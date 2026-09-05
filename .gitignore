@@ -1,0 +1,13 @@
+# 构建产物
+build/
+dist/
+*.spec
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 调试/临时脚本
+_*.py
+_session.*
+_hash.txt
