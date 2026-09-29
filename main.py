@@ -67,6 +67,8 @@ def selftest() -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from xdao import __version__
+
     parser = argparse.ArgumentParser(
         prog="xdao-export",
         description="X岛串导出工具：把串完整备份为 HTML / TXT / Markdown / EPUB。",
@@ -77,6 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
             "  python main.py 7001 -f markdown   命令行导出单个串\n"
             "  python main.py 7001 --watch       监控串，有新回复就导出\n"
         ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"X岛串导出工具 {__version__}",
     )
     parser.add_argument(
         "threads",
