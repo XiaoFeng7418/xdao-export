@@ -151,6 +151,17 @@ def main(argv: list[str]) -> int:
         print(f"已创建 Release {release['tag_name']}：{release['html_url']}")
     else:
         release = existing
+        # 复用已有 Release 时同步发布说明与标题，避免说明停在旧版本。
+        if release.get("body") != notes or release.get("name") != args.name:
+            release = request_json(
+                "PATCH",
+                f"/repos/{args.repo}/releases/{release['id']}",
+                token,
+                {"name": args.name, "body": notes},
+            )
+            print(f"已更新 Release {release['tag_name']} 的发布说明")
+        else:
+            print(f"Release {args.tag} 的说明已是最新")
 
     uploaded = {a["name"] for a in release.get("assets", [])}
     for raw in args.asset:
