@@ -303,3 +303,35 @@ def _escape_xhtml_line(line: str) -> str:
 def output_path(output_dir: Path, name: str, suffix: str) -> Path:
     """拼出导出文件路径，文件名安全化后加上扩展名。"""
     return Path(output_dir) / (sanitize_filename(name) + suffix)
+
+
+class OutputDirNotWritable(Exception):
+    """导出目录不可写。提前抛出，避免白抓一遍再失败。"""
+
+
+def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
+    """确认导出目录可写，返回规范化后的目录。
+
+    抓一个长串可能要几分钟，如果最后才发现目录写不进去，那一趟就白跑了，
+    所以开始抓之前就先探一次。目录不存在时会尝试创建。
+    """
+    target = Path(output_dir)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise OutputDirNotWritable(
+            f"{kind}目录无法创建：{target}\n{exc}\n"
+            "请换一个可写的目录，或检查该位置的权限。"
+        ) from exc
+
+    probe = target / ".xdao-write-probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise OutputDirNotWritable(
+            f"{kind}目录不可写：{target}\n{exc}\n"
+            "常见原因：该目录的权限不允许当前账户写入（可在文件夹属性 → 安全里授予"
+            "「完全控制」），或程序运行在受限环境里。请换一个可写的目录后重试。"
+        ) from exc
+    return target
