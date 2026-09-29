@@ -32,11 +32,15 @@
 
 ## 下载（打包版）
 
-无需安装 Python，直接双击即可运行的 Windows 程序，请到本仓库的 Releases 页面下载 `X岛串导出工具.exe`：
+无需安装 Python，直接双击即可运行的 Windows 程序。请到本仓库的 Releases 页面下载：
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-> 打包版对应 v0.1.0。上面这些新功能需要从源码运行，或等下一版打包。
+- 最新版：`xdao-export-v0.2.0.exe`（含四种导出格式、断点续传与串监控）；
+- 旧版：`xdao-export-v0.1.0.exe`（只有 HTML / TXT 导出）。
+
+> 打包好的 exe 不作为源码仓库的一部分，只通过 Releases 发布；
+> 想运行最新代码也可以直接按下面的方式从源码启动。
 
 ## 从源码运行
 
