@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 from ._shared import (
+    OutputDirNotWritable,
     ThreadData,
     derive_filename,
+    ensure_writable,
     fetch_image,
     guess_mime,
     iter_post_image_urls,
@@ -72,10 +74,12 @@ __all__ = [
     "EpubBuilder",
     "HtmlBuilder",
     "MarkdownBuilder",
+    "OutputDirNotWritable",
     "ThreadData",
     "TxtBuilder",
     "create_exporter",
     "derive_filename",
+    "ensure_writable",
     "fetch_image",
     "guess_mime",
     "iter_post_image_urls",

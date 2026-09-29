@@ -387,3 +387,60 @@ def test_corrupt_page_file_falls_back_to_download(artifacts_dir):
 
     assert (7001, 2) in api.requests  # 缺页会重新下载
     assert len(result.posts) == 7
+
+
+# ---------- 缓存不可写时的行为 ----------
+
+
+def test_cache_write_failure_is_reported_not_swallowed(artifacts_dir, monkeypatch):
+    """缓存写不进去时必须留下痕迹，否则用户以为抓取成果已留存。"""
+    api = build_three_page_api()
+    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir)
+
+    from pathlib import Path as _Path
+
+    real_write_text = _Path.write_text
+
+    def fake_write_text(self, *args, **kwargs):
+        if self.suffix == ".json" and "pages" in str(self):
+            raise PermissionError(13, "Permission denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, "write_text", fake_write_text)
+    result = fetcher.fetch(7001)
+
+    assert "PermissionError" in result.cache_warning
+    assert len(result.posts) == 7  # 抓取本身照常完成
+
+
+def test_fetch_stops_early_when_cache_dir_unwritable(artifacts_dir, monkeypatch):
+    """缓存目录不可写时应立刻报错，而不是抓完之后才发现。"""
+    api = build_three_page_api()
+    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir)
+
+    import xdao.cache as cache_module
+    from xdao.exporters._shared import OutputDirNotWritable
+
+    def boom(*args, **kwargs):
+        raise OutputDirNotWritable("缓存目录不可写（测试）")
+
+    monkeypatch.setattr(cache_module, "ensure_writable", boom)
+    with pytest.raises(XdaoError, match="缓存"):
+        fetcher.fetch(7001)
+    assert api.requests == []  # 一个请求都没发出去
+
+
+def test_fetch_without_cache_skips_the_check(artifacts_dir, monkeypatch):
+    """关掉缓存时不做可写性预检，照常抓取。"""
+    api = build_three_page_api()
+    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir, use_cache=False)
+
+    import xdao.cache as cache_module
+    from xdao.exporters._shared import OutputDirNotWritable
+
+    def boom(*args, **kwargs):
+        raise OutputDirNotWritable("不该被调用")
+
+    monkeypatch.setattr(cache_module, "ensure_writable", boom)
+    result = fetcher.fetch(7001)
+    assert len(result.posts) == 7
