@@ -26,6 +26,7 @@ from ..client import Post
 from ._shared import (
     ThreadData,
     derive_filename,
+    ensure_writable,
     fetch_image,
     guess_mime,
     iter_post_image_urls,
@@ -154,8 +155,8 @@ class EpubBuilder:
         include_hashes: list[str] | None = None,
     ) -> Path:
         """在 output_dir 下按文件名模板（或推导结果）保存。"""
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # 先确认目录可写，避免抓了几分钟才在最后一步失败。
+        output_dir = ensure_writable(output_dir)
         name = sanitize_filename(self.output_name(thread)) + ".epub"
         return self.build(
             thread,
