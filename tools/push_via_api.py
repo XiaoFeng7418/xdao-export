@@ -375,18 +375,18 @@ def main(argv: list[str]) -> int:
             continue
         result = api(token, "POST", f"/repos/{args.repo}/git/commits", payload)
         created = result["sha"]
-        if not exclude:
-            # 只有完整复刻时才可能、也应该得到与本地相同的 sha。
-            if created != commit["sha"]:
-                raise ApiError(
-                    f"commit sha 不一致：本地 {commit['sha']} / 远端 {created}\n"
-                    "说明提交元数据有差异，请检查 author/committer 与时间。"
-                )
+        if created == commit["sha"]:
+            # 完整复刻：连 sha 都与本地一致。
             print(f"    提交 {created[:8]} 与本地一致 ✓  {commit['message'].splitlines()[0][:46]}")
+        elif not exclude:
+            raise ApiError(
+                f"commit sha 不一致：本地 {commit['sha']} / 远端 {created}\n"
+                "说明提交元数据有差异，请检查 author/committer 与时间。"
+            )
         else:
             print(
                 f"    提交 {created[:8]}（本地 {commit['sha'][:8]}，"
-                f"因排除项内容不同）  {commit['message'].splitlines()[0][:40]}"
+                f"内容因排除项与本地不同）  {commit['message'].splitlines()[0][:40]}"
             )
         new_shas.append(created)
         parent = created
