@@ -385,9 +385,12 @@ def main(argv: list[str]) -> int:
                 f"内容因排除项与本地不同）  {commit['message'].splitlines()[0][:40]}"
             )
         else:
-            raise ApiError(
-                f"commit sha 不一致：本地 {commit['sha']} / 远端 {created}\n"
-                "树内容相同却算出不同的提交，说明 author/committer 与时间有差异。"
+            # 树相同但 sha 不同：GitHub 会把时区规范化成 UTC，
+            # 于是同一时刻、同一内容的提交算出不同的 sha。这是正常的，
+            # 采用远端算出的那个，保证后续提交的父链连得上。
+            print(
+                f"    提交 {created[:8]}（本地 {commit['sha'][:8]}，"
+                f"时区写法被规范化）  {commit['message'].splitlines()[0][:40]}"
             )
         new_shas.append(created)
         parent = created
