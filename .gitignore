@@ -7,8 +7,8 @@ dist/
 __pycache__/
 *.pyc
 
-# 调试/临时脚本（只忽略仓库根目录下的，避免误伤 tools/ 等目录）
-/_*.py
+# 调试/临时脚本
+_*.py
 _session.*
 _hash.txt
 
@@ -16,8 +16,4 @@ _hash.txt
 .cache/
 *.egg-info/
 .pytest_cache/
-pytest-cache-files-*/
-
-# 测试产物：目录本身要保留（受限环境要求预先存在才能写入），
-# 但跑出来的东西不进版本库。
-.test-artifacts/*
+tests/tmp/

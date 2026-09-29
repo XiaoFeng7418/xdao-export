@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import gzip
-import hashlib
 import json
-import os
-import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
-from pathlib import Path
 
 
 USER_AGENT = (
@@ -21,9 +17,6 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0 Safari/537.36"
 )
-
-# 单张图片体积上限，防止异常响应把内存吃满。
-MAX_IMAGE_BYTES = 24 * 1024 * 1024
 
 
 class XdaoError(Exception):
@@ -58,8 +51,12 @@ class Post:
     admin: int
     sage: int = 0
     is_po: bool = False
-    # 该发言来自第几页（缓存与去重使用）。
-    page: int = 1
+
+    @property
+    def image_url(self) -> str | None:
+        if not self.img:
+            return None
+        return None  # 由 Builder 结合 CDN 前缀解析
 
 
 class XdaoClient:
@@ -72,74 +69,14 @@ class XdaoClient:
         "https://api.nmb.best/api",
     ]
 
-    def __init__(
-        self,
-        timeout: float = 20.0,
-        retries: int = 2,
-        proxy: str | None = None,
-        throttle: float = 0.08,
-    ) -> None:
-        """
-        timeout  : 单次请求超时秒数
-        retries  : 失败重试次数（指数退避）
-        proxy    : 代理地址，如 http://127.0.0.1:7890；留空则读取环境变量
-        throttle : 两次请求之间的最小间隔秒数，避免请求过密
-        """
-        self.timeout = float(timeout)
-        self.retries = max(0, int(retries))
-        self._throttle_interval = max(0.0, float(throttle))
-
-        handlers: list[urllib.request.BaseHandler] = []
-        self.proxy = (proxy or "").strip() or self._proxy_from_env()
-        if self.proxy:
-            handlers.append(
-                urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy})
-            )
-        if not any(isinstance(h, urllib.request.ProxyHandler) for h in handlers):
-            # 显式装配空代理，避免继承系统级代理设置导致行为不可预期。
-            handlers.append(urllib.request.ProxyHandler({}))
-
+    def __init__(self) -> None:
         self._jar = CookieJar()
-        handlers.append(urllib.request.HTTPCookieProcessor(self._jar))
-        self._opener = urllib.request.build_opener(*handlers)
-
+        self._opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self._jar)
+        )
         self._api_base: str | None = None
         self.cdn_path = "https://image.nmb.best/"
         self._last_request_at = 0.0
-        # 最近一次取串返回的总页数与页号。
-        self.last_page_count = 1
-        self.last_page_index = 1
-        # 图片本地缓存目录（由外部按需设置，用于跨次导出去重下载）。
-        self.image_cache_dir: Path | None = None
-
-    @staticmethod
-    def _proxy_from_env() -> str:
-        """读取环境变量里的代理设置（大小写两种写法都认）。"""
-        for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-            value = os.environ.get(key)
-            if value:
-                return value.strip()
-        return ""
-
-    def apply_config(self, settings) -> None:
-        """从 AppSettings 应用网络相关配置（超时、重试、代理、限速）。"""
-        self.timeout = float(getattr(settings, "timeout", self.timeout) or self.timeout)
-        self.retries = max(0, int(getattr(settings, "retries", self.retries) or 0))
-        self._throttle_interval = max(
-            0.0, float(getattr(settings, "throttle", self._throttle_interval) or 0.0)
-        )
-        proxy = (getattr(settings, "proxy", "") or "").strip()
-        if proxy != (self.proxy or ""):
-            self.proxy = proxy or self._proxy_from_env()
-            handlers: list[urllib.request.BaseHandler] = []
-            if self.proxy:
-                handlers.append(
-                    urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy})
-                )
-            else:
-                handlers.append(urllib.request.ProxyHandler({}))
-            handlers.append(urllib.request.HTTPCookieProcessor(self._jar))
-            self._opener = urllib.request.build_opener(*handlers)
 
     # ---------- 基础请求 ----------
 
@@ -148,15 +85,9 @@ class XdaoClient:
         url: str,
         data: bytes | None = None,
         headers: dict | None = None,
-        timeout: float | None = None,
-        retries: int | None = None,
-        max_bytes: int | None = None,
+        timeout: int = 20,
+        retries: int = 2,
     ) -> bytes:
-        """发起请求并返回响应体。
-
-        对超时、连接错误、429 与 5xx 做指数退避重试；
-        4xx（除 429）属于确定性错误，直接失败，不做无谓重试。
-        """
         self._throttle()
         merged_headers = {
             "User-Agent": USER_AGENT,
@@ -169,120 +100,57 @@ class XdaoClient:
         if headers:
             merged_headers.update(headers)
 
-        effective_timeout = float(timeout if timeout is not None else self.timeout)
-        attempts = self.retries if retries is None else max(0, int(retries))
         last_error: Exception | None = None
-
-        for attempt in range(attempts + 1):
+        for attempt in range(retries + 1):
             req = urllib.request.Request(url, data=data)
             for key, value in merged_headers.items():
                 req.add_header(key, value)
             try:
-                with self._opener.open(req, timeout=effective_timeout) as resp:
-                    if max_bytes:
-                        raw = resp.read(max_bytes + 1)
-                        if len(raw) > max_bytes:
-                            raise XdaoError(
-                                f"响应内容超过 {max_bytes // 1024} KB 上限：{url}"
-                            )
-                    else:
-                        raw = resp.read()
-                    if resp.headers.get("Content-Encoding") == "gzip":
+                with self._opener.open(req, timeout=timeout) as resp:
+                    raw = resp.read()
+                    encoding = resp.headers.get("Content-Encoding")
+                    if encoding == "gzip":
                         raw = gzip.decompress(raw)
                     return raw
             except urllib.error.HTTPError as exc:
-                retryable = exc.code == 429 or 500 <= exc.code < 600
-                if not retryable or attempt >= attempts:
-                    detail = ""
-                    try:
-                        detail = exc.read().decode("utf-8", "replace")[:300]
-                    except Exception:
-                        pass
-                    if exc.code == 429:
-                        raise XdaoError(
-                            "请求过于频繁，已被服务器限流（429）。请稍后重试，"
-                            "或在设置里把「请求间隔」调大。"
-                        ) from exc
-                    raise XdaoError(f"请求失败 {exc.code}: {url}\n{detail}") from exc
-                last_error = exc
-                self._backoff(attempt, retry_after=exc.headers.get("Retry-After"))
+                detail = exc.read().decode("utf-8", "replace")[:300]
+                raise XdaoError(f"请求失败 {exc.code}: {url}\n{detail}") from exc
             except TimeoutError as exc:
                 last_error = exc
-                if attempt >= attempts:
-                    break
-                self._backoff(attempt)
-            except urllib.error.URLError as exc:
-                last_error = exc
-                if attempt >= attempts:
-                    break
-                self._backoff(attempt)
             except OSError as exc:
                 last_error = exc
-                if attempt >= attempts:
-                    break
-                self._backoff(attempt)
-
+                time.sleep(0.6 * (attempt + 1))
+            except urllib.error.URLError as exc:
+                last_error = exc
+                time.sleep(0.6 * (attempt + 1))
         if isinstance(last_error, TimeoutError):
-            raise XdaoError(f"请求超时（{effective_timeout:.0f} 秒）：{url}") from last_error
-        raise XdaoError(f"网络错误：{last_error or '未知原因'}（{url}）") from last_error
-
-    @staticmethod
-    def _backoff(attempt: int, retry_after: str | None = None) -> None:
-        """指数退避等待；服务器给了 Retry-After 就优先听它的。"""
-        if retry_after:
-            try:
-                time.sleep(min(30.0, max(0.0, float(retry_after))))
-                return
-            except (TypeError, ValueError):
-                pass
-        time.sleep(min(8.0, 0.8 * (2**attempt)))
+            raise XdaoError(f"请求超时：{url}") from last_error
+        raise XdaoError(f"网络错误：{last_error}") from last_error
 
     def _throttle(self) -> None:
-        if self._throttle_interval <= 0:
-            return
         elapsed = time.monotonic() - self._last_request_at
-        if elapsed < self._throttle_interval:
-            time.sleep(self._throttle_interval - elapsed)
+        if elapsed < 0.08:
+            time.sleep(0.08 - elapsed)
         self._last_request_at = time.monotonic()
 
     def _resolve_api_base(self) -> str:
-        """确定可用的接口前缀；已选中的前缀失效时会重新探测其它备用地址。"""
-        candidates = list(self.API_BASES)
-        if self._api_base in candidates:
-            candidates.remove(self._api_base)
-            candidates.insert(0, self._api_base)
-
+        if self._api_base:
+            return self._api_base
         last_error: Exception | None = None
-        for base in candidates:
+        for base in self.API_BASES:
             try:
                 self._request(f"{base}/getCDNPath", timeout=10)
                 self._api_base = base
                 return base
             except XdaoError as exc:
                 last_error = exc
-        self._api_base = None
         raise XdaoError(f"无法连接 X 岛接口：{last_error}")
 
     def _api_get_json(self, path: str, params: dict) -> dict | list:
-        """取接口 JSON；当前前缀失败时自动换备用前缀重试一次。"""
-        last_error: Exception | None = None
-        for attempt in range(len(self.API_BASES)):
-            base = self._resolve_api_base()
-            query = urllib.parse.urlencode(params)
-            try:
-                raw = self._request(f"{base}/{path}?{query}")
-                return json.loads(raw.decode("utf-8"))
-            except XdaoError as exc:
-                last_error = exc
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                # 接口偶尔会返回 HTML 错误页，换备用前缀再试。
-                last_error = XdaoError(f"接口返回了非 JSON 内容：{base}/{path}")
-            # 当前前缀不可用，下一轮会重新探测。
-            if self._api_base == base:
-                self._api_base = None
-            if attempt == len(self.API_BASES) - 1:
-                break
-        raise last_error if isinstance(last_error, XdaoError) else XdaoError(str(last_error))
+        base = self._resolve_api_base()
+        query = urllib.parse.urlencode(params)
+        raw = self._request(f"{base}/{path}?{query}")
+        return json.loads(raw.decode("utf-8"))
 
     # ---------- 图片 CDN ----------
 
@@ -448,35 +316,10 @@ class XdaoClient:
     # ---------- 取串 ----------
 
     def fetch_thread_page(self, thread_id: int, page: int = 1) -> dict:
-        payload = self._api_get_json("thread", {"id": thread_id, "page": page})
-        # 记录最近一次请求的页数，供抓取层判断总量（接口不总是给出）。
-        self.last_page_count = self._extract_page_count(payload)
-        self.last_page_index = page
-        return payload
+        return self._api_get_json("thread", {"id": thread_id, "page": page})
 
-    @staticmethod
-    def _extract_page_count(payload) -> int:
-        """接口用不同字段名表达总页数，这里统一取一个可靠的候选值。"""
-        if not isinstance(payload, dict):
-            return 1
-        for key in ("PageCount", "page_count", "TotalPage", "total_page", "pages"):
-            try:
-                value = int(payload.get(key) or 0)
-            except (TypeError, ValueError):
-                continue
-            if value > 0:
-                return value
-        try:
-            return max(1, int(payload.get("ReplyCount") or 0) // 19 + 1)
-        except (TypeError, ValueError):
-            return 1
-
-    def parse_thread_page(self, payload: dict, page: int | None = None) -> dict:
-        """把一页 /thread 的原始数据解析成规范结构。
-
-        page 省略时沿用最近一次请求的页号；从缓存里读出来的旧页要显式传入页号。
-        """
-        current_page = int(page or self.last_page_index or 1)
+    def parse_thread_page(self, payload: dict) -> dict:
+        """把一页 /thread 的原始数据解析成规范结构。"""
         replies = payload.get("Replies") or []
         po_hash = payload.get("user_hash")
         posts: list[Post] = []
@@ -493,7 +336,6 @@ class XdaoClient:
             admin=int(payload.get("admin") or 0),
             sage=int(payload.get("sage") or 0),
             is_po=True,
-            page=current_page,
         )
         posts.append(main)
 
@@ -514,7 +356,6 @@ class XdaoClient:
                     admin=int(item.get("admin") or 0),
                     sage=int(item.get("sage") or 0),
                     is_po=False,
-                    page=current_page,
                 )
             )
         return {
@@ -527,38 +368,5 @@ class XdaoClient:
             "has_more": len(replies) > 0,
         }
 
-    def download_image(self, url: str, use_cache: bool = True) -> bytes:
-        """下载图片；启用缓存时命中本地文件直接返回，避免重复下载。
-
-        缓存文件按 URL 的 SHA-1 命名，存放在 ``image_cache_dir``。
-        """
-        path = self._cache_path(url) if use_cache else None
-        if path is not None and path.exists():
-            try:
-                return path.read_bytes()
-            except OSError:
-                pass  # 缓存损坏就重新下载
-
-        data = self._request(url, timeout=max(30.0, self.timeout), max_bytes=MAX_IMAGE_BYTES)
-
-        if path is not None:
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                # 先写临时文件再替换，避免并发下载留下半截文件。
-                tmp = path.with_suffix(path.suffix + ".part")
-                tmp.write_bytes(data)
-                tmp.replace(path)
-            except OSError:
-                pass  # 缓存写入失败不影响本次导出
-        return data
-
-    def _cache_path(self, url: str) -> Path | None:
-        if self.image_cache_dir is None or not url or url.startswith("data:"):
-            return None
-        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()
-        # 扩展名取自 URL，兜底 .img；真正类型由调用方按魔数判断。
-        suffix = ".img"
-        match = re.search(r"\.(jpg|jpeg|png|gif|webp|bmp)(?:\?|$)", url.lower())
-        if match:
-            suffix = "." + ("jpg" if match.group(1) == "jpeg" else match.group(1))
-        return Path(self.image_cache_dir) / f"{digest[:2]}" / f"{digest}{suffix}"
+    def download_image(self, url: str) -> bytes:
+        return self._request(url, timeout=30)
