@@ -1,0 +1,90 @@
+"""导出器集合。
+
+对外统一出口：抓取层和界面层只从这里取导出器，不必关心内部文件划分。
+
+- ``html``     : 图片内嵌的单文件 HTML
+- ``txt``      : 纯文本，图片保留链接
+- ``markdown`` : 便于二次编辑的 Markdown
+- ``epub``     : 可导入阅读器的 EPUB 电子书
+- ``_shared``  : 文本处理、文件名推导、图片解析等公共逻辑
+"""
+
+from __future__ import annotations
+
+from ._shared import (
+    ThreadData,
+    derive_filename,
+    fetch_image,
+    guess_mime,
+    iter_post_image_urls,
+    markdown_images_to_xhtml,
+    mime_to_ext,
+    output_path,
+    plain_text,
+    render_filename,
+    render_inline_content,
+    resolve_image_url,
+    sanitize_filename,
+)
+from .epub import EpubBuilder
+from .html import HtmlBuilder
+from .markdown import MarkdownBuilder
+from .txt import TxtBuilder
+
+# 支持的导出格式：格式键 → (显示名, 扩展名, 导出器类)
+EXPORTERS = {
+    "html": ("HTML（图片嵌入）", ".html", HtmlBuilder),
+    "txt": ("TXT（纯文本）", ".txt", TxtBuilder),
+    "markdown": ("Markdown（.md）", ".md", MarkdownBuilder),
+    "epub": ("EPUB（电子书）", ".epub", EpubBuilder),
+}
+
+
+def create_exporter(
+    format_key: str,
+    client,
+    progress=None,
+    filename_template: str | None = None,
+    image_mode: str | None = None,
+):
+    """按格式键创建导出器实例；未知格式回退到 HTML。
+
+    不同导出器接受的参数不同（例如只有 EPUB 有 ``image_mode``），
+    这里按能力逐级回退，避免调用方为每种格式写分支。
+    """
+    _, _, cls = EXPORTERS.get(format_key, EXPORTERS["html"])
+    attempts = [
+        {"progress": progress, "filename_template": filename_template, "image_mode": image_mode},
+        {"progress": progress, "filename_template": filename_template},
+        {"progress": progress},
+    ]
+    last_error: TypeError | None = None
+    for kwargs in attempts:
+        try:
+            return cls(client, **kwargs)
+        except TypeError as exc:
+            last_error = exc
+    raise last_error if last_error else TypeError(f"无法创建导出器：{format_key}")
+
+
+__all__ = [
+    "EXPORTERS",
+    "EpubBuilder",
+    "HtmlBuilder",
+    "MarkdownBuilder",
+    "ThreadData",
+    "TxtBuilder",
+    "create_exporter",
+    "derive_filename",
+    "fetch_image",
+    "guess_mime",
+    "iter_post_image_urls",
+    "markdown_images_to_xhtml",
+    "mime_to_ext",
+    "output_path",
+    "plain_text",
+    "render_filename",
+    "render_inline_content",
+    "resolve_image_url",
+    "sanitize_filename",
+]
