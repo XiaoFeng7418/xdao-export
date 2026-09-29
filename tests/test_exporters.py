@@ -15,10 +15,12 @@ from xdao.client import Post
 from xdao.exporters import (
     EXPORTERS,
     HtmlBuilder,
+    OutputDirNotWritable,
     ThreadData,
     TxtBuilder,
     create_exporter,
     derive_filename,
+    ensure_writable,
     guess_mime,
     iter_post_image_urls,
     output_path,
@@ -363,6 +365,49 @@ def test_txt_save_creates_output_dir(out_dir):
     target = out_dir / "新的子目录"
     path = TxtBuilder(FakeClient()).save(sample_thread(), "all", target)
     assert path.parent == target and path.exists()
+
+
+# ---------- 导出目录可写性预检 ----------
+
+
+def test_ensure_writable_creates_missing_directory(out_dir):
+    target = out_dir / "还没创建" / "更深一层"
+    assert ensure_writable(target) == target
+    assert target.is_dir()
+
+
+def test_ensure_writable_rejects_unwritable_directory(out_dir, monkeypatch):
+    """目录不可写时必须提前失败，而不是抓完才报错。"""
+    from pathlib import Path as _Path
+
+    real_write_text = _Path.write_text
+
+    def fake_write_text(self, *args, **kwargs):
+        if self.name == ".xdao-write-probe":
+            raise PermissionError(13, "Permission denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, "write_text", fake_write_text)
+    with pytest.raises(OutputDirNotWritable, match="不可写"):
+        ensure_writable(out_dir)
+
+
+@pytest.mark.parametrize("key", ["html", "txt", "markdown", "epub"])
+def test_save_fails_fast_when_directory_unwritable(out_dir, monkeypatch, key):
+    """四种导出器都要在写盘前预检目录，给出可读的错误。"""
+    from pathlib import Path as _Path
+
+    real_write_text = _Path.write_text
+
+    def fake_write_text(self, *args, **kwargs):
+        if self.name == ".xdao-write-probe":
+            raise PermissionError(13, "Permission denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, "write_text", fake_write_text)
+    exporter = create_exporter(key, FakeClient())
+    with pytest.raises(OutputDirNotWritable):
+        exporter.save(sample_thread(), "all", out_dir)
 
 
 def test_txt_save_without_template_uses_title(out_dir):

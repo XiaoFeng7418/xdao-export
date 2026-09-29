@@ -281,6 +281,11 @@ def run_cli(args: argparse.Namespace) -> int:
                 posts=list(result.posts),
             )
             print(f"    {len(thread.posts)} 楼 · {result.reason}")
+            if getattr(result, "cache_warning", ""):
+                print(
+                    f"    警告：缓存写入失败，本次抓取不会被复用 —— {result.cache_warning}",
+                    file=sys.stderr,
+                )
             path = exporter.save(thread, scope, output_dir, include_hashes=hashes)
             succeeded += 1
             print(f"    完成：{path}")

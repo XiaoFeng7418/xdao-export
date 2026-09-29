@@ -11,6 +11,7 @@ from ..client import Post, XdaoClient
 from ._shared import (
     ThreadData,
     derive_filename,
+    ensure_writable,
     fetch_image,
     guess_mime,
     iter_post_image_urls,
@@ -262,8 +263,8 @@ class HtmlBuilder:
         output_dir: Path | str = ".",
         include_hashes: list[str] | None = None,
     ) -> Path:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # 先确认目录可写，避免抓了几分钟才在最后一步失败。
+        output_dir = ensure_writable(output_dir)
         self._notify("正在整理并保存 HTML 文件…")
         path = output_dir / (sanitize_filename(self.output_name(thread)) + ".html")
         path.write_text(self.build(thread, scope, include_hashes), encoding="utf-8")
