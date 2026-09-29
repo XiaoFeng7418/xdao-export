@@ -3,6 +3,10 @@ build/
 dist/
 *.spec
 
+# 打包好的可执行文件：跟上游仓库的习惯一致，只作为 Release 附件发布，
+# 不进源码树（体积大，且每次打包都会变）。
+/X岛串导出工具.exe
+
 # Python 缓存
 __pycache__/
 *.pyc
