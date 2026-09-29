@@ -13,6 +13,7 @@ from ..client import Post
 from ._shared import (
     ThreadData,
     derive_filename,
+    ensure_writable,
     iter_post_image_urls,
     plain_text,
     render_filename,
@@ -124,8 +125,8 @@ class MarkdownBuilder:
     ) -> Path:
         """写文件，返回路径（UTF-8、行尾 \\n）。"""
         self._notify("正在生成 Markdown 文件…")
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # 先确认目录可写，避免抓了几分钟才在最后一步失败。
+        output_dir = ensure_writable(output_dir)
         path = output_dir / (sanitize_filename(self.output_name(thread)) + ".md")
         text = self.build(thread, scope, include_hashes)
         # 固定用 \n，避免在 Windows 上写出 CRLF。

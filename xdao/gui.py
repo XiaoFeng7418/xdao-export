@@ -1372,6 +1372,16 @@ class App:
                             f"{len(thread.posts)} 楼 · {result.reason}",
                         )
                     )
+                    if getattr(result, "cache_warning", ""):
+                        # 缓存写不进去意味着这次抓取没有留下断点续传的成果，
+                        # 必须说清楚，否则用户会以为下次能续上。
+                        self._export_queue.put(
+                            (
+                                "log",
+                                f"[{index}/{len(urls)}] 警告：缓存写入失败，"
+                                f"本次抓取不会被复用 —— {result.cache_warning}",
+                            )
+                        )
                     path = exporter.save(
                         thread, scope, Path(output_dir), include_hashes=include_hashes
                     )

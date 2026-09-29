@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .client import Post, XdaoClient, XdaoError
+from .exporters._shared import OutputDirNotWritable, ensure_writable
 
 # 缓存格式版本，结构不兼容时旧缓存自动失效。
 CACHE_VERSION = 1
@@ -69,6 +70,8 @@ class CachedThread:
     pages_reused: int = 0
     new_posts: int = 0
     edited_posts: int = 0
+    # 缓存不可写时的原因；非空说明这次抓取没有留下断点续传的成果。
+    cache_warning: str = ""
 
     def fingerprint_pairs(self) -> list[tuple[int, str, str]]:
         """(页号, 楼层 id, 指纹) 三元组，用于回写缓存。"""
@@ -92,6 +95,8 @@ class ThreadCache:
     last_page_count: int = 0
     fingerprints: dict[str, str] = field(default_factory=dict)
     page_files: list[str] = field(default_factory=list)
+    # 写缓存失败时记录原因，供界面提示；空表示一切正常。
+    write_error: str = ""
 
     @property
     def path(self) -> Path:
@@ -126,8 +131,11 @@ class ThreadCache:
             self.page_path(page).write_text(
                 json.dumps(payload, ensure_ascii=False), encoding="utf-8"
             )
-        except (OSError, TypeError):
-            pass  # 缓存写入失败不影响本次导出
+        except (OSError, TypeError) as exc:
+            # 缓存写不进去不该中断导出，但必须让上层知道 ——
+            # 否则用户会以为抓取成果已留存，下次重跑还得再抓一遍。
+            if not self.write_error:
+                self.write_error = f"{type(exc).__name__}: {exc}"
 
     @staticmethod
     def hash_payload(payload: dict) -> str:
@@ -180,8 +188,9 @@ class ThreadCache:
             self.path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        except OSError:
-            pass
+        except OSError as exc:
+            if not self.write_error:
+                self.write_error = f"{type(exc).__name__}: {exc}"
 
     def clear(self) -> None:
         """清空该串的缓存（页面文件一并删除）。"""
@@ -307,6 +316,17 @@ class CachedThreadFetcher:
         thread_id = parse_thread_id(url_or_id)
         if thread_id is None:
             raise XdaoError(f"无法识别串号：{url_or_id}")
+
+        # 抓一个长串可能要几分钟，靠的就是缓存能续上；所以先确认缓存目录可写，
+        # 写不进去就当场停下说清楚，而不是让用户白抓一场。
+        if self.use_cache:
+            try:
+                ensure_writable(self.cache_dir, kind="缓存")
+            except OutputDirNotWritable as exc:
+                raise XdaoError(
+                    f"{exc}\n\n提示：不想用缓存可以关掉「使用本地缓存」，"
+                    "或在设置里把缓存目录改到一个可写的位置。"
+                ) from exc
 
         cache = ThreadCache.load(self.cache_dir, thread_id) if self.use_cache else ThreadCache(
             cache_dir=self.cache_dir, thread_id=thread_id
@@ -553,4 +573,5 @@ class CachedThreadFetcher:
             pages_reused=pages_reused,
             new_posts=new_posts,
             edited_posts=edited_posts,
+            cache_warning=cache.write_error,
         )
