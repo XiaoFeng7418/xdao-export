@@ -11,3 +11,9 @@ __pycache__/
 _*.py
 _session.*
 _hash.txt
+
+# 运行期缓存与导出产物
+.cache/
+*.egg-info/
+.pytest_cache/
+tests/tmp/
