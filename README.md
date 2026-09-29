@@ -36,11 +36,20 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-- 最新版：`xdao-export-v0.2.0.exe`（含四种导出格式、断点续传与串监控）；
-- 旧版：`xdao-export-v0.1.0.exe`（只有 HTML / TXT 导出）。
+最新版 **v0.2.0** 提供两个附件，**内容完全一样**，按环境挑一个：
 
-> 打包好的 exe 不作为源码仓库的一部分，只通过 Releases 发布；
-> 想运行最新代码也可以直接按下面的方式从源码启动。
+| 附件 | 什么时候用 |
+|---|---|
+| `xdao-export-v0.2.0-win64.zip` | **推荐**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动。 |
+| `xdao-export-v0.2.0.exe` | 单文件版，只有一个文件更好携带。每次启动会把内容解压到系统临时目录。 |
+
+> **如果单文件版弹出「Could not create temporary directory!」**：这是 PyInstaller 单文件模式的
+> 启动器在 Python 代码运行前就失败了 —— 当前环境的系统临时目录不可写。程序本身没问题，
+> 换用免安装包即可。
+>
+> 免安装包解压后，`xdao-export.exe` 与 `_internal` 文件夹**必须放在一起**，不要只把 exe 单独拷走。
+
+旧版 `xdao-export-v0.1.0.exe` 只有 HTML / TXT 导出。想运行最新代码也可以直接按下面的方式从源码启动。
 
 ## 从源码运行
 
