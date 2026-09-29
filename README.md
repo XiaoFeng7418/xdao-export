@@ -82,6 +82,9 @@ python main.py 67024789 68811943 --watch --interval 600 -f html
 
 # 只做接口自检
 python main.py --selftest
+
+# 查看版本
+python main.py --version
 ```
 
 未登录时也能用，但只能读到每个串的前 100 页。用 `--cookie <userhash>` 或先在图形界面里登录。
