@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import timezone
 from pathlib import Path
 
 API = "https://api.github.com"
@@ -118,6 +119,81 @@ def local_commits() -> list[dict]:
             }
         )
     return commits
+
+
+def remote_chain(repo: str, token: str, head: str, limit: int = 100) -> list[dict]:
+    """取远端分支上最近的若干提交（从旧到新），用于判断哪些已经推过。"""
+    if not head:
+        return []
+    chain = []
+    sha = head
+    while sha and len(chain) < limit:
+        data = api(token, "GET", f"/repos/{repo}/git/commits/{sha}")
+        chain.append(data)
+        parents = data.get("parents") or []
+        sha = parents[0]["sha"] if parents else ""
+    chain.reverse()
+    return chain
+
+
+def _same_email(a: str, b: str) -> bool:
+    return (a or "").strip().lower() == (b or "").strip().lower()
+
+
+def _same_instant(a: str, b: str) -> bool:
+    """比较两个时间是否为同一时刻（容忍时区写法不同，例如 +08:00 与 Z）。"""
+    from datetime import datetime
+
+    if not a or not b:
+        return False
+    try:
+        left = datetime.fromisoformat(a.replace("Z", "+00:00"))
+        right = datetime.fromisoformat(b.replace("Z", "+00:00"))
+    except ValueError:
+        return a == b
+    if left.tzinfo is None:
+        left = left.replace(tzinfo=timezone.utc)
+    if right.tzinfo is None:
+        right = right.replace(tzinfo=timezone.utc)
+    return left == right
+
+
+def _same_commit(local_commit: dict, remote_commit: dict) -> bool:
+    remote_author = remote_commit.get("author") or {}
+    return (
+        local_commit["message"].strip() == (remote_commit.get("message") or "").strip()
+        and _same_email(local_commit["author_email"], remote_author.get("email", ""))
+        and _same_instant(local_commit["author_date"], remote_author.get("date", ""))
+    )
+
+
+def find_pushed_prefix(local: list[dict], remote: list[dict]) -> int:
+    """返回「本地提交中已经推到远端」的个数。
+
+    以提交说明 + 作者邮箱 + 作者时间比对：即使因为排除大文件导致 tree 与
+    sha 不同，也能认出同一条改动，从而只推送新增的部分，不再重建历史。
+
+    对齐方式：先在远端链里找到本地第一个提交所在的位置，再逐个往下比。
+    远端链可能比本地长（例如历史上重复推送过），所以不能按位置直接对齐。
+
+    注意：这里用的是 Git Data API 的原始提交对象（字段为 author / message），
+    不是 commits 列表接口的 commit.author 结构。
+    """
+    if not local or not remote:
+        return 0
+    # 从最近的位置往回找：远端可能因为历史原因留有同一批提交的旧副本，
+    # 必须对齐到最新那一次，否则会把已经推过的提交又推一遍。
+    for start in range(len(remote) - 1, -1, -1):
+        if not _same_commit(local[0], remote[start]):
+            continue
+        matched = 0
+        for offset, local_commit in enumerate(local):
+            position = start + offset
+            if position >= len(remote) or not _same_commit(local_commit, remote[position]):
+                break
+            matched += 1
+        return matched
+    return 0
 
 
 def blob_content(sha: str) -> bytes:
@@ -246,17 +322,33 @@ def main(argv: list[str]) -> int:
         except ApiError as exc:
             print(f"（读取远端树失败，将重新上传全部 blob：{exc}）")
 
+    # 已经推过的提交不再重建，只推送新增部分（否则每次都会产生一套新的 sha）
+    parent = remote_head or None
+    pending = commits
+    if remote_head:
+        try:
+            chain = remote_chain(args.repo, token, remote_head)
+            pushed = find_pushed_prefix(commits, chain)
+            if pushed:
+                print(f"远端已有 {pushed} 个提交与本地对应，从第 {pushed + 1} 个开始推送")
+                pending = commits[pushed:]
+            if not pending:
+                print("没有需要推送的新提交，远端已是最新。")
+                return 0
+        except ApiError as exc:
+            print(f"（读取远端历史失败，将按完整历史重建：{exc}）")
+            parent = None
+
     print("1) 上传缺失的 blob")
     if exclude:
         print(f"   按约定排除：{'、'.join(sorted(exclude))}（只存在于本地与 Release 附件）")
-    uploaded = upload_blobs(commits, args.repo, token, known_blobs, exclude)
+    uploaded = upload_blobs(pending, args.repo, token, known_blobs, exclude)
     print(f"   本次上传 {uploaded} 个 blob")
 
     print("2) 构建树与提交")
-    parent = remote_head or None
     cache: dict = {}
     new_shas = []
-    for commit in commits:
+    for commit in pending:
         entries = [e for e in commit["entries"] if e["path"] not in exclude]
         tree_sha = build_path_tree(entries, args.repo, token, cache)
         if not exclude and tree_sha != commit["tree"]:
