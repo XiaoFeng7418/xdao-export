@@ -155,15 +155,48 @@ xdao-export/
    （`.pytest_tmp`、`.pytest-scratch`）。已经用 `tools/clean_scratch.py` 清理干净；
    若再遇到同类目录，用这个脚本处理。
 
-## 六、Git
+## 六、Git 与 GitHub
 
-- 仓库：https://github.com/XiaoFeng7418/xdao-export
-- Release v0.1.0（含旧版 exe）：https://github.com/XiaoFeng7418/xdao-export/releases/tag/v0.1.0
+- 仓库：https://github.com/XiaoFeng7418/xdao-export （公开，默认分支 `master`）
+- 已配置：描述、话题、MIT 许可、合并后自动删除分支；Wiki 已关闭。
+- Releases：
+  - `v0.2.0` → 附件 `xdao-export-v0.2.0.exe`（当前版本，含四种格式与缓存/监控）
+  - `v0.1.0` → 附件 `xdao-export-v0.1.0.exe`（旧版）
 - 提交作者已设为私密邮箱 `XiaoFeng7418@users.noreply.github.com`。
-- gh 便携版：`work\ghcli\bin\gh.exe`
-- 推送注意：本机 git 配置了 `http.proxy=127.0.0.1:7890`（可能失效），推送时用：
-  `git -c http.proxy= -c https.proxy= push`
-- 本地仓库位置：`D:\小玩意\xdao-export`（**尚未推送到 GitHub**，需要时请先确认）。
+- gh 便携版：`C:\Users\14515\Documents\Codex\2026-09-05\w-x\work\ghcli\bin\gh.exe`
+  （全局 gitconfig 里已把它配成 github.com 的凭据助手，正常终端里 `git push` 不需要再输密码）。
+- **打包好的 exe 不进源码树**，只作为 Release 附件发布（`.gitignore` 已排除）。
+
+### 本机 git 传输不可用时的维护方式
+
+本机受限环境下 `git` 的 HTTPS 传输被拦（schannel 报 `SEC_E_NO_CREDENTIALS`，
+openssl 报连接重置），但 `gh` 的 API 通道正常。因此本仓库的推送与发布都准备了脚本：
+
+```powershell
+Set-Location 'D:\小玩意\xdao-export'
+$py = 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+
+# 推送提交（自动识别远端已有哪些，只推新增部分）
+& $py -X utf8 tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
+
+# 把远端提交在本地逐字节重建，使两边 sha 对齐（本地曾被重写过时用）
+& $py -X utf8 tools/sync_from_api.py --repo XiaoFeng7418/xdao-export --branch master --dry-run
+
+# 发布 Release 并上传 exe 附件
+& $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag v0.2.1 `
+    --name "..." --notes-file docs/RELEASE_NOTES_v0.2.0.md --asset "dist/X岛串导出工具.exe"
+```
+
+若哪天网络恢复正常，直接 `git push origin main:master` 也可以 —— 本地提交与远端
+HEAD 的树内容一致。
+
+### 两个必须知道的坑
+
+1. **Release 附件名不要用中文。** 走 `?name=` 上传时 GitHub 会把中文名截断成单个字符
+   （`X岛串导出工具.exe` 会变成 `X.exe`），所以附件统一用 `xdao-export-vX.Y.Z.exe`。
+2. **通过 API 创建的提交会被规范化时区。** 传入 `+08:00` 的时间，GitHub 存下的是
+   UTC 写法，因此同一个提交在本地与远端会算出不同的 sha（内容完全一致）。
+   推送脚本已经把这种情况当作正常处理，不要据此判定"推送失败"。
 
 ## 七、隐私注意
 
@@ -174,7 +207,13 @@ xdao-export/
 
 ## 八、后续可做（暂未实现）
 
-- 重新打包 exe 并发布新 Release（当前 exe 落后于源码）。
+- 无人值守登录 / 验证码识别。
+- 导出 PDF（本机有 Edge / Chrome，可用无头模式把内嵌图片的 HTML 转成 PDF）。
+- 监控到更新时的桌面通知。
+- 断点续传的更细粒度：单页下载失败时的自动补抓与重试队列。
+- 把监控列表导出 / 导入为配置文件，方便多台机器迁移。
+- 用 GitHub Actions 在推送时自动跑 `pytest`（需要先确认 runner 能装依赖）。
+
 - 无人值守登录 / 验证码识别。
 - 导出 PDF 文件（当前可用浏览器打印 HTML；本机有 Edge/Chrome，可考虑无头模式转 PDF）。
 - 监控到更新时的桌面通知。
