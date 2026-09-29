@@ -341,7 +341,7 @@ def main(argv: list[str]) -> int:
 
     print("1) 上传缺失的 blob")
     if exclude:
-        print(f"   按约定排除：{'、'.join(sorted(exclude))}（只存在于本地与 Release 附件）")
+        print(f"   按约定排除：{'、'.join(sorted(exclude))}")
     uploaded = upload_blobs(pending, args.repo, token, known_blobs, exclude)
     print(f"   本次上传 {uploaded} 个 blob")
 
@@ -351,7 +351,7 @@ def main(argv: list[str]) -> int:
     for commit in pending:
         entries = [e for e in commit["entries"] if e["path"] not in exclude]
         tree_sha = build_path_tree(entries, args.repo, token, cache)
-        if not exclude and tree_sha != commit["tree"]:
+        if tree_sha != commit["tree"] and not exclude:
             raise ApiError(f"树 sha 不一致：本地 {commit['tree']} / 重建 {tree_sha}")
         payload = {
             "message": commit["message"],
@@ -378,15 +378,16 @@ def main(argv: list[str]) -> int:
         if created == commit["sha"]:
             # 完整复刻：连 sha 都与本地一致。
             print(f"    提交 {created[:8]} 与本地一致 ✓  {commit['message'].splitlines()[0][:46]}")
-        elif not exclude:
-            raise ApiError(
-                f"commit sha 不一致：本地 {commit['sha']} / 远端 {created}\n"
-                "说明提交元数据有差异，请检查 author/committer 与时间。"
-            )
-        else:
+        elif tree_sha != commit["tree"]:
+            # 有排除项时树内容与本地不同，sha 自然不同，这是预期内的。
             print(
                 f"    提交 {created[:8]}（本地 {commit['sha'][:8]}，"
                 f"内容因排除项与本地不同）  {commit['message'].splitlines()[0][:40]}"
+            )
+        else:
+            raise ApiError(
+                f"commit sha 不一致：本地 {commit['sha']} / 远端 {created}\n"
+                "树内容相同却算出不同的提交，说明 author/committer 与时间有差异。"
             )
         new_shas.append(created)
         parent = created
