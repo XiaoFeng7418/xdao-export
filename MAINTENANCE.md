@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 256 项，必须全绿）
+2. **跑测试**（当前基线 258 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 256 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 258 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -262,6 +262,17 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    于是会一路穿到 PyInstaller 启动器变成错误对话框）；
 6. 打包版 `xdao-export.exe --version` 必须是可读中文（由 `main._open_utf8_console()` 保证），
    不能是 `X������������ 0.3.3` 这种乱码。
+7. 打包版**还要真的能输出**：GUI 子系统的 exe 从 cmd 里跑 `--version`，光设 UTF-8 不够，
+   得先 `AttachConsole(ATTACH_PARENT_PROCESS)` 再重开标准流（`main._attach_parent_console()`，
+   v0.4.0 加）。验收方式：
+
+   ```powershell
+   cmd /c '"D:\...\xdao-export.exe" --version > out.txt 2>&1'
+   Get-Content out.txt   # 期望「X岛串导出工具 0.4.0」+ 空的一行，退出码 0
+   ```
+
+   不加 `> out.txt` 直接在 pwsh 里 `& $exe --version` 是**验证不了**的：GUI 子系统进程
+   接不上 pwsh 的管道，只会得到空输出和一句 `OSError: [Errno 22] Invalid argument`。
 
 **怎么验收打包版的界面**：本机 `Start-Process -PassThru` 对 GUI 进程会卡住不返回，
 改用 `python tools/gui_probe.py --exe <exe 路径>` —— 启动、等 9 秒、枚举窗口标题、
@@ -318,7 +329,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、256 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、258 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - **留意**：`compileall` 即使编译失败也返回 0，工作流里已显式 grep 报错，
   改这一步时别退化成无效检查。

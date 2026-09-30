@@ -49,6 +49,66 @@ def _open_utf8_console() -> None:
             pass
 
 
+#: 只要命令行里出现这些开关，就说明用户是在终端里跑，需要把输出接到控制台。
+_CONSOLE_HINT_FLAGS = {
+    "-h",
+    "--help",
+    "--version",
+    "--selftest",
+    "--no-cache",
+    "--no-notify",
+    "--cache-dir",
+    "--proxy",
+    "--timeout",
+    "--retries",
+    "--throttle",
+    "--interval",
+    "--verify-cached",
+    "--pdfdiag",
+}
+
+
+def _needs_console(argv: list[str] | None = None) -> bool:
+    """判断这次启动需不需要往控制台说话（命令行用法、而不是双击开界面）。"""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        return False
+    return any(arg.split("=", 1)[0] in _CONSOLE_HINT_FLAGS for arg in args)
+
+
+def _attach_parent_console(argv: list[str] | None = None) -> None:
+    """打包版是 GUI 子系统程序，从 cmd 里跑时不会自动连上父控制台。
+
+    结果是 `xdao-export.exe --version` 什么都不显示，而且往那个「无效的 stdout」
+    写还会冒出 `OSError: [Errno 22] Invalid argument`（v0.4.0 打包验收时实测到）。
+    这里在确实要输出命令行信息时，临时 AttachConsole 到父进程的控制台并重新打开
+    标准流；双击启动（没有父控制台）时它只会失败，然后什么都不做。
+    """
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return
+    if not _needs_console(argv):
+        return
+    try:
+        import ctypes
+
+        ATTACH_PARENT_PROCESS = -1
+        if not ctypes.windll.kernel32.AttachConsole(ATTACH_PARENT_PROCESS):
+            return  # 没有父控制台（双击启动），保持原样
+        for stream_name in ("stdout", "stderr"):
+            try:
+                setattr(sys, stream_name, open("CONOUT$", "w", encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+        try:
+            stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+            sys.stdin = stdin
+        except OSError:
+            pass
+    except Exception:  # noqa: BLE001 —— 接不上控制台也不该影响导出
+        pass
+
+
+_attach_parent_console()
 _open_utf8_console()
 
 
