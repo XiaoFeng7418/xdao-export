@@ -163,7 +163,7 @@ def refresh_fonts(root: tk.Misc | None = None) -> None:
 def describe_login_failure(message: str) -> tuple[str, str]:
     """把登录失败的提示翻成「对话框标题 + 该做的事」。
 
-    用户报过：邮箱登录点了之后只看到一句「未找到可用的饼干」。真相是
+    实测过：邮箱登录点了之后只看到一句「未找到可用的饼干」。真相是
     X 岛的跳转提示页（HTTP 200）被当成了饼干列表，真正的失败原因
     （登录没过 / 没有权限 / 账号里确实没有饼干）被盖掉了。
     这里把几种情况分开说，并且都给一个能马上做的动作。
@@ -204,7 +204,7 @@ def describe_export_failure(exc: BaseException) -> str:
     """把导出线程里的异常翻成一句能让用户动手的话。
 
     两类错误占绝大多数：
-    - ``PermissionError``：用户反复报「导出目录不可写」，只甩一句
+    - ``PermissionError``：反复出现「导出目录不可写」，只甩一句
       ``[Errno 13] Permission denied`` 帮不上忙，得说清是哪个目录、往哪换；
     - 接口回「必须登入领取饼干后才可以访问」：这是**服务端**的拒绝，
       本地日志却只有这一行，用户会以为是程序坏了，得告诉他去重新登录。
@@ -1584,7 +1584,7 @@ class App:
 
         ``start()`` 定下目录后存在 ``self._output_dir``；这里兜底读界面上的
         输入框，任何情况下都返回一个字符串 —— 收尾函数绝不能因为拿不到目录
-        而抛异常（用户看到的会是「界面出错」而不是导出结果）。
+        而抛异常（看到的会是「界面出错」而不是导出结果）。
         """
         resolved = getattr(self, "_output_dir", "")
         if resolved:
@@ -1732,9 +1732,9 @@ class App:
             messagebox.showerror("导出目录不可用", str(exc))
             return None
 
-        # 用户报过：抓取全成功、写文件时权限拒绝，整趟白跑（Windows 的受控文件夹访问
+        # 实测过：抓取全成功、写文件时权限拒绝，整趟白跑（Windows 的受控文件夹访问
         # 默认保护桌面/文档）。所以先挑一个真写得进去的目录 —— 挑不到原位就自动换。
-        # 用户在命令行/界面上显式写死的目录不换地方，只把问题说清楚。
+        # 命令行/界面上显式写死的目录不换地方，只把问题说清楚。
         allow_fallback = not self._dir_pinned
         choice = choose_writable_dir(output_dir, kind="导出", allow_fallback=allow_fallback)
         output_dir = str(choice.path)
@@ -1777,7 +1777,7 @@ class App:
         # 导出目录存到实例上：_finish()（结束汇总/弹窗）跑在主线程，
         # 拿不到 start() 里的局部变量。曾经这里只写局部变量，导致
         # 一整趟导出结束后弹「NameError: name 'output_dir' is not defined」
-        # （2026-09-30 用户实测：抓取失败后 _finish 一跑就崩）。
+        # （2026-09-30 实测：抓取失败后 _finish 一跑就崩）。
         self._output_dir = resolved
         output_dir = resolved
 
@@ -1883,7 +1883,7 @@ class App:
 
         def worker() -> None:
             # 这个线程里任何漏出来的异常都会让打包版弹出「Unhandled exception in script」
-            # 对话框（用户看到过一次），所以在这里兜底，转成界面上的一条日志 + 结束事件。
+            # 对话框（见到过一次），所以在这里兜底，转成界面上的一条日志 + 结束事件。
             try:
                 worker_body()
             except Exception as exc:  # noqa: BLE001 —— 兜住线程里的一切
@@ -1938,7 +1938,7 @@ class App:
         self._last_failed = list(failed)
         # 汇总弹窗里要报"文件在哪"。这个值由 start() 落在实例上，这里再兜一层：
         # 万一哪条路径漏了赋值，也只丢一句话，不能让整个收尾崩掉（曾经的 NameError
-        # 就是在这里弹出来的，用户看到的是「界面出错」而不是导出结果）。
+        # 就是在这里弹出来的，看到的是「界面出错」而不是导出结果）。
         output_dir = self._resolved_output_dir()
         self.progress_bar.stop()
         self.progress_bar.set_value(succeeded, total)
@@ -1952,7 +1952,7 @@ class App:
         notes = [line for line in (incomplete or []) if line]
         if notes:
             # 文件是写出去了，但内容是缺的 —— 只提示"失败"会漏掉这种情况，
-            # 用户在日志里翻到的那一条也容易划过去，这里再强调一次。
+            # 日志里的那一条也容易划过去，这里再强调一次。
             self.log(f"有 {len(notes)} 个串没能抓全：")
             for line in notes:
                 self.log(f"    {line}")

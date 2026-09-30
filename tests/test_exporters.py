@@ -379,7 +379,7 @@ def test_ensure_writable_creates_missing_directory(out_dir):
 def test_ensure_writable_tolerates_a_failed_probe(out_dir, monkeypatch):
     """探针写不动**不等于**目录不可写，导出不能被它拦下。
 
-    用户真报过这个：目录用别的程序（甚至旧版本）都能写，只有本程序的探针文件
+    实测过这个：目录用别的程序（甚至旧版本）都能写，只有本程序的探针文件
     被拦，于是程序直接弹「导出目录不可写」拒绝开工。
     """
     from pathlib import Path as _Path
@@ -414,7 +414,7 @@ def test_probe_file_looks_like_a_normal_export(out_dir):
 def test_can_write_dir_probes_a_subdirectory(out_dir, monkeypatch):
     """能不能写要**往下一层**探：这一级能写、下一级不能写，算不能写。
 
-    用户报过的真实场景：``D:\\X岛\\.cache`` 建得出来，``.cache\\pages`` 拒绝访问。
+    实测过的场景：``D:\\X岛\\.cache`` 建得出来，``.cache\\pages`` 拒绝访问。
     只探表层会把这种目录判成"能写"，于是「缓存目录写不进去就换个地方」的兜底
     逻辑永远不触发，缓存文件每次都在同一个地方撞墙。
     """
@@ -458,7 +458,7 @@ def test_choose_writable_dir_keeps_the_requested_directory(tmp_path):
 def test_choose_writable_dir_moves_to_localappdata_when_blocked(tmp_path, monkeypatch):
     """请求的目录写不进去时，自动改用 LOCALAPPDATA 下的位置。
 
-    这就是用户 2026-09-30 遇到的场景：导出目录设在桌面下的新文件夹，
+    这就是实际遇到的场景：导出目录设在桌面下的新文件夹，
     抓取全部成功、写文件时 ``[Errno 13]``（受控文件夹访问只放行白名单程序），
     整趟白跑。
     """
@@ -513,7 +513,7 @@ def test_choose_writable_dir_never_overwrites_an_earlier_fallback(tmp_path, monk
 
 
 def test_choose_writable_dir_pinned_keeps_the_directory_but_explains(tmp_path):
-    """用户显式指定的目录不换地方（allow_fallback=False），但要说清为什么不能用。"""
+    """显式指定的目录不换地方（allow_fallback=False），但要说清为什么不能用。"""
     from xdao.exporters._shared import choose_writable_dir
 
     blocked = tmp_path / "被拦的目录"
@@ -543,7 +543,7 @@ def test_fallback_dirs_stay_inside_appdata_and_temp(tmp_path, monkeypatch):
     """兜底候选必须落在 %LOCALAPPDATA% / %TEMP% 里。
 
     受控文件夹访问保护的是桌面/文档/图片/视频，只有这两个位置是明确留给
-    用户程序写数据的 —— 兜底候选跑到别处就等于没兜底。
+    程序写数据的 —— 兜底候选跑到别处就等于没兜底。
     """
     from xdao.exporters._shared import fallback_dirs
 
