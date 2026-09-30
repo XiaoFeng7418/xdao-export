@@ -21,6 +21,7 @@ from pathlib import Path
 from .cache import CachedThreadFetcher, default_cache_dir, parse_thread_id
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
+from .notifications import Notifier, message_for
 
 
 @dataclass
@@ -238,10 +239,13 @@ def watch_forever(
     cache_dir: Path | None = None,
     on_result=None,
     verify_cached: bool = False,
+    notifier: "Notifier | None" = None,
 ) -> None:
     """后台循环：每 interval 秒检查一轮，直到 stop_event 被设置。
 
     每轮的顺序是「先检查、后等待」，所以启动后马上就会出一次结果。
+    ``notifier`` 不为空时，检查出更新的串会顺带弹一条桌面通知
+    （节流由 :class:`~xdao.notifications.Notifier` 负责）。
     """
     interval = max(15.0, float(interval or 60))
     while not (stop_event and stop_event.is_set()):
@@ -260,12 +264,28 @@ def watch_forever(
                     on_result(result)
                 except Exception:
                     pass  # 回调异常不该终止监控
+            notify_result(notifier, result)
         # 用 wait 而不是 sleep，这样停止指令能立刻生效。
         if stop_event:
             if stop_event.wait(interval):
                 return
         else:
             time.sleep(interval)
+
+
+def notify_result(notifier: "Notifier | None", result: WatchResult) -> bool:
+    """有更新时为一次监控结果发通知；返回值只用于测试与日志。
+
+    「首次导出」不提醒：那是用户自己刚加的监控，把 10 个串一次性导出时
+    弹 10 条通知只会烦人。只有**确实出现了新楼层**才值得打断用户。
+    """
+    if notifier is None or not result.ok or not result.changed:
+        return False
+    if result.first_run and result.new_posts <= 0:
+        return False
+    title = "串有更新，已自动导出" if result.exported else "串有更新"
+    body = message_for(result.target.label, result.new_posts, result.total_posts, result.exported)
+    return bool(notifier.notify(title, body, key=target_key(result.target)))
 
 
 def describe_targets(targets: list[WatchTarget]) -> str:

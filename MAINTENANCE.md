@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 228 项，必须全绿）
+2. **跑测试**（当前基线 256 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 228 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 256 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -268,9 +268,33 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 强制结束并给出结论；标题是「Unhandled exception in script」就说明启动失败。
 把输出目录设成用户的 `D:\X岛`（config 里的默认值）时最容易暴露界面层的兜底问题。
 
+## 桌面通知（v0.4.0，2026-09-30）
+
+监控发现新楼层时会弹系统通知。这一块有两条**实测得来、不知道就会做错**的结论：
+
+1. **Windows 必须用哨兵 AppUserModelID**。Windows 只给「注册过 AppUserModelID」的程序
+   显示通知；直接 `CreateToastNotifier("X岛串导出工具")` 时命令返回 0、看起来一切正常，
+   但通知中心**什么都收不到**（本机对照实验：A 用哨兵 ID 能看到，B 用应用名看不到）。
+   所以 `xdao/notifications.py` 里 `SENTINEL_AUMID =
+   {1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe`，
+   不要图省事改回应用名。
+2. **Toast 默认静音**，所以弹完还要 `winsound.MessageBeep()` 补一声；提示音失败
+   （没音频设备）不影响「通知已发出」这个结论。
+
+其它约定：
+
+- 通知只走 `Notifier.notify()`，**任何异常都必须吞掉返回 False**：通知发不出去绝不能
+  影响导出。测试用注入 `runner` / `platform` / `beep` 代替真的弹窗。
+- 节流按「监控条目键」算（`xdao.watcher.target_key`），默认 900 秒；
+  `settings.notify_interval` 可调。
+- **「首次导出」不提醒**（`result.first_run and result.new_posts <= 0`）：用户一次加十个
+  监控不该弹十条通知。
+- 界面上通知在主线程 `_poll_watch` 里发（那里已经有日志和队列），监控线程不碰 GUI。
+- 想验证真的能弹：`XDAO_LIVE_NOTIFY=1 python -m pytest tests/test_live_notify.py -q -s`
+  （连真实接口抓 No.50000001，伪造 3 个新楼层，跑完「判定 → 导出 → 通知」全链路）。
+
 ## 路线图（尚未实现）
 
-- 监控到更新时的桌面通知
 - 无人值守登录 / 验证码识别
 - 单页失败时的自动补抓与重试队列
 - 监控列表的导入 / 导出
@@ -281,6 +305,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 四种格式（HTML / TXT / Markdown / EPUB）＋ **PDF**（v0.3.0，走本机浏览器无头渲染）
 - 断点续传、增量更新、图片缓存
 - 串更新监控
+- **监控桌面通知**（v0.4.0）：有新楼时弹 Windows 通知 + 提示音，同串 15 分钟一次
 - 命令行入口与 `--selftest`
 - **CI**：每次推送/PR 自动跑离线测试（`.github/workflows/tests.yml`），
   Linux 3.10/3.12 + Windows 3.12 三个环境；打 tag 时额外校验版本号与 tag 一致
@@ -293,7 +318,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、228 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、256 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - **留意**：`compileall` 即使编译失败也返回 0，工作流里已显式 grep 报错，
   改这一步时别退化成无效检查。

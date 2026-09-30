@@ -34,6 +34,8 @@
 **监控**
 
 - 盯住若干个串，定时检查新回复并**自动导出**；没有新回复时每轮只花一次请求。
+- 发现有新回复时**弹桌面通知**（带提示音），挂着监控去干别的事也不会漏掉更新；
+  同一个串 15 分钟内只提醒一次。日志里同步留一行记录。
 - 可选「校验老楼层改动」，发现被编辑的楼层时也会重新导出（每轮多一次请求）。
 
 ## 下载（打包版）
@@ -42,12 +44,12 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.3.3** 提供两个附件，**功能完全一样**，按环境挑一个：
+最新版 **v0.4.0** 提供两个附件，**功能完全一样**，按环境挑一个：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.3.3-win64.zip` | **推荐**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**。 |
-| `xdao-export-v0.3.3.exe` | 单文件版，只有一个文件更好携带。每次启动会把内容解压到系统临时目录。 |
+| `xdao-export-v0.4.0-win64.zip` | **推荐**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**。 |
+| `xdao-export-v0.4.0.exe` | 单文件版，只有一个文件更好携带。每次启动会把内容解压到系统临时目录。 |
 
 > **如果单文件版弹出「Could not create temporary directory!」**：这是 PyInstaller 单文件模式的
 > 启动器在 Python 代码运行前就失败了 —— 当前环境的系统临时目录不可写。程序本身没问题，
@@ -68,7 +70,10 @@ https://github.com/XiaoFeng7418/xdao-export/releases
 > 不是文件夹、配置坏了……都会得到一段说明 + 退出码 1，而不是 PyInstaller 的
 > 「Unhandled exception in script」对话框。
 
-更早的版本：`v0.3.2`（缓存目录自动换地方）、`v0.3.1` / `v0.3.0`（新增 PDF 导出）、`v0.2.2` / `v0.2.0`（只有 HTML / TXT / Markdown / EPUB）、`v0.1.0`（只有 HTML / TXT 导出）。
+> **监控会弹桌面通知**（v0.4.0 起）：发现有新回复时弹一条 Windows 通知 + 提示音，同一个串
+> 15 分钟内只提醒一次。界面上的「监控时弹桌面通知」可以关掉，命令行用 `--no-notify`。
+
+更早的版本：`v0.3.3`（任何错误都只给一句人话）、`v0.3.2`（缓存目录自动换地方）、`v0.3.1` / `v0.3.0`（新增 PDF 导出）、`v0.2.2` / `v0.2.0`（只有 HTML / TXT / Markdown / EPUB）、`v0.1.0`（只有 HTML / TXT 导出）。
 想运行最新代码也可以直接按下面的方式从源码启动。
 
 ## 从源码运行
@@ -110,8 +115,11 @@ python main.py 67024789 --template "[{id}] {title}"
 # 忽略缓存，完整重抓
 python main.py 67024789 --no-cache
 
-# 监控：每 10 分钟检查一次，有新回复就导出
+# 监控：每 10 分钟检查一次，有新回复就导出（默认弹桌面通知）
 python main.py 67024789 68811943 --watch --interval 600 -f html
+
+# 监控但不要桌面通知
+python main.py 67024789 --watch --no-notify
 
 # 只做接口自检
 python main.py --selftest
@@ -144,6 +152,7 @@ xdao-export/
 │  ├─ cache.py             页面缓存、断点续传、增量更新（CachedThreadFetcher）
 │  ├─ fetcher.py           抓取流程与兼容层
 │  ├─ watcher.py           串监控：定时检查、按需导出
+│  ├─ notifications.py     桌面通知（Windows Toast / macOS / Linux）
 │  ├─ settings.py          本机配置持久化
 │  ├─ gui.py               Tkinter 界面
 │  └─ exporters/           导出器
@@ -153,7 +162,7 @@ xdao-export/
 │     ├─ markdown.py       Markdown
 │     └─ epub.py           EPUB 3（纯标准库实现）
 ├─ tools/clean_scratch.py  清理测试残留目录
-└─ tests/                  228 个离线单元测试
+└─ tests/                  256 个离线单元测试（另 1 个真机用例默认跳过）
 ```
 
 ## 开发
