@@ -53,7 +53,7 @@ userhash 时，会弹一句人话提示说明没找到，而不是抛一个看�
 
 ## 测试
 
-`485 collected / 483 passed, 2 skipped`（两条 skipped 都要显式开关才跑：`XDAO_BROWSER_TEST=1`
+`493 collected / 491 passed, 2 skipped`（两条 skipped 都要显式开关才跑：`XDAO_BROWSER_TEST=1`
 会拉起真实浏览器，`XDAO_LIVE_NOTIFY=1` 会真弹一次系统通知）。
 这一版新增的离线用例覆盖：
 

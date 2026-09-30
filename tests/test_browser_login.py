@@ -268,6 +268,25 @@ def test_find_browser_falls_back_when_the_explicit_path_is_missing(
     assert info.path == str(edge)
 
 
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        # 反斜杠在 Linux 上不是分隔符：只取「文件名」不能依赖宿主平台，
+        # 否则界面上会给用户显示一整段路径当浏览器名（Linux CI 上真红过一次）。
+        (r"C:\Program Files\Microsoft\Edge\Application\msedge.exe", "Edge"),
+        (r"C:\Users\me\AppData\Local\Google\Chrome\Application\chrome.exe", "Chrome"),
+        (r"C:\x\Chromium\Application\chrome.exe", "Chromium"),
+        (r"C:\x\brave.exe", "Brave"),
+        (r"C:\x\Custom\mybrowser.exe", "mybrowser"),
+        ("/usr/bin/chromium-browser", "Chromium"),
+        ("/usr/bin/my-browser", "my-browser"),
+        ("", "Chromium"),
+    ],
+)
+def test_guess_name_ignores_the_host_separator(path: str, expected: str) -> None:
+    assert bl._guess_name(Path(path)) == expected
+
+
 def test_find_browser_returns_none_when_nothing_is_installed(
     artifacts_dir: Path,
 ) -> None:

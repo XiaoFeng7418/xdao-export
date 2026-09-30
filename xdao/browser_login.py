@@ -154,7 +154,10 @@ def known_paths(env: Mapping[str, str] | None = None) -> list[BrowserInfo]:
 
 def _guess_name(path: Path) -> str:
     """按可执行文件名猜浏览器名，只用于界面文案。"""
-    stem = path.stem.lower()
+    # 只用字节名，不依赖宿主平台的分隔符：Windows 上 ``Path("C:\\x\\msedge.exe").stem``
+    # 是 ``msedge``，Linux 上同一串会被当成**一个**文件名（反斜杠不是分隔符），
+    # ``stem`` 变成 ``C:\\x\\msedge``，界面文案就会带上整段路径。
+    stem = str(path).replace("\\", "/").rsplit("/", 1)[-1].lower()
     if "msedge" in stem or stem == "edge":
         return "Edge"
     if "brave" in stem:
@@ -163,7 +166,7 @@ def _guess_name(path: Path) -> str:
         return "Chromium"
     if "chrome" in stem:
         return "Chrome"
-    return path.stem or "Chromium"
+    return (stem.rsplit(".", 1)[0] if "." in stem else stem) or "Chromium"
 
 
 def find_browser(
