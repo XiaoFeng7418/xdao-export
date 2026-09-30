@@ -169,36 +169,39 @@ xdao-export/
   （全局 gitconfig 里已把它配成 github.com 的凭据助手，正常终端里 `git push` 不需要再输密码）。
 - **打包好的 exe 不进源码树**，只作为 Release 附件发布（`.gitignore` 已排除）。
 
-### 本机 git 传输不可用时的维护方式
+### 推送通道（2026-09-30 更新）
 
-本机受限环境下 `git` 的 HTTPS 传输被拦（schannel 报 `SEC_E_NO_CREDENTIALS`，
-openssl 报连接重置），但 `gh` 的 API 通道正常。因此本仓库的推送与发布都准备了脚本：
+**本机代理已配好，`git push` 可以直接用，优先用它。** 全局配置里
+`http.proxy` 与 `https.proxy` 都是 `http://127.0.0.1:7890`（7890 是 HTTP 混合端口，
+写成 `https://` 会直接 TLS 失败）。分支映射已配好：本地 `main` ↔ 远端 `master`。
 
 ```powershell
 Set-Location 'D:\小玩意\xdao-export'
 $py = 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
 
-# 推送提交（自动识别远端已有哪些，只推新增部分）
+# 日常推送（两边 sha 完全一致）
+git push origin main:refs/heads/master
+
+# 代理不可用时的备用通道：走 GitHub Git Data API 重建对象
 & $py -X utf8 tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
 
-# 把远端提交在本地逐字节重建，使两边 sha 对齐（本地曾被重写过时用）
+# 把远端提交在本地逐字节重建，使两边 sha 对齐
 & $py -X utf8 tools/sync_from_api.py --repo XiaoFeng7418/xdao-export --branch master --dry-run
 
 # 发布 Release 并上传 exe 附件
 & $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag v0.2.1 `
-    --name "..." --notes-file docs/RELEASE_NOTES_v0.2.0.md --asset "dist/X岛串导出工具.exe"
+    --name "..." --notes-file docs/RELEASE_NOTES_v0.2.0.md --asset "dist/xdao-export-v0.2.1.exe"
 ```
-
-若哪天网络恢复正常，直接 `git push origin main:master` 也可以 —— 本地提交与远端
-HEAD 的树内容一致。
 
 ### 两个必须知道的坑
 
 1. **Release 附件名不要用中文。** 走 `?name=` 上传时 GitHub 会把中文名截断成单个字符
    （`X岛串导出工具.exe` 会变成 `X.exe`），所以附件统一用 `xdao-export-vX.Y.Z.exe`。
-2. **通过 API 创建的提交会被规范化时区。** 传入 `+08:00` 的时间，GitHub 存下的是
-   UTC 写法，因此同一个提交在本地与远端会算出不同的 sha（内容完全一致）。
-   推送脚本已经把这种情况当作正常处理，不要据此判定"推送失败"。
+2. **走 API 推送时两边 sha 会不同，这不是历史被篡改。** GitHub 的提交对象其实
+   **会保留**我们送上去的偏移量（送 `+08:00` 就存 `+0800`），是**接口读回来的日期**
+   被改写成 UTC，原偏移量拿不回来。所以远端对象的 sha 无法从接口返回值复算。
+   2026-09-30 已用 `git push` 把两边对齐（旧远端历史存为标签
+   `backup-before-align-20260930`），细节见 `MAINTENANCE.md` 的「推送通道」一节。
 
 ## 七、隐私注意
 

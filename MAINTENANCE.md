@@ -26,7 +26,7 @@
 
    | 告警 | 处理方式 |
    |---|---|
-   | 本地有提交未推送 | `& $py -X utf8 tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master` |
+   | 本地有提交未推送 | `git push origin main:refs/heads/master`（优先；代理不可用时才用 `tools/push_via_api.py`） |
    | 版本号与 Release 不一致 | 升 `xdao/__init__.py` 的版本号 → 打包 → 发新 Release |
    | 附件名含非 ASCII | 用 `make_release.py` 改名或重传（中文名会被 GitHub 截断成单字符） |
    | 开放 issue / PR | 阅读、回复；是 bug 就修并补单元测试 |
@@ -57,8 +57,12 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
 # 4) 验证两种产物都能跑（自检退出码应为 0）
 #    xdao-export.exe --selftest
 
-# 5) 提交并推送
+# 5) 提交并推送（2026-09-30 起本机代理可用，直接 git push 即可，两边 sha 完全一致）
+$env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890'
 & git add -A; & git commit -m "..."
+& git push origin main:refs/heads/master        # 本地分支叫 main，远端默认分支叫 master
+
+# 备用通道：代理不可用时才用 API 推送（sha 会与本地不同，内容仍一致）
 & $py -X utf8 tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
 
 # 6) 发布
@@ -71,6 +75,45 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
 & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
 ```
 
+## 推送通道（2026-09-30 起）
+
+- **日常推送直接用 `git push`**。本机代理 `http://127.0.0.1:7890` 已配进全局
+  `http.proxy` / `https.proxy`（两处都必须是 `http://` —— 7890 是 HTTP 混合端口，
+  写成 `https://` 连它会直接 TLS 握手失败）。未设 `HTTP_PROXY` 环境变量时 git 也能走全局配置。
+- 分支映射：本地 `main` ↔ 远端 `master`。已设 `branch.main.remote=origin`、
+  `branch.main.merge=refs/heads/master`、`push.default=upstream`，`git push` 一条命令即可。
+- 凭据：仓库级 `credential.https://github.com.helper` 指向 gh 便携版，
+  **必须以 `!` 开头**（少了它 git 会去 PATH 里找一个叫 `credential-C:/...` 的程序，
+  于是每次网络操作都刷一句 `is not a git command` 的警告，但不影响推送）。
+- `tools/push_via_api.py` 保留为**代理不可用时的备用通道**，也可用于本地对象逐字节校验。
+
+### 两边 sha 曾经不同 —— 根因与现状
+
+- 现象：本地与远端各 25 条提交，**顺序、说明、tree 全部对应、文件逐字节一致**，但 sha 全不同，
+  看起来像历史分叉，`repo_check.py` 也因此报「本地有 N 个提交未推送」。
+- 根因（2026-09-30 用字节级证据查清，共两处，都在 `tools/push_via_api.py`）：
+  1. 提交说明末尾换行被吃掉。原代码写的是
+     `git("log", "-1", "--pretty=%B", sha).decode("utf-8").rstrip("\n")`，
+     **少一个字节就让整条历史的 sha 全部不同**。
+  2. 拼提交对象时把 ISO 写法的时间（`2026-09-30T13:20:24+08:00`）直接塞了进去，
+     而 git 提交对象里必须是 `{epoch} {±HHMM}` 写法。
+- 顺带查清两件事：
+  - GitHub **会保留**我们送上去的时区偏移（送 `+08:00` 存下来就是 `+0800`）；
+    是**接口读回来的日期**一律被改写成 `...Z`，所以原偏移量从接口侧拿不回来。
+    因此「远端对象的 sha 无法用接口返回值复算」是正常现象，**不代表历史被篡改**。
+  - `git log --pretty=%B` 会给**没有结尾换行**的说明擅自补一个 `\n`，
+    而本地历史里两种形态都有（25 条里有 7 条无尾换行：`6749e5bc` `67847a7b` `a7e00042`
+    `bc94f2fa` `93fb0f53` `6d0b59aa` `5e7713e3`）。所以消息必须用
+    `git cat-file commit` 原样取。修好后本地 25 条提交可以**逐字节复算校验，25/25 通过**。
+- 处置：先用 `git push` 把远端旧历史备份成标签
+  `backup-before-align-20260930`（本地对应分支 `backup-remote-master-20260930`，
+  指向旧远端尖端 `d17e8bd4`），再 `git push --force-with-lease` 把本地对象原样推上去，
+  两边 sha 从此完全一致（对齐后远端 master = `f58bf55`）。
+- 若将来又出现「文件一致但提交计数不一致」，先按下面两步自查，别急着重推：
+  1. `python -X utf8 tools/ci_logs.py` 之类的接口脚本能否读出远端链，
+     再用 `tools/push_via_api.py` 里的 `local_commits()` 复算本地 sha（应 25/25 通过）；
+  2. 确认不是真的漏推后，用 `git fetch origin && git log --oneline origin/master` 直接对比。
+
 ## 巡检发现的真实情况（2026-09-30）
 
 - 远端历史上因多次重跑推送脚本、以及一次修正提交（`git commit --amend`），
@@ -82,6 +125,8 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
   但远端链里同名副本过多时仍可能差一两个。
 - 结论判据：`文件` ✓ + `版本` ✓ + `发布` ✓ 即可认为同步正常，
   不必因为「提交」一项的计数偏差去重推（重推只会再造一个副本）。
+- **上述历史分叉已于 2026-09-30 消除**（见上一节）：远端 master 与本地完全对齐，
+  「提交」一项现在也是 ✓，计数偏差不再出现。
 
 ## 硬性约定
 
@@ -89,8 +134,9 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
    走 `?name=` 上传时 GitHub 会把中文名截断成单个字符。
 2. **打包好的 exe 不进源码树**（`.gitignore` 已忽略根目录 `*.exe` 与 `dist/`），
    只作为 Release 附件。
-3. **API 创建的提交会被规范化时区**（传 `+08:00`、存成 UTC），所以同一提交在本地
-   与远端可能算出不同 sha —— 内容一致即视为正常，不要据此判定推送失败。
+3. **优先用 `git push`**。走 API 推送时远端提交对象由 GitHub 生成，接口读回来的日期
+   被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
+   想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
 5. **改动必须带测试**：`tests/` 是 219 项离线用例，新增功能请补用例，
    不要依赖联网测试。
