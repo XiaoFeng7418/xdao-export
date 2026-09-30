@@ -1,5 +1,7 @@
 # X岛串导出工具
 
+[![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
+
 一个 Windows 桌面小工具：登录 X 岛（nmbxd1.com）后，把任意一个串**完整**导出为本地文件，突破游客只能看前 100 页的限制。也可以完全用命令行运行，适合脚本和计划任务。
 
 ## 功能
