@@ -208,7 +208,7 @@ def test_success_also_writes_log(out_dir, monkeypatch):
 def test_invalid_output_dir_gives_clean_error(capsys):
     """导出目录没法创建时要给一句人话，而不是把 traceback 抛给用户。
 
-    用户报过：把导出目录填成 `D:\\Windows` 这类位置时，打包版直接弹出
+    实测过：把导出目录填成 `D:\\Windows` 这类位置时，打包版直接弹出
     「Unhandled exception in script」和一大段 traceback。
     """
     blocker = ARTIFACTS / "cli-not-a-dir"
@@ -233,9 +233,9 @@ def test_output_dir_falls_back_when_the_configured_one_is_blocked(
 ):
     """配置里的导出目录写不进去时，命令行要自动换到能写的位置。
 
-    用户 2026-09-30 的场景：导出目录设在桌面下的新文件夹，抓取全部成功、写文件时
+    真实场景：导出目录设在桌面下的新文件夹，抓取全部成功、写文件时
     ``[Errno 13]``（受控文件夹访问只放行白名单程序），整趟白跑。
-    ``-o`` 是用户在命令行里写死的，所以不换地方；只有配置里的默认值才换。
+    ``-o`` 是命令行里写死的，所以不换地方；只有配置里的默认值才换。
     """
     import xdao.exporters as exporters_module
     import xdao.exporters._shared as shared_module

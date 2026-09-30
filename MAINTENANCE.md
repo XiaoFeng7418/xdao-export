@@ -33,7 +33,7 @@
    | 附件名含非 ASCII | 用 `make_release.py` 改名或重传（中文名会被 GitHub 截断成单字符） |
    | 开放 issue / PR | 阅读、回复；是 bug 就修并补单元测试 |
 
-4. **看用户反馈**：Release 下载次数、issue、Star。
+4. **看外部反馈**：Release 下载次数、issue、Star。
 
 ## 仓库门面（描述与话题）由代码推导
 
@@ -176,9 +176,9 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    2026-09-30 就这么处理过 `v0.5.2` / `v0.5.3`：附件内容不变，只让标签指向清洗后的树。
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
-   被测试替换过、`save` 没有，结果是把**用户真实的
+   被测试替换过、`save` 没有，结果是把**真实的
    `%APPDATA%\xdao-export\config.json` 覆盖成测试目录**（2026-09-30 真的发生过：
-   用户的登录饼干被写成 `TESTHASH`、导出目录变成 pytest 临时目录）。
+   登录饼干被写成 `TESTHASH`、导出目录变成 pytest 临时目录）。
    `tests/test_window.py` 的 `isolated_settings` 现在把 `AppSettings.save` 也换成了空函数，
    再加用例时不要绕过它。
 
@@ -215,13 +215,13 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 
 ## 缓存目录写不进去不再挡住宿主功能（v0.3.2，2026-09-30）
 
-**用户报的问题**：导出到 `<盘符>\X岛` 时报
+**报出来的问题**：导出到 `<盘符>\X岛` 时报
 `[Errno 13] Permission denied: '<盘符>\X岛\.cache\xdao-write-test.tmp'`，
 而 0.1.0 版反而能正常写入。
 
 **原因**：0.1.0 没有缓存层，只往导出目录本身写文件；0.2 之后把「缓存目录可写」
 变成了前置条件，于是**缓存写不进去 → 整个导出在抓取前就退出**，看起来像"目录没权限"。
-用户拿到的错误文案里说的是缓存，而真正写不进去的可能是导出目录本身。
+报错文案里说的是缓存，而真正写不进去的可能是导出目录本身。
 
 **改法**（`xdao/cache.py` + `xdao/exporters/_shared.py`）：
 
@@ -243,12 +243,12 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 4. 打包版在输出目录不可写时要报 `OutputDirNotWritable: 导出目录不可写：<目录>`，
    而不是把锅甩给缓存目录。
 
-**注意**：`<盘符>\X岛` 是用户自己的目录，别把测试文件留在里面。
+**注意**：`<盘符>\X岛` 是使用者的真实目录，别把测试文件留在里面。
 
 ## 入口处不许漏出 traceback（v0.3.3，2026-09-30）
 
-**用户报的问题**：打包版弹出 PyInstaller 的「Unhandled exception in script」对话框，
-内容是 `PermissionError: [WinError 5] 拒绝访问。: 'D:\Windows'`，
+**报出来的问题**：打包版弹出 PyInstaller 的「Unhandled exception in script」对话框，
+内容是 `PermissionError: [WinError 5] 拒绝访问。: '<系统目录>'`，
 traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`。
 
 **原因**：那行 `mkdir` 没有 try/except。异常穿过 `run_cli`（`main()` 当时只是
@@ -316,7 +316,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   影响导出。测试用注入 `runner` / `platform` / `beep` 代替真的弹窗。
 - 节流按「监控条目键」算（`xdao.watcher.target_key`），默认 900 秒；
   `settings.notify_interval` 可调。
-- **「首次导出」不提醒**（`result.first_run and result.new_posts <= 0`）：用户一次加十个
+- **「首次导出」不提醒**（`result.first_run and result.new_posts <= 0`）：一次加十个
   监控不该弹十条通知。
 - 界面上通知在主线程 `_poll_watch` 里发（那里已经有日志和队列），监控线程不碰 GUI。
 - 想验证真的能弹：`XDAO_LIVE_NOTIFY=1 python -m pytest tests/test_live_notify.py -q -s`
@@ -388,7 +388,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   同版把写盘失败的提示改成可执行的（指出目录、建议换到文档目录、提示查安全软件白名单）
 - **导出目录写不进去就自动换地方**（v0.5.3）：`choose_writable_dir()` 在写不进去时依次试
   `%LOCALAPPDATA%\xdao-export\导出` → `%TEMP%\xdao-export`，返回 `DirChoice(path, notes, fallback)`；
-  界面与命令行都会明说换了地方，且**不动用户设置**。用户在「更改…」里手选过目录
+  界面与命令行都会明说换了地方，且**不动导出设置**。在「更改…」里手选过目录
   （`App._dir_pinned`）或命令行给了 `-o`，则只提示不换。触发场景是受控文件夹访问默认保护
   桌面/文档/图片/视频 —— 抓取全部成功、最后一个文件都写不下去。
   同版把 `诊断写入.ps1` 改成会把报告写成 `诊断结果-*.txt`（双击一闪而过的抱怨），
@@ -426,7 +426,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   （否则请求头会出现两条 `userhash`）
 - **认得「跳转提示」页**（v0.6.1）：X 岛失败时用 ThinkPHP 的跳转模板回话，**HTTP 状态是 200**，
   靠页面里的 JS 自己跳 —— 浏览器会跳，`urllib` 不会。旧版把这张页面当饼干列表解析，
-  一个 id 都找不到就抛「未找到可用的饼干」，把真正的失败原因盖掉（用户报的邮箱登录问题）。
+  一个 id 都找不到就抛「未找到可用的饼干」，把真正的失败原因盖掉（邮箱登录失败的根因）。
   现在 `XdaoClient.jump_page_url()` 认 `跳转提示` / `id="href"`（两种属性顺序都试）、
   `jump_page_message()` 取 `class="error"|"success"` 那段文字，
   `_request_following_jumps(url, max_jumps=2)` 遇到跳转页就跟着走并返回 `(响应体, 最终地址)`

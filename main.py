@@ -311,7 +311,7 @@ def run_cli(args: argparse.Namespace) -> int:
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         # 走到这里时还没有任何导出器参与，所以要自己把错误讲清楚；
-        # 用户报过「导出到 D:\Windows 之类的目录 → 直接弹未处理异常对话框」。
+        # 实测过「导出到 D:\Windows 之类的目录 → 直接弹未处理异常对话框」。
         reason = exc.strerror or str(exc)
         raise XdaoError(
             f"导出目录没法创建：{output_dir}\n{reason}"
@@ -444,12 +444,12 @@ def run_cli(args: argparse.Namespace) -> int:
             log_lines.append(f"    抓取：{len(thread.posts)} 楼 · {result.reason}")
             if getattr(result, "retry_note", ""):
                 # 缺页/撞上限这类"产物不完整"必须显式说出来：旧版本是静默少抓一大截，
-                # 用户拿到半份成品还以为抓完了。
+                # 拿到半份成品还以为抓完了。
                 print(f"    注意：{result.retry_note}", file=sys.stderr)
                 log_lines.append(f"    注意：{result.retry_note}")
             if getattr(result, "cache_warning", ""):
                 # 可能是「换了缓存目录」，也可能是「缓存没写成」——两种情况都要说清楚，
-                # 否则用户会以为下次能续上。
+                # 否则会以为下次能续上。
                 print(f"    提示：{result.cache_warning}", file=sys.stderr)
                 log_lines.append(f"    提示：{result.cache_warning}")
             path = exporter.save(thread, scope, output_dir, include_hashes=hashes)
@@ -505,7 +505,7 @@ def main(argv: list[str] | None = None) -> int:
         return pdf_diag_main()
 
     if args.threads:
-        # 兜底：跑到这一步说明是命令行模式，绝不能让未处理的异常穿透到用户面前
+        # 兜底：跑到这一步说明是命令行模式，绝不能让未处理的异常直接弹给使用者
         # —— 打包版会把 traceback 弹成「Unhandled exception in script」对话框。
         from xdao.client import XdaoError
 

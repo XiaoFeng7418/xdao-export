@@ -1,6 +1,6 @@
 """图形界面入口的兜底测试（不需要真的开窗口）。
 
-用户报过：打包版弹「Unhandled exception in script」对话框。命令行入口已经堵住了，
+实测过：打包版弹「Unhandled exception in script」对话框。命令行入口已经堵住了，
 界面这边也必须堵 —— 尤其是打包版（--windowed）**没有 stderr**，
 任何漏出去的异常都会变成 PyInstaller 的错误对话框。
 """
@@ -97,7 +97,7 @@ def test_describe_export_failure_explains_a_rejected_cookie():
 
 
 def test_describe_login_failure_says_what_to_do_for_a_session_that_did_not_stick():
-    """用户报过：邮箱登录后只看到「未找到可用的饼干」。
+    """实测过：邮箱登录后只看到「未找到可用的饼干」。
 
     真相是跳转提示页被当成了饼干列表。文案必须说清是"这次登录没生效"，
     并给出两个能马上做的动作（重登 / 改用饼干直接登录）。

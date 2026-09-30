@@ -383,7 +383,7 @@ def _keep(path: str):
 def test_start_moves_to_a_writable_directory(app: gui.App, monkeypatch, tmp_path: Path) -> None:
     """导出目录写不进去时，界面要自动换到能写的位置并说清楚。
 
-    用户 2026-09-30 报的场景：目录设在桌面下的新文件夹（受控文件夹访问的保护范围），
+    实际遇到的场景：目录设在桌面下的新文件夹（受控文件夹访问的保护范围），
     抓取全部成功、写文件时 ``[Errno 13]``，整趟白跑。
     """
     from xdao.exporters._shared import DirChoice
@@ -396,7 +396,7 @@ def test_start_moves_to_a_writable_directory(app: gui.App, monkeypatch, tmp_path
     note = f"导出目录 {blocked} 写不进去，已自动改用 {fallback_dir}。"
 
     def fake_choose(requested, *, kind="导出", allow_fallback=True, probe=None):
-        assert allow_fallback is True  # 用户没在「更改…」里选过，允许换地方
+        assert allow_fallback is True  # 没在「更改…」里选过，允许换地方
         return DirChoice(fallback_dir, [note], True)
 
     shown: list[tuple[str, str]] = []
@@ -416,7 +416,7 @@ def test_start_moves_to_a_writable_directory(app: gui.App, monkeypatch, tmp_path
 
 
 def test_start_keeps_a_user_chosen_directory(app: gui.App, monkeypatch, tmp_path: Path) -> None:
-    """用户在「更改…」里选过的目录不换：只报错，不动他的选择。"""
+    """在「更改…」里选过的目录不换：只报错，不动他的选择。"""
     from xdao.exporters._shared import DirChoice
 
     blocked = tmp_path / "用户选的目录"
@@ -468,7 +468,7 @@ def test_finish_reports_the_directory_without_a_local_output_dir(
 ) -> None:
     """``_finish()`` 不许引用 ``start()`` 的局部变量 ``output_dir``。
 
-    2026-09-30 用户实测：一趟导出结束后弹「NameError: name 'output_dir' is not
+    2026-09-30 实测：一趟导出结束后弹「NameError: name 'output_dir' is not
     defined」—— ``_finish`` 是 ``_poll_export`` 从队列回调里调的，那里根本
     看不到 ``start()`` 的局部变量，只能读实例上的值。
     """

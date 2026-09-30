@@ -396,7 +396,7 @@ def test_corrupt_page_file_falls_back_to_download(artifacts_dir):
 
 
 def test_cache_write_failure_is_reported_not_swallowed(artifacts_dir, monkeypatch):
-    """缓存写不进去时必须留下痕迹，否则用户以为抓取成果已留存。"""
+    """缓存写不进去时必须留下痕迹，否则会以为抓取成果已留存。"""
     api = build_three_page_api()
     fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir)
 
@@ -419,7 +419,7 @@ def test_cache_write_failure_is_reported_not_swallowed(artifacts_dir, monkeypatc
 def test_cache_falls_back_to_a_writable_place(artifacts_dir, monkeypatch):
     """首选缓存目录写不进去时换一个能写的地方继续，并说明换了地方。
 
-    真实场景：导出目录在只读介质 / 权限受限的位置（用户报过 `D:\\X岛\\.cache`
+    真实场景：导出目录在只读介质 / 权限受限的位置（实测过 `D:\\X岛\\.cache`
     写不进去）。缓存只是加速手段，不该因为它写不进去就整次导出失败。
     """
     import xdao.cache as cache_module
@@ -455,7 +455,7 @@ def test_cache_keeps_the_requested_dir_when_it_is_writable(artifacts_dir):
 
 
 def test_cache_dir_candidates_are_ordered_and_unique(artifacts_dir):
-    """候选顺序：用户指定的 → 用户配置目录 → 系统临时目录，且不重复。"""
+    """候选顺序：显式指定的 → 用户配置目录 → 系统临时目录，且不重复。"""
     preferred = artifacts_dir / "wanted"
     candidates = cache_dir_candidates(preferred)
     assert candidates[0] == preferred
@@ -484,7 +484,7 @@ def test_resolve_cache_dir_returns_note_only_when_it_moves(artifacts_dir, monkey
 def test_cache_warning_explains_an_unwritable_cache_dir(artifacts_dir, monkeypatch):
     """缓存目录写不进去时，提示里要说清后果和下一步，而不是只甩一句 errno。
 
-    用户报过的场景：缓存目录跟着导出目录走，而导出目录只有上一级可写，
+    实测过的场景：缓存目录跟着导出目录走，而导出目录只有上一级可写，
     于是 ``.cache`` 建得出来、``.cache\\pages`` 拒绝访问。
     """
     import xdao.cache as cache_module
