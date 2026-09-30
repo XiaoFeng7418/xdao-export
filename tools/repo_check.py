@@ -158,6 +158,8 @@ def main(argv: list[str]) -> int:
             report.add(OK, "版本", f"{version} 与最新 Release {latest['tag_name']} 一致")
 
         # ---------- 5. 附件检查 ----------
+        # v0.5.1 起只发免安装包：单文件版的启动器在中文路径下会直接打不开
+        # （Could not create temporary directory!），且这取决于用户把文件放哪儿。
         names = [a["name"] for a in latest.get("assets", [])]
         has_zip = any(n.endswith(".zip") for n in names)
         has_exe = any(n.endswith(".exe") for n in names)
@@ -166,9 +168,9 @@ def main(argv: list[str]) -> int:
         else:
             report.add(BAD, "发布", "最新 Release 没有免安装包，受限环境下用户会打不开")
         if has_exe:
-            report.add(OK, "发布", "提供单文件版（exe）")
+            report.add(WARN, "发布", "还带着单文件版（exe）——它在中文路径下打不开，建议撤掉")
         if "免安装包" in (latest.get("body") or ""):
-            report.add(OK, "发布", "发布说明里解释了两种打包形式的区别")
+            report.add(OK, "发布", "发布说明里解释了下哪个附件")
         else:
             report.add(WARN, "发布", "发布说明没有说明该下哪个附件")
         for name in names:

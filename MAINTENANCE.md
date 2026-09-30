@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 290 项，必须全绿）
+2. **跑测试**（当前基线 293 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -60,19 +60,19 @@ $py = 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\
 # 1) 改版本号（xdao/__init__.py），跑测试
 & $py -X utf8 -m pytest -q
 
-# 2) 打包两种形式（onedir 免安装包 + onefile 单文件版）
+# 2) 打包（只打 onedir 免安装包；单文件版自 v0.5.1 起不再提供 —— 它的启动器在
+#    中文/非 ASCII 路径下会在 Python 代码运行前就失败：Could not create temporary directory!）
 #    注意必须设 TCL_LIBRARY / TK_LIBRARY，否则打包出的程序缺 Tcl/Tk
 $env:TCL_LIBRARY='C:\Users\14515\Documents\Codex\python3129\tcl\tcl8.6'
 $env:TK_LIBRARY='C:\Users\14515\Documents\Codex\python3129\tcl\tk8.6'
 $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
 & $pypi -m PyInstaller --onedir --windowed --clean --noconfirm --name "xdao-export" main.py
-& $pypi -m PyInstaller --onefile --windowed --clean --noconfirm --name "xdao-export-single" main.py
-# 单文件版改成带版本号的 ASCII 名：dist\xdao-export-vX.Y.Z.exe
 
 # 3) 组装免安装包（exe + _internal + 使用说明.txt），压缩成
 #    xdao-export-vX.Y.Z-win64.zip
 
-# 4) 验证两种产物都能跑（自检退出码应为 0）
+# 4) 验证产物能跑（自检退出码应为 0）
+#    xdao-export.exe --version      # 应输出「X岛串导出工具 X.Y.Z」
 #    xdao-export.exe --selftest
 
 # 5) 提交并推送（2026-09-30 起本机代理可用，直接 git push 即可，两边 sha 完全一致）
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 290 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 293 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -321,18 +321,30 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - **`Card` 的宽度会跟着内容变**：内层画布默认宽 378，早期版本从不调宽度，
   导致所有用卡片装内容的对话框被钉死在 410px、长文字只能裁掉。现在
   `_on_body_configure` 会按内容宽度（含子控件的 `wraplength`）撑开画布。
+- **字体只在有窗口时定案**：`theme.resolve_fonts(root)` 探测系统字体并缓存结果；
+  没有窗口时（导入期、纯 Tcl 测试）只返回候选里的第一个、**不落缓存** ——
+  否则导入期绑定的族名会一路粘住，出现"控件用 Consolas、主题报 Cascadia Mono"
+  （CI 上真挂过）。`gui.setup_style()` 会在 `apply_theme` 之后调 `gui.refresh_fonts()`
+  重算模块级别名，所以**新增字体常量时也要放进 `refresh_fonts`**，否则又会分叉。
 - **线程模型没变**：`App` 不是 Tk 组件，任何定时回调都必须 `self.root.after(...)`；
   后台线程只往 queue 投结果；监控队列只由 `App._poll_watch` 消费。
 - **改完界面怎么自查**：`python tools/gui_shot.py [输出.png] [--width N] [--height N]`
   （纯标准库 GDI 截图）。抓图必须用 `root.winfo_id()`，**不要 `GetParent`** ——
   那会把标题栏算进去，整张图内容上移 31px，看着像元素被截断。
-- **回归用例**：`tests/test_theme.py`（配色/间距/样式）与 `tests/test_window.py`
-  （两栏比例、底部进度条在默认与最小窗口下都完整可见）。
-  两个坑：① `tk.Tcl()` 纯 Tcl 解释器里**没有 ttk 包**（报 `invalid command name "ttk::style"`），
+- **回归用例**：`tests/test_theme.py`（配色/间距/样式/字体缓存）与 `tests/test_window.py`
+  （两栏比例、底部进度条在默认与最小窗口下都完整可见、控件字体与主题同源）。
+  四个坑：① `tk.Tcl()` 纯 Tcl 解释器里**没有 ttk 包**（报 `invalid command name "ttk::style"`），
   测样式必须用真 `tk.Tk()`；② 窗口 `withdraw()` 之后 Tk 不算几何，
-  `winfo_ismapped()` 和宽度全是 0，测试里要把窗口挪到屏幕外而不是隐藏。
+  `winfo_ismapped()` 和宽度全是 0，测试里要把窗口挪到屏幕外而不是隐藏；
+  ③ 读控件字体要用 `widget.tk.splitlist(...)` —— 族名带空格时 `cget("font")`
+  返回 `'{Cascadia Mono} 9'`，直接 `split()` 会把族名截成 `'{Cascadia'`；
+  ④ 窗口搬出屏幕后 Windows 偶尔要过一拍才映射，断言宽度前用
+  `wait_visible()` 等一下，不要硬断。
   `tests/test_window.py` 整组共用一个根窗口（本机连开十几个 Tk 根窗口偶发创建失败），
   并把 `AppSettings.load()` 换成隔离配置，**不许碰用户真实的 `%APPDATA%` 配置**。
+- **CI 的 Windows runner 桌面只有 1024x768**：请求 1060 宽的窗口会被系统夹到 1028，
+  右栏与日志框比本地窄。窗口尺寸相关的断言一律按最小尺寸（940x680）来写，
+  别假设"我要多少就有多少"。
 
 ## 路线图（尚未实现）
 
@@ -362,7 +374,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、290 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、293 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会
   自动 skip，Linux CI 上属于预期行为，不算失败。

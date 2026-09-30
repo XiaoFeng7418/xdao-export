@@ -376,8 +376,12 @@ def test_ensure_writable_creates_missing_directory(out_dir):
     assert target.is_dir()
 
 
-def test_ensure_writable_rejects_unwritable_directory(out_dir, monkeypatch):
-    """目录不可写时必须提前失败，而不是抓完才报错。"""
+def test_ensure_writable_tolerates_a_failed_probe(out_dir, monkeypatch):
+    """探针写不动**不等于**目录不可写，导出不能被它拦下。
+
+    用户真报过这个：目录用别的程序（甚至旧版本）都能写，只有本程序的
+    ``.xdao-write-probe`` 被拦，于是程序直接弹「导出目录不可写」拒绝开工。
+    """
     from pathlib import Path as _Path
 
     real_write_text = _Path.write_text
@@ -388,26 +392,20 @@ def test_ensure_writable_rejects_unwritable_directory(out_dir, monkeypatch):
         return real_write_text(self, *args, **kwargs)
 
     monkeypatch.setattr(_Path, "write_text", fake_write_text)
-    with pytest.raises(OutputDirNotWritable, match="不可写"):
-        ensure_writable(out_dir)
+    assert ensure_writable(out_dir) == out_dir
+    # 探针没留下垃圾
+    assert not (out_dir / ".xdao-write-probe").exists()
 
 
 @pytest.mark.parametrize("key", ["html", "txt", "markdown", "epub"])
-def test_save_fails_fast_when_directory_unwritable(out_dir, monkeypatch, key):
-    """四种导出器都要在写盘前预检目录，给出可读的错误。"""
-    from pathlib import Path as _Path
-
-    real_write_text = _Path.write_text
-
-    def fake_write_text(self, *args, **kwargs):
-        if self.name == ".xdao-write-probe":
-            raise PermissionError(13, "Permission denied")
-        return real_write_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(_Path, "write_text", fake_write_text)
+def test_save_creates_missing_directory_and_writes(out_dir, key):
+    """目录不存在时要自己建出来（预检失败不再是拦路虎）。"""
+    target = out_dir / "临时子目录"
     exporter = create_exporter(key, FakeClient())
-    with pytest.raises(OutputDirNotWritable):
-        exporter.save(sample_thread(), "all", out_dir)
+    path = exporter.save(sample_thread(), "all", target)
+    assert path.exists() and path.stat().st_size > 0
+    assert ensure_writable(target) == target
+    assert not (target / ".xdao-write-probe").exists()
 
 
 def test_txt_save_without_template_uses_title(out_dir):

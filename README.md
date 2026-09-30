@@ -51,16 +51,16 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.5.0** 提供两个附件，**功能完全一样**，按环境挑一个：
+最新版 **v0.5.1** 提供免安装包：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.5.0-win64.zip` | **推荐**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**。 |
-| `xdao-export-v0.5.0.exe` | 单文件版，只有一个文件更好携带。每次启动会把内容解压到系统临时目录。 |
+| `xdao-export-v0.5.1-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**。 |
 
-> **如果单文件版弹出「Could not create temporary directory!」**：这是 PyInstaller 单文件模式的
-> 启动器在 Python 代码运行前就失败了 —— 当前环境的系统临时目录不可写。程序本身没问题，
-> 换用免安装包即可。
+> **单文件版（`xdao-export-vX.Y.Z.exe`）从 v0.5.1 起不再提供**。它的启动器会把内容解压到
+> 系统临时目录，只要解压出来的文件夹路径里带中文/非 ASCII 字符，或者临时目录不可写，就会弹出
+> 「Could not create temporary directory!」直接打不开 —— 而这跟用户把文件放哪儿有关，程序没法
+> 自己兜住。免安装包没有这个环节，国内常见的「D:\小玩意\…」这类中文目录也能正常跑。
 >
 > 免安装包解压后，`xdao-export.exe` 与 `_internal` 文件夹**必须放在一起**，不要只把 exe 单独拷走。
 
@@ -172,7 +172,7 @@ xdao-export/
 │     └─ epub.py           EPUB 3（纯标准库实现）
 ├─ tools/clean_scratch.py  清理测试残留目录
 ├─ tools/gui_shot.py       开发期界面截图（纯标准库，改界面后自查）
-└─ tests/                  290 个离线单元测试（另 1 个真机用例默认跳过）
+└─ tests/                  293 个离线单元测试（另 1 个真机用例默认跳过）
 ```
 
 ## 开发
