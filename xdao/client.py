@@ -227,6 +227,59 @@ class XdaoClient:
         raise XdaoError(f"网络错误：{last_error or '未知原因'}（{url}）") from last_error
 
     @staticmethod
+    def jump_page_url(html: str) -> str:
+        """取「跳转提示」页要去的地方，没有就返回空串。
+
+        X 岛用 ThinkPHP 的跳转模板：**HTTP 状态是 200**，靠页面里的
+        ``<a id="href" href="…">`` + 一段 JavaScript 定时跳转。浏览器会自己走，
+        urllib 不会，所以我们得自己认出来 —— 否则「并没有权限访问」这种页面
+        会被当成正常的列表页，解析出零条记录（线上踩过：
+        邮箱登录成功后立刻去取饼干列表，拿到的是这张跳转页，程序报
+        「未找到可用的饼干」，把真正的「登录没成/没有权限」盖掉了）。
+        """
+        if not html or "<html" not in html.lower():
+            return ""
+        if "跳转提示" not in html and 'id="href"' not in html:
+            return ""
+        match = re.search(
+            r'<a[^>]*id="href"[^>]*href="([^"]*)"', html
+        ) or re.search(r'<a[^>]*href="([^"]*)"[^>]*id="href"', html)
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def jump_page_message(html: str) -> str:
+        """取「跳转提示」页上写给用户看的那句话（成功或失败），没有就返回空串。"""
+        match = re.search(
+            r'class="(?:error|success)"[^>]*>(.*?)</p>', html, flags=re.S
+        )
+        if not match:
+            return ""
+        import html as _html
+
+        return " ".join(_html.unescape(re.sub(r"<[^>]+>", " ", match.group(1))).split())
+
+    def _request_following_jumps(
+        self, url: str, max_jumps: int = 2, **kwargs
+    ) -> tuple[bytes, str]:
+        """请求一个页面，遇到「跳转提示」页就跟着走（最多 max_jumps 次）。
+
+        返回 ``(响应体, 最终地址)``。每一跳都带上 cookie，会话才能接上。
+        """
+        raw = self._request(url, **kwargs)
+        final = url
+        for _ in range(max_jumps):
+            target = self.jump_page_url(raw.decode("utf-8", "replace"))
+            if not target:
+                break
+            if target.startswith("/"):
+                target = self.SITE + target
+            if target == final:
+                break
+            final = target
+            raw = self._request(target, **kwargs)
+        return raw, final
+
+    @staticmethod
     def _backoff(attempt: int, retry_after: str | None = None) -> None:
         """指数退避等待；服务器给了 Retry-After 就优先听它的。"""
         if retry_after:
@@ -343,7 +396,9 @@ class XdaoClient:
 
     def fetch_login_form(self) -> LoginForm:
         login_url = f"{self.SITE}/Member/User/Index/login.html"
-        html = self._request(login_url).decode("utf-8", "replace")
+        # 有可能被弹到登录页（例如会话过期），跟着跳转走一遍再解析。
+        raw, login_url = self._request_following_jumps(login_url)
+        html = raw.decode("utf-8", "replace")
 
         import re
 
@@ -388,6 +443,17 @@ class XdaoClient:
         if ("账号" in plain or "用户" in plain) and ("错" in plain or "不存在" in plain or "失败" in plain):
             raise LoginError("账号不存在或登录失败。")
 
+        # 服务端也可能用「跳转提示」页回话（HTTP 200 + 页面跳转）。
+        # 这种页面里没有「账号/密码/验证码」这些字段名，上面的规则全都匹配不上，
+        # 会被当成"登录成功"，最后错误地报成「未找到可用的饼干」。
+        jump_message = self.jump_page_message(text)
+        jump_target = self.jump_page_url(text)
+        if jump_message and "login" in jump_target:
+            raise LoginError(
+                f"登录没有通过，X 岛返回：{jump_message}（已回到登录页）。"
+                "常见原因是账号或密码不对，也可能是验证码过期——请刷新验证码后重试。"
+            )
+
         # 登录成功会返回“登陆成功”并设置 memberUserspapapa；
         # 真正的 userhash 需要再去应用一块饼干。
         try:
@@ -402,7 +468,8 @@ class XdaoClient:
         还需要访问饼干列表并应用一块饼干，主站才会设置 userhash。
         """
         index_url = f"{self.SITE}/Member/User/Cookie/index.html"
-        html = self._request(index_url).decode("utf-8", "replace")
+        html, final_url = self._request_following_jumps(index_url)
+        html = html.decode("utf-8", "replace")
 
         import re
 
@@ -418,10 +485,30 @@ class XdaoClient:
                     if candidate:
                         ids.append(candidate)
         if not ids:
-            raise XdaoError("未找到可用的饼干，请先在浏览器里登录用户系统并应用一块饼干。")
+            # 被弹回登录页 = 会话没建立起来，不是"账号里没有饼干"。
+            if "login" in final_url:
+                message = self.jump_page_message(html)
+                detail = f"X 岛返回：{message}。" if message else "X 岛把请求弹回了登录页。"
+                raise LoginError(
+                    f"登录后没能进入用户系统（{detail}）"
+                    "请重新登录：确认密码正确、验证码是刚刷新出来的那一张。"
+                )
+            message = self.jump_page_message(html)
+            if message:
+                raise LoginError(
+                    f"登录后没能读取饼干列表（X 岛返回：{message}）。"
+                    "请确认该账号能打开用户系统的「饼干」页。"
+                )
+            raise XdaoError(
+                "已登录，但这个账号的饼干列表是空的。请先在浏览器里打开 X 岛用户系统 "
+                "→「饼干」→ 领取并应用一块饼干，再回到程序重新登录。"
+            )
 
         cookie_id = ids[0]
-        self._request(f"{self.SITE}/Member/User/Cookie/switchTo/id/{cookie_id}.html")
+        # 同样跟着「跳转提示」页走：应用饼干这一跳也可能被弹回去。
+        self._request_following_jumps(
+            f"{self.SITE}/Member/User/Cookie/switchTo/id/{cookie_id}.html"
+        )
 
         export_html = self._request(
             f"{self.SITE}/Member/User/Cookie/export/id/{cookie_id}.html"

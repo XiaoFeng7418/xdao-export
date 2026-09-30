@@ -96,6 +96,38 @@ def test_describe_export_failure_explains_a_rejected_cookie():
     assert "饼干" in text
 
 
+def test_describe_login_failure_says_what_to_do_for_a_session_that_did_not_stick():
+    """用户报过：邮箱登录后只看到「未找到可用的饼干」。
+
+    真相是跳转提示页被当成了饼干列表。文案必须说清是"这次登录没生效"，
+    并给出两个能马上做的动作（重登 / 改用饼干直接登录）。
+    """
+    title, body = gui.describe_login_failure(
+        "登录后没能进入用户系统（X 岛把请求弹回了登录页。）请重新登录：确认密码正确、"
+        "验证码是刚刷新出来的那一张。"
+    )
+    assert title == "登录没有生效"
+    assert "重新" in body
+    assert "改用饼干直接登录" in body
+    assert "未找到可用的饼干" not in title  # 不能再把话盖回那句误导性的提示
+
+
+def test_describe_login_failure_keeps_the_captcha_and_password_hints():
+    title, body = gui.describe_login_failure("验证码错误，请点击验证码图片刷新后重试。")
+    assert "验证码" in title
+    assert "新" in body  # 提示验证码已经换了一张
+
+    title2, body2 = gui.describe_login_failure("密码错误，请重新输入。")
+    assert "密码" in title2
+    assert "改用饼干直接登录" in body2
+
+
+def test_describe_login_failure_passes_unknown_errors_through():
+    title, body = gui.describe_login_failure("网络错误：连接被重置")
+    assert title == "登录失败"
+    assert body == "网络错误：连接被重置"
+
+
 def test_run_installs_a_callback_exception_handler(monkeypatch):
     """Tk 回调异常不能依赖 stderr —— 打包版没有 stderr。"""
     root = FakeRoot()

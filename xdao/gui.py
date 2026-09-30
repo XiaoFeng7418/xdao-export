@@ -160,6 +160,39 @@ def refresh_fonts(root: tk.Misc | None = None) -> None:
     MONO_FONT = mono(theme.SIZE_SMALL)
 
 
+def describe_login_failure(message: str) -> tuple[str, str]:
+    """把登录失败的提示翻成「对话框标题 + 该做的事」。
+
+    用户报过：邮箱登录点了之后只看到一句「未找到可用的饼干」。真相是
+    X 岛的跳转提示页（HTTP 200）被当成了饼干列表，真正的失败原因
+    （登录没过 / 没有权限 / 账号里确实没有饼干）被盖掉了。
+    这里把几种情况分开说，并且都给一个能马上做的动作。
+    """
+    text = (message or "").strip()
+    if "验证码" in text and "错" in text:
+        return "验证码不对", f"{text}\n\n验证码图片已经换成新的一张，重新填一次再登录。"
+    if "密码" in text and ("错" in text or "不正确" in text):
+        return "密码不对", f"{text}\n\n请确认密码；也可以点下面的「改用饼干直接登录」跳过账号密码。"
+    if "账号" in text and ("不存在" in text or "错" in text):
+        return "账号有问题", f"{text}\n\n请确认邮箱地址；也可以点下面的「改用饼干直接登录」。"
+    if "没能进入用户系统" in text or "没能读取饼干列表" in text:
+        return (
+            "登录没有生效",
+            f"{text}\n\n"
+            "多半是这次登录没被服务端认下来（验证码过期、密码刚改过、账号被限制）。"
+            "请点「登录」重新来一次，验证码务必用最新那张。\n"
+            "如果反复失败，请点「改用饼干直接登录」，从浏览器里复制 userhash 粘贴进来。",
+        )
+    if "饼干列表是空的" in text:
+        return (
+            "这个账号还没有饼干",
+            f"{text}\n\n"
+            "在浏览器里登录 X 岛用户系统 →「饼干」→ 领取并应用一块饼干，"
+            "然后回到程序重新登录。",
+        )
+    return "登录失败", text
+
+
 def setup_style(root: tk.Tk) -> ttk.Style:
     """装上现代扁平配色 + 定下真实字体（实际工作都在 xdao.theme 里）。"""
     style = apply_theme(root)
@@ -354,7 +387,8 @@ class LoginDialog(tk.Toplevel):
             self.userhash = payload
             self.destroy()
             return
-        messagebox.showerror("登录失败", payload, parent=self)
+        title, body = describe_login_failure(payload)
+        messagebox.showerror(title, body, parent=self)
         self._refresh_captcha()
 
     def _manual_userhash(self) -> None:
