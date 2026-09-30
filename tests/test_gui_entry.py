@@ -890,3 +890,94 @@ def test_watch_dialog_has_both_list_io_buttons(dialog_root, artifacts_dir):
 
     assert "导出列表" in labels
     assert "导入列表" in labels
+
+
+# ---------- 环境自检（界面这条路） ----------
+
+
+class _SelftestApp:
+    """只实现 ``SelftestDialog`` 会用到的那点东西。"""
+
+    def __init__(self, root) -> None:
+        self.root = root
+        self.logged: list[str] = []
+
+    def log(self, message: str) -> None:
+        self.logged.append(message)
+
+
+def _isolate_settings(monkeypatch, artifacts_dir) -> None:
+    """自检会 ``AppSettings.load()``，这里换成读临时目录，别碰用户真实配置。"""
+    monkeypatch.setattr(
+        AppSettings,
+        "load",
+        classmethod(lambda cls: cls(_path=artifacts_dir / "config.json")),
+    )
+
+
+def _open_selftest(root, app) -> gui.SelftestDialog:
+    dialog = gui.SelftestDialog(app)
+    dialog.update()
+    return dialog
+
+
+def test_selftest_dialog_survives_a_broken_config(
+    dialog_root, artifacts_dir, monkeypatch
+):
+    """配置写不出来时，自检要给出「不行」而不是抛出来。"""
+    from xdao import preflight
+
+    _isolate_settings(monkeypatch, artifacts_dir)
+    monkeypatch.setattr(preflight, "can_write_dir", lambda directory: False)
+    app = _SelftestApp(dialog_root)
+
+    dialog = _open_selftest(dialog_root, app)
+    try:
+        content = dialog.text.get("1.0", "end")
+    finally:
+        _close(dialog)
+
+    assert "[不行]" in content
+    assert "配置目录" in content, "自检报告没打出来"
+    assert "程序版本" in content, "对话框没打抬头"
+
+
+def test_selftest_dialog_grows_with_the_window(dialog_root, artifacts_dir, monkeypatch):
+    """文本区要跟着窗口长，不能只占「请求高度」在卡片里留一大块空白。
+
+    ``Card(stretch=True)`` 之前，画布里的 body 只有请求尺寸：窗口拉到 620
+    高，文本区还是 206px（真机截图里下面空一大块）。
+    """
+    _isolate_settings(monkeypatch, artifacts_dir)
+    app = _SelftestApp(dialog_root)
+    dialog = _open_selftest(dialog_root, app)
+    try:
+        dialog.geometry("660x620")
+        dialog.update()
+        tall = dialog.text.winfo_height()
+        dialog.geometry("660x400")
+        dialog.update()
+        short = dialog.text.winfo_height()
+    finally:
+        _close(dialog)
+
+    assert tall > 400, f"窗口 620 高时文本区只有 {tall}px"
+    assert short < tall, f"窗口变矮文本区没跟着缩：{short} vs {tall}"
+
+
+def test_selftest_dialog_copy_puts_the_report_on_the_clipboard(
+    dialog_root, artifacts_dir, monkeypatch
+):
+    _isolate_settings(monkeypatch, artifacts_dir)
+    app = _SelftestApp(dialog_root)
+    dialog = _open_selftest(dialog_root, app)
+    try:
+        dialog._copy()
+        status = dialog.status_var.get()
+        clipboard = dialog.clipboard_get()
+    finally:
+        _close(dialog)
+
+    assert "已复制" in status
+    assert "本机自检" in clipboard
+    assert app.logged, "自检结果没有写进运行日志"

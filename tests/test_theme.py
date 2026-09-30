@@ -16,7 +16,7 @@ from tkinter import ttk
 import pytest
 
 from xdao import theme
-from xdao.widgets import draw_round_rect, round_rect_points
+from xdao.widgets import Card, draw_round_rect, round_rect_points
 
 
 @pytest.fixture(scope="module")
@@ -287,3 +287,43 @@ def test_draw_round_rect_creates_one_polygon(window: tk.Tk) -> None:
     assert isinstance(item, int)
     assert len(canvas.find_all()) == 1
     assert canvas.type(item) == "polygon"
+
+
+# ---------------------------------------------------------------- 卡片
+
+
+def test_card_body_stops_at_the_requested_height(window: tk.Tk) -> None:
+    """默认卡片跟着内容走：里面只有 200 高的东西，卡片就不该撑到 600。"""
+    window.deiconify()
+    window.geometry("500x600")
+    window.update()
+    card = Card(window)
+    card.pack(fill="both", expand=True)
+    tk.Frame(card.body, bg="#ffffff", height=200, width=100).pack(fill="x")
+    window.update()
+    height = card.body.winfo_height()
+    card.destroy()
+    window.withdraw()
+
+    assert height <= 280, f"卡片没跟着内容走：body {height}px"
+
+
+def test_card_stretch_lets_the_body_fill_the_card(window: tk.Tk) -> None:
+    """``stretch=True`` 时内容要长到卡片底部，而不是停在请求高度。
+
+    这是「自检窗口里文本区只占 206px、下面空一大块」的根因：
+    画布里的内嵌窗口不会自己长高，得垫一层铺满画布的容器。
+    """
+    window.deiconify()
+    window.geometry("500x600")
+    window.update()
+    card = Card(window, stretch=True)
+    card.pack(fill="both", expand=True)
+    tk.Frame(card.body, bg="#ffffff", height=200, width=100).pack(fill="x")
+    window.update()
+    height = card.body.winfo_height()
+    card_height = card.winfo_height()
+    card.destroy()
+    window.withdraw()
+
+    assert height > 400, f"卡片 {card_height} 高，内容只有 {height}"

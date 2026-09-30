@@ -58,27 +58,51 @@ class Card(tk.Frame):
         padding: int | None = None,
         radius: int | None = None,
         accent: bool = False,
+        stretch: bool = False,
         **kwargs,
     ) -> None:
         pal = theme.PALETTE
         super().__init__(master, bg=pal.bg, highlightthickness=0, bd=0, **kwargs)
         self._radius = theme.RADIUS if radius is None else radius
         self._accent = accent
+        self._stretch = stretch
         pad = theme.gap(4) if padding is None else padding
 
         self._canvas = tk.Canvas(self, bg=pal.bg, highlightthickness=0, bd=0)
         self._canvas.pack(fill="both", expand=True)
-        self.body = tk.Frame(self._canvas, bg=pal.surface, padx=pad, pady=pad)
-        self._window = self._canvas.create_window(0, 0, anchor="nw", window=self.body)
+        self._host: tk.Frame | None = None
+        if stretch:
+            # 画布里的窗口默认只有「请求尺寸」，不会跟着画布长高，于是
+            # 想撑满的文本区永远只拿到请求高度。中间垫一个铺满画布的
+            # 容器，body 再放进容器里 expand，就能真正长到卡片底部。
+            self._host = tk.Frame(self._canvas, bg=pal.surface)
+            self._window = self._canvas.create_window(0, 0, anchor="nw", window=self._host)
+            self.body = tk.Frame(self._host, bg=pal.surface, padx=pad, pady=pad)
+            self.body.pack(fill="both", expand=True)
+        else:
+            self.body = tk.Frame(self._canvas, bg=pal.surface, padx=pad, pady=pad)
+            self._window = self._canvas.create_window(0, 0, anchor="nw", window=self.body)
         self._syncing = False
         self._wrap_width = 0
         self._canvas.bind("<Configure>", self._on_canvas_configure)
         self.body.bind("<Configure>", self._on_body_configure)
 
     def _on_canvas_configure(self, _event=None) -> None:
-        """宽度跟着卡片走（内容自适应宽度），高度由内容决定。"""
+        """宽度跟着卡片走（内容自适应宽度），高度由内容决定。
+
+        ``stretch=True`` 时高度也交给画布，卡片多高内容就铺多高。
+        """
         width = self._canvas.winfo_width()
-        if width > 1:
+        height = self._canvas.winfo_height()
+        if self._host is not None:
+            options = {}
+            if width > 1:
+                options["width"] = width
+            if height > 1:
+                options["height"] = height
+            if options:
+                self._canvas.itemconfigure(self._window, **options)
+        elif width > 1:
             self._canvas.itemconfigure(self._window, width=width)
         self._redraw()
 
@@ -90,13 +114,14 @@ class Card(tk.Frame):
         """
         if self._syncing:
             return
-        needed = self.body.winfo_reqheight()
-        if needed > 1 and self._canvas.cget("height") != needed:
-            self._syncing = True
-            try:
-                self._canvas.configure(height=needed)
-            finally:
-                self._syncing = False
+        if self._host is None:
+            needed = self.body.winfo_reqheight()
+            if needed > 1 and self._canvas.cget("height") != needed:
+                self._syncing = True
+                try:
+                    self._canvas.configure(height=needed)
+                finally:
+                    self._syncing = False
         # 宽度：只在内容比画布宽的时候撑开。
         # 历史坑：早期版本从不调宽度，画布就一直是 tk.Canvas 的默认 378px，
         # 于是所有用 Card 装内容的对话框都被钉死在 410px 宽，文字再长也只会被裁掉。

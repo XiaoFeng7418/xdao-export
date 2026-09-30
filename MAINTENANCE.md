@@ -434,6 +434,15 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **环境自检**（v0.11.0）：`--selftest` 从「只联网测接口」扩成「本机环境体检 + 联网检查」，
+  新增 `xdao/preflight.py`（`Check` / `Report` / 八项本机检查 / `run_network_checks()`），
+  命令行加 `--selftest-json`、`--offline`（单独给 `--offline` 会明确报错，不落到启动界面），
+  界面加 `SelftestDialog` 与「运行日志」右上角的「自检」按钮。全程只读：配置目录用
+  `can_write_dir` 探针、绝不调 `AppSettings.save()`；本机那部分断网也照样有意义。
+  顺带修掉 `Card` 的一个布局老问题：画布不会把内嵌窗口的高度拉到画布高，`body` 恒为
+  请求尺寸，于是「填满」是假的 —— 新增 `Card(stretch=True)`（先垫一层铺满画布的
+  `Frame` 再把 `body` pack 进去），自检对话框的文本区从 206px 变成 442px。
+  教训：**withdraw 的根窗口量出来的 Tk 尺寸不可信**，布局用例必须先 `deiconify()+update()`。
 - **改掉两处「复述来源」的措辞**（v0.10.2）：`--pdfdiag` 的说明里「用户报……时」改成
   「遇到……时」，缓存目录候选顺序的说明里「用户要求的位置」改成「指定的位置」。
   仓库是公开的，注释与帮助文字不写「用户报/用户要求」这类复述来源的句式；

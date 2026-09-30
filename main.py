@@ -56,6 +56,8 @@ _CONSOLE_HINT_FLAGS = {
     "--help",
     "--version",
     "--selftest",
+    "--selftest-json",
+    "--offline",
     "--no-cache",
     "--no-notify",
     "--cache-dir",
@@ -120,41 +122,27 @@ _attach_parent_console()
 _open_utf8_console()
 
 
-def selftest() -> int:
-    from xdao.client import XdaoClient, XdaoError
+def selftest(json_output: bool = False, offline: bool = False) -> int:
+    """自检：先看本机环境，再看接口能不能通。
 
-    client = XdaoClient()
-    print("1) 测试接口连接…")
-    try:
-        cdn = client.update_cdn_path()
-        print("   OK, CDN =", cdn)
-    except XdaoError as exc:
-        print("   失败:", exc)
-        return 1
+    分两段是有意的 —— 本机那段（配置目录、缓存目录、导出目录、浏览器、导出格式）
+    在断网时照样有意义，而它在原来自检里完全没有。
+    """
+    from xdao import preflight
 
-    print("2) 测试取串接口（No.50000001 第 1 页）…")
-    try:
-        data = client.fetch_thread_page(50000001, 1)
-        if isinstance(data, dict) and data.get("success") is False:
-            print("   接口返回错误:", data.get("error"))
-            return 1
-        title = data.get("title") if isinstance(data, dict) else None
-        print("   OK, 标题 =", title)
-    except XdaoError as exc:
-        print("   失败:", exc)
-        return 1
-
-    print("3) 检查各导出格式可导入…")
-    try:
-        from xdao.exporters import EXPORTERS
-
-        print("   OK, 格式 =", "、".join(EXPORTERS))
-    except Exception as exc:
-        print("   失败:", exc)
-        return 1
-
-    print("自检完成。")
-    return 0
+    report = preflight.Report()
+    if not json_output:
+        for line in preflight.environment_lines():
+            print(line)
+        print("")
+    report.extend(preflight.run_local_checks().checks)
+    if not offline:
+        report.extend(preflight.run_network_checks())
+    if json_output:
+        print(report.to_json())
+    else:
+        print(report.render())
+    return 1 if report.failures else 0
 
 
 def _pdf_value_help(table_name: str) -> str:
@@ -353,7 +341,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--selftest",
         action="store_true",
-        help="只做接口连接自检",
+        help="自检：先查本机环境（配置/缓存/导出目录、浏览器、导出格式），再测接口连接",
+    )
+    parser.add_argument(
+        "--selftest-json",
+        action="store_true",
+        help="配 --selftest 用：结果按 JSON 输出（便于贴给别人看）",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="配 --selftest 用：只查本机，不联网",
     )
     parser.add_argument(
         "--pdfdiag",
@@ -705,8 +703,13 @@ def _watch_list_command(args) -> int | None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    if args.selftest:
-        return selftest()
+    if args.offline and not (args.selftest or args.selftest_json):
+        # 单独给 --offline 的话，不接「启动图形界面」那条路 —— 那会让用户以为
+        # 参数生效了（界面起来、什么都没查），必须当场说清楚。
+        print("--offline 要配 --selftest 用。", file=sys.stderr)
+        return 2
+    if args.selftest or args.selftest_json:
+        return selftest(json_output=args.selftest_json, offline=args.offline)
 
     if args.watch_export or args.watch_import:
         if args.watch_export and args.watch_import:
