@@ -434,6 +434,19 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **新版本检查**（v0.12.0）：新增 `xdao/update_check.py`（`parse_version` / `is_newer` /
+  `fetch_latest` / `check_for_update`）。问的是 `releases/latest` 接口，**只取 tag_name 与
+  html_url**，不发任何本机信息；代理按「环境变量（HTTPS_PROXY 等）→ Windows 系统代理设置
+  （注册表 ProxyEnable/ProxyServer）→ 直连」的顺序探。结果缓存在 `配置目录/update-check.json`，
+  24 小时内不重复问；命令行 `--check-update` / `--check-update-json`（**手动查一律不吃缓存**），
+  界面在「运行日志」右上角加「检查更新」按钮，启动后 1.2 秒自己问一次（静默，只写日志）。
+  三条设计取舍：①认不出的版本号当 0.0.0 —— 宁可不说「有新版本」，也不能瞎报；
+  ②查不到不算程序出错，`--check-update` 一律退出码 0，`--offline` 与它同时给出会明确报错；
+  ③界面那条路必须**用队列把结果交回主线程** —— 工作线程直接 `root.after()` 会撞上
+  `RuntimeError: main thread is not in main loop`（本机探针真踩到过，导出/监控原本就是队列）。
+  顺带修掉一个老毛病：`--offline` 以前只在「没配 `--selftest`」时报错，和 `--check-update`
+  一起给会被忽略，现在是明确的不兼容组合。
+
 - **环境自检**（v0.11.0）：`--selftest` 从「只联网测接口」扩成「本机环境体检 + 联网检查」，
   新增 `xdao/preflight.py`（`Check` / `Report` / 八项本机检查 / `run_network_checks()`），
   命令行加 `--selftest-json`、`--offline`（单独给 `--offline` 会明确报错，不落到启动界面），

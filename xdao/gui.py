@@ -1791,6 +1791,11 @@ class App:
         self._watch_notifier: Notifier | None = None
         self._watch_dialog: WatchDialog | None = None
         self._selftest_dialog: SelftestDialog | None = None
+        # 新版本检查的结果（后台线程查完，主线程读）
+        self._update_result: object | None = None
+        self._update_button: ttk.Button | None = None
+        self._checking_update = False
+        self._update_queue: queue.Queue = queue.Queue()
         # 切换主题时旧控件会被销毁，这里记住本次实例出来的控件，便于重建
         self._widget_roots: list[tk.Misc] = []
 
@@ -1802,6 +1807,8 @@ class App:
         self.refresh_watch_status()
         self.refresh_cache_info()
         self.log("就绪。填入串网址后点「开始导出」。")
+        # 启动后悄悄问一次「有没有新版本」：查到了只写一行日志，不弹窗打扰。
+        self.root.after(1200, lambda: self.check_update(silent=True))
 
     # ---------- 主题 ----------
 
@@ -2243,6 +2250,10 @@ class App:
         ttk.Button(log_head, text="自检", style="Ghost.TButton", command=self.open_selftest).pack(
             side="right", padx=(0, theme.gap(0.5))
         )
+        self._update_button = ttk.Button(
+            log_head, text="检查更新", style="Ghost.TButton", command=self.check_update
+        )
+        self._update_button.pack(side="right", padx=(0, theme.gap(0.5)))
 
         self.log_text = tk.Text(
             card.body,
@@ -2380,6 +2391,87 @@ class App:
             self._selftest_dialog.focus_set()
             return
         self._selftest_dialog = SelftestDialog(self)
+
+    # ---------- 新版本检查 ----------
+
+    def check_update(self, silent: bool = False) -> None:
+        """问一次 GitHub 有没有新版本。
+
+        查完把结果写进运行日志：有新版本会带一个 ★，失败只说一句。
+        点按钮那次如果早就知道有新版本，会直接问「要不要打开下载页」；
+        启动时那次（``silent=True``）只写日志，不弹窗打扰。
+        """
+        if self._checking_update:
+            return
+        result = self._update_result
+        if result is not None and not silent and getattr(result, "newer", False):
+            # 已经知道有新版本了，再点就直接问「去不去下载页」
+            self._offer_download(result)
+            return
+        self._checking_update = True
+        if self._update_button is not None:
+            self._update_button.config(text="检查中…")
+        # 结果用队列交回主线程：Tk 的对象只能在主线程里碰，工作线程直接调
+        # after() 会撞上 RuntimeError: main thread is not in main loop。
+        self._update_queue = queue.Queue()
+        threading.Thread(
+            target=self._update_worker, args=(self._update_queue,), daemon=True
+        ).start()
+        self.root.after(120, self._poll_update)
+
+    def _update_worker(self, box: queue.Queue) -> None:
+        try:
+            from . import update_check
+
+            # force=True：点了按钮就是要现查，别拿一天的缓存糊弄人
+            result = update_check.check_for_update(force=True)
+        except Exception:  # noqa: BLE001 —— 查版本失败绝不能影响主流程
+            result = None
+        box.put(result)
+
+    def _poll_update(self) -> None:
+        """在主线程里看一眼后台查完没有（和导出、监控用的是同一套做法）。"""
+        box = getattr(self, "_update_queue", None)
+        if box is None:
+            return
+        try:
+            result = box.get_nowait()
+        except queue.Empty:
+            self.root.after(120, self._poll_update)
+            return
+        self._update_done(result)
+
+    def _update_done(self, result: object) -> None:
+        self._checking_update = False
+        if result is not None:
+            self._update_result = result
+        if self._update_button is not None and self._update_button.winfo_exists():
+            newer = bool(result is not None and getattr(result, "newer", False))
+            self._update_button.config(text="有新版本" if newer else "检查更新")
+        if result is None:
+            return
+        line = result.line() if hasattr(result, "line") else ""
+        if getattr(result, "newer", False):
+            self.log(f"★ {line}")
+        elif getattr(result, "ok", False):
+            self.log(line)
+        elif not getattr(result, "from_cache", False):
+            # 查不到（没网、代理不通）只说一次，不反复念
+            self.log(line)
+
+    def _offer_download(self, result: object) -> None:
+        url = getattr(result, "url", "")
+        text = getattr(result, "line", lambda: "")()
+        if not url:
+            self.log(text)
+            return
+        if messagebox.askyesno("有新版本", f"{text}\n\n现在打开下载页吗？"):
+            try:
+                import webbrowser
+
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 —— 打不开浏览器就把网址写进日志
+                self.log(f"下载页：{url}")
 
     def choose_folder(self) -> None:
         chosen = filedialog.askdirectory(
