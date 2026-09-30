@@ -172,7 +172,7 @@ xdao-export/
 │     └─ epub.py           EPUB 3（纯标准库实现）
 ├─ tools/clean_scratch.py  清理测试残留目录
 ├─ tools/gui_shot.py       开发期界面截图（纯标准库，改界面后自查）
-└─ tests/                  293 个离线单元测试（另 1 个真机用例默认跳过）
+└─ tests/                  294 个离线单元测试（另 1 个真机用例默认跳过）
 ```
 
 ## 开发
