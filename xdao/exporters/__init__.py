@@ -52,6 +52,7 @@ def create_exporter(
     image_mode: str | None = None,
     browser_path: str | None = None,
     pdf_timeout: int | None = None,
+    fallback_html: bool | None = None,
 ):
     """按格式键创建导出器实例；未知格式回退到 HTML。
 
@@ -66,6 +67,7 @@ def create_exporter(
             "image_mode": image_mode,
             "browser_path": browser_path,
             "pdf_timeout": pdf_timeout,
+            "fallback_html": fallback_html,
         },
         {"progress": progress, "filename_template": filename_template, "image_mode": image_mode},
         {"progress": progress, "filename_template": filename_template},
@@ -73,6 +75,7 @@ def create_exporter(
     ]
     last_error: TypeError | None = None
     for kwargs in attempts:
+        # 只丢掉值为 None 的项：False 是有意义的取值（例如 fallback_html=False）。
         clean = {k: v for k, v in kwargs.items() if v is not None}
         try:
             return cls(client, **clean)
