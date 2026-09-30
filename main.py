@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 
@@ -96,8 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-f",
         "--format",
         default=None,
-        choices=["html", "txt", "markdown", "epub"],
-        help="导出格式（默认 html）",
+        choices=["html", "pdf", "txt", "markdown", "epub"],
+        help="导出格式（默认 html；pdf 需要本机装有 Chrome 或 Edge）",
     )
     parser.add_argument("-o", "--output", default=None, metavar="目录", help="导出目录")
     parser.add_argument(
@@ -139,6 +140,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["embed", "url", "drop"],
         help="EPUB 的图片处理：embed 内嵌（默认）、url 仅链接、drop 丢弃",
+    )
+    parser.add_argument(
+        "--pdf-browser",
+        default=None,
+        metavar="路径",
+        help="导出 PDF 时使用的浏览器可执行文件（默认自动找 Chrome / Edge）",
+    )
+    parser.add_argument(
+        "--pdf-timeout",
+        type=int,
+        default=None,
+        metavar="秒",
+        help="PDF 渲染超时（默认 900 秒）",
     )
     parser.add_argument(
         "--cookie",
@@ -266,12 +280,22 @@ def run_cli(args: argparse.Namespace) -> int:
         client,
         filename_template=template,
         image_mode=args.image_mode or settings.image_mode or "embed",
+        browser_path=args.pdf_browser or settings.pdf_browser or None,
+        pdf_timeout=args.pdf_timeout,
     )
 
     succeeded = 0
     failed: list[str] = []
+    # 失败原因同时写进文件：控制台输出可能被管道截断，日志文件能留全。
+    log_lines: list[str] = [
+        f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"导出目录：{output_dir}",
+        f"格式：{format_key}｜范围：{scope}｜缓存：{'启用' if use_cache else '关闭'}",
+        "",
+    ]
     for index, raw in enumerate(args.threads, start=1):
         print(f"[{index}/{len(args.threads)}] {raw}")
+        log_lines.append(f"[{index}/{len(args.threads)}] {raw}")
         try:
             result = fetcher.fetch(raw, verify_cached=args.verify)
             thread = ThreadData(
@@ -281,24 +305,45 @@ def run_cli(args: argparse.Namespace) -> int:
                 posts=list(result.posts),
             )
             print(f"    {len(thread.posts)} 楼 · {result.reason}")
+            log_lines.append(f"    抓取：{len(thread.posts)} 楼 · {result.reason}")
             if getattr(result, "cache_warning", ""):
                 print(
                     f"    警告：缓存写入失败，本次抓取不会被复用 —— {result.cache_warning}",
                     file=sys.stderr,
                 )
+                log_lines.append(f"    警告：缓存写入失败 —— {result.cache_warning}")
             path = exporter.save(thread, scope, output_dir, include_hashes=hashes)
             succeeded += 1
-            print(f"    完成：{path}")
+            size = f"（{path.stat().st_size / 1024 / 1024:.1f} MB）" if path.exists() else ""
+            print(f"    完成：{path}{size}")
+            log_lines.append(f"    完成：{path}{size}")
         except XdaoError as exc:
             failed.append(raw)
             print(f"    失败：{exc}", file=sys.stderr)
+            log_lines.append(f"    失败：{exc}")
         except Exception as exc:
             failed.append(raw)
-            print(f"    失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+            detail = f"{type(exc).__name__}: {exc}"
+            print(f"    失败：{detail}", file=sys.stderr)
+            log_lines.append(f"    失败：{detail}")
 
-    print(f"全部处理完毕：成功 {succeeded} / {len(args.threads)} 个。")
+    summary = f"全部处理完毕：成功 {succeeded} / {len(args.threads)} 个。"
+    print(summary)
+    log_lines.append("")
+    log_lines.append(summary)
     if failed:
-        print("失败清单：" + "、".join(failed), file=sys.stderr)
+        print(f"失败 {len(failed)} 个：" + "、".join(failed), file=sys.stderr)
+        print("（以上失败原因已写入导出目录下的 xdao-export.log）", file=sys.stderr)
+        log_lines.append("失败清单：" + "、".join(failed))
+
+    try:
+        (output_dir / "xdao-export.log").write_text(
+            "\n".join(log_lines) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        pass  # 写日志失败不影响导出结果
+
+    if failed:
         return 1
     return 0
 
