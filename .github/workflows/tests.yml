@@ -1,0 +1,102 @@
+name: tests
+
+# 每次推送与 PR 都跑一遍离线单元测试。
+# 用例本身不联网（全部用测试替身），因此 runner 不需要任何凭据。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux：验证纯逻辑部分（不涉及 tkinter 界面）
+          - os: ubuntu-latest
+            python: "3.10"   # 项目声明的最低版本
+          - os: ubuntu-latest
+            python: "3.12"
+          # Windows：真正的目标平台，验证 tkinter 相关导入与打包前置条件
+          - os: windows-latest
+            python: "3.12"
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      # 确保没有任何网络代理干扰离线用例
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: 语法检查（全部源码必须能编译）
+        shell: bash
+        run: |
+          # 注意：compileall 即使遇到语法错误也返回 0，必须显式判错，
+          # 否则这一步等于没检查。
+          out=$(python -m compileall -q xdao main.py tools tests 2>&1) || true
+          echo "$out"
+          if echo "$out" | grep -qiE 'error|Sorry'; then
+            echo "::error::存在无法编译的文件"
+            exit 1
+          fi
+          echo "全部文件编译通过"
+
+      - name: 单元测试
+        run: python -m pytest -q
+
+      - name: 命令行入口可用
+        run: |
+          python main.py --version
+          python main.py --help
+
+      - name: 导出器注册表完整
+        run: |
+          python -c "from xdao.exporters import EXPORTERS; expected={'html','pdf','txt','markdown','epub'}; got=set(EXPORTERS); assert got==expected, f'格式注册表不一致: {got}'; print('格式:', ', '.join(EXPORTERS))"
+
+      - name: 源码版自检（仅联网可用时跑，失败不阻断）
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        run: python main.py --selftest
+
+  version-consistency:
+    name: 版本号与最新 Release 一致
+    runs-on: ubuntu-latest
+    # 只在推送 tag 时检查：代码版本号必须与 tag 相同，避免发错版本
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 比对 tag 与 xdao.__version__
+        run: |
+          python - <<'PY'
+          import os, sys
+          sys.path.insert(0, ".")
+          from xdao import __version__
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if tag != __version__:
+              raise SystemExit(f"tag {tag} 与代码里的版本号 {__version__} 不一致")
+          print(f"版本号一致：{__version__}")
+          PY
