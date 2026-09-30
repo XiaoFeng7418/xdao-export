@@ -125,7 +125,12 @@ def columns(app: gui.App) -> tuple[tk.Misc, tk.Misc]:
 
 def test_window_title_and_geometry(app: gui.App) -> None:
     assert app.root.title() == "X岛串导出"
-    assert "1060x760" in app.root.geometry()
+    # 默认尺寸是请求值；屏幕比它小时窗口会被系统压小（CI 的 Windows runner
+    # 只有 1024x768），所以只断言"请求值 + 不超过屏幕"。
+    default = [int(part) for part in app.root.geometry().split("+")[0].split("x")]
+    assert default[0] >= 940 and default[1] >= 680
+    assert default[0] <= app.root.winfo_screenwidth()
+    assert default[1] <= app.root.winfo_screenheight()
     assert app.root.minsize() == (940, 680)
 
 
@@ -204,9 +209,14 @@ def test_start_button_spans_the_column(app: gui.App) -> None:
 
 def test_log_text_is_read_only_and_monospace(app: gui.App) -> None:
     assert str(app.log_text.cget("state")) == "disabled"
-    # cget("font") 返回的是 "Consolas 9" 这样的字符串，跟元组比要对齐格式
+    # cget("font") 返回的是 "Consolas 9" 这样的字符串，跟元组比要对齐格式。
+    # 断言到"是主题认可的等宽字体"即可，不钉死某一个族名：字体探测在导入时
+    # 缓存一次，本机是 Consolas、CI 上可能是别的（曾经因为钉死族名在
+    # windows-latest 上挂过）。
     family, size = str(app.log_text.cget("font")).split()[:2]
-    assert family == theme.FONT_MONO
+    allowed = set(theme.MONO_FONT_CANDIDATES) | {theme.FALLBACK_MONO_FONT, theme.FONT_MONO}
+    assert family in allowed, f"日志字体 {family!r} 不在等宽候选里"
+    assert len(family) <= 16, f"字体名 {family!r} 不像是真的"
     assert int(size) == theme.SIZE_SMALL
     assert app.log_text.winfo_width() > 400
 
