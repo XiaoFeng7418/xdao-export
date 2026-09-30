@@ -31,10 +31,16 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 其中界面相关的 62 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。
 
-打包版随 v0.10.0 重新构建，Release **只提供免安装包（zip）**。v0.10.0 修掉了
+打包版随 v0.10.1 重新构建（v0.10.1 无代码改动，只是把冻结登录的核验结论写进文档、
+版本号与包重打一次），Release **只提供免安装包（zip）**。v0.10.0 修掉了
 「打包版导不出 PDF」（`xdao/browser_flags.py`：冻结环境启动浏览器时加 `--no-sandbox`，
 根因是 Chromium 沙箱层在冻结父进程下初始化失败；源码运行仍带沙箱），
-`--pdfdiag` 诊断同步走这一套参数。v0.9.0 给串监控加了
+`--pdfdiag` 诊断同步走这一套参数。**登录窗口那条路 2026-10-01 也在冻结环境里量过**：
+不加开关时进程起得来但页面不提交、截图一直 `Internal error`（登录页加载不出来），
+加上开关后落在登录页、标题「用户登录 - User System - X岛揭示板」、截图 27,910 字节；
+写冻结探针的四个坑（`.spec` 的 `pathex`、`hiddenimports`、对照组的模块常量要还原、
+stdout 编码）记在 `MAINTENANCE.md` 的「以后要再写冻结探针」一节。
+v0.9.0 给串监控加了
 **列表导入 / 导出**（`xdao/watch_list.py` 管文件格式：界面「串监控」里的「导出列表 / 导入列表」，
 命令行 `--watch-export` / `--watch-import` / `--watch-import-replace`）：导出只带「怎么监控」，
 不带监控进度（否则换机器后第一轮该出的不出），导入是**合并**、坏条目逐条给中文原因；
