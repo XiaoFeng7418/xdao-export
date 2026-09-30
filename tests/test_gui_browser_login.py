@@ -119,9 +119,18 @@ class _FakeSession:
 
     instances: list["_FakeSession"] = []
 
-    def __init__(self, ws_url: str, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        ws_url: str,
+        timeout: float = 15.0,
+        site_urls=None,
+        http_json=None,
+    ) -> None:
         self.ws_url = ws_url
         self.timeout = timeout
+        # 界面层建会话时会带上「本站点」前缀与「怎么读 /json/list」，替身照单全收。
+        self.site_urls = list(site_urls or [])
+        self.http_json = http_json
         self.connected = False
         self.closed = False
         self.cookies: list[dict] = []

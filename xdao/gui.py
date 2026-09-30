@@ -771,7 +771,9 @@ class BrowserLoginDialog(tk.Toplevel):
                 self._release_browser(browser)
                 return
             # 浏览器端点交给 CDPSession，它自己会换成页面标签再握手。
-            session = backend.CDPSession(browser.browser_ws_url)
+            # 建会话时把「本站点」一起告诉它：connect() 靠这个挑对页面标签
+            # （Edge 自己会开 sync-confirmation 之类的内部页，不能抓错）。
+            session = backend._new_session(browser.browser_ws_url)
             self._session = session
             session.connect()
             if self._stop.is_set():  # 取消正好落在握手过程中
