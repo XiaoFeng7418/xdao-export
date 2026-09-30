@@ -26,12 +26,15 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1007 项（1001 通过）、6 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关
+单元测试 1078 项（1072 通过）、6 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关
 `XDAO_BROWSER_TEST=1` / `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`）；
 其中界面相关的 62 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。
 
-打包版随 v0.11.0 重新构建。v0.11.0 加了**环境自检**（`xdao/preflight.py`：`--selftest` 先查本机再查联网，界面「运行日志」右上角有「自检」按钮，新增 `--selftest-json` / `--offline`），同版把 `Card` 的 `stretch=True` 补上（画布不会把内嵌窗口拉到画布高）；v0.10.1、v0.10.2 都是补丁版：前者把冻结登录的核验结论
+打包版随 v0.12.0 重新构建。v0.12.0 加了**新版本检查**（`xdao/update_check.py`：命令行
+`--check-update` / `--check-update-json`，界面「运行日志」右上角「检查更新」按钮，启动后 1.2 秒
+静默问一次；结果缓存在配置目录，一天内不重复问；只取发布页的 tag 与链接，不发本机信息）。
+v0.11.0 加了**环境自检**（`xdao/preflight.py`：`--selftest` 先查本机再查联网，界面「运行日志」右上角有「自检」按钮，新增 `--selftest-json` / `--offline`），同版把 `Card` 的 `stretch=True` 补上（画布不会把内嵌窗口拉到画布高）；v0.10.1、v0.10.2 都是补丁版：前者把冻结登录的核验结论
 写进文档，后者只改了两处「复述来源」的措辞，都没有功能改动），Release **只提供免安装包（zip）**。v0.10.0 修掉了
 「打包版导不出 PDF」（`xdao/browser_flags.py`：冻结环境启动浏览器时加 `--no-sandbox`，
 根因是 Chromium 沙箱层在冻结父进程下初始化失败；源码运行仍带沙箱），
@@ -75,9 +78,9 @@ xdao-export/
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（48）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（14）
 │  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（125）
-│  ├─ test_cli.py          命令行参数与入口（38）
+│  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update（48）
 │  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（6）
-│  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出（35）
+│  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检与更新按钮（42）
 │  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（12，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
 │  ├─ test_watcher.py      监控与配置（30）
@@ -88,10 +91,12 @@ xdao-export/
 │  ├─ test_pdf.py          PDF 渲染与路由（37）
 │  ├─ test_pdf_opts.py     PDF 纸张/边距/缩放/页码选项（325）
 │  ├─ test_browser_flags.py 打包运行时给浏览器补的开关（7）
+│  ├─ test_preflight.py    环境自检：各项检查的 ok/warn/fail 分支（35）
+│  ├─ test_update_check.py 新版本检查：版本号比较、接口、缓存、代理（62）
 │  ├─ test_pdf_render.py   PDF 真机渲染 4 条（默认跳过，`XDAO_PDF_TEST=1`）
 │  ├─ test_settings.py     配置读写（25）
 │  ├─ test_live_notify.py  真机通知（1，默认跳过）
-│  ├─ test_theme.py        配色/字体/间距/ttk 样式（25，需真 Tk）
+│  ├─ test_theme.py        配色/字体/间距/ttk 样式、Card 拉伸（27，需真 Tk）
 │  └─ test_window.py       主窗口布局回归（25，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号

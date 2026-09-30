@@ -58,6 +58,8 @@ _CONSOLE_HINT_FLAGS = {
     "--selftest",
     "--selftest-json",
     "--offline",
+    "--check-update",
+    "--check-update-json",
     "--no-cache",
     "--no-notify",
     "--cache-dir",
@@ -143,6 +145,22 @@ def selftest(json_output: bool = False, offline: bool = False) -> int:
     else:
         print(report.render())
     return 1 if report.failures else 0
+
+
+def check_update(json_output: bool = False) -> int:
+    """查一下有没有新版本。
+
+    查不到（没网、代理不通、接口改版）不算程序出错，所以退出码是 0 ——
+    这条命令的用途是「顺手看一眼」，不是「必须成功」。
+    """
+    from xdao import update_check
+
+    result = update_check.check_for_update(force=True)
+    if json_output:
+        print(result.to_json())
+    else:
+        print(result.line())
+    return 0
 
 
 def _pdf_value_help(table_name: str) -> str:
@@ -352,6 +370,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--offline",
         action="store_true",
         help="配 --selftest 用：只查本机，不联网",
+    )
+    parser.add_argument(
+        "--check-update",
+        action="store_true",
+        help="查一下有没有新版本（问一次 GitHub，结果记一天）",
+    )
+    parser.add_argument(
+        "--check-update-json",
+        action="store_true",
+        help="配 --check-update 用：结果按 JSON 输出",
     )
     parser.add_argument(
         "--pdfdiag",
@@ -703,6 +731,10 @@ def _watch_list_command(args) -> int | None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.offline and (args.check_update or args.check_update_json):
+        # 「只查本机」和「问一次 GitHub」是矛盾的，别让用户以为没联网。
+        print("--offline 与 --check-update 不能一起用（查版本必须联网）。", file=sys.stderr)
+        return 2
     if args.offline and not (args.selftest or args.selftest_json):
         # 单独给 --offline 的话，不接「启动图形界面」那条路 —— 那会让用户以为
         # 参数生效了（界面起来、什么都没查），必须当场说清楚。
@@ -710,6 +742,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.selftest or args.selftest_json:
         return selftest(json_output=args.selftest_json, offline=args.offline)
+
+    if args.check_update or args.check_update_json:
+        return check_update(json_output=args.check_update_json)
 
     if args.watch_export or args.watch_import:
         if args.watch_export and args.watch_import:

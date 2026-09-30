@@ -981,3 +981,116 @@ def test_selftest_dialog_copy_puts_the_report_on_the_clipboard(
     assert "已复制" in status
     assert "本机自检" in clipboard
     assert app.logged, "自检结果没有写进运行日志"
+
+
+# ---------- 新版本检查（界面这条路） ----------
+
+
+class _FakeUpdateButton:
+    def __init__(self) -> None:
+        self.text = "检查更新"
+
+    def config(self, **kwargs) -> None:
+        if "text" in kwargs:
+            self.text = kwargs["text"]
+
+    def winfo_exists(self) -> bool:
+        return True
+
+
+class _UpdateApp:
+    """只实现新版本检查这条路的 App 会用到的那点东西。
+
+    ``_update_done`` / ``_poll_update`` / ``_offer_download`` 直接借用真实现
+    （它们的逻辑就是要测的），其余属性用假的顶上。
+    """
+
+    def __init__(self, root) -> None:
+        self.root = root
+        self.logged: list[str] = []
+        self._update_result = None
+        self._update_button = _FakeUpdateButton()
+        self._checking_update = True
+        self._update_queue = queue.Queue()
+
+    def log(self, message: str) -> None:
+        self.logged.append(message)
+
+    _update_done = gui.App._update_done
+    _poll_update = gui.App._poll_update
+    _offer_download = gui.App._offer_download
+
+
+def _call_update_worker(app, monkeypatch, result) -> None:
+    """跑一遍后台线程那半边 + 主线程收结果那半边（不真起线程）。"""
+    from xdao import update_check
+
+    monkeypatch.setattr(update_check, "check_for_update", lambda **kwargs: result)
+    gui.App._update_worker(app, app._update_queue)
+    gui.App._poll_update(app)
+
+
+def test_update_check_logs_the_newer_release_and_marks_the_button(
+    dialog_root, monkeypatch
+):
+    from xdao import update_check
+
+    app = _UpdateApp(dialog_root)
+    result = update_check.UpdateResult(
+        ok=True,
+        newer=True,
+        current="0.11.0",
+        latest=update_check.ReleaseInfo(tag="v9.9.9", url="https://example.invalid/9"),
+    )
+
+    _call_update_worker(app, monkeypatch, result)
+
+    assert app._checking_update is False
+    assert app._update_button.text == "有新版本"
+    assert any("9.9.9" in line for line in app.logged), "有新版本却没写进日志"
+
+
+def test_update_check_says_being_current_without_marking_the_button(
+    dialog_root, monkeypatch
+):
+    from xdao import update_check
+
+    app = _UpdateApp(dialog_root)
+    result = update_check.UpdateResult(ok=True, newer=False, current="0.11.0")
+
+    _call_update_worker(app, monkeypatch, result)
+
+    assert app._update_button.text == "检查更新"
+    assert any("已是最新版本" in line for line in app.logged)
+    assert app._update_result is result
+
+
+def test_update_check_survives_a_broken_checker(dialog_root, monkeypatch):
+    """查版本失败（连模块都炸了）也要把按钮恢复，不能卡在「检查中…」。"""
+    app = _UpdateApp(dialog_root)
+    app._update_button.config(text="检查中…")
+    from xdao import update_check
+
+    def boom(**kwargs):
+        raise RuntimeError("天知道")
+
+    monkeypatch.setattr(update_check, "check_for_update", boom)
+
+    gui.App._update_worker(app, app._update_queue)
+    gui.App._poll_update(app)
+
+    assert app._checking_update is False
+    assert app._update_button.text == "检查更新"
+
+
+def test_app_schedules_one_update_check_after_startup():
+    """窗口起来之后要自己问一次「有没有新版本」，而且不弹窗（silent）。"""
+    import inspect
+    import re
+
+    from xdao.gui import App
+
+    source = inspect.getsource(App.__init__)
+    pattern = r"root\.after\(\s*\d+,\s*lambda:\s*self\.check_update\(silent=True\)"
+    assert re.search(pattern, source), "App 起来之后没有安排那次新版本检查"
+    assert source.count("check_update(silent=True)") == 1, "启动时只该问一次"

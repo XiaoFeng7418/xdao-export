@@ -859,3 +859,98 @@ def test_offline_alone_is_refused_instead_of_opening_the_gui(monkeypatch, capsys
     code = main(["--offline"])
     assert code == 2
     assert "要配 --selftest 用" in capsys.readouterr().err
+
+
+# ---------- 新版本检查（--check-update 这条路） ----------
+
+
+def _stub_update(monkeypatch, result):
+    """把问接口换成固定结果，用例只管参数与输出形态。"""
+    from xdao import update_check
+
+    calls: list[dict] = []
+
+    def fake_check(**kwargs):
+        calls.append(kwargs)
+        return result
+
+    monkeypatch.setattr(update_check, "check_for_update", fake_check)
+    return calls
+
+
+def test_check_update_prints_the_newer_release(monkeypatch, capsys):
+    from xdao import update_check
+
+    newer = update_check.UpdateResult(
+        ok=True,
+        newer=True,
+        current="0.11.0",
+        latest=update_check.ReleaseInfo(tag="v9.9.9", url="https://example.invalid/9"),
+    )
+    calls = _stub_update(monkeypatch, newer)
+
+    code = main(["--check-update"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "有新版本可用" in out
+    assert "9.9.9" in out
+    assert calls and calls[0]["force"] is True, "手动查一次就该现问，不吃缓存"
+
+
+def test_check_update_says_when_it_is_current(monkeypatch, capsys):
+    from xdao import update_check
+
+    current = update_check.UpdateResult(ok=True, newer=False, current="0.11.0")
+    _stub_update(monkeypatch, current)
+
+    code = main(["--check-update"])
+
+    assert code == 0
+    assert "已是最新版本" in capsys.readouterr().out
+
+
+def test_check_update_still_exits_zero_when_it_cannot_reach_github(monkeypatch, capsys):
+    """查不到不是程序出错：这条命令的用处是「顺手看一眼」。"""
+    from xdao import update_check
+
+    failed = update_check.UpdateResult(ok=False, reason="连不上 GitHub（连接被重置）")
+    _stub_update(monkeypatch, failed)
+
+    code = main(["--check-update"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "没查到" in out
+    assert "连不上 GitHub" in out
+
+
+def test_check_update_json_outputs_only_json(monkeypatch, capsys):
+    from xdao import update_check
+
+    newer = update_check.UpdateResult(
+        ok=True,
+        newer=True,
+        current="0.11.0",
+        latest=update_check.ReleaseInfo(tag="v9.9.9", url="https://example.invalid/9"),
+    )
+    _stub_update(monkeypatch, newer)
+
+    code = main(["--check-update-json"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["有没有新的"] is True
+    assert payload["最新版本"] == "v9.9.9"
+
+
+def test_offline_with_check_update_is_refused(monkeypatch, capsys):
+    """「只查本机」和「问一次 GitHub」是矛盾的，不能悄悄联网。"""
+    calls = _stub_update(monkeypatch, None)
+
+    code = main(["--check-update", "--offline"])
+
+    assert code == 2
+    assert calls == [], "说了 --offline 却还是去问了接口"
+    assert "不能一起用" in capsys.readouterr().err
