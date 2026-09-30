@@ -28,3 +28,8 @@ pytest-cache-files-*/
 
 # 根目录下的可执行文件一律不进源码树（只作为 Release 附件）
 /*.exe
+
+# 诊断/临时产物（浏览器 profile、崩溃转储等）
+/xdao-pdfdiag-*/
+/pdfdiag-*/
+
