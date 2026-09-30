@@ -22,10 +22,13 @@ Windows 桌面小工具：登录 X 岛（nmbxd1.com）后，把任意一个串�
 
 功能全部实现并已实测：五种格式在真实长串（No.67024789，33 页 / 626 楼）上导出成功，
 EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、626 个楼层 XHTML 全部可解析）；
-监控桌面通知已在本机实测弹出。
-单元测试 258 个全部通过、1 个真机用例默认跳过（都离线，无需联网）。
+监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
+改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-打包版随 v0.4.0 重新构建，Release 同时提供免安装包（zip）与单文件版（exe）。
+单元测试 290 个全部通过、1 个真机用例默认跳过（都离线，无需联网）；
+其中界面相关的 32 项（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会自动 skip。
+
+打包版随 v0.5.0 重新构建，Release 同时提供免安装包（zip）与单文件版（exe）。
 单文件版在系统临时目录不可写的环境里会打不开（`Could not create temporary directory!`），
 因此默认推荐免安装包 —— 详见 `MAINTENANCE.md` 与各版本的 Release 说明。
 
@@ -42,11 +45,14 @@ xdao-export/
 ├─ tests/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
 │  ├─ conftest.py          artifacts_dir 夹具（替代 tmp_path）
-│  ├─ test_cache.py        缓存/断点续传/增量更新（30）
-│  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（55）
+│  ├─ test_cache.py        缓存/断点续传/增量更新（37）
+│  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（61）
 │  ├─ test_watcher.py      监控与配置（25）
-│  ├─ test_epub.py         EPUB（37）
-│  └─ test_markdown.py     Markdown（35）
+│  ├─ test_epub.py         EPUB（31）
+│  ├─ test_markdown.py     Markdown（41）
+│  ├─ test_notifications.py 桌面通知（28）
+│  ├─ test_theme.py        配色/字体/间距/ttk 样式（19，需真 Tk）
+│  └─ test_window.py       主窗口布局回归（13，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号
    ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理
@@ -54,7 +60,10 @@ xdao-export/
    ├─ fetcher.py           抓取流程与兼容层（ThreadFetcher 不带缓存）
    ├─ watcher.py           WatchTarget / check_once / watch_forever
    ├─ settings.py          AppSettings：本机配置读写
-   ├─ gui.py               Tkinter 界面 + 三个对话框 + CookiePicker
+   ├─ notifications.py     桌面通知（Windows Toast 用哨兵 AUMID / macOS / Linux）
+   ├─ theme.py             配色 / 字体 / 间距 / ttk 样式（界面视觉唯一来源）
+   ├─ widgets.py           自绘控件：Card、StatusPill、ModernProgress、FlatText
+   ├─ gui.py               Tkinter 界面 + 四个对话框
    └─ exporters/
       ├─ __init__.py       EXPORTERS 注册表、create_exporter、公共函数再导出
       ├─ _shared.py        plain_text / sanitize_filename / ThreadData / derive_filename

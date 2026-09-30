@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 258 项，必须全绿）
+2. **跑测试**（当前基线 290 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 258 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 290 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -304,12 +304,43 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 想验证真的能弹：`XDAO_LIVE_NOTIFY=1 python -m pytest tests/test_live_notify.py -q -s`
   （连真实接口抓 No.50000001，伪造 3 个新楼层，跑完「判定 → 导出 → 通知」全链路）。
 
+## 界面架构（v0.5.0 重做，改界面前必读）
+
+- **视觉只有一份来源**：`xdao/theme.py`。配色（`LIGHT`/`DARK` 两套 `Palette`）、
+  字体探测（`resolve_fonts`）、字号常量、间距 `gap(n)`（一档 4px）、圆角半径、
+  ttk 样式全部在这里；`xdao/gui.py` 里**不要再写死色值**，也不要直接写像素间距。
+- **自绘控件在 `xdao/widgets.py`**：`Card`（圆角卡片，内容放 `.body`）、
+  `StatusPill`（状态胶囊）、`ModernProgress`（圆角进度条）、`FlatText`、`SectionHeading`。
+  全是 `tk` 级控件（不是 ttk），因为要自定义绘制。
+- **主窗口是两栏**：左栏固定宽 `theme.SETTINGS_COLUMN_WIDTH`（452），右栏吃满剩余宽度。
+  左栏必须 `pack_propagate(False)` + `grid` 里配 `minsize`：里面的滚动画布会把自己的
+  实际宽度当成请求宽度，不锁死的话 grid 会把右栏挤成一条缝（实测只剩 39px）。
+- **左栏滚动区**（`App._scroll_area`）的画布初始 `width`/`height` 必须写死
+  （`SETTINGS_COLUMN_WIDTH` / `SETTINGS_VIEWPORT_HEIGHT`）：不写死时画布请求高度会
+  跟着内容反复变，出现"holder 265 / canvas 528"这种不一致。
+- **`Card` 的宽度会跟着内容变**：内层画布默认宽 378，早期版本从不调宽度，
+  导致所有用卡片装内容的对话框被钉死在 410px、长文字只能裁掉。现在
+  `_on_body_configure` 会按内容宽度（含子控件的 `wraplength`）撑开画布。
+- **线程模型没变**：`App` 不是 Tk 组件，任何定时回调都必须 `self.root.after(...)`；
+  后台线程只往 queue 投结果；监控队列只由 `App._poll_watch` 消费。
+- **改完界面怎么自查**：`python tools/gui_shot.py [输出.png] [--width N] [--height N]`
+  （纯标准库 GDI 截图）。抓图必须用 `root.winfo_id()`，**不要 `GetParent`** ——
+  那会把标题栏算进去，整张图内容上移 31px，看着像元素被截断。
+- **回归用例**：`tests/test_theme.py`（配色/间距/样式）与 `tests/test_window.py`
+  （两栏比例、底部进度条在默认与最小窗口下都完整可见）。
+  两个坑：① `tk.Tcl()` 纯 Tcl 解释器里**没有 ttk 包**（报 `invalid command name "ttk::style"`），
+  测样式必须用真 `tk.Tk()`；② 窗口 `withdraw()` 之后 Tk 不算几何，
+  `winfo_ismapped()` 和宽度全是 0，测试里要把窗口挪到屏幕外而不是隐藏。
+  `tests/test_window.py` 整组共用一个根窗口（本机连开十几个 Tk 根窗口偶发创建失败），
+  并把 `AppSettings.load()` 换成隔离配置，**不许碰用户真实的 `%APPDATA%` 配置**。
+
 ## 路线图（尚未实现）
 
 - 无人值守登录 / 验证码识别
 - 单页失败时的自动补抓与重试队列
 - 监控列表的导入 / 导出
 - PDF 的页边距 / 纸张大小可配置（目前沿用网页的打印样式）
+- 暗色配色已经写好（`theme.DARK`）但还没做切换入口
 
 ## 已完成
 
@@ -317,6 +348,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 断点续传、增量更新、图片缓存
 - 串更新监控
 - **监控桌面通知**（v0.4.0）：有新楼时弹 Windows 通知 + 提示音，同串 15 分钟一次
+- **界面重做**（v0.5.0）：两栏布局、统一主题（`theme.py`）、自绘控件（`widgets.py`）、
+  四个对话框统一风格；`CardFaint.TLabel` 缺失与 `Card` 死宽度两个老问题一并修掉
 - 命令行入口与 `--selftest`
 - **CI**：每次推送/PR 自动跑离线测试（`.github/workflows/tests.yml`），
   Linux 3.10/3.12 + Windows 3.12 三个环境；打 tag 时额外校验版本号与 tag 一致
@@ -329,8 +362,10 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、258 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、290 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
+- 界面相关的用例（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会
+  自动 skip，Linux CI 上属于预期行为，不算失败。
 - **留意**：`compileall` 即使编译失败也返回 0，工作流里已显式 grep 报错，
   改这一步时别退化成无效检查。
 - 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。

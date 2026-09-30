@@ -1,5 +1,9 @@
 """Tkinter 图形界面。
 
+配色、字体、间距与 ttk 样式集中在 :mod:`xdao.theme`，圆角卡片、状态胶囊、
+扁平文本域等自绘控件在 :mod:`xdao.widgets`；本文件只负责布局与业务流转，
+不要再写死色值。
+
 线程模型（沿用项目原有的约定，务必保持）：
 ``App`` 不是 Tk 组件，因此任何定时回调都必须写 ``self.root.after(...)``，
 不能写 ``self.after(...)``，否则日志与进度不会刷新。
@@ -22,168 +26,37 @@ from .exporters import EXPORTERS, ThreadData, create_exporter
 from .exporters._shared import OutputDirNotWritable, ensure_writable
 from .fetcher import parse_thread_id
 from .notifications import Notifier
+from . import theme
 from .settings import AppSettings
+from .theme import PALETTE, apply_theme, font, mono, resolve_fonts
 from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
+from .widgets import Card, ModernProgress, SectionHeading, StatusPill
 
 
-ACCENT = "#3b82f6"
-ACCENT_HOVER = "#2563eb"
-ACCENT_DISABLED = "#9db8e8"
-BG = "#f5f7fb"
-CARD = "#ffffff"
-TEXT = "#1f2430"
-MUTED = "#6b7280"
-BORDER = "#e2e8f0"
-OK_GREEN = "#16a34a"
+_PAL = PALETTE
 
-FONT_UI = "Microsoft YaHei UI"
-SECTION_FONT = (FONT_UI, 11, "bold")
-BODY_FONT = (FONT_UI, 10)
-SMALL_FONT = (FONT_UI, 9)
-MONO_FONT = ("Consolas", 9)
+# 颜色与字体的短别名（历史原因：对话框里到处都在用），取值一律来自 theme，
+# 想换配色只改 xdao/theme.py，不要在界面文件里写死色值。
+ACCENT = _PAL.accent
+ACCENT_HOVER = _PAL.accent_hover
+ACCENT_DISABLED = _PAL.accent_soft
+BG = _PAL.bg
+CARD = _PAL.surface
+TEXT = _PAL.text
+MUTED = _PAL.muted
+BORDER = _PAL.border
+OK_GREEN = _PAL.ok
+
+FONT_UI = theme.FONT_UI
+SECTION_FONT = font(theme.SIZE_SUBHEAD, bold=True)
+BODY_FONT = font(theme.SIZE_BODY)
+SMALL_FONT = font(theme.SIZE_SMALL)
+MONO_FONT = mono(theme.SIZE_SMALL)
 
 
 def setup_style(root: tk.Tk) -> ttk.Style:
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    style.configure(".", background=BG, foreground=TEXT, font=BODY_FONT)
-    style.configure("TFrame", background=BG)
-    style.configure("TLabel", background=BG, foreground=TEXT)
-    style.configure("Card.TFrame", background=CARD, relief="flat")
-    style.configure("Card.TLabel", background=CARD, foreground=TEXT)
-    style.configure("CardSection.TLabel", background=CARD, foreground=TEXT, font=SECTION_FONT)
-    style.configure("CardMuted.TLabel", background=CARD, foreground=MUTED, font=SMALL_FONT)
-    style.configure("Section.TLabel", background=BG, foreground=TEXT, font=SECTION_FONT)
-    style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=SMALL_FONT)
-    style.configure(
-        "TButton",
-        background=ACCENT,
-        foreground="#ffffff",
-        borderwidth=0,
-        focusthickness=0,
-        padding=(16, 9),
-        relief="flat",
-        font=(FONT_UI, 10, "bold"),
-    )
-    style.map(
-        "TButton",
-        background=[("active", ACCENT_HOVER), ("disabled", ACCENT_DISABLED)],
-    )
-    style.configure(
-        "Secondary.TButton",
-        background="#eef2f7",
-        foreground=TEXT,
-        borderwidth=0,
-        focusthickness=0,
-        padding=(11, 7),
-        relief="flat",
-        font=(FONT_UI, 9),
-    )
-    style.map("Secondary.TButton", background=[("active", "#e2e8f0")])
-    style.configure(
-        "TEntry",
-        fieldbackground=CARD,
-        bordercolor=BORDER,
-        lightcolor=BORDER,
-        darkcolor=BORDER,
-        padding=6,
-    )
-    style.configure("TCombobox", padding=4)
-    style.configure("TCheckbutton", background=BG)
-    style.configure("Card.TCheckbutton", background=CARD)
-    style.configure("TRadiobutton", background=BG)
-    style.configure(
-        "Horizontal.TProgressbar",
-        background=ACCENT,
-        troughcolor="#eef1f6",
-        bordercolor=BORDER,
-        lightcolor=ACCENT,
-        darkcolor=ACCENT,
-        thickness=6,
-    )
-    return style
-
-
-class ModernProgress(tk.Canvas):
-    """圆角扁平进度条，支持确定/不确定两种模式。"""
-
-    def __init__(self, master, height: int = 8, **kwargs) -> None:
-        super().__init__(
-            master,
-            height=height,
-            bg=BG,
-            highlightthickness=0,
-            borderwidth=0,
-            **kwargs,
-        )
-        self._value = 0
-        self._maximum = 100
-        self._mode = "determinate"
-        self._offset = 0.0
-        self._animating = False
-        self.bind("<Configure>", lambda _e: self._redraw())
-
-    def _round_rect(self, x1, y1, x2, y2, r=4, **kw) -> None:
-        points = [
-            x1 + r, y1,
-            x2 - r, y1,
-            x2, y1,
-            x2, y1 + r,
-            x2, y2 - r,
-            x2, y2,
-            x2 - r, y2,
-            x1 + r, y2,
-            x1, y2,
-            x1, y2 - r,
-            x1, y1 + r,
-            x1, y1,
-        ]
-        self.create_polygon(points, smooth=True, **kw)
-
-    def _redraw(self) -> None:
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w <= 2 or h <= 2:
-            return
-        r = h / 2
-        self._round_rect(0, 0, w, h, r=r, fill="#eef1f6", outline="")
-        if self._mode == "indeterminate":
-            seg_w = max(30.0, w * 0.25)
-            span = w + seg_w
-            x = (self._offset * span) % span - seg_w
-            self._round_rect(x, 0, x + seg_w, h, r=r, fill=ACCENT, outline="")
-        else:
-            ratio = min(1.0, self._value / self._maximum) if self._maximum else 0.0
-            fill_w = w * ratio
-            if fill_w >= h:
-                self._round_rect(0, 0, fill_w, h, r=r, fill=ACCENT, outline="")
-
-    def start(self, interval: int = 12) -> None:
-        self._mode = "indeterminate"
-        self._animating = True
-        self._animate()
-
-    def stop(self) -> None:
-        self._animating = False
-        self._mode = "determinate"
-        self._redraw()
-
-    def set_value(self, value: float, maximum: float = 100) -> None:
-        self._mode = "determinate"
-        self._value = value
-        self._maximum = maximum
-        self._redraw()
-
-    def _animate(self) -> None:
-        if not self._animating:
-            return
-        self._offset += 0.025
-        self._redraw()
-        self.after(30, self._animate)
+    """装上现代扁平配色（实际工作都在 xdao.theme 里）。"""
+    return apply_theme(root)
 
 
 class LoginDialog(tk.Toplevel):
@@ -201,46 +74,67 @@ class LoginDialog(tk.Toplevel):
 
         self.form = None
 
-        pad = {"padx": 12, "pady": 6}
-        ttk.Label(self, text="账号（邮箱）").grid(row=0, column=0, sticky="w", **pad)
-        self.email_var = tk.StringVar()
-        ttk.Entry(self, textvariable=self.email_var, width=34).grid(row=0, column=1, **pad)
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
+        outer.pack(fill="both", expand=True)
 
-        ttk.Label(self, text="密码").grid(row=1, column=0, sticky="w", **pad)
-        self.password_var = tk.StringVar()
-        ttk.Entry(self, textvariable=self.password_var, width=34, show="*").grid(
-            row=1, column=1, **pad
+        card = Card(outer)
+        card.pack(fill="x")
+        SectionHeading(card.body, "登录 X 岛").pack(fill="x")
+
+        form = ttk.Frame(card.body, style="Card.TFrame")
+        form.pack(fill="x", pady=(theme.gap(2), 0))
+        form.columnconfigure(1, weight=1)
+
+        ttk.Label(form, text="账号（邮箱）", style="Card.TLabel").grid(
+            row=0, column=0, sticky="w", pady=theme.gap(1)
+        )
+        self.email_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.email_var).grid(
+            row=0, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1)
         )
 
-        ttk.Label(self, text="验证码").grid(row=2, column=0, sticky="w", **pad)
-        verify_row = ttk.Frame(self)
-        verify_row.grid(row=2, column=1, sticky="w", **pad)
+        ttk.Label(form, text="密码", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", pady=theme.gap(1)
+        )
+        self.password_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.password_var, show="*").grid(
+            row=1, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1)
+        )
+
+        ttk.Label(form, text="验证码", style="Card.TLabel").grid(
+            row=2, column=0, sticky="w", pady=theme.gap(1)
+        )
+        verify_row = ttk.Frame(form, style="Card.TFrame")
+        verify_row.grid(row=2, column=1, sticky="w", padx=(theme.gap(2), 0), pady=theme.gap(1))
         self.verify_var = tk.StringVar()
         ttk.Entry(verify_row, textvariable=self.verify_var, width=14).pack(side="left")
         self._captcha_image = None
         self.captcha_button = ttk.Button(
-            verify_row, text="加载中…", command=self._refresh_captcha
+            verify_row, text="加载中…", style="Secondary.TButton", command=self._refresh_captcha
         )
-        self.captcha_button.pack(side="left", padx=(8, 0))
+        self.captcha_button.pack(side="left", padx=(theme.gap(2), 0))
 
         self.remember_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self, text="记住登录状态（本机保存 userhash）", variable=self.remember_var).grid(
-            row=3, column=0, columnspan=2, sticky="w", **pad
-        )
+        ttk.Checkbutton(
+            card.body,
+            text="记住登录状态（本机保存 userhash）",
+            variable=self.remember_var,
+            style="Card.TCheckbutton",
+        ).pack(anchor="w", pady=(theme.gap(1), 0))
 
-        buttons = ttk.Frame(self)
-        buttons.grid(row=4, column=0, columnspan=2, pady=(4, 12))
-        ttk.Button(
-            buttons, text="取消", style="Secondary.TButton", command=self.destroy
-        ).pack(side="left", padx=6)
-        self.login_button = ttk.Button(buttons, text="登录", command=self._do_login)
-        self.login_button.pack(side="left", padx=6)
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(theme.gap(3), 0))
         ttk.Button(
             buttons,
             text="改用饼干直接登录",
-            style="Secondary.TButton",
+            style="Ghost.TButton",
             command=self._manual_userhash,
-        ).pack(side="left", padx=6)
+        ).pack(side="left")
+        ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
+            side="right", padx=(theme.gap(1), 0)
+        )
+        self.login_button = ttk.Button(buttons, text="登录", command=self._do_login)
+        self.login_button.pack(side="right")
         self.after(50, self._load_form)
 
     def _refresh_captcha(self) -> None:
@@ -353,120 +247,148 @@ class SettingsDialog(tk.Toplevel):
         self.transient(master)
         self.grab_set()
 
-        pad = {"padx": 10, "pady": 5}
-        frame = ttk.Frame(self, padding=(16, 14))
-        frame.pack(fill="both", expand=True)
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
+        outer.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="网络", style="Section.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 6)
+        # ① 网络
+        net_card = Card(outer)
+        net_card.pack(fill="x")
+        SectionHeading(net_card.body, "网络").pack(fill="x")
+
+        net = ttk.Frame(net_card.body, style="Card.TFrame")
+        net.pack(fill="x", pady=(theme.gap(2), 0))
+        net.columnconfigure(1, weight=1)
+
+        ttk.Label(net, text="代理地址", style="Card.TLabel").grid(
+            row=0, column=0, sticky="w", pady=theme.gap(1)
         )
-
-        ttk.Label(frame, text="代理地址").grid(row=1, column=0, sticky="w", **pad)
         self.proxy_var = tk.StringVar(value=settings.proxy)
-        ttk.Entry(frame, textvariable=self.proxy_var, width=34).grid(row=1, column=1, **pad)
+        ttk.Entry(net, textvariable=self.proxy_var).grid(
+            row=0, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1)
+        )
         ttk.Label(
-            frame,
+            net,
             text="例如 http://127.0.0.1:7890；留空则读取系统环境变量，仍为空表示直连。",
-            style="Muted.TLabel",
-            wraplength=340,
-        ).grid(row=2, column=1, sticky="w", padx=10)
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, theme.gap(1)))
 
-        ttk.Label(frame, text="请求超时（秒）").grid(row=3, column=0, sticky="w", **pad)
+        # 三个数字项排成一行，省一层高度（小屏上更友好）
         self.timeout_var = tk.StringVar(value=f"{settings.timeout:g}")
-        ttk.Entry(frame, textvariable=self.timeout_var, width=10).grid(
-            row=3, column=1, sticky="w", **pad
-        )
-
-        ttk.Label(frame, text="失败重试次数").grid(row=4, column=0, sticky="w", **pad)
         self.retries_var = tk.StringVar(value=str(settings.retries))
-        ttk.Entry(frame, textvariable=self.retries_var, width=10).grid(
-            row=4, column=1, sticky="w", **pad
-        )
-
-        ttk.Label(frame, text="请求间隔（秒）").grid(row=5, column=0, sticky="w", **pad)
         self.throttle_var = tk.StringVar(value=f"{settings.throttle:g}")
-        ttk.Entry(frame, textvariable=self.throttle_var, width=10).grid(
-            row=5, column=1, sticky="w", **pad
-        )
+        numbers = ttk.Frame(net, style="Card.TFrame")
+        numbers.grid(row=2, column=0, columnspan=2, sticky="w", pady=theme.gap(1))
+        for column, (text, variable) in enumerate(
+            (
+                ("请求超时（秒）", self.timeout_var),
+                ("失败重试次数", self.retries_var),
+                ("请求间隔（秒）", self.throttle_var),
+            )
+        ):
+            group = ttk.Frame(numbers, style="Card.TFrame")
+            group.grid(row=0, column=column, sticky="w", padx=(0, theme.gap(3)))
+            ttk.Label(group, text=text, style="Card.TLabel").pack(anchor="w")
+            ttk.Entry(group, textvariable=variable, width=10).pack(
+                anchor="w", pady=(theme.gap(0.5), 0)
+            )
         ttk.Label(
-            frame,
+            net,
             text="请求过密会被限流（429）；抓很长的串时把间隔调到 0.3～0.5 更稳。",
-            style="Muted.TLabel",
-            wraplength=340,
-        ).grid(row=6, column=1, sticky="w", padx=10)
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
+            justify="left",
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
 
-        ttk.Separator(frame, orient="horizontal").grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=10
-        )
-        ttk.Label(frame, text="缓存", style="Section.TLabel").grid(
-            row=8, column=0, columnspan=2, sticky="w", pady=(0, 6)
-        )
+        # ② 缓存
+        cache_card = Card(outer)
+        cache_card.pack(fill="x", pady=(theme.gap(2), 0))
+        SectionHeading(cache_card.body, "缓存").pack(fill="x")
+
+        cache = ttk.Frame(cache_card.body, style="Card.TFrame")
+        cache.pack(fill="x", pady=(theme.gap(2), 0))
+        cache.columnconfigure(1, weight=1)
 
         self.use_cache_var = tk.BooleanVar(value=settings.use_cache)
         ttk.Checkbutton(
-            frame,
+            cache,
             text="启用本地缓存（断点续传、跳过重复下载）",
             variable=self.use_cache_var,
-        ).grid(row=9, column=0, columnspan=2, sticky="w", **pad)
+            style="Card.TCheckbutton",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
 
-        ttk.Label(frame, text="缓存目录").grid(row=10, column=0, sticky="w", **pad)
-        cache_row = ttk.Frame(frame)
-        cache_row.grid(row=10, column=1, sticky="ew", **pad)
-        self.cache_var = tk.StringVar(value=settings.cache_dir)
-        ttk.Entry(cache_row, textvariable=self.cache_var, width=26).pack(
-            side="left", fill="x", expand=True
+        ttk.Label(cache, text="缓存目录", style="Card.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(theme.gap(1.5), 0)
         )
+        cache_row = ttk.Frame(cache, style="Card.TFrame")
+        cache_row.grid(
+            row=1, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=(theme.gap(1.5), 0)
+        )
+        self.cache_var = tk.StringVar(value=settings.cache_dir)
+        ttk.Entry(cache_row, textvariable=self.cache_var).pack(side="left", fill="x", expand=True)
         ttk.Button(
             cache_row, text="…", style="Secondary.TButton", width=3, command=self._choose_cache
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=(theme.gap(1), 0))
         ttk.Label(
-            frame,
+            cache,
             text="留空表示放在导出目录下的 .cache，随导出目录一起迁移。",
-            style="Muted.TLabel",
-            wraplength=340,
-        ).grid(row=11, column=1, sticky="w", padx=10)
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
+            justify="left",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(theme.gap(1), 0))
 
-        ttk.Separator(frame, orient="horizontal").grid(
-            row=12, column=0, columnspan=2, sticky="ew", pady=10
+        # ③ 导出
+        export_card = Card(outer)
+        export_card.pack(fill="x", pady=(theme.gap(2), 0))
+        SectionHeading(export_card.body, "导出").pack(fill="x")
+
+        export = ttk.Frame(export_card.body, style="Card.TFrame")
+        export.pack(fill="x", pady=(theme.gap(2), 0))
+        export.columnconfigure(1, weight=1)
+
+        ttk.Label(export, text="文件名模板", style="Card.TLabel").grid(
+            row=0, column=0, sticky="w", pady=theme.gap(1)
         )
-        ttk.Label(frame, text="导出", style="Section.TLabel").grid(
-            row=13, column=0, columnspan=2, sticky="w", pady=(0, 6)
-        )
-        ttk.Label(frame, text="文件名模板").grid(row=14, column=0, sticky="w", **pad)
         self.template_var = tk.StringVar(value=settings.filename_template)
-        ttk.Entry(frame, textvariable=self.template_var, width=34).grid(row=14, column=1, **pad)
+        ttk.Entry(export, textvariable=self.template_var).grid(
+            row=0, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1)
+        )
         ttk.Label(
-            frame,
+            export,
             text=(
                 "占位符：{title} 标题、{id} 串号、{date} 导出日期、{po} PO 饼干、{count} 楼层数。\n"
                 "例：[{id}] {title}。留空表示用标题，无标题时取第一句话。"
             ),
-            style="Muted.TLabel",
-            wraplength=340,
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
             justify="left",
-        ).grid(row=15, column=1, sticky="w", padx=10)
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, theme.gap(1)))
 
-        ttk.Label(frame, text="PDF 浏览器").grid(row=16, column=0, sticky="w", **pad)
-        browser_row = ttk.Frame(frame)
-        browser_row.grid(row=16, column=1, sticky="ew", **pad)
+        ttk.Label(export, text="PDF 浏览器", style="Card.TLabel").grid(
+            row=2, column=0, sticky="w", pady=theme.gap(1)
+        )
+        browser_row = ttk.Frame(export, style="Card.TFrame")
+        browser_row.grid(row=2, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1))
         self.browser_var = tk.StringVar(value=settings.pdf_browser)
-        ttk.Entry(browser_row, textvariable=self.browser_var, width=26).pack(
+        ttk.Entry(browser_row, textvariable=self.browser_var).pack(
             side="left", fill="x", expand=True
         )
         ttk.Button(
             browser_row, text="…", style="Secondary.TButton", width=3, command=self._choose_browser
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=(theme.gap(1), 0))
         ttk.Label(
-            frame,
+            export,
             text="导出 PDF 时调用的浏览器（无头模式渲染）。留空表示自动查找 Chrome 或 Edge。",
-            style="Muted.TLabel",
-            wraplength=340,
-        ).grid(row=17, column=1, sticky="w", padx=10)
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
+            justify="left",
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
 
-        buttons = ttk.Frame(self, padding=(16, 0, 16, 14))
-        buttons.pack(fill="x")
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(theme.gap(3), 0))
         ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
-            side="right", padx=(6, 0)
+            side="right", padx=(theme.gap(1), 0)
         )
         ttk.Button(buttons, text="保存", command=self._save).pack(side="right")
 
@@ -531,22 +453,30 @@ class CookiePicker(tk.Toplevel):
         self.transient(master)
         self.grab_set()
 
-        outer = ttk.Frame(self, padding=(16, 14))
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="第一页出现的饼干", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(
-            outer,
-            text="勾选后点「应用」，多个饼干会以空格分隔写入筛选框。",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
 
-        list_frame = ttk.Frame(outer)
-        list_frame.pack(fill="both", expand=True)
+        card = Card(outer)
+        card.pack(fill="both", expand=True)
+        SectionHeading(card.body, "第一页出现的饼干").pack(fill="x")
+        ttk.Label(
+            card.body,
+            text="勾选后点「应用」，多个饼干会以空格分隔写入筛选框。",
+            style="CardMuted.TLabel",
+            justify="left",
+        ).pack(anchor="w", pady=(theme.gap(1), 0))
+
+        list_frame = ttk.Frame(card.body, style="Card.TFrame")
+        list_frame.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
         canvas = tk.Canvas(
-            list_frame, bg=CARD, highlightthickness=1, highlightbackground=BORDER
+            list_frame,
+            bg=PALETTE.surface,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
         )
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=CARD)
+        inner = tk.Frame(canvas, bg=PALETTE.surface)
         canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
@@ -561,14 +491,25 @@ class CookiePicker(tk.Toplevel):
                 label += "  ← PO"
             var = tk.BooleanVar(value=cookie in existing)
             tk.Checkbutton(
-                inner, text=label, variable=var, bg=CARD, anchor="w", font=SMALL_FONT
-            ).pack(anchor="w", padx=8, pady=2, fill="x")
+                inner,
+                text=label,
+                variable=var,
+                bg=PALETTE.surface,
+                activebackground=PALETTE.surface,
+                fg=TEXT,
+                activeforeground=TEXT,
+                selectcolor=PALETTE.surface,
+                highlightthickness=0,
+                bd=0,
+                anchor="w",
+                font=SMALL_FONT,
+            ).pack(anchor="w", padx=theme.gap(2), pady=theme.gap(0.5), fill="x")
             self.vars[cookie] = var
 
-        buttons = ttk.Frame(outer)
-        buttons.pack(fill="x", pady=(10, 0))
+        buttons = ttk.Frame(card.body, style="Card.TFrame")
+        buttons.pack(fill="x", pady=(theme.gap(2.5), 0))
         ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
-            side="right", padx=(6, 0)
+            side="right", padx=(theme.gap(1), 0)
         )
         ttk.Button(buttons, text="应用", command=self._apply).pack(side="right")
         ttk.Button(
@@ -579,7 +520,7 @@ class CookiePicker(tk.Toplevel):
             text="全不选",
             style="Secondary.TButton",
             command=lambda: self._set_all(False),
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=(theme.gap(1), 0))
 
     def _set_all(self, value: bool) -> None:
         for var in self.vars.values():
@@ -603,18 +544,21 @@ class WatchDialog(tk.Toplevel):
         self.minsize(660, 420)
         self.transient(app.root)
 
-        outer = ttk.Frame(self, padding=(16, 14))
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(2)))
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(outer, text="监控列表", style="Section.TLabel").pack(anchor="w")
+        card = Card(outer)
+        card.pack(fill="both", expand=True)
+        SectionHeading(card.body, "监控列表").pack(fill="x")
         ttk.Label(
-            outer,
+            card.body,
             text="定时检查这些串：有新回复就自动导出；没有新回复只花一次请求。",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
+            style="CardMuted.TLabel",
+            justify="left",
+        ).pack(anchor="w", pady=(theme.gap(1), 0))
 
-        list_frame = ttk.Frame(outer)
-        list_frame.pack(fill="both", expand=True)
+        list_frame = ttk.Frame(card.body, style="Card.TFrame")
+        list_frame.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
         columns = ("thread", "scope", "format", "state", "checked")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=9)
         for key, text, width in (
@@ -631,8 +575,8 @@ class WatchDialog(tk.Toplevel):
         scroll.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=scroll.set)
 
-        controls = ttk.Frame(outer)
-        controls.pack(fill="x", pady=(10, 0))
+        controls = ttk.Frame(card.body, style="Card.TFrame")
+        controls.pack(fill="x", pady=(theme.gap(2), 0))
         ttk.Button(
             controls,
             text="添加输入框中的串",
@@ -641,9 +585,9 @@ class WatchDialog(tk.Toplevel):
         ).pack(side="left")
         ttk.Button(
             controls, text="移除选中", style="Secondary.TButton", command=self._remove_selected
-        ).pack(side="left", padx=(6, 0))
-        ttk.Label(controls, text="检查间隔（秒）", style="Muted.TLabel").pack(
-            side="left", padx=(14, 4)
+        ).pack(side="left", padx=(theme.gap(1.5), 0))
+        ttk.Label(controls, text="检查间隔（秒）", style="CardMuted.TLabel").pack(
+            side="left", padx=(theme.gap(3.5), theme.gap(1))
         )
         self.interval_var = tk.StringVar(value=str(int(self.app.settings.watch_interval)))
         ttk.Entry(controls, textvariable=self.interval_var, width=7).pack(side="left")
@@ -652,21 +596,22 @@ class WatchDialog(tk.Toplevel):
             controls,
             text="校验老楼层改动（更准，每轮多一次请求）",
             variable=self.verify_var,
-        ).pack(side="left", padx=(10, 0))
+            style="Card.TCheckbutton",
+        ).pack(side="left", padx=(theme.gap(2.5), 0))
 
-        actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(10, 0))
+        actions = ttk.Frame(card.body, style="Card.TFrame")
+        actions.pack(fill="x", pady=(theme.gap(2), 0))
         self.toggle_button = ttk.Button(actions, text="开始监控", command=self._toggle)
         self.toggle_button.pack(side="left")
         self.status_var = tk.StringVar()
-        ttk.Label(actions, textvariable=self.status_var, style="Muted.TLabel").pack(
-            side="left", padx=(12, 0)
+        ttk.Label(actions, textvariable=self.status_var, style="CardMuted.TLabel").pack(
+            side="left", padx=(theme.gap(3), 0)
         )
         ttk.Button(
             actions, text="立即检查一次", style="Secondary.TButton", command=self._check_now
         ).pack(side="right")
         ttk.Button(actions, text="关闭", style="Secondary.TButton", command=self.destroy).pack(
-            side="right", padx=(0, 6)
+            side="right", padx=(0, theme.gap(1.5))
         )
 
         self._refresh()
@@ -785,6 +730,7 @@ class WatchDialog(tk.Toplevel):
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        resolve_fonts(root)
         self.style = setup_style(root)
         root.configure(bg=BG)
         self.settings = AppSettings.load()
@@ -816,268 +762,373 @@ class App:
         self._watch_dialog: WatchDialog | None = None
 
         root.title("X岛串导出")
-        root.geometry("840x840")
-        root.minsize(740, 720)
+        root.geometry("1060x760")
+        root.minsize(940, 680)
 
-        outer = ttk.Frame(root, padding=(18, 16))
+        outer = ttk.Frame(root, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, minsize=theme.SETTINGS_COLUMN_WIDTH)
+        outer.columnconfigure(1, weight=1)
+        outer.rowconfigure(1, weight=1)
 
-        header = tk.Canvas(outer, height=72, bg=BG, highlightthickness=0)
-        header.pack(fill="x")
-        header.bind("<Configure>", lambda e: self._draw_header(header))
+        self._build_header(outer)
+        self._build_settings_column(outer)
+        self._build_activity_card(outer)
 
-        # 状态行
-        status_row = ttk.Frame(outer)
-        status_row.pack(fill="x", pady=(10, 10))
+        self.refresh_watch_status()
+        self.refresh_cache_info()
+        self.log("就绪。填入串网址后点「开始导出」。")
+
+    # ---------- 界面搭建 ----------
+
+    def _build_header(self, parent: ttk.Frame) -> None:
+        """顶栏：标题 + 一句话说明 + 状态胶囊 + 三个入口按钮。"""
+        header = ttk.Frame(parent)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, theme.gap(3)))
+        header.columnconfigure(0, weight=1)
+
+        title_box = ttk.Frame(header)
+        title_box.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_box, text="X岛串导出", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            title_box,
+            text="HTML · PDF · TXT · Markdown · EPUB　|　断点续传 · 图片缓存 · 更新监控",
+            style="Faint.TLabel",
+        ).pack(anchor="w", pady=(theme.gap(0.5), 0))
+
+        actions = ttk.Frame(header)
+        actions.grid(row=0, column=1, sticky="e")
+        ttk.Button(
+            actions, text="登录 / 设置饼干", style="Ghost.TButton", command=self.open_login
+        ).pack(side="left")
+        ttk.Button(actions, text="设置", style="Ghost.TButton", command=self.open_settings).pack(
+            side="left", padx=(theme.gap(0.5), 0)
+        )
+        ttk.Button(
+            actions, text="监控串更新", style="Secondary.TButton", command=self.open_watch
+        ).pack(side="left", padx=(theme.gap(0.5), 0))
+
+        status_row = ttk.Frame(header)
+        status_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(theme.gap(2.5), 0))
         self.status_var = tk.StringVar(value="已登录" if self.settings.userhash else "未登录")
+        self.status_pill = StatusPill(
+            status_row,
+            self.status_var.get(),
+            tone="ok" if self.settings.userhash else "muted",
+        )
+        self.status_pill.pack(side="left")
+        # 登录状态在弹窗里改，这里不重复造按钮，只留提示
         ttk.Label(
             status_row,
-            textvariable=self.status_var,
-            foreground=OK_GREEN if self.settings.userhash else MUTED,
-            font=(FONT_UI, 10, "bold"),
-        ).pack(side="left")
-        self.watch_status_var = tk.StringVar(value="")
-        ttk.Label(status_row, textvariable=self.watch_status_var, style="Muted.TLabel").pack(
-            side="left", padx=(12, 0)
-        )
-        ttk.Button(
-            status_row, text="监控串更新", style="Secondary.TButton", command=self.open_watch
-        ).pack(side="right", padx=(6, 0))
-        ttk.Button(
-            status_row, text="设置", style="Secondary.TButton", command=self.open_settings
-        ).pack(side="right", padx=(6, 0))
-        ttk.Button(
-            status_row,
-            text="登录 / 设置饼干",
-            style="Secondary.TButton",
-            command=self.open_login,
-        ).pack(side="right")
+            text="登录后才能在受限版块里看帖；只看公开串可以不登录。",
+            style="Faint.TLabel",
+        ).pack(side="left", padx=(theme.gap(2), 0))
 
-        # 输入卡片
-        url_shadow = tk.Frame(outer, bg="#e3e8f0")
-        url_shadow.pack(fill="both", expand=True, pady=(0, 12))
-        url_card = tk.Frame(url_shadow, bg=CARD, padx=14, pady=12)
-        url_card.pack(fill="both", expand=True, padx=1, pady=1)
-        ttk.Label(url_card, text="① 输入串网址", style="CardSection.TLabel").pack(anchor="w")
-        ttk.Label(url_card, text="每行一个，可一次粘贴多个", style="CardMuted.TLabel").pack(
-            anchor="w", pady=(0, 8)
+        self.watch_status_var = tk.StringVar(value="")
+        self.watch_pill = StatusPill(status_row, "", tone="accent")
+        ttk.Label(status_row, textvariable=self.watch_status_var, style="Faint.TLabel").pack(
+            side="right"
+        )
+
+    def _build_settings_column(self, parent: ttk.Frame) -> None:
+        """左栏：输入串 → 抓取选项 → 导出目录 → 开始按钮 → 进度。
+
+        窗口太矮时左栏可以滚动（小屏笔记本上 1366x768 很常见），
+        所以内容放在 :meth:`_scroll_area` 里，而不是直接挂在 ``parent`` 上。
+        """
+        column = ttk.Frame(parent, width=theme.SETTINGS_COLUMN_WIDTH)
+        column.grid(row=1, column=0, sticky="nsew", padx=(0, theme.gap(2)))
+        column.pack_propagate(False)  # 见 theme.SETTINGS_COLUMN_WIDTH 的注释
+        column.columnconfigure(0, weight=1)
+        column.rowconfigure(0, weight=1)
+
+        inner = self._scroll_area(column)
+        inner.columnconfigure(0, weight=1)
+
+        # ① 输入串
+        input_card = Card(inner)
+        input_card.grid(row=0, column=0, sticky="ew")
+        SectionHeading(input_card.body, "① 输入串网址", "每行一个，可一次粘贴多个串").pack(
+            fill="x"
         )
         self.urls_text = tk.Text(
-            url_card,
-            height=4,
+            input_card.body,
+            height=3,
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
             highlightbackground=BORDER,
             highlightcolor=ACCENT,
             font=BODY_FONT,
-            padx=10,
-            pady=8,
-            bg="#fbfcfe",
+            padx=theme.gap(2),
+            pady=theme.gap(1.5),
+            bg=PALETTE.surface_sunken,
+            fg=TEXT,
+            insertbackground=TEXT,
+            selectbackground=PALETTE.accent_soft,
         )
-        self.urls_text.pack(fill="both", expand=True)
+        self.urls_text.pack(fill="x", pady=(theme.gap(1.25), 0))
         self._add_context_menu(self.urls_text)
 
-        scope_frame = ttk.Frame(url_card, style="Card.TFrame")
-        scope_frame.pack(fill="x", pady=(12, 0))
-        ttk.Label(scope_frame, text="抓取范围", style="Card.TLabel", font=SECTION_FONT).pack(side="left")
+        # 抓取范围
+        scope_row = ttk.Frame(input_card.body, style="Card.TFrame")
+        scope_row.pack(fill="x", pady=(theme.gap(1.5), 0))
+        ttk.Label(scope_row, text="抓取范围", style="Card.TLabel").pack(side="left")
         self.scope_var = tk.StringVar(value=self.settings.scope or "all")
         ttk.Radiobutton(
-            scope_frame, text="所有人发言", variable=self.scope_var, value="all"
-        ).pack(side="left", padx=(12, 14))
+            scope_row, text="所有人发言", variable=self.scope_var, value="all",
+            style="Card.TRadiobutton",
+        ).pack(side="left", padx=(theme.gap(2), theme.gap(1.5)))
         ttk.Radiobutton(
-            scope_frame, text="只抓 PO 发言", variable=self.scope_var, value="po"
+            scope_row, text="只抓 PO 发言", variable=self.scope_var, value="po",
+            style="Card.TRadiobutton",
         ).pack(side="left")
 
-        cookie_frame = ttk.Frame(url_card, style="Card.TFrame")
-        cookie_frame.pack(fill="x", pady=(10, 0))
-        ttk.Label(cookie_frame, text="只看指定饼干", style="Card.TLabel", font=SECTION_FONT).pack(
-            side="left"
-        )
+        # 只看指定饼干
+        cookie_row = ttk.Frame(input_card.body, style="Card.TFrame")
+        cookie_row.pack(fill="x", pady=(theme.gap(1), 0))
+        ttk.Label(cookie_row, text="只看指定饼干", style="Card.TLabel").pack(side="left")
         self.hashes_var = tk.StringVar(value=self.settings.include_hashes)
-        ttk.Entry(cookie_frame, textvariable=self.hashes_var).pack(
-            side="left", fill="x", expand=True, padx=(12, 8)
+        ttk.Entry(cookie_row, textvariable=self.hashes_var).pack(
+            side="left", fill="x", expand=True, padx=(theme.gap(2), theme.gap(1))
         )
         self.pick_cookie_button = ttk.Button(
-            cookie_frame,
+            cookie_row,
             text="从串中挑选…",
             style="Secondary.TButton",
             command=self.pick_cookies,
         )
         self.pick_cookie_button.pack(side="left")
-        ttk.Label(
-            url_card,
-            text="留空表示不筛选；多个饼干用空格或逗号分隔。填写后以该筛选为准，「只抓 PO」不再生效。",
-            style="CardMuted.TLabel",
-        ).pack(anchor="w", pady=(4, 0))
+        self.hash_hint = ttk.Label(
+            input_card.body,
+            text="留空 = 不筛选；多个用空格或逗号分隔。",
+            style="CardFaint.TLabel",
+            justify="left",
+        )
+        self.hash_hint.pack(anchor="w", fill="x", pady=(theme.gap(0.5), 0))
+        self.hash_hint.bind(
+            "<Configure>",
+            lambda e: e.widget.configure(wraplength=max(200, e.width - theme.gap(1))),
+        )
 
-        format_frame = ttk.Frame(url_card, style="Card.TFrame")
-        format_frame.pack(fill="x", pady=(10, 0))
-        ttk.Label(format_frame, text="导出格式", style="Card.TLabel", font=SECTION_FONT).pack(side="left")
+        ttk.Separator(input_card.body, orient="horizontal").pack(
+            fill="x", pady=(theme.gap(1), theme.gap(1))
+        )
+
+        # 导出格式 + 两个开关（并成一行，少占一层高度）
+        format_row = ttk.Frame(input_card.body, style="Card.TFrame")
+        format_row.pack(fill="x")
+        ttk.Label(format_row, text="导出格式", style="Card.TLabel").pack(side="left")
         self._format_keys = list(EXPORTERS.keys())
         self.format_box = ttk.Combobox(
-            format_frame,
+            format_row,
             state="readonly",
-            width=22,
+            width=18,
             values=[name for name, _, _ in EXPORTERS.values()],
         )
-        self.format_box.pack(side="left", padx=(12, 0))
+        self.format_box.pack(side="left", padx=(theme.gap(2), theme.gap(1)))
         self.format_box.current(
             self._format_keys.index(self.settings.format_key)
             if self.settings.format_key in self._format_keys
             else 0
         )
+        self.format_box.bind("<<ComboboxSelected>>", lambda _e: self._sync_image_mode())
+
+        option_row = ttk.Frame(input_card.body, style="Card.TFrame")
+        option_row.pack(fill="x", pady=(theme.gap(1), 0))
         self.use_cache_var = tk.BooleanVar(value=self.settings.use_cache)
         ttk.Checkbutton(
-            format_frame, text="使用本地缓存", variable=self.use_cache_var
-        ).pack(side="left", padx=(14, 0))
-
-        # 监控到更新时的桌面通知
+            option_row,
+            text="本地缓存（断点续传）",
+            variable=self.use_cache_var,
+            style="Card.TCheckbutton",
+        ).pack(side="left")
         self.notify_var = tk.BooleanVar(value=self.settings.notify)
         ttk.Checkbutton(
-            format_frame, text="监控时弹桌面通知", variable=self.notify_var
-        ).pack(side="left", padx=(14, 0))
+            option_row,
+            text="监控时弹通知",
+            variable=self.notify_var,
+            style="Card.TCheckbutton",
+        ).pack(side="left", padx=(theme.gap(2), 0))
 
-        # EPUB 的图片处理方式（只在选 EPUB 时可用）
-        self.image_mode_frame = ttk.Frame(url_card, style="Card.TFrame")
-        self.image_mode_frame.pack(fill="x", pady=(8, 0))
-        ttk.Label(
-            self.image_mode_frame, text="EPUB 图片", style="Card.TLabel", font=SECTION_FONT
-        ).pack(side="left")
+        # EPUB 的图片处理方式（只在选 EPUB 时可用；非 EPUB 时整行收起来）
+        self.image_mode_frame = ttk.Frame(input_card.body, style="Card.TFrame")
+        ttk.Label(self.image_mode_frame, text="EPUB 图片", style="Card.TLabel").pack(side="left")
         self._image_mode_keys = ["embed", "url", "drop"]
         self.image_mode_box = ttk.Combobox(
             self.image_mode_frame,
             state="readonly",
-            width=28,
+            width=26,
             values=["内嵌到文件（体积大，离线可看）", "仅保留图片链接（体积小）", "丢弃图片"],
         )
-        self.image_mode_box.pack(side="left", padx=(12, 0))
+        self.image_mode_box.pack(side="left", padx=(theme.gap(2), 0))
         self.image_mode_box.current(
             self._image_mode_keys.index(self.settings.image_mode)
             if self.settings.image_mode in self._image_mode_keys
             else 0
         )
-        self.format_box.bind("<<ComboboxSelected>>", lambda _e: self._sync_image_mode())
-        self._sync_image_mode()
+        if self.current_format() == "epub":
+            self.image_mode_frame.pack(fill="x", pady=(theme.gap(1), 0))
 
-        # 导出目录卡片
-        folder_shadow = tk.Frame(outer, bg="#e3e8f0")
-        folder_shadow.pack(fill="x", pady=(0, 14))
-        folder_card = tk.Frame(folder_shadow, bg=CARD, padx=14, pady=12)
-        folder_card.pack(fill="x", padx=1, pady=1)
-        ttk.Label(folder_card, text="② 导出目录", style="CardSection.TLabel").pack(
-            anchor="w", pady=(0, 8)
-        )
-        folder_inner = ttk.Frame(folder_card, style="Card.TFrame")
-        folder_inner.pack(fill="x")
+        # ② 导出目录
+        folder_card = Card(inner)
+        folder_card.grid(row=1, column=0, sticky="ew", pady=(theme.gap(2), 0))
+        SectionHeading(folder_card.body, "② 导出目录", "成品与日志都写在这里").pack(fill="x")
         self.output_var = tk.StringVar(
             value=self.settings.output_dir or str(Path.home() / "Documents" / "X岛备份")
         )
-        ttk.Entry(folder_inner, textvariable=self.output_var).pack(
+        folder_row = ttk.Frame(folder_card.body, style="Card.TFrame")
+        folder_row.pack(fill="x", pady=(theme.gap(1.25), 0))
+        ttk.Entry(folder_row, textvariable=self.output_var).pack(
             side="left", fill="x", expand=True
         )
         ttk.Button(
-            folder_inner, text="更改…", style="Secondary.TButton", command=self.choose_folder
-        ).pack(side="left", padx=(8, 0))
+            folder_row, text="更改…", style="Secondary.TButton", command=self.choose_folder
+        ).pack(side="left", padx=(theme.gap(1), 0))
 
-        cache_row = ttk.Frame(folder_card, style="Card.TFrame")
-        cache_row.pack(fill="x", pady=(8, 0))
+        cache_row = ttk.Frame(folder_card.body, style="Card.TFrame")
+        cache_row.pack(fill="x", pady=(theme.gap(1), 0))
         self.cache_info_var = tk.StringVar(value="")
-        ttk.Label(cache_row, textvariable=self.cache_info_var, style="CardMuted.TLabel").pack(
-            side="left"
-        )
+        ttk.Label(
+            cache_row, textvariable=self.cache_info_var, style="CardFaint.TLabel"
+        ).pack(side="left", fill="x", expand=True)
         ttk.Button(
-            cache_row, text="清空缓存", style="Secondary.TButton", command=self.clear_cache
+            cache_row, text="打开目录", style="Secondary.TButton", command=self.open_folder
         ).pack(side="right")
+        ttk.Button(
+            cache_row,
+            text="清空缓存",
+            style="Ghost.TButton",
+            command=self.clear_cache,
+        ).pack(side="right", padx=(0, theme.gap(1)))
 
-        # 主操作按钮
-        buttons = ttk.Frame(outer)
-        buttons.pack(fill="x")
-        self.start_button = ttk.Button(buttons, text="开始导出", command=self.start, width=16)
-        self.start_button.pack(side="left")
+        # 主操作按钮 + 进度（滚动区之外，永远看得见）
+        footer = ttk.Frame(column)
+        footer.grid(row=1, column=0, sticky="ew", pady=(theme.gap(2), 0))
+        button_row = ttk.Frame(footer)
+        button_row.pack(fill="x")
+        self.start_button = ttk.Button(button_row, text="开始导出", command=self.start)
+        self.start_button.pack(side="left", fill="x", expand=True)
         self.retry_button = ttk.Button(
-            buttons,
+            button_row,
             text="重试失败项",
             style="Secondary.TButton",
             command=self.retry_failed,
             state="disabled",
         )
-        self.retry_button.pack(side="left", padx=(8, 0))
-        ttk.Button(
-            buttons, text="打开导出目录", style="Secondary.TButton", command=self.open_folder
-        ).pack(side="left", padx=(8, 0))
+        self.retry_button.pack(side="left", padx=(theme.gap(1), 0))
 
-        # 进度
         self.progress_var = tk.StringVar(value="等待开始")
-        progress_head = ttk.Frame(outer)
-        progress_head.pack(fill="x", pady=(14, 6))
-        ttk.Label(progress_head, textvariable=self.progress_var, style="Muted.TLabel").pack(side="left")
-        self.progress_bar = ModernProgress(outer, height=8)
+        ttk.Label(footer, textvariable=self.progress_var, style="Faint.TLabel").pack(
+            anchor="w", pady=(theme.gap(2), theme.gap(1))
+        )
+        self.progress_bar = ModernProgress(footer)
         self.progress_bar.pack(fill="x")
 
-        # 日志
-        log_head = ttk.Frame(outer)
-        log_head.pack(fill="x", pady=(14, 4))
-        ttk.Label(log_head, text="运行日志", style="Section.TLabel").pack(side="left")
-        ttk.Button(log_head, text="清空", style="Secondary.TButton", command=self.clear_log).pack(
+    def _scroll_area(self, parent: ttk.Frame) -> ttk.Frame:
+        """造一个"装不下就滚动"的纵向容器，返回可往里塞内容的内层 Frame。
+
+        用法：``inner = self._scroll_area(column)``，然后往 ``inner`` 里 grid 内容。
+
+        画布高度写死（不跟着内容走）是关键：``tk.Canvas`` 的"请求高度"会跟着
+        内嵌窗口的实际高度跑，一旦跟着内容长高，父容器就会被撑成内容那么高，
+        左边栏不再滚动、右边日志栏还会被挤成一条缝。高度固定后行为才可预期。
+        """
+        holder = ttk.Frame(parent)
+        holder.pack(fill="both", expand=True)
+        canvas = tk.Canvas(
+            holder,
+            bg=BG,
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=False,
+            width=theme.SETTINGS_COLUMN_WIDTH,
+            height=theme.SETTINGS_VIEWPORT_HEIGHT,
+        )
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        window = canvas.create_window(0, 0, anchor="nw", window=inner)
+        canvas.configure(yscrollcommand=scroll.set)
+        self._scroll_needed = False
+
+        def sync(_event=None) -> None:
+            width = canvas.winfo_width()
+            height = canvas.winfo_height()
+            content = inner.winfo_reqheight()
+            if width > 1:
+                canvas.itemconfigure(window, width=width)
+            if height > 1 and content < height:
+                canvas.itemconfigure(window, height=height)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            needed = height > 1 and content > height + 1
+            if needed != self._scroll_needed:
+                self._scroll_needed = needed
+                if needed:
+                    scroll.pack(side="right", fill="y", padx=(theme.gap(1), 0))
+                else:
+                    scroll.pack_forget()
+
+        def on_wheel(event: tk.Event) -> None:
+            if self._scroll_needed:
+                canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        inner.bind("<Configure>", sync)
+        canvas.bind("<Configure>", sync)
+        canvas.bind("<MouseWheel>", on_wheel)
+        return inner
+
+    def _build_activity_card(self, parent: ttk.Frame) -> None:
+        """右栏：运行日志卡片，高度随窗口自适应。"""
+        card = Card(parent)
+        card.grid(row=1, column=1, sticky="nsew")
+        card.pack_propagate(False)
+
+        ttk.Label(card.body, text="运行日志", style="CardHeading.TLabel").pack(anchor="w")
+        log_head = ttk.Frame(card.body, style="Card.TFrame")
+        log_head.pack(fill="x", pady=(theme.gap(0.5), theme.gap(1.5)))
+        ttk.Label(
+            log_head, text="抓取与导出的每一步都会记在这里", style="CardFaint.TLabel"
+        ).pack(side="left")
+        ttk.Button(log_head, text="保存…", style="Ghost.TButton", command=self.save_log).pack(
             side="right"
         )
-        ttk.Button(
-            log_head, text="保存日志…", style="Secondary.TButton", command=self.save_log
-        ).pack(side="right", padx=(0, 6))
+        ttk.Button(log_head, text="清空", style="Ghost.TButton", command=self.clear_log).pack(
+            side="right", padx=(0, theme.gap(0.5))
+        )
+
         self.log_text = tk.Text(
-            outer,
-            height=8,
+            card.body,
+            height=18,
             state="disabled",
-            background="#fbfcfe",
+            background=PALETTE.surface_sunken,
+            fg=TEXT,
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
             highlightbackground=BORDER,
             highlightcolor=ACCENT,
             font=MONO_FONT,
-            padx=10,
-            pady=8,
+            padx=theme.gap(2),
+            pady=theme.gap(1.5),
+            selectbackground=PALETTE.accent_soft,
         )
         self.log_text.pack(fill="both", expand=True)
         self._add_context_menu(self.log_text)
+        card.bind("<Configure>", lambda _e: self._fit_log_height())
 
-        self.refresh_watch_status()
-        self.refresh_cache_info()
-        self.log("就绪。填入串网址后点「开始导出」。")
-
-    # ---------- 界面辅助 ----------
-
-    def _draw_header(self, canvas: tk.Canvas) -> None:
-        canvas.delete("all")
-        w = canvas.winfo_width()
-        h = canvas.winfo_height()
-        if w <= 1 or h <= 1:
+    def _fit_log_height(self) -> None:
+        """日志框按卡片实际高度决定显示多少行（不跟着内容无限长高）。"""
+        try:
+            available = self.log_text.master.winfo_height() - 64
+            linespace = int(self.log_text.tk.call("font", "metrics", MONO_FONT, "-linespace"))
+        except (tk.TclError, TypeError, ValueError):
             return
-        top = (238, 244, 255)
-        bottom = (245, 247, 251)
-        for i in range(h):
-            t = i / max(1, h - 1)
-            r = int(top[0] + (bottom[0] - top[0]) * t)
-            g = int(top[1] + (bottom[1] - top[1]) * t)
-            b = int(top[2] + (bottom[2] - top[2]) * t)
-            canvas.create_line(0, i, w, i, fill=f"#{r:02x}{g:02x}{b:02x}")
-        canvas.create_text(
-            18,
-            26,
-            anchor="w",
-            text="X岛串导出",
-            fill="#1f2430",
-            font=("Microsoft YaHei UI", 18, "bold"),
-        )
-        canvas.create_text(
-            18,
-            50,
-            anchor="w",
-            text="完整备份任意一个串：HTML / TXT / Markdown / EPUB，支持断点续传与更新监控",
-            fill="#6b7280",
-            font=("Microsoft YaHei UI", 9),
-        )
+        if available < 80 or linespace <= 0:
+            return
+        lines = max(10, min(40, available // linespace))
+        if int(self.log_text.cget("height")) != lines:
+            self.log_text.configure(height=lines)
 
     def _add_context_menu(self, widget: tk.Text) -> None:
         menu = tk.Menu(widget, tearoff=0)
@@ -1110,9 +1161,15 @@ class App:
         return "embed"
 
     def _sync_image_mode(self) -> None:
-        """图片模式只对 EPUB 有意义，其它格式下灰掉以免误导。"""
+        """图片模式只对 EPUB 有意义：选 EPUB 时露出来，其它格式直接收起来。"""
         enabled = self.current_format() == "epub"
         self.image_mode_box.configure(state="readonly" if enabled else "disabled")
+        if not hasattr(self, "_scroll_needed"):
+            return  # 界面还没搭完（构造过程中会调用一次）
+        if enabled:
+            self.image_mode_frame.pack(fill="x", pady=(theme.gap(1), 0))
+        else:
+            self.image_mode_frame.pack_forget()
 
     def parse_hashes(self) -> list[str]:
         return self.settings.parse_hashes(self.hashes_var.get())
