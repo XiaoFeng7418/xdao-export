@@ -269,7 +269,7 @@ def default_cache_dir(base: Path | None = None) -> Path:
 def cache_dir_candidates(preferred: Path | str | None = None) -> list[Path]:
     """缓存目录的候选位置，按优先级排列。
 
-    用户要求的位置永远排第一；后面是「用户配置目录 → 本地配置目录 → 系统临时目录」，
+    指定的位置永远排第一；后面是「用户配置目录 → 本地配置目录 → 系统临时目录」，
     用来在首选位置写不进去时顶上（只读的导出目录、受限的桌面环境等）。
 
     缓存只是加速手段，不该因为它写不进去就让整次导出失败 —— 换一个能写的地方继续，
