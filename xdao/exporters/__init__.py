@@ -56,11 +56,13 @@ def create_exporter(
     browser_path: str | None = None,
     pdf_timeout: int | None = None,
     fallback_html: bool | None = None,
+    pdf_options=None,
 ):
     """按格式键创建导出器实例；未知格式回退到 HTML。
 
     不同导出器接受的参数不同（例如只有 EPUB 有 ``image_mode``、只有 PDF 有
-    ``browser_path``），这里按能力逐级回退，避免调用方为每种格式写分支。
+    ``browser_path`` 和 ``pdf_options``），这里按能力逐级回退，避免调用方为每种
+    格式写分支。
     """
     _, _, cls = EXPORTERS.get(format_key, EXPORTERS["html"])
     attempts = [
@@ -71,8 +73,23 @@ def create_exporter(
             "browser_path": browser_path,
             "pdf_timeout": pdf_timeout,
             "fallback_html": fallback_html,
+            "pdf_options": pdf_options,
         },
-        {"progress": progress, "filename_template": filename_template, "image_mode": image_mode},
+        # pdf_options 在下面两层也要给：PdfBuilder 不收 image_mode，所以它其实是从
+        # 「progress + filename_template + pdf_options」那层才建起来的 —— 只写在第一层
+        # 的话，第一层会因 image_mode 整体 TypeError 掉，落到没有 pdf_options 的层，
+        # 用户设好的纸张/边距就被悄悄丢掉了。
+        {
+            "progress": progress,
+            "filename_template": filename_template,
+            "image_mode": image_mode,
+            "pdf_options": pdf_options,
+        },
+        {
+            "progress": progress,
+            "filename_template": filename_template,
+            "pdf_options": pdf_options,
+        },
         {"progress": progress, "filename_template": filename_template},
         {"progress": progress},
     ]

@@ -28,6 +28,7 @@ import argparse
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -65,6 +66,13 @@ _CONSOLE_HINT_FLAGS = {
     "--interval",
     "--verify-cached",
     "--pdfdiag",
+    "--pdf-paper",
+    "--pdf-orientation",
+    "--pdf-margin",
+    "--pdf-margin-mm",
+    "--pdf-scale",
+    "--pdf-no-background",
+    "--pdf-pages",
 }
 
 
@@ -147,6 +155,30 @@ def selftest() -> int:
 
     print("自检完成。")
     return 0
+
+
+def _pdf_value_help(table_name: str) -> str:
+    """把 :mod:`xdao.pdf_opts` 里的取值表拼成 ``--help`` 里的候选清单。
+
+    直接引用那张表而不是在这里再抄一遍：帮助里列出的取值永远不会和程序
+    实际接受的取值走散。
+    """
+    items: list[str] = []
+    try:
+        from xdao import pdf_opts
+
+        table = getattr(pdf_opts, table_name, None)
+        if isinstance(table, dict):
+            items = [f"{key}＝{label}" for key, label in table.items() if str(key) != "default"]
+        elif table:
+            items = [str(item) for item in table if str(item) != "default"]
+    except Exception:  # noqa: BLE001 —— 帮助文本拼不出来也不该让 --help 崩掉
+        items = []
+    listed = "、".join(items)
+    text = f"{listed}，default 跟随网页样式" if listed else "default 跟随网页样式"
+    # argparse 会用 % 去格式化 help 字符串，字面量百分号必须写两次；
+    # 这里转义一次，以后标签表里加了 "%" 也不会让整个 --help 崩掉。
+    return text.replace("%", "%%")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -237,6 +269,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="PDF 渲染超时（默认 900 秒）",
     )
     parser.add_argument(
+        "--pdf-paper",
+        default=None,
+        metavar="纸张",
+        help=f"PDF 纸张（{_pdf_value_help('PAPER_LABELS')}）",
+    )
+    parser.add_argument(
+        "--pdf-orientation",
+        default=None,
+        metavar="方向",
+        help=f"PDF 方向（{_pdf_value_help('ORIENTATION_LABELS')}）",
+    )
+    parser.add_argument(
+        "--pdf-margin",
+        default=None,
+        metavar="边距",
+        help=f"PDF 页边距预设（{_pdf_value_help('MARGIN_PRESETS')}）",
+    )
+    parser.add_argument(
+        "--pdf-margin-mm",
+        default=None,
+        metavar="毫米",
+        help="PDF 页边距自定义值（毫米，会盖过 --pdf-margin；默认跟随网页样式）",
+    )
+    parser.add_argument(
+        "--pdf-scale",
+        default=None,
+        metavar="倍数",
+        # 注意别在 help 里写裸的百分号：argparse 拿 % 格式化这段文本，会直接报错。
+        help="PDF 缩放倍数（0.5～2.0，默认 1.0＝原始大小）",
+    )
+    parser.add_argument(
+        "--pdf-no-background",
+        action="store_true",
+        help="PDF 不打印网页背景色与背景图（默认打印）",
+    )
+    parser.add_argument(
+        "--pdf-pages",
+        default=None,
+        metavar="页码",
+        help="只导出这些页，例如 1-3,5（默认全部页码）",
+    )
+    parser.add_argument(
         "--cookie",
         default=None,
         metavar="userhash",
@@ -285,6 +359,50 @@ def _collect_hashes(raw: str | None) -> list[str]:
     return result
 
 
+def _resolve_pdf_options(args: argparse.Namespace, settings):
+    """把命令行显式给出的 PDF 选项与配置里的值合成一份 ``PdfOptions``。
+
+    命令行没给的项一律落回**配置里**的值（而不是内置默认值）—— 否则随手加一个
+    ``--pdf-paper`` 就会把用户在图形界面里设好的缩放、边距一起抹掉。
+
+    返回 ``(options, error)``：``error`` 非空表示参数不合法，调用方打印它并返回 2。
+    """
+    from xdao.pdf_opts import PdfOptionsError, require_valid_pdf_options
+
+    def pick(cli_value, attribute: str, fallback: str):
+        if cli_value is not None:
+            return cli_value
+        value = getattr(settings, attribute, None)
+        return fallback if value in (None, "") else value
+
+    def margin_value(cli_value, attribute: str) -> str:
+        """边距槽位：默认值翻译成 ""（pdf_opts 里 ""＝这一项没填）。
+
+        配置和界面的规范值都是 "default"，而 ``require_valid_pdf_options`` 会把
+        显式传进去的 "default" 当成「用户直接写了毫米数」报错，所以这里先翻译。
+        """
+        value = pick(cli_value, attribute, "default")
+        return "" if value in (None, "", "default") else value
+
+    try:
+        options = require_valid_pdf_options(
+            paper=pick(args.pdf_paper, "pdf_paper", "default"),
+            orientation=pick(args.pdf_orientation, "pdf_orientation", "portrait"),
+            margin=margin_value(args.pdf_margin, "pdf_margin"),
+            margin_mm=pick(args.pdf_margin_mm, "pdf_margin_mm", ""),
+            scale=pick(args.pdf_scale, "pdf_scale", "1.0"),
+            page_ranges=pick(args.pdf_pages, "pdf_page_ranges", ""),
+        )
+    except PdfOptionsError as exc:
+        return None, str(exc)
+    # 「不打印背景」是个开关，没有反方向的参数，所以它不参与上面的校验：
+    # 只有命令行显式写了才覆盖配置里的值。
+    background = bool(getattr(settings, "pdf_background", True)) and not args.pdf_no_background
+    if bool(getattr(options, "background", True)) != background:
+        options = replace(options, background=background)
+    return options, ""
+
+
 def run_cli(args: argparse.Namespace) -> int:
     """命令行导出 / 监控。返回进程退出码。"""
     from xdao.cache import CachedThreadFetcher
@@ -294,6 +412,12 @@ def run_cli(args: argparse.Namespace) -> int:
     from xdao.watcher import WatchTarget, check_once, notify_result, watch_forever
 
     settings = AppSettings.load()
+    # PDF 选项先校验：写在最前面，参数写错了就不必先去建目录、连网络。
+    pdf_options, pdf_error = _resolve_pdf_options(args, settings)
+    if pdf_error:
+        print(f"PDF 参数有误：{pdf_error}", file=sys.stderr)
+        print("（可选值见 --help）", file=sys.stderr)
+        return 2
     client = XdaoClient(
         timeout=settings.timeout,
         retries=settings.retries,
@@ -352,6 +476,14 @@ def run_cli(args: argparse.Namespace) -> int:
     print(f"导出目录：{output_dir}")
     print(f"格式：{format_key}（{EXPORTERS[format_key][1]}）｜范围：{scope}"
           f"｜缓存：{'启用' if use_cache else '关闭'}｜缓存目录：{cache_dir}")
+    if format_key == "pdf":
+        # 把真正生效的纸张/边距说出来：全默认（跟随网页样式）时不用占一行。
+        # needs_cdp 而不是 is_default：只填了页码或只关了背景时同样要说一声。
+        try:
+            if pdf_options.needs_cdp or not pdf_options.background:
+                print(f"PDF 设置：{pdf_options.describe()}")
+        except Exception:  # noqa: BLE001 —— 提示语失败不该影响导出
+            pass
     if cache_note:
         print(f"注意：{cache_note}")
     if hashes:
@@ -398,12 +530,16 @@ def run_cli(args: argparse.Namespace) -> int:
             # 先跑一轮并把抓取过程打出来，然后进入静默循环。
             for target in targets:
                 result = check_once(client, target, output_dir, cache_dir=cache_dir,
-                                    progress=progress, verify_cached=args.verify)
+                                    progress=progress, verify_cached=args.verify,
+                                    browser_path=args.pdf_browser or settings.pdf_browser or None,
+                                    pdf_options=pdf_options)
                 notify_result(notifier, result)
             watch_forever(
                 client, targets, output_dir, max(15.0, interval),
                 cache_dir=cache_dir, on_result=on_result, verify_cached=args.verify,
                 notifier=notifier,
+                browser_path=args.pdf_browser or settings.pdf_browser or None,
+                pdf_options=pdf_options,
             )
         except KeyboardInterrupt:
             print("\n已停止监控。")
@@ -418,6 +554,7 @@ def run_cli(args: argparse.Namespace) -> int:
         image_mode=args.image_mode or settings.image_mode or "embed",
         browser_path=args.pdf_browser or settings.pdf_browser or None,
         pdf_timeout=args.pdf_timeout,
+        pdf_options=pdf_options,
     )
 
     succeeded = 0

@@ -22,6 +22,19 @@ DEFAULT_WATCH_INTERVAL = 300.0
 # 同一个串两次桌面通知的最小间隔：监控每轮都可能报"有更新"，不节流会刷屏。
 DEFAULT_NOTIFY_INTERVAL = 900.0
 
+# ---------- PDF 纸张 / 边距的默认值 ----------
+# 这组默认值等价于 v0.7.0 的行为：跟随网页样式（纸张与页边距都交给浏览器）、
+# 缩放 100%、打印背景、全部页码。老配置文件里没有这些键时必须落在这里，
+# 少一项都会改变老用户的成品外观。
+DEFAULT_PDF_PAPER = "default"
+DEFAULT_PDF_ORIENTATION = "portrait"
+DEFAULT_PDF_MARGIN = "default"
+DEFAULT_PDF_MARGIN_MM = ""
+# 缩放存字符串：浮点写进 JSON 再读回来会出现 0.30000000000000004 这类尾数。
+DEFAULT_PDF_SCALE = "1.0"
+DEFAULT_PDF_BACKGROUND = True
+DEFAULT_PDF_PAGE_RANGES = ""
+
 
 def app_config_dir() -> Path:
     """本机配置目录。"""
@@ -58,6 +71,19 @@ class AppSettings:
     image_mode: str = "embed"
     # 导出 PDF 时使用的浏览器；留空表示自动探测 Chrome / Edge
     pdf_browser: str = ""
+
+    # ---------- PDF 纸张 / 页边距 ----------
+    # 归一化全部交给 xdao/pdf_opts.py（界面与命令行同一套规则）；
+    # 这里只负责持久化，坏值一律回落到上面那组默认值。
+    pdf_paper: str = DEFAULT_PDF_PAPER
+    pdf_orientation: str = DEFAULT_PDF_ORIENTATION
+    pdf_margin: str = DEFAULT_PDF_MARGIN
+    # 自定义页边距（毫米）；空串表示没设、用 pdf_margin 那个预设
+    pdf_margin_mm: str = DEFAULT_PDF_MARGIN_MM
+    pdf_scale: str = DEFAULT_PDF_SCALE
+    pdf_background: bool = DEFAULT_PDF_BACKGROUND
+    # 只导出这些页码，写法例如 "1-3,5"；空串表示全部
+    pdf_page_ranges: str = DEFAULT_PDF_PAGE_RANGES
 
     # ---------- 缓存 ----------
     use_cache: bool = True
@@ -109,6 +135,21 @@ class AppSettings:
         image_mode = str(data.get("image_mode") or "embed")
         self.image_mode = image_mode if image_mode in ("embed", "url", "drop") else "embed"
         self.pdf_browser = str(data.get("pdf_browser") or "")
+        # 逐字段解析：老配置没有这些键 → 取默认值（＝ v0.7.0 的成品外观）；
+        # 有键但值坏 → 同样回落默认，绝不让读配置抛异常。
+        self.pdf_paper = _pdf_choice(data.get("pdf_paper"), DEFAULT_PDF_PAPER, "normalize_paper")
+        self.pdf_orientation = _pdf_choice(
+            data.get("pdf_orientation"), DEFAULT_PDF_ORIENTATION, "normalize_orientation"
+        )
+        self.pdf_margin = _pdf_choice(
+            data.get("pdf_margin"), DEFAULT_PDF_MARGIN, "normalize_margin"
+        )
+        self.pdf_margin_mm = _pdf_margin_mm(data.get("pdf_margin_mm"), DEFAULT_PDF_MARGIN_MM)
+        self.pdf_scale = _pdf_scale(data.get("pdf_scale"), DEFAULT_PDF_SCALE)
+        self.pdf_background = _as_bool(data.get("pdf_background"), DEFAULT_PDF_BACKGROUND)
+        self.pdf_page_ranges = _pdf_page_ranges(
+            data.get("pdf_page_ranges"), DEFAULT_PDF_PAGE_RANGES
+        )
         self.use_cache = bool(data.get("use_cache", True))
         self.cache_dir = str(data.get("cache_dir") or "")
         self.watch_interval = _as_float(data.get("watch_interval"), DEFAULT_WATCH_INTERVAL)
@@ -144,6 +185,13 @@ class AppSettings:
                 "include_hashes": self.include_hashes,
                 "image_mode": self.image_mode,
                 "pdf_browser": self.pdf_browser,
+                "pdf_paper": self.pdf_paper,
+                "pdf_orientation": self.pdf_orientation,
+                "pdf_margin": self.pdf_margin,
+                "pdf_margin_mm": self.pdf_margin_mm,
+                "pdf_scale": self.pdf_scale,
+                "pdf_background": self.pdf_background,
+                "pdf_page_ranges": self.pdf_page_ranges,
                 "use_cache": self.use_cache,
                 "cache_dir": self.cache_dir,
                 "watch_interval": self.watch_interval,
@@ -204,3 +252,115 @@ def _as_int(value, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return result if result >= 0 else fallback
+
+
+def _as_bool(value, fallback: bool) -> bool:
+    """宽容地读布尔项。
+
+    JSON 里本该是 true/false，但配置是纯文本、用户会手改，所以 "0"/"否"
+    这类写法也认。认不出来（含空串）时回落到 fallback。
+    """
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on", "是", "开"):
+        return True
+    if text in ("0", "false", "no", "off", "否", "关"):
+        return False
+    return fallback
+
+
+def _pdf_normalizer(name: str):
+    """取 :mod:`xdao.pdf_opts` 里的归一化函数；取不到就返回 None。
+
+    归一化规则只有一套（pdf_opts），配置层不另写一遍 —— 但也绝不因为
+    它取不到/抛异常就让读配置失败，那种情况按"坏值"处理即可。
+    """
+    try:
+        from . import pdf_opts
+    except Exception:  # noqa: BLE001 —— 归一化模块缺失不该挡住启动
+        return None
+    return getattr(pdf_opts, name, None)
+
+
+def _pdf_choice(value, fallback: str, normalizer_name: str) -> str:
+    """纸张 / 方向 / 页边距这类枚举项：认不出来一律回落默认值。"""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return fallback
+    normalize = _pdf_normalizer(normalizer_name)
+    if normalize is None:
+        return fallback
+    try:
+        normalized = normalize(text)
+    except Exception:  # noqa: BLE001 —— 坏值回落默认，不许把异常抛给启动流程
+        return fallback
+    normalized_text = "" if normalized is None else str(normalized).strip()
+    # normalize_* 遇到不认识的值时可能静默给回默认值：那和"坏值"同解。
+    if not normalized_text or normalized_text == fallback:
+        return fallback
+    return normalized_text
+
+
+def _pdf_margin_mm(value, fallback: str) -> str:
+    """自定义页边距（毫米）：存字符串；非法值回落（空串＝没设）。"""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return fallback
+    try:
+        from .pdf_opts import require_valid_pdf_options
+
+        # margin="" 是「这一项没填」的哨兵：pdf_opts 里显式传 "default"
+        # 会被当成「用户直接写了毫米数」而报错（pdf_opts.py:481-485）。
+        options = require_valid_pdf_options(margin="", margin_mm=text)
+    except Exception:  # noqa: BLE001
+        return fallback
+    if getattr(options, "margin_mm", None) is None:
+        return fallback
+    return text
+
+
+def _pdf_scale(value, fallback: str) -> str:
+    """缩放：存字符串避免浮点误差；非数字或越界一律回落默认。"""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return fallback
+    try:
+        from .pdf_opts import SCALE_MAX, SCALE_MIN
+
+        number = float(text)
+    except Exception:  # noqa: BLE001
+        return fallback
+    # 先按写进来的原值判范围：normalize_scale 可能把越界值悄悄夹进区间，
+    # 那样坏值就会伪装成合法值被存下来。
+    if not (SCALE_MIN <= number <= SCALE_MAX):
+        return fallback
+    normalize = _pdf_normalizer("normalize_scale")
+    if normalize is None:
+        return fallback
+    try:
+        normalize(text)
+    except Exception:  # noqa: BLE001
+        return fallback
+    return text
+
+
+def _pdf_page_ranges(value, fallback: str) -> str:
+    """页码范围（例如 "1-3,5"）：通过校验就保留原文，坏值回落空串。"""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return fallback
+    try:
+        from .pdf_opts import require_valid_pdf_options
+
+        # 同上：margin="" 表示「边距这一项没填」。
+        options = require_valid_pdf_options(margin="", page_ranges=text)
+    except Exception:  # noqa: BLE001 —— 页码写错不该让程序起不来
+        return fallback
+    normalized = getattr(options, "page_ranges", text)
+    if isinstance(normalized, str) and normalized.strip():
+        return normalized.strip()
+    # 归一化结果不是字符串（例如已解析成集合）时，校验通过就保留用户原文。
+    return text

@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 493 项，必须全绿）
+2. **跑测试**（当前基线 899 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 493 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 899 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -382,7 +382,6 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
     **不要**把基于 OCR / 视觉模型的自动登录写进产品 —— 认错一次就得从头再来，
     还不如让用户自己点一下浏览器窗口。
 - 监控列表的导入 / 导出
-- PDF 的页边距 / 纸张大小可配置（目前沿用网页的打印样式）
 
 ## 已完成
 
@@ -472,6 +471,47 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `client._decode_response_body(data, content_type)` 按 gzip 魔数兜一层（解压失败原样返回），
   `_request()` 顺手把最近一次响应头记进 `self._last_response_headers`（键统一小写），
   `fetch_login_form()` 用它判断 —— **不改 `_request` 的返回类型**，替换 `_request` 的既有夹具不受影响。
+- **PDF 纸张 / 边距 / 缩放 / 页码可配置**（v0.8.0）：选项集中在 `xdao/pdf_opts.py`
+  （`PdfOptions` + `from_settings()` + `require_valid_pdf_options()`），界面、命令行、导出器
+  共用同一套校验与文案。`exporters/pdf.py` 按 `PdfOptions.needs_cdp` 路由：全默认走原来的
+  `--print-to-pdf` 命令行（输出与 v0.7.0 逐字节相同），改动过就走 CDP 的 `Page.printToPDF`。
+  界面新增设置对话框的「PDF 页面」一块，命令行新增 7 个 `--pdf-*` 开关（写错 exit 2），
+  `watcher.check_once()/watch_forever()` 也接上了同一套选项。真机用例在
+  `tests/test_pdf_render.py`（`XDAO_PDF_TEST=1` 才跑，4 条：A3 纸张、默认 A4、
+  边距影响分页、页码范围截断）。
+
+- **CDP 通道抽成公共模块**（v0.8.0）：`xdao/cdp.py` 只放传输层（帧协议、`CDPSession`、
+  `pick_page`/`pick_site_page`、`http_json`），不含任何业务站点常量；站点前缀由调用方通过
+  `CDPSession(ws_url, timeout=…, site_urls=[…])` 传进去。`browser_login.py` 保留同名兼容出口
+  （`from .cdp import …` + `BrowserLoginError = CdpError` + `_new_session()`），所以既有测试与
+  调用方不用改。**`LoginBrowser.start()/stop()` 与 `_kill_process_tree()` 必须留在
+  `browser_login.py`**：测试用 `monkeypatch.setattr(bl.subprocess, "Popen"/"run")` 打桩，
+  走的是本模块的 `subprocess` 名字。
+- **PDF 纸张 / 边距可配置**（v0.8.0）：`xdao/pdf_opts.py` 是选项的唯一来源（界面下拉框、
+  命令行校验、导出器共用）；`exporters/pdf.py` 有两条渲染路径 —— 全默认走原来的
+  `--print-to-pdf` 命令行（输出与 v0.7.0 逐字节相同），改过任何一项走 CDP 的
+  `Page.printToPDF`（返回的 `result["data"]` 是 base64 的 PDF，解出来写盘即可）。
+  `watcher.check_once()/watch_forever()` 必须由调用方显式传 `pdf_options` 与 `browser_path`
+  —— 监控是长期后台功能，漏接会让用户以为设置没保存。三个必须记住的点：
+  1. **路由判断用 `PdfOptions.needs_cdp`，不要用 `is_default`** —— `is_default` 不看
+     `page_ranges`，只填页码会被判成「没改过」而走命令行，页码被静默丢掉；
+  2. **显式纸张时绝不能带 `preferCSSPageSize`** —— 两者同时出现时浏览器改以页面 CSS 的
+     `@page size` 为准（用户选 A3 出 A4），而且是竞态：同一份 HTML、同一组参数连跑三次，
+     只有在 `@page` 还没解析完的那一次才按显式纸张出纸。真机对照脚本
+     `_scratch/cmp_pdf_paths.py`；
+  3. **页面自己声明 `@page { margin: … }` 时，CDP 的 `marginTop/…` 会被页面样式盖掉** ——
+     浏览器的行为，绕不过去，所以「跟随网页样式」才是推荐默认值。
+- **测试绝不许碰用户真实配置**（v0.8.0 的教训）：`tests/test_settings.py` 早期版本没有隔离
+  配置，跑一次全量就把 `%APPDATA%\xdao-export\config.json` 里的 PDF 键写成了测试值
+  （实现者自己跑全量时同样触发）。现在 `tests/conftest.py` 有 autouse 守卫
+  `_forbid_writing_the_real_user_config`：**模块级安装、只装不拆、幂等**，拦「读用户配置」与
+  「写用户配置」，**不拦构造**（`AppSettings()` 默认落到用户配置本身是要被测的行为）。
+  两条踩过的坑：①改 dataclass 的 `__dataclass_fields__["_path"].default_factory` 或改模块里
+  `_default_config_path` 名字都拦不住（factory 函数对象在类创建时就进了 `__init__` 的默认值），
+  只有包 `AppSettings.__init__`/`load`/`save` 有效；②安装时要先看
+  `AppSettings.load.__name__ != "load"` 就**直接退让**，否则会把别人（module 作用域夹具）已经
+  换上的替身永久留在类上（实测 24 条界面用例全红）。临时配置的正确写法是**派生子类**并把
+  `_path` 声明成 `default_factory=lambda: path`。
 
 ## 浏览器登录：两个真机才量得出来的坑（v0.7.0）
 
@@ -509,7 +549,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、493 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、899 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
   在没有显示环境的机器上会自动 skip，Linux CI 上属于预期行为，不算失败。

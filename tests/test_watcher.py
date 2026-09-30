@@ -403,3 +403,98 @@ def test_resolved_cache_dir_prefers_explicit_setting():
     assert settings.resolved_cache_dir("D:/out") == Path("D:/out") / ".cache"
     settings.cache_dir = "D:/mycache"
     assert settings.resolved_cache_dir("D:/out") == Path("D:/mycache")
+
+
+# ---------- PDF 选项要一路传到监控用的导出器 ----------
+#
+# 起因：v0.8.0 给 PDF 加了纸张/边距设置，但串监控那条路没接上 ——
+# 用户在设置里选了 A3、无边距，手动导出对、后台监控导出的却还是默认纸张。
+# 这类「只有一条路接上了」的漏洞靠肉眼看不出来，所以用契约断言钉住。
+
+
+def test_check_once_hands_pdf_options_and_browser_to_the_exporter(monkeypatch):
+    """监控导出 PDF 时，设置里的纸张/边距与浏览器路径必须传下去。"""
+    import xdao.watcher as watcher_module
+    from xdao.pdf_opts import PdfOptions
+
+    _, out, cache = prepare_dirs("watcher-pdf-options")
+    api = build_three_page_api()
+    target = WatchTarget("7001", format_key="pdf")
+    options = PdfOptions(paper="a3", margin="none")
+    seen: list[dict] = []
+    real_create = watcher_module.create_exporter
+
+    def spy_create(*args, **kwargs):
+        seen.append(kwargs)
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(watcher_module, "create_exporter", spy_create)
+
+    result = check_once(
+        api,
+        target,
+        out,
+        cache_dir=cache,
+        browser_path="C:/假的浏览器.exe",
+        pdf_options=options,
+    )
+
+    assert result.ok
+    assert len(seen) == 1, "监控没有走到导出那一步"
+    assert seen[0]["browser_path"] == "C:/假的浏览器.exe"
+    assert seen[0]["pdf_options"] is options
+
+
+def test_check_once_defaults_keep_the_old_behaviour(monkeypatch):
+    """不传这两项时不能凭空多出参数 —— 老调用方（含测试）必须照常工作。"""
+    import xdao.watcher as watcher_module
+
+    _, out, cache = prepare_dirs("watcher-pdf-default")
+    api = build_three_page_api()
+    seen: list[dict] = []
+    real_create = watcher_module.create_exporter
+
+    def spy_create(*args, **kwargs):
+        seen.append(kwargs)
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(watcher_module, "create_exporter", spy_create)
+
+    check_once(api, WatchTarget("7001"), out, cache_dir=cache)
+
+    assert seen[0]["browser_path"] is None
+    assert seen[0]["pdf_options"] is None
+
+
+def test_watch_forever_passes_pdf_options_into_every_check(monkeypatch):
+    """后台循环的每一轮检查都要带上 PDF 选项与浏览器路径。"""
+    import xdao.watcher as watcher_module
+    from xdao.pdf_opts import PdfOptions
+
+    base = workspace_dir("watcher-loop-pdf")
+    empty = watcher_module.WatchResult(target=WatchTarget("7001"))
+    calls: list[dict] = []
+    event = threading.Event()
+
+    def fake_check(*args, **kwargs):
+        calls.append(kwargs)
+        event.set()  # 检查一次就收工
+        return empty
+
+    monkeypatch.setattr(watcher_module, "check_once", fake_check)
+    options = PdfOptions(paper="a4", scale=1.2)
+
+    watch_forever(
+        build_three_page_api(),
+        [WatchTarget("7001", format_key="pdf")],
+        base / "out",
+        interval=15,
+        stop_event=event,
+        cache_dir=base / "cache",
+        browser_path="D:/浏览器.exe",
+        pdf_options=options,
+    )
+
+    assert calls, "监控一轮都没跑"
+    assert all(call["browser_path"] == "D:/浏览器.exe" for call in calls)
+    assert all(call["pdf_options"] is options for call in calls)

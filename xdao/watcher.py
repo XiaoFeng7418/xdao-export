@@ -142,10 +142,16 @@ def check_once(
     cache_dir: Path | None = None,
     progress=None,
     verify_cached: bool = False,
+    browser_path: str | None = None,
+    pdf_options=None,
 ) -> WatchResult:
     """检查一个串并按需导出（有更新才写文件）。
 
     verify_cached=True 时会额外校验老楼层是否被编辑过（多花一次请求）。
+
+    ``browser_path`` / ``pdf_options`` 是给 PDF 用的：不传时就是浏览器的默认
+    纸张与页边距。**必须由调用方显式带进来** —— 监控是长期后台跑的功能，
+    用户改了设置却只在手动导出生效，会看起来像「设置没保存」。
     """
     result = WatchResult(target=target)
     cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
@@ -199,6 +205,8 @@ def check_once(
             client,
             progress=progress,
             image_mode=target.image_mode,
+            browser_path=browser_path,
+            pdf_options=pdf_options,
         )
         path = exporter.save(
             thread,
@@ -240,12 +248,15 @@ def watch_forever(
     on_result=None,
     verify_cached: bool = False,
     notifier: "Notifier | None" = None,
+    browser_path: str | None = None,
+    pdf_options=None,
 ) -> None:
     """后台循环：每 interval 秒检查一轮，直到 stop_event 被设置。
 
     每轮的顺序是「先检查、后等待」，所以启动后马上就会出一次结果。
     ``notifier`` 不为空时，检查出更新的串会顺带弹一条桌面通知
     （节流由 :class:`~xdao.notifications.Notifier` 负责）。
+    ``browser_path`` / ``pdf_options`` 与 :func:`check_once` 同义。
     """
     interval = max(15.0, float(interval or 60))
     while not (stop_event and stop_event.is_set()):
@@ -258,6 +269,8 @@ def watch_forever(
                 output_dir,
                 cache_dir=cache_dir,
                 verify_cached=verify_cached,
+                browser_path=browser_path,
+                pdf_options=pdf_options,
             )
             if on_result:
                 try:

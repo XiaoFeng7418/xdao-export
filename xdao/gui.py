@@ -26,7 +26,7 @@ from .exporters import EXPORTERS, ThreadData, create_exporter
 from .exporters._shared import OutputDirNotWritable, choose_writable_dir, ensure_writable
 from .fetcher import parse_thread_id
 from .notifications import Notifier
-from . import theme
+from . import pdf_opts, theme
 from .settings import AppSettings
 from .theme import apply_theme, font, mono, resolve_fonts
 from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
@@ -854,6 +854,67 @@ class BrowserLoginDialog(tk.Toplevel):
         return None
 
 
+_PDF_SCALE_FALLBACK = f"{pdf_opts.SCALE_DEFAULT:g}"
+
+
+def _choice_key(labels: dict, keys: list, label: str) -> str:
+    """把下拉框里选中的中文标签翻回取值键；认不出就取第一项（＝默认）。"""
+    for key in keys:
+        if labels.get(key) == label:
+            return key
+    return keys[0]
+
+
+def _choice_text(labels: dict, key, fallback: str) -> str:
+    """配置里的键翻成下拉框要显示的中文标签（配置被手改坏时退回默认项）。"""
+    return labels.get(str(key or "").strip().lower(), fallback)
+
+
+def _scale_text(value) -> str:
+    """缩放显示成 ``1``/``0.8`` 这种短写法（配置里存的是字符串，避免浮点误差）。"""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return _PDF_SCALE_FALLBACK
+
+
+def _pdf_scale_text(raw: str, fallback: str) -> str:
+    """缩放：认得出来且落在允许区间就存下来，否则保留原值。
+
+    校验借 pdf_opts 的 ``require_valid_pdf_options`` 走一遍，rules 只有一份。
+    """
+    text = (raw or "").strip()
+    try:
+        options = pdf_opts.require_valid_pdf_options(margin="", scale=text)
+    except pdf_opts.PdfOptionsError:
+        return fallback
+    return f"{options.scale:g}"
+
+
+def _pdf_margin_mm_text(raw: str, fallback: str) -> str:
+    """自定义页边距：留空＝不设（用左边预设）；越界或填错则保留原值。"""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        pdf_opts.require_valid_pdf_options(margin="", margin_mm=text)
+    except pdf_opts.PdfOptionsError:
+        return fallback
+    return text
+
+
+def _pdf_page_ranges_text(raw: str, fallback: str) -> str:
+    """页码范围：留空＝全部页；写错则保留原值（不让一次误输入清掉好设置）。"""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        options = pdf_opts.require_valid_pdf_options(margin="", page_ranges=text)
+    except pdf_opts.PdfOptionsError:
+        return fallback
+    return options.page_ranges
+
+
 class SettingsDialog(tk.Toplevel):
     """网络、缓存与导出设置。"""
 
@@ -1005,6 +1066,103 @@ class SettingsDialog(tk.Toplevel):
             justify="left",
         ).grid(row=3, column=0, columnspan=2, sticky="w")
 
+        # ④ PDF 页面：默认「跟随网页样式」，导出效果与浏览器打印完全一致 ——
+        # 老配置（没有这几个键）升级后行为不变，靠的就是这个默认值。
+        pdf_row = ttk.Frame(export, style="Card.TFrame")
+        pdf_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
+        self._paper_keys = list(pdf_opts.PAPER_LABELS)
+        self._orientation_keys = list(pdf_opts.ORIENTATION_LABELS)
+        self._margin_keys = list(pdf_opts.MARGIN_PRESETS)
+
+        self.pdf_paper_var = tk.StringVar(
+            value=_choice_text(
+                pdf_opts.PAPER_LABELS, settings.pdf_paper, pdf_opts.PAPER_LABELS["default"]
+            )
+        )
+        self.pdf_orientation_var = tk.StringVar(
+            value=_choice_text(
+                pdf_opts.ORIENTATION_LABELS,
+                settings.pdf_orientation,
+                pdf_opts.ORIENTATION_LABELS["portrait"],
+            )
+        )
+        self.pdf_margin_var = tk.StringVar(
+            value=_choice_text(
+                pdf_opts.MARGIN_PRESETS, settings.pdf_margin, pdf_opts.MARGIN_PRESETS["default"]
+            )
+        )
+        for column, (text, variable, keys, labels, width) in enumerate(
+            (
+                ("纸张", self.pdf_paper_var, self._paper_keys, pdf_opts.PAPER_LABELS, 22),
+                (
+                    "方向",
+                    self.pdf_orientation_var,
+                    self._orientation_keys,
+                    pdf_opts.ORIENTATION_LABELS,
+                    8,
+                ),
+                ("页边距", self.pdf_margin_var, self._margin_keys, pdf_opts.MARGIN_PRESETS, 22),
+            )
+        ):
+            group = ttk.Frame(pdf_row, style="Card.TFrame")
+            group.grid(row=0, column=column, sticky="w", padx=(0, theme.gap(3)))
+            ttk.Label(group, text=text, style="Card.TLabel").pack(anchor="w")
+            ttk.Combobox(
+                group,
+                textvariable=variable,
+                values=[labels[key] for key in keys],
+                state="readonly",
+                width=width,
+            ).pack(anchor="w", pady=(theme.gap(0.5), 0))
+
+        self.pdf_margin_mm_var = tk.StringVar(value=str(settings.pdf_margin_mm or ""))
+        mm_group = ttk.Frame(pdf_row, style="Card.TFrame")
+        mm_group.grid(row=0, column=3, sticky="w")
+        ttk.Label(mm_group, text="自定义边距（毫米）", style="Card.TLabel").pack(anchor="w")
+        ttk.Entry(mm_group, textvariable=self.pdf_margin_mm_var, width=10).pack(
+            anchor="w", pady=(theme.gap(0.5), 0)
+        )
+
+        page_row = ttk.Frame(export, style="Card.TFrame")
+        page_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
+        scale_group = ttk.Frame(page_row, style="Card.TFrame")
+        scale_group.grid(row=0, column=0, sticky="w", padx=(0, theme.gap(3)))
+        ttk.Label(
+            scale_group,
+            text=f"缩放（{pdf_opts.SCALE_MIN:g}～{pdf_opts.SCALE_MAX:g}）",
+            style="Card.TLabel",
+        ).pack(anchor="w")
+        self.pdf_scale_var = tk.StringVar(value=_scale_text(settings.pdf_scale))
+        ttk.Entry(scale_group, textvariable=self.pdf_scale_var, width=10).pack(
+            anchor="w", pady=(theme.gap(0.5), 0)
+        )
+
+        pages_group = ttk.Frame(page_row, style="Card.TFrame")
+        pages_group.grid(row=0, column=1, sticky="w")
+        ttk.Label(pages_group, text="页码范围", style="Card.TLabel").pack(anchor="w")
+        self.pdf_pages_var = tk.StringVar(value=str(settings.pdf_page_ranges or ""))
+        ttk.Entry(pages_group, textvariable=self.pdf_pages_var, width=18).pack(
+            anchor="w", pady=(theme.gap(0.5), 0)
+        )
+
+        self.pdf_background_var = tk.BooleanVar(value=bool(settings.pdf_background))
+        ttk.Checkbutton(
+            export,
+            text="打印背景（网页底色与图片背景会印出来）",
+            variable=self.pdf_background_var,
+            style="Card.TCheckbutton",
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
+        ttk.Label(
+            export,
+            text=(
+                "「跟随网页样式」＝与浏览器打印效果一致；自定义边距留空时用左边的预设，"
+                "填了以它为准；页码范围留空表示全部页。这些设置只在导出 PDF 时生效。"
+            ),
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
+            justify="left",
+        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(theme.gap(1), 0))
+
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
         ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
@@ -1035,6 +1193,24 @@ class SettingsDialog(tk.Toplevel):
         settings.cache_dir = self.cache_var.get().strip()
         settings.filename_template = self.template_var.get().strip()
         settings.pdf_browser = self.browser_var.get().strip()
+        # PDF 页面：写回的都是 pdf_opts 认得的取值键；坏值保留原值（不把好设置抹掉）。
+        settings.pdf_paper = _choice_key(
+            pdf_opts.PAPER_LABELS, self._paper_keys, self.pdf_paper_var.get()
+        )
+        settings.pdf_orientation = _choice_key(
+            pdf_opts.ORIENTATION_LABELS, self._orientation_keys, self.pdf_orientation_var.get()
+        )
+        settings.pdf_margin = _choice_key(
+            pdf_opts.MARGIN_PRESETS, self._margin_keys, self.pdf_margin_var.get()
+        )
+        settings.pdf_margin_mm = _pdf_margin_mm_text(
+            self.pdf_margin_mm_var.get(), settings.pdf_margin_mm
+        )
+        settings.pdf_scale = _pdf_scale_text(self.pdf_scale_var.get(), settings.pdf_scale)
+        settings.pdf_page_ranges = _pdf_page_ranges_text(
+            self.pdf_pages_var.get(), settings.pdf_page_ranges
+        )
+        settings.pdf_background = bool(self.pdf_background_var.get())
 
         def _num(raw: str, fallback: float, minimum: float) -> float:
             try:
@@ -2240,6 +2416,11 @@ class App:
             f"缓存 {'启用' if self.use_cache_var.get() else '关闭'}。"
         )
         self.log(f"导出目录：{output_dir}")
+        if self.current_format() == "pdf":
+            # 只在真的改过纸张/边距/背景/页码时说一声，全默认不必占一行。
+            pdf_options = pdf_opts.from_settings(self.settings)
+            if pdf_options.needs_cdp or not pdf_options.background:
+                self.log(f"PDF 设置：{pdf_options.describe()}")
 
         def worker_body() -> None:
             scope = self.scope_var.get()
@@ -2264,6 +2445,7 @@ class App:
                 filename_template=template,
                 image_mode=self.current_image_mode(),
                 browser_path=self.settings.pdf_browser or None,
+                pdf_options=pdf_opts.from_settings(self.settings),
             )
 
             succeeded = 0
@@ -2480,6 +2662,8 @@ class App:
                     on_result=lambda result: self.watch_queue.put(result),
                     verify_cached=verify_cached,
                     notifier=notifier,
+                    browser_path=self.settings.pdf_browser or None,
+                    pdf_options=pdf_opts.from_settings(self.settings),
                 )
             except Exception as exc:  # noqa: BLE001 —— 监控线程也不能把 traceback 弹给用户
                 self.watch_queue.put(f"监控出错：{type(exc).__name__}: {exc}")
@@ -2528,6 +2712,8 @@ class App:
                     Path(output_dir),
                     cache_dir=cache_dir,
                     verify_cached=verify,
+                    browser_path=self.settings.pdf_browser or None,
+                    pdf_options=pdf_opts.from_settings(self.settings),
                 )
                 self.watch_queue.put(result)
 

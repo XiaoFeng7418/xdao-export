@@ -1,15 +1,27 @@
-"""图形界面入口的兜底测试（不需要真的开窗口）。
+"""图形界面入口的兜底测试。
 
 实测过：打包版弹「Unhandled exception in script」对话框。命令行入口已经堵住了，
 界面这边也必须堵 —— 尤其是打包版（--windowed）**没有 stderr**，
 任何漏出去的异常都会变成 PyInstaller 的错误对话框。
+
+文件末尾两组是 PDF 纸张/边距的接线：前一组是纯逻辑（不开窗口），
+后一组要真的建 Tk 窗口（设置对话框、导出主流程），没有显示环境时跳过。
 """
 
 from __future__ import annotations
 
+import json
+import queue
+import time
+import tkinter as tk
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 import xdao.gui as gui
+from xdao import pdf_opts
+from xdao.settings import AppSettings
 
 
 class FakeRoot:
@@ -256,3 +268,397 @@ def test_manual_userhash_prompt_tells_users_not_to_open_devtools(monkeypatch):
     assert "粘贴" in title
     assert "整段" in prompt
     assert "不需要打开开发者工具" in prompt
+
+
+# ---------------------------------------------------------------------------
+# PDF 纸张/边距：界面上那几个小工具（纯逻辑，不用开窗口）
+# ---------------------------------------------------------------------------
+
+
+def test_choice_key_maps_every_label_back_to_its_key():
+    """下拉框显示的是中文标签，存回配置的必须是 pdf_opts 认得的取值键。"""
+    keys = list(pdf_opts.PAPER_LABELS)
+    for key in keys:
+        assert gui._choice_key(pdf_opts.PAPER_LABELS, keys, pdf_opts.PAPER_LABELS[key]) == key
+
+
+def test_choice_key_falls_back_to_the_first_entry():
+    """下拉框里出现了表外的文字（配置被手改坏）时取默认项，不能抛。"""
+    keys = list(pdf_opts.MARGIN_PRESETS)
+    assert gui._choice_key(pdf_opts.MARGIN_PRESETS, keys, "窄边距（乱写的）") == keys[0]
+
+
+def test_choice_text_shows_the_label_and_survives_a_broken_config():
+    assert gui._choice_text(pdf_opts.PAPER_LABELS, "a4", "兜底") == pdf_opts.PAPER_LABELS["a4"]
+    assert gui._choice_text(pdf_opts.PAPER_LABELS, "b5", "兜底") == "兜底"
+
+
+def test_scale_text_never_shows_float_noise():
+    """配置里存的是字符串，界面要显示 1 / 0.8，而不是 1.0 / 0.8000000000000001。"""
+    assert gui._scale_text("1.0") == "1"
+    assert gui._scale_text(0.8) == "0.8"
+    assert gui._scale_text("坏值") == "1"
+    assert gui._scale_text(None) == "1"
+
+
+def test_pdf_scale_text_is_validated_by_pdf_opts():
+    """校验规则只有 pdf_opts 一份：越界/认不出的输入保留原值，不悄悄改成 1。"""
+    assert gui._pdf_scale_text(" 1.2 ", "1") == "1.2"
+    assert gui._pdf_scale_text("0.5", "1") == "0.5"
+    assert gui._pdf_scale_text("2.5", "1") == "1"
+    assert gui._pdf_scale_text("abc", "1") == "1"
+    assert gui._pdf_scale_text("", "1") == "1"
+
+
+def test_pdf_margin_mm_text_keeps_good_values_and_original_text():
+    assert gui._pdf_margin_mm_text(" 22.5 ", "") == "22.5"
+    assert gui._pdf_margin_mm_text("0", "18") == "0"
+    assert gui._pdf_margin_mm_text("51", "18") == "18", "超出 0~50 毫米"
+    assert gui._pdf_margin_mm_text("abc", "18") == "18"
+    assert gui._pdf_margin_mm_text("", "18") == "", "清空＝改回用左边的预设"
+
+
+def test_pdf_page_ranges_text_normalizes_and_keeps_good_values():
+    assert gui._pdf_page_ranges_text("1-3, 5", "") == "1-3,5"
+    assert gui._pdf_page_ranges_text("5-2", "1-3") == "1-3"
+    assert gui._pdf_page_ranges_text("", "1-3") == ""
+
+
+# ---------------------------------------------------------------------------
+# 设置对话框：真窗口用例（无显示环境时跳过，理由在白名单里）
+# ---------------------------------------------------------------------------
+
+
+def _make_root(timeout: float = 5.0) -> tk.Tk:
+    """建根窗口；偶发 ``TclError`` 是环境抖动，重试几秒再放弃。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            root = tk.Tk()
+        except tk.TclError:  # pragma: no cover - 取决于运行环境
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+            continue
+        root.geometry("900x700+3000+3000")
+        root.update()
+        return root
+
+
+def _close(widget) -> None:
+    try:
+        if widget.winfo_exists():
+            widget.destroy()
+    except tk.TclError:  # pragma: no cover - 窗口已经没了
+        pass
+
+
+@pytest.fixture
+def dialog_root():
+    try:
+        root = _make_root()
+    except tk.TclError as exc:  # pragma: no cover - 取决于运行环境
+        pytest.skip(f"没有可用的显示环境：{exc}")
+    try:
+        yield root
+    finally:
+        _close(root)
+
+
+def _open_settings(root, settings) -> gui.SettingsDialog:
+    dialog = gui.SettingsDialog(root, settings)
+    root.update()
+    return dialog
+
+
+def test_settings_dialog_starts_from_a_clean_config(dialog_root, artifacts_dir):
+    """老配置（没有 pdf_* 键）打开时应当是「跟随网页样式 + 100% + 有背景」。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        assert dialog.pdf_paper_var.get() == pdf_opts.PAPER_LABELS["default"]
+        assert dialog.pdf_orientation_var.get() == pdf_opts.ORIENTATION_LABELS["portrait"]
+        assert dialog.pdf_margin_var.get() == pdf_opts.MARGIN_PRESETS["default"]
+        assert dialog.pdf_margin_mm_var.get() == ""
+        assert dialog.pdf_scale_var.get() == "1"
+        assert dialog.pdf_pages_var.get() == ""
+        assert dialog.pdf_background_var.get() is True
+    finally:
+        _close(dialog)
+
+
+def test_settings_dialog_saves_pdf_options_without_exporting(
+    dialog_root, artifacts_dir, monkeypatch
+):
+    """点「保存」只写配置：选了什么存什么，且绝不触发一次真导出。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    exported: list[tuple] = []
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: exported.append((a, k)))
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.pdf_paper_var.set(pdf_opts.PAPER_LABELS["a4"])
+        dialog.pdf_orientation_var.set(pdf_opts.ORIENTATION_LABELS["landscape"])
+        dialog.pdf_margin_var.set(pdf_opts.MARGIN_PRESETS["wide"])
+        dialog.pdf_margin_mm_var.set("15.5")
+        dialog.pdf_scale_var.set("0.75")
+        dialog.pdf_pages_var.set("1-3, 7")
+        dialog.pdf_background_var.set(False)
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert dialog.saved is True
+    assert settings.pdf_paper == "a4"
+    assert settings.pdf_orientation == "landscape"
+    assert settings.pdf_margin == "wide"
+    assert settings.pdf_margin_mm == "15.5"
+    assert settings.pdf_scale == "0.75"
+    assert settings.pdf_page_ranges == "1-3,7"
+    assert settings.pdf_background is False
+    assert exported == []
+
+    saved = json.loads((artifacts_dir / "config.json").read_text(encoding="utf-8"))
+    assert saved["pdf_paper"] == "a4"
+    assert saved["pdf_scale"] == "0.75"
+    assert saved["pdf_background"] is False
+
+
+def test_settings_dialog_keeps_good_values_when_the_input_is_bad(dialog_root, artifacts_dir):
+    """手滑填错时保留原值：一次误输入不该把调好的设置抹掉。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.pdf_scale = "0.8"
+    settings.pdf_page_ranges = "1-3"
+    settings.pdf_margin_mm = "18"
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.pdf_scale_var.set("飞快")
+        dialog.pdf_pages_var.set("5-2")
+        dialog.pdf_margin_mm_var.set("999")
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.pdf_scale == "0.8"
+    assert settings.pdf_page_ranges == "1-3"
+    assert settings.pdf_margin_mm == "18"
+
+
+# ---------------------------------------------------------------------------
+# 导出主流程：跑真的 ``App.start()``，但线程/抓取/导出全换替身（不用开窗口）
+# ---------------------------------------------------------------------------
+
+
+class _SyncThread:
+    """把界面里起的后台线程换成「start() 就地跑」，用例才好断言。"""
+
+    def __init__(self, target=None, daemon=None, **kwargs):
+        self._target = target
+
+    def start(self) -> None:
+        self._target()
+
+
+class _FakeWidget:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def config(self, **kwargs) -> None:
+        self.calls.append(("config", kwargs))
+
+    def start(self, interval=None) -> None:
+        self.calls.append(("start", interval))
+
+
+class _FakeVar:
+    def __init__(self, value) -> None:
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value) -> None:
+        self._value = value
+
+
+class _FakeApp:
+    """只实现 ``App.start()`` 会用到的那点东西，替代整个真窗口。"""
+
+    def __init__(self, settings, output_dir: Path) -> None:
+        self.settings = settings
+        self._exporting = False
+        self._output_dir = None
+        self._export_queue: queue.Queue = queue.Queue()
+        self._last_failed: list[str] = []
+        self.client = SimpleNamespace(image_cache_dir=None)
+        self.start_button = _FakeWidget()
+        self.progress_bar = _FakeWidget()
+        self.progress_var = _FakeVar("")
+        self.scope_var = _FakeVar("all")
+        self.use_cache_var = _FakeVar(False)
+        self.root = SimpleNamespace(after=lambda delay, func=None: None)
+        self.logs: list[str] = []
+        self._output = output_dir
+
+    def log(self, message: str) -> None:
+        self.logs.append(message)
+
+    def prepare_export_dir(self):
+        return self._output
+
+    def persist_prefs(self) -> None:
+        pass
+
+    def apply_settings_to_client(self) -> None:
+        pass
+
+    def current_format(self) -> str:
+        return "pdf"
+
+    def parse_hashes(self) -> bool:
+        return False
+
+    def current_cache_dir(self):
+        return self._output
+
+    def current_image_mode(self) -> str:
+        return "embed"
+
+    def _poll_export(self) -> None:
+        """``App.start()`` 结尾会 ``root.after(50, self._poll_export)``；这里什么都不做。"""
+        pass
+
+
+def test_gui_export_passes_pdf_options_to_the_exporter(artifacts_dir, monkeypatch):
+    """界面导出时必须把设置里那套纸张/边距交给导出器，并在日志里说一声。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+    settings.pdf_paper = "a4"
+    settings.pdf_margin = "narrow"
+    settings.pdf_scale = "0.8"
+    settings.pdf_page_ranges = "1-3"
+    recorded: list[dict] = []
+
+    class _FakeExporter:
+        def save(self, thread, scope, path, include_hashes=False):
+            return path / "结果.pdf"
+
+    def fake_create_exporter(*args, **kwargs):
+        recorded.append(kwargs)
+        return _FakeExporter()
+
+    class _FakeFetcher:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def fetch(self, url):
+            return SimpleNamespace(
+                meta=SimpleNamespace(thread_id="69540387", title="测试串", po_hash="PO"),
+                posts=[],
+                reason="测试用抓取结果",
+                retry_note="",
+                cache_warning="",
+            )
+
+    monkeypatch.setattr(gui, "create_exporter", fake_create_exporter)
+    monkeypatch.setattr(gui, "CachedThreadFetcher", _FakeFetcher)
+    monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/69540387"])
+
+    assert recorded, "start() 必须真的走到导出器那一步"
+    assert recorded[0]["pdf_options"] == pdf_opts.from_settings(settings)
+    assert recorded[0]["pdf_options"].paper == "a4"
+    assert recorded[0]["pdf_options"].margin == "narrow"
+    assert any(line.startswith("PDF 设置：") for line in app.logs)
+
+
+def test_gui_export_does_not_mention_pdf_options_when_they_are_default(
+    artifacts_dir, monkeypatch
+):
+    """全默认（跟随网页样式）时不要多打一行，老配置的日志保持原样。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    class _FakeExporter:
+        def save(self, thread, scope, path, include_hashes=False):
+            return path / "结果.html"
+
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: _FakeExporter())
+    monkeypatch.setattr(
+        gui,
+        "CachedThreadFetcher",
+        lambda *a, **k: SimpleNamespace(
+            fetch=lambda url: SimpleNamespace(
+                meta=SimpleNamespace(thread_id="1", title="测试串", po_hash="PO"),
+                posts=[],
+                reason="测试用抓取结果",
+                retry_note="",
+                cache_warning="",
+            )
+        ),
+    )
+    monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/69540387"])
+
+    assert not any("PDF 设置" in line for line in app.logs)
+    assert any(line.startswith("导出目录：") for line in app.logs)
+
+
+class _FakeWatchApp:
+    """只实现 ``App.check_watch_once()`` 会用到的那点东西。"""
+
+    def __init__(self, settings, output_dir: Path, target) -> None:
+        self.settings = settings
+        self.client = SimpleNamespace(image_cache_dir=None)
+        self.output_var = _FakeVar(str(output_dir))
+        self.use_cache_var = _FakeVar(False)
+        self.watch_targets = [target]
+        self.watch_queue: queue.Queue = queue.Queue()
+
+    def persist_prefs(self) -> None:
+        pass
+
+    def apply_settings_to_client(self) -> None:
+        pass
+
+    def current_cache_dir(self):
+        return Path(self.output_var.get()) / ".cache"
+
+    def log(self, message: str) -> None:
+        pass
+
+    def _poll_watch(self) -> None:
+        """真实现会 ``after`` 排一次轮询；这里什么都不做。"""
+
+
+def test_gui_watch_check_hands_pdf_options_to_every_check(artifacts_dir, monkeypatch):
+    """串监控的「立即检查一轮」也要用上设置里的纸张/边距。
+
+    v0.8.0 的漏洞就是这里：手动导出接了 PDF 选项，监控那条路没接，
+    用户改完设置只有一部分功能生效。所以界面这条路也要有契约断言。
+    """
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.pdf_paper = "a3"
+    settings.pdf_margin = "none"
+    settings.pdf_browser = "C:/假浏览器.exe"
+    calls: list[dict] = []
+
+    def fake_check(client, target, output_dir, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(target=target, error="", exported=None)
+
+    monkeypatch.setattr(gui, "check_once", fake_check)
+    monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
+
+    app = _FakeWatchApp(settings, artifacts_dir / "out", gui.WatchTarget("7001", format_key="pdf"))
+    gui.App.check_watch_once(app)
+
+    assert calls, "检查一轮都没跑"
+    options = calls[0]["pdf_options"]
+    assert (options.paper, options.margin) == ("a3", "none")
+    assert calls[0]["browser_path"] == "C:/假浏览器.exe"
