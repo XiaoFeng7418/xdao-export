@@ -140,7 +140,7 @@ xdao-export/
 │     ├─ markdown.py       Markdown
 │     └─ epub.py           EPUB 3（纯标准库实现）
 ├─ tools/clean_scratch.py  清理测试残留目录
-└─ tests/                  218 个离线单元测试
+└─ tests/                  219 个离线单元测试
 ```
 
 ## 开发
