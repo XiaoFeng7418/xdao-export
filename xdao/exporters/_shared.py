@@ -313,7 +313,14 @@ def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
     """确认导出目录可写，返回规范化后的目录。
 
     抓一个长串可能要几分钟，如果最后才发现目录写不进去，那一趟就白跑了，
-    所以开始抓之前就先探一次。目录不存在时会尝试创建。
+    所以开始抓之前先探一次。目录不存在时会尝试创建。
+
+    **探针失败不再等于目录不可写**：0.5.0 之前只要有一步写不进去就直接拦下
+    导出，结果用户明明能正常写这个目录（用记事本、用旧版本都行），程序却弹出
+    「导出目录不可写」拒绝开工 —— 那是探针文件（``.xdao-write-probe``）自己被
+    安全软件/策略/只读介质挡了，跟真正的导出结果文件不是一回事。现在探针只
+    用来做"缓存目录挪窝"这类旁路决策（``can_write_dir``），拦不拦由真实导出
+    时的错误说了算：写不进去会带着真实文件名和真实 errno 报出来。
     """
     target = Path(output_dir)
     try:
@@ -328,12 +335,10 @@ def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
     try:
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-    except OSError as exc:
-        raise OutputDirNotWritable(
-            f"{kind}目录不可写：{target}\n{exc}\n"
-            "常见原因：该目录的权限不允许当前账户写入（可在文件夹属性 → 安全里授予"
-            "「完全控制」），或程序运行在受限环境里。请换一个可写的目录后重试。"
-        ) from exc
+    except OSError:
+        # 探针写不动 —— 只是少了一层提前预警，不代表导出会失败
+        # （不同名的文件、已有的文件往往照样能写）。
+        probe.unlink(missing_ok=True)
     return target
 
 
