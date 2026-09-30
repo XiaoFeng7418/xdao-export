@@ -8,7 +8,8 @@ Windows 桌面小工具：登录 X 岛（nmbxd1.com）后，把任意一个串�
 
 已实现功能：
 
-- 账号密码 + 5 位验证码登录，登录状态本地保存；支持手动粘贴 userhash 兜底。
+- 登录三选一：**用浏览器登录**（推荐：程序开一个独立的浏览器窗口，登录后经 CDP 把饼干取回来）、
+  账号密码 + 5 位验证码、**直接粘贴饼干**（整段 cookie 贴进来即可，程序自己摘 userhash）；登录状态本地保存。
 - 抓取范围：所有人发言 / 只抓 PO 发言；**只看指定饼干**（界面可从第一页勾选）。
 - 四种导出格式：HTML（图片内嵌）、TXT、Markdown、EPUB（图片可选内嵌/链接/丢弃）。
 - 文件名模板：`{title} {id} {date} {po} {count}`。
@@ -25,8 +26,10 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 348 项（347 通过）、1 个真机用例默认跳过（都离线，无需联网）；
-其中界面相关的 50 项（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会自动 skip。
+单元测试 485 项（483 通过）、2 个真机用例默认跳过（都离线，无需联网；跳过的那两条要显式开关
+`XDAO_BROWSER_TEST=1` / `XDAO_LIVE_NOTIFY=1`）；
+其中界面相关的 62 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
+在没有显示环境的机器上会自动 skip。
 
 打包版随 v0.6.1 重新构建，Release **只提供免安装包（zip）**。v0.6.0 做了两件路线图上的事：
 **单页失败自动补抓与重试队列**（某个页抓失败不再中断整趟，失败页最后统一补抓，补不上会
@@ -54,9 +57,11 @@ xdao-export/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
 │  ├─ conftest.py          artifacts_dir 夹具（替代 tmp_path）
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（46）
-│  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析（9）
+│  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（14）
+│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（115）
 │  ├─ test_cli.py          命令行参数与入口（12）
-│  ├─ test_gui_entry.py    界面入口与错误文案（9）
+│  ├─ test_gui_entry.py    界面入口与错误文案（14）
+│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（12，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
 │  ├─ test_watcher.py      监控与配置（27）
 │  ├─ test_epub.py         EPUB（31）
@@ -68,7 +73,8 @@ xdao-export/
 │  └─ test_window.py       主窗口布局回归（25，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号
-   ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理
+   ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理、响应体解包
+   ├─ browser_login.py     浏览器登录：找 Edge/Chrome、DevTools 端口、手写 WebSocket 帧层 + CDP 取饼干
    ├─ cache.py             页面缓存、CachedThreadFetcher、断点续传与增量判定
    ├─ fetcher.py           抓取流程与兼容层（ThreadFetcher 不带缓存）
    ├─ watcher.py           WatchTarget / check_once / watch_forever
@@ -76,7 +82,7 @@ xdao-export/
    ├─ notifications.py     桌面通知（Windows Toast 用哨兵 AUMID / macOS / Linux）
    ├─ theme.py             配色 / 字体 / 间距 / ttk 样式（界面视觉唯一来源）
    ├─ widgets.py           自绘控件：Card、StatusPill、ModernProgress、FlatText
-   ├─ gui.py               Tkinter 界面 + 四个对话框
+   ├─ gui.py               Tkinter 界面 + 五个对话框（登录 / 浏览器登录 / 设置 / 饼干 / 监控）
    └─ exporters/
       ├─ __init__.py       EXPORTERS 注册表、create_exporter、公共函数再导出
       ├─ _shared.py        plain_text / sanitize_filename / ThreadData / derive_filename
@@ -109,6 +115,22 @@ xdao-export/
 - 登录成功后需再「应用一块饼干」：`Member/User/Cookie/index.html` → `switchTo/id/{id}.html`
   → `export/id/{id}.html` 取 userhash 值。
 - 最终 `userhash` cookie 要设置到多个域：`nmbxd1.com`、`.nmbxd1.com`、`api.nmb.best`、`.api.nmb.best`。
+- **用浏览器登录（v0.7.0，`xdao/browser_login.py`）**：用系统里的 Edge / Chrome，以
+  `--remote-debugging-port=0 --user-data-dir=<配置目录>\browser-profile` 打开一个**独立用户目录**
+  的窗口（刻意**不加** `--headless` / `--guest` / `--incognito`：要的就是用户能看见、且登录态留得住）。
+  端口读 `<profile>\DevToolsActivePort` 第一行（第二行是浏览器级 ws 路径）；WebSocket 帧层是
+  **纯标准库**手写的（socket + base64 + hashlib + struct），连上 CDP 后用 `Network.getCookies`
+  读 `userhash`（HttpOnly 的也读得到）。`read_cookies` 里没有时再调 `apply_leaf_cookie()`，
+  在页面里 `fetch` 一遍 `switchTo` / `export` 取最新那块叶子饼干。
+  界面侧是 `gui.py` 的 `BrowserLoginDialog`；线程只往 `queue.Queue` 投消息，主线程用 `after` 轮询，
+  退出前必须停线程 + terminate 浏览器进程，不留孤儿进程（见下面「GUI 线程」一节的约定）。
+- 粘贴登录的宽容解析也在 `browser_login.py`：`parse_userhash_input(text)` 支持整段 cookie
+  （`a=1; userhash=ABC; b=2`）、`userhash=ABC`、裸值、带引号/换行的粘贴；`looks_like_userhash()`
+  判非空、无空白、无 `;`、长度 >= 6、可打印 ASCII。界面只负责问一次、解析失败弹提示、成功就 `set_userhash`。
+- 验证码接口 `verify.html` 实测把 PNG **包在 gzip 里**发回来，HTTP 头却写 `image/png`：
+  `client.py` 的 `_decode_response_body()` 按 gzip 魔数兜一层（解压失败原样返回），
+  `fetch_login_form()` 用最近一次响应头判断后交给界面 —— 只认 `Content-Encoding` 会漏。
+  （Tk 的 `PhotoImage` 恰好能直接吃压缩字节，所以这个问题一直没暴露。）
 
 ### 3. 缓存与断点续传（cache.py）
 
@@ -235,15 +257,10 @@ git push origin main:refs/heads/master
 
 ## 八、后续可做（暂未实现）
 
-- 无人值守登录 / 验证码识别。
-- 导出 PDF（本机有 Edge / Chrome，可用无头模式把内嵌图片的 HTML 转成 PDF）。
-- 监控到更新时的桌面通知。
-- 断点续传的更细粒度：单页下载失败时的自动补抓与重试队列。
-- 把监控列表导出 / 导入为配置文件，方便多台机器迁移。
-- 用 GitHub Actions 在推送时自动跑 `pytest`（需要先确认 runner 能装依赖）。
+与 `MAINTENANCE.md` 的「路线图（尚未实现）」保持一致（PDF 导出、桌面通知、单页补抓与重试、
+CI 都已经实现，见那份文件的「已完成」）：
 
-- 无人值守登录 / 验证码识别。
-- 导出 PDF 文件（当前可用浏览器打印 HTML；本机有 Edge/Chrome，可考虑无头模式转 PDF）。
-- 监控到更新时的桌面通知。
-- 断点续传的更细粒度：单页下载失败时的自动补抓与重试队列。
-- 把监控列表导出/导入为配置文件，方便在多台机器间迁移。
+- 无人值守登录：浏览器登录（v0.7.0）已经把这一步缩到只剩验证码。
+  实测视觉模型对 X 岛的验证码识别率太低（三张只对一张半），短期不要做。
+- 监控列表的导入 / 导出（在几台机器之间迁移监控用）。
+- PDF 的页边距 / 纸张大小可配置（目前沿用网页的打印样式）。

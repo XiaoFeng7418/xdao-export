@@ -172,16 +172,17 @@ def describe_login_failure(message: str) -> tuple[str, str]:
     if "验证码" in text and "错" in text:
         return "验证码不对", f"{text}\n\n验证码图片已经换成新的一张，重新填一次再登录。"
     if "密码" in text and ("错" in text or "不正确" in text):
-        return "密码不对", f"{text}\n\n请确认密码；也可以点下面的「改用饼干直接登录」跳过账号密码。"
+        return "密码不对", f"{text}\n\n请确认密码；也可以点下面的「用浏览器登录」，让程序自己从浏览器里取一次。"
     if "账号" in text and ("不存在" in text or "错" in text):
-        return "账号有问题", f"{text}\n\n请确认邮箱地址；也可以点下面的「改用饼干直接登录」。"
+        return "账号有问题", f"{text}\n\n请确认邮箱地址；也可以点下面的「用浏览器登录」。"
     if "没能进入用户系统" in text or "没能读取饼干列表" in text:
         return (
             "登录没有生效",
             f"{text}\n\n"
             "多半是这次登录没被服务端认下来（验证码过期、密码刚改过、账号被限制）。"
             "请点「登录」重新来一次，验证码务必用最新那张。\n"
-            "如果反复失败，请点「改用饼干直接登录」，从浏览器里复制 userhash 粘贴进来。",
+            "如果反复失败，请点「用浏览器登录」让程序自己去取一次，"
+            "或者点「直接粘贴饼干登录」手动粘贴。",
         )
     if "饼干列表是空的" in text:
         return (
@@ -216,7 +217,8 @@ def describe_export_failure(exc: BaseException) -> str:
             "「饼干」（userhash）才给读。程序这边已经把登录状态发过去了，"
             "服务端仍然拒绝，通常是饼干已失效或账号掉线。\n"
             "    请点右上角「登录 / 设置饼干」重新登录一次（会自动重新应用饼干）；"
-            "还不行就用「手动粘贴 userhash」把浏览器里 userhash 的值贴进来。"
+            "还不行就用登录窗口的「用浏览器登录」让程序自己去取一次，"
+            "或者把浏览器里的 cookie 整段贴进「直接粘贴饼干登录」。"
         )
     if not isinstance(exc, PermissionError):
         return text
@@ -232,10 +234,18 @@ def describe_export_failure(exc: BaseException) -> str:
 
 
 class LoginDialog(tk.Toplevel):
-    def __init__(self, master: tk.Tk, client: XdaoClient) -> None:
+    def __init__(
+        self,
+        master: tk.Tk,
+        client: XdaoClient,
+        settings: AppSettings | None = None,
+    ) -> None:
         super().__init__(master)
         self.configure(bg=BG)
         self.client = client
+        # 「用浏览器登录」要知道把浏览器 profile 放哪、要不要走代理，都取自这份设置。
+        # 不传就自己读一次配置：老的调用方不必跟着改签名。
+        self.settings = settings if settings is not None else AppSettings.load()
         self.userhash: str | None = None
         self._result_queue: queue.Queue = queue.Queue()
         self._busy = False
@@ -298,7 +308,7 @@ class LoginDialog(tk.Toplevel):
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
         ttk.Button(
             buttons,
-            text="改用饼干直接登录",
+            text="直接粘贴饼干登录",
             style="Ghost.TButton",
             command=self._manual_userhash,
         ).pack(side="left")
@@ -307,6 +317,15 @@ class LoginDialog(tk.Toplevel):
         )
         self.login_button = ttk.Button(buttons, text="登录", command=self._do_login)
         self.login_button.pack(side="right")
+        # 最省事的一条路：开一个独立浏览器窗口去登录，程序在旁边把饼干取回来。
+        # 放在「登录」左边，因为实测账号密码这条路经常被验证码/跳转卡住。
+        self.browser_button = ttk.Button(
+            buttons,
+            text="用浏览器登录",
+            style="Secondary.TButton",
+            command=self._open_browser_login,
+        )
+        self.browser_button.pack(side="right", padx=(0, theme.gap(1)))
         self.after(50, self._load_form)
 
     def _refresh_captcha(self) -> None:
@@ -392,19 +411,445 @@ class LoginDialog(tk.Toplevel):
         self._refresh_captcha()
 
     def _manual_userhash(self) -> None:
-        """账号密码登录失败的兜底：直接粘贴 userhash 饼干。"""
+        """账号密码登录走不通时的兜底：把浏览器里的饼干整段粘进来即可。"""
+        # 延迟导入：这个模块只管「从粘贴的文字里摘 userhash」这一件事，
+        # 界面本身不依赖它，缺了也不该影响窗口启动。
+        from .browser_login import looks_like_userhash, parse_userhash_input
+
         value = simpledialog.askstring(
-            "填入饼干",
-            "请从浏览器开发者工具复制 userhash 的值（Cookie 中 userhash= 到 ; 之间的内容），粘贴到下面：",
+            "粘贴饼干登录",
+            "在浏览器里登录 X 岛用户系统，把 cookie 整段复制粘贴到下面就行"
+            "（userhash=... 也在这段里），程序会自己把值摘出来。\n"
+            "不需要打开开发者工具。",
             parent=self,
         )
-        if value and value.strip():
+        if not value or not value.strip():
+            return
+        userhash = parse_userhash_input(value)
+        if not userhash or not looks_like_userhash(userhash):
+            messagebox.showwarning(
+                "没找到 userhash",
+                "粘贴的内容里没找到 userhash，"
+                "请确认复制的是浏览器里的整段 cookie（或至少包含 userhash=... 的那一部分）。",
+                parent=self,
+            )
+            return
+        try:
+            self.client.set_userhash(userhash)
+            self.userhash = userhash
+            self.destroy()
+        except Exception as exc:
+            messagebox.showerror("设置失败", str(exc), parent=self)
+
+    def _open_browser_login(self) -> None:
+        """开「用浏览器登录」子窗口；成功后跟别的登录方式一样，把结果交给调用方。
+
+        本对话框自己 ``grab_set()`` 过，而子窗口也要用鼠标：先把 grab 放开，
+        等子窗口关掉再收回来（子窗口成功时会把本对话框一起关掉，那时就不用了）。
+        """
+        self.grab_release()
+        dialog = BrowserLoginDialog(self, self.client, self.settings)
+        try:
+            self.wait_window(dialog)
+        finally:
             try:
-                self.client.set_userhash(value.strip())
-                self.userhash = value.strip()
+                if self.winfo_exists():
+                    self.grab_set()
+            except tk.TclError:  # pragma: no cover - 窗口已经不可用了
+                pass
+        if dialog.userhash:
+            self.userhash = dialog.userhash
+            self.destroy()
+
+
+# ---------- 用浏览器登录 ----------
+
+# 后台线程查饼干的间隔（秒）：太密会把 CDP 调用排满，太稀用户登录完要干等。
+BROWSER_POLL_SECONDS = 1.5
+# 没读到 userhash 时，隔这么久去饼干页领一次（用户登录成功那一刻正好用上）。
+BROWSER_LEAF_SECONDS = 5.0
+# 等用户登录的上限；到点给一句能照做的话，而不是一直转圈。
+BROWSER_LOGIN_TIMEOUT = 300.0
+# 等浏览器把调试端口写出来的上限（冷启动 + 首次建 profile 会偏慢）。
+BROWSER_START_TIMEOUT = 30.0
+# 主线程消费消息队列的间隔（毫秒），跟本文件其它对话框保持一致。
+BROWSER_UI_POLL_MS = 150
+
+
+def _load_browser_login():
+    """惰性导入 :mod:`xdao.browser_login`。
+
+    「用浏览器登录」才需要它（里面是一整套 CDP 客户端），平时不该拖累界面启动；
+    惰性导入还能把「模块缺失」变成界面上一句人话，而不是让窗口直接打不开。
+    """
+    from . import browser_login
+
+    return browser_login
+
+
+class BrowserLoginDialog(tk.Toplevel):
+    """「用浏览器登录」：开一个独立浏览器窗口，程序在旁边等着取饼干。
+
+    为什么要有它：X 岛的账号密码登录经常卡在验证码和跳转上，而让人开 F12
+    复制 cookie 对普通用户太不友好。这里用**独立 profile** 起 Edge/Chrome
+    （不动用户自己浏览器的任何配置），通过 CDP 读饼干，拿到 userhash 就自动
+    关掉浏览器。
+
+    线程模型：浏览器、CDP 会话都归后台线程管，它只往 ``_queue`` 投消息；
+    ``_poll`` 在主线程消费。本类是 Tk 组件，所以用自己的 ``after``。
+    """
+
+    def __init__(
+        self,
+        master: tk.Tk,
+        client: XdaoClient,
+        settings: AppSettings | None = None,
+    ) -> None:
+        super().__init__(master)
+        self.configure(bg=BG)
+        self.client = client
+        self.settings = settings if settings is not None else AppSettings.load()
+        # 成功后交给 LoginDialog；None 表示这次没成（用户取消或失败）。
+        self.userhash: str | None = None
+
+        self._queue: queue.Queue = queue.Queue()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._browser = None  # backend.LoginBrowser，启动后才有
+        self._session = None
+        self._ui_job: str | None = None
+        self._closing = False
+
+        self.title("用浏览器登录 X 岛")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+        # 关窗就是取消：必须先把线程、CDP、浏览器进程收干净再销毁窗口。
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
+        outer.pack(fill="both", expand=True)
+
+        card = Card(outer)
+        card.pack(fill="x")
+        SectionHeading(card.body, "用浏览器登录").pack(fill="x")
+        tk.Label(
+            card.body,
+            text=(
+                "点开之后会弹出一个独立的浏览器窗口。在里面像平时一样登录 X 岛用户系统，"
+                "该输密码就输密码、该点验证码就点验证码；登录成功后程序会自己把饼干取回来，"
+                "浏览器窗口也会自动关掉。\n"
+                "不需要按 F12，也不用复制任何东西；这个窗口用的是单独的浏览器配置，"
+                "不会动你自己浏览器里的登录状态。"
+            ),
+            bg=CARD,
+            fg=MUTED,
+            font=SMALL_FONT,
+            justify="left",
+            anchor="w",
+            wraplength=420,
+        ).pack(fill="x", pady=(theme.gap(2), 0))
+
+        self.status_var = tk.StringVar(value="正在准备…")
+        ttk.Label(
+            card.body,
+            textvariable=self.status_var,
+            style="CardMuted.TLabel",
+            wraplength=420,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(theme.gap(2), 0))
+
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(theme.gap(3), 0))
+        ttk.Button(
+            buttons,
+            text="直接粘贴饼干登录",
+            style="Ghost.TButton",
+            command=self._manual_userhash,
+        ).pack(side="left")
+        ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self._on_cancel).pack(
+            side="right", padx=(theme.gap(1), 0)
+        )
+        self.retry_button = ttk.Button(
+            buttons, text="重新打开浏览器", style="Secondary.TButton", command=self._restart
+        )
+        self.retry_button.pack(side="right", padx=(theme.gap(1), 0))
+        self.retry_button.config(state="disabled")
+
+        # 窗口先画出来，再开浏览器：不然点下去要愣一下才有反应。
+        self.after(20, self.start)
+
+    # ---------- 主线程：状态与收尾 ----------
+
+    def _set_status(self, text: str) -> None:
+        self.status_var.set(text)
+
+    def start(self) -> None:
+        """打开浏览器并开始等饼干；已经在跑时重复调用没有副作用。"""
+        if self._closing:
+            return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._shutdown()  # 上一轮的进程/会话可能还在（重开时）
+        self._stop.clear()
+        self._set_status("正在打开浏览器窗口，请稍等…")
+        self.retry_button.config(state="disabled")
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+        if self._ui_job is None:
+            self._ui_job = self.after(BROWSER_UI_POLL_MS, self._poll)
+
+    def _restart(self) -> None:
+        """重开浏览器：先把上一轮收干净（含 join 线程），再起新的一轮。"""
+        self._shutdown()
+        self.start()
+
+    def _poll(self) -> None:
+        """主线程：消费后台消息（本类是 Tk 组件，用自己的 after）。"""
+        self._ui_job = None
+        while True:
+            try:
+                kind, payload = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "ok":
+                try:
+                    self.userhash = self.client.import_userhash(str(payload))
+                except Exception as exc:
+                    self._set_status(f"饼干取到了，但设置失败：{exc}")
+                    self.retry_button.config(state="normal")
+                    continue
+                # 拿到就走了：收尾（停线程/关 CDP/杀浏览器）必须在 destroy 之前。
+                self._shutdown()
                 self.destroy()
+                return
+            if kind == "ready":
+                self._set_status(str(payload))
+                continue
+            if kind == "note":  # 只是提醒一句（比如没能自动把窗口切到登录页），别当失败
+                current = self.status_var.get()
+                self._set_status(f"{current}（{payload}）" if current else str(payload))
+                continue
+            if kind == "browser_closed":
+                self._set_status(
+                    "浏览器窗口已经关掉了，还没取到饼干。点「重新打开浏览器」重开一个，"
+                    "或者点「直接粘贴饼干登录」。"
+                )
+            else:  # 剩下的都是错误
+                self._set_status(str(payload))
+            self.retry_button.config(state="normal")
+        if not self._closing:
+            self._ui_job = self.after(BROWSER_UI_POLL_MS, self._poll)
+
+    def _on_cancel(self) -> None:
+        """取消 / 点关闭：线程、CDP、浏览器进程一样都不许留下再销毁窗口。"""
+        self._closing = True
+        self._shutdown()
+        self.destroy()
+
+    def _release(self) -> None:
+        """停线程、关 CDP 会话、结束浏览器进程。可重复调用，不碰 Tk —— 后台线程也能调。
+
+        顺序是故意的：先 set 停止位（后台线程从 wait 里立刻醒），再关 CDP
+        （后台若正卡在读饼干上，关掉会话能让它马上抛出来），最后才等线程。
+        """
+        self._stop.set()
+        session, self._session = self._session, None
+        if session is not None:
+            try:
+                session.close()
+            except Exception:  # pragma: no cover - 会话可能已经断了
+                pass
+        browser, self._browser = self._browser, None
+        if browser is not None:
+            self._release_browser(browser)
+        thread, self._thread = self._thread, None
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+    def _release_browser(self, browser) -> None:
+        """按**实例**结束浏览器进程，并把登记处清干净。可重复调用，不碰 Tk。
+
+        为什么不能只靠 ``_release()`` 里的 ``self._browser``：用户取消（关窗 / 粘贴饼干）
+        可能正好落在「已经登记、进程还没起来」的那一瞬 —— 主线程那次 ``_release()``
+        既停不掉任何东西（``process`` 还是 None），又把 ``self._browser`` 清成了 None。
+        后台线程随后才把进程真正拉起来，此时再回头看 ``self._browser`` 已经什么都没有了，
+        进程就没人管了。所以启动/握手这些「起来之后才发现已取消」的分支必须拿
+        **自己的局部引用**来收尾，而不是重新去读登记处。
+        """
+        if self._browser is browser:
+            self._browser = None
+        try:
+            browser.stop()  # 内部 terminate → 等一会 → kill，不往外抛
+        except Exception:  # pragma: no cover - 收尾路径不能把异常丢回界面
+            pass
+
+    def _shutdown(self) -> None:
+        """主线程收尾：先放掉资源，再撤掉还没跑的那次轮询。"""
+        self._release()
+        if self._ui_job is not None:
+            try:
+                self.after_cancel(self._ui_job)
+            except Exception:  # pragma: no cover - 窗口可能已经销毁
+                pass
+            self._ui_job = None
+
+    # ---------- 兜底：手动粘贴 ----------
+
+    def _manual_userhash(self) -> None:
+        """不想开浏览器的话，也可以自己把饼干整段粘进来。"""
+        try:
+            backend = _load_browser_login()
+        except Exception:
+            backend = None
+        value = simpledialog.askstring(
+            "直接粘贴饼干登录",
+            "在浏览器里登录 X 岛用户系统，把 cookie 整段复制粘贴到下面就行"
+            "（userhash=... 也在这段里），程序会自己把值摘出来。",
+            parent=self,
+        )
+        if not value or not value.strip():
+            return
+        userhash = ""
+        if backend is not None:
+            try:
+                userhash = backend.parse_userhash_input(value)
+                if userhash and not backend.looks_like_userhash(userhash):
+                    userhash = ""
+            except Exception:
+                userhash = ""
+        if not userhash:
+            messagebox.showwarning(
+                "没找到 userhash",
+                "粘贴的内容里没找到 userhash，请确认复制的是浏览器里的整段 cookie。",
+                parent=self,
+            )
+            return
+        try:
+            self.userhash = self.client.import_userhash(userhash)
+        except Exception as exc:
+            messagebox.showerror("设置失败", str(exc), parent=self)
+            return
+        self._shutdown()
+        self.destroy()
+
+    # ---------- 后台线程 ----------
+
+    def _worker(self) -> None:
+        """起浏览器、连 CDP、等 userhash。只碰 queue/进程/会话，绝不碰 Tk。"""
+        try:
+            backend = _load_browser_login()
+        except Exception:
+            self._queue.put(
+                ("error", "这个版本里缺少「浏览器登录」组件，请改用「直接粘贴饼干登录」。")
+            )
+            return
+        try:
+            info = backend.find_browser()
+        except Exception as exc:
+            self._queue.put(("error", f"没能找到浏览器：{exc}"))
+            return
+        if info is None:
+            self._queue.put(
+                ("error", "没找到 Edge 或 Chrome。请先装一个，或者改用「直接粘贴饼干登录」。")
+            )
+            return
+        if self._stop.is_set():  # 找浏览器的功夫里用户已经取消了，别再多开一个进程
+            return
+        try:
+            profile = backend.user_data_dir(Path(self.settings.config_path).parent)
+            # 先登记再 start()：用户可能在启动过程中点取消，主线程得能把它停掉。
+            browser = backend.LoginBrowser(
+                info, profile, self.settings.proxy or "", timeout=BROWSER_START_TIMEOUT
+            )
+            self._browser = browser
+            browser.start()
+            if self._stop.is_set():  # 取消正好落在启动过程中
+                # 必须拿局部引用收尾：主线程那次 _release() 已经把 self._browser 清成 None，
+                # 里面那个进程当时还没起来、它停不掉，再读登记处就等于放任成一个孤儿进程。
+                self._release_browser(browser)
+                return
+            # 浏览器端点交给 CDPSession，它自己会换成页面标签再握手。
+            session = backend.CDPSession(browser.browser_ws_url)
+            self._session = session
+            session.connect()
+            if self._stop.is_set():  # 取消正好落在握手过程中
+                self._release_browser(browser)
+                return
+            # 真机实测：刚起来的那个标签常常还停在 about:blank（起始地址还没落地），
+            # 这时页面里的 fetch 会落在别的源上，领饼干那一步会白跑。
+            # ensure_login_page 只在「确实不在站内」时才导航，用户已经登进去的页面不会被拽走。
+            # 导航失败（比如页面正在被销毁、Page.navigate 报错）不该把整条登录流程掐掉：
+            # 后面每一轮轮询都会重新读 URL，用户还是能正常登录。
+            try:
+                backend.ensure_login_page(session)
+            except Exception as exc:  # noqa: BLE001 —— 导航只是尽力而为
+                self._queue.put(("note", f"没能把浏览器窗口切到登录页（{exc}），请在窗口里手动打开。"))
+        except Exception as exc:
+            if not self._stop.is_set():  # 取消时后台报的错没人看，不必再刷界面
+                self._queue.put(("error", f"打开浏览器失败：{exc}"))
+            return
+        self._queue.put(
+            ("ready", "浏览器已经打开了：请在里面登录 X 岛用户系统。登录成功后这里会自动关掉。")
+        )
+
+        deadline = time.monotonic() + BROWSER_LOGIN_TIMEOUT
+        next_leaf = time.monotonic() + BROWSER_LEAF_SECONDS
+        while not self._stop.is_set():
+            process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
+            if process is not None and process.poll() is not None:
+                self._queue.put(("browser_closed", None))
+                return
+            try:
+                value = self._read_userhash(backend, session)
+                if not value and time.monotonic() >= next_leaf:
+                    next_leaf = time.monotonic() + BROWSER_LEAF_SECONDS
+                    value = self._try_leaf_cookie(backend, session)
+                if value:
+                    self._queue.put(("ok", value))
+                    return
             except Exception as exc:
-                messagebox.showerror("设置失败", str(exc), parent=self)
+                self._queue.put(("error", f"读取浏览器饼干失败：{exc}"))
+                return
+            if time.monotonic() >= deadline:
+                break
+            self._stop.wait(BROWSER_POLL_SECONDS)
+        if not self._stop.is_set():
+            self._queue.put(
+                (
+                    "error",
+                    f"等了 {BROWSER_LOGIN_TIMEOUT / 60:.0f} 分钟还没看到登录成功。"
+                    "请确认浏览器窗口里已经登录完成，再点「重新打开浏览器」试一次。",
+                )
+            )
+
+    @staticmethod
+    def _read_userhash(backend, session) -> str | None:
+        """从 CDP 读到的饼干里挑出 userhash；没有就返回 None。"""
+        for cookie in session.read_cookies():
+            if not isinstance(cookie, dict) or cookie.get("name") != "userhash":
+                continue
+            value = str(cookie.get("value") or "").strip()
+            if value and backend.looks_like_userhash(value):
+                return value
+        return None
+
+    @staticmethod
+    def _try_leaf_cookie(backend, session) -> str | None:
+        """兜底：登录了却没看到 userhash，就去饼干页领一块新的。
+
+        这一步失败是常态（人还没登录完、页面正在跳转），所以异常一律当「还没好」，
+        不往界面上报错 —— 它本来就是兜底路径，主路径是上面的 read_cookies。
+        """
+        try:
+            value = backend.apply_leaf_cookie(session)
+        except Exception:
+            return None
+        value = str(value or "").strip()
+        if value and backend.looks_like_userhash(value):
+            return value
+        return None
 
 
 class SettingsDialog(tk.Toplevel):
@@ -1494,7 +1939,7 @@ class App:
 
     def open_login(self) -> None:
         try:
-            dialog = LoginDialog(self.root, self.client)
+            dialog = LoginDialog(self.root, self.client, self.settings)
             self.root.wait_window(dialog)
             if dialog.userhash:
                 self.settings.userhash = dialog.userhash
