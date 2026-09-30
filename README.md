@@ -8,7 +8,10 @@
 
 - 五种格式：
   - **HTML**：图片以 base64 内嵌，单文件可离线打开、打印、另存为 PDF；
-  - **PDF**：调用本机 Chrome / Edge 的无头模式直接渲染成 PDF，图片与中文字体都内嵌，可直接打印或归档；
+  - **PDF**：调用本机 Chrome / Edge 的无头模式直接渲染成 PDF，图片与中文字体都内嵌，可直接打印或归档。
+    ⚠️ **打包版（Releases 里的 exe）目前无法导出 PDF** —— 打包运行时启动浏览器会被系统中断，
+    此时程序会自动改存 HTML 并提示你如何打印成 PDF；需要真正的 PDF 请从源码运行
+    `python main.py <串号> -f pdf`。
   - **TXT**：纯文本，图片保留链接；
   - **Markdown**：便于二次编辑、贴到博客；
   - **EPUB**：可直接导入阅读器的电子书，图片可选内嵌 / 仅链接 / 丢弃。
@@ -135,7 +138,7 @@ xdao-export/
 │     ├─ markdown.py       Markdown
 │     └─ epub.py           EPUB 3（纯标准库实现）
 ├─ tools/clean_scratch.py  清理测试残留目录
-└─ tests/                  191 个离线单元测试
+└─ tests/                  218 个离线单元测试
 ```
 
 ## 开发
