@@ -97,6 +97,8 @@ class ThreadCache:
     page_files: list[str] = field(default_factory=list)
     # 写缓存失败时记录原因，供界面提示；空表示一切正常。
     write_error: str = ""
+    # 连缓存目录本身都没能建出来（例如目录权限只放开到上一级）。
+    fetch_error: str = ""
 
     @property
     def path(self) -> Path:
@@ -134,8 +136,13 @@ class ThreadCache:
         except (OSError, TypeError) as exc:
             # 缓存写不进去不该中断导出，但必须让上层知道 ——
             # 否则用户会以为抓取成果已留存，下次重跑还得再抓一遍。
+            detail = f"{type(exc).__name__}: {exc}"
             if not self.write_error:
-                self.write_error = f"{type(exc).__name__}: {exc}"
+                self.write_error = detail
+            # 目录这一级就失败（而不是文件写失败）单独记一笔：
+            # 「缓存目录本身用不了」和「某个文件写不动」给用户的建议不一样。
+            if not self.fetch_error and isinstance(exc, PermissionError):
+                self.fetch_error = detail
 
     @staticmethod
     def hash_payload(payload: dict) -> str:
@@ -627,6 +634,15 @@ class CachedThreadFetcher:
                 for post in parsed_pages[page]:
                     cache.fingerprints[str(post.id)] = post_fingerprint(post)
             cache.save()
+
+        if cache.fetch_error:
+            # 缓存目录这一级就用不了：说清楚「这次没留下断点续传的成果」，
+            # 并给出下一步（换缓存目录），别只说一句 PermissionError。
+            cache.write_error = (
+                f"{cache.fetch_error} —— 缓存目录 {self.cache_dir} 写不进去，"
+                "这次抓取不会留下断点续传的成果；可以在「设置 → 缓存」里"
+                "换一个能写的缓存目录（默认位置一般可用）。"
+            )
 
         # 「换了缓存目录」这类说明要一直带着走；真正的写入失败优先显示。
         warning = cache.write_error or self.cache_note

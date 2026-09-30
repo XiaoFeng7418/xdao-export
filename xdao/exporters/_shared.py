@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import html as html_lib
+import os
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -358,9 +360,45 @@ def can_write_dir(directory: Path | str) -> bool:
 
     和 ``ensure_writable`` 探的是同一件事，区别是这里要拿来**换地方重试**
     （例如缓存目录写不进去时另找一个），所以失败不该炸掉调用方。
+
+    探测要**往下一层**探，不能只看这一层：用户报过 ``D:\\X岛\\.cache`` 这一级
+    建得出来、``.cache\\pages`` 却拒绝访问——只探表层会把这种目录判成"能写"，
+    然后换目录的兜底逻辑就永远不会触发（v0.5.1 的实测教训）。所以这里既试建
+    文件，也试建一个临时子目录，任何一步失败就算不能写。
     """
+    target = Path(directory)
+    probe = target / PROBE_NAME
+    write_ok = True
     try:
-        ensure_writable(directory, kind="")
-    except (OutputDirNotWritable, OSError):
+        target.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+    except OSError:
+        write_ok = False
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if not write_ok:
         return False
+    # 下一层：真实导出/缓存都会在自己下面建子目录（cache/pages、images/ab/ 等）。
+    child = target / f"{PROBE_NAME}.d{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    try:
+        child.mkdir()
+    except OSError:
+        return False
+    try:
+        (child / PROBE_NAME).write_text("ok", encoding="utf-8")
+    except OSError:
+        return False
+    finally:
+        # 先删文件再删目录，别在用户目录里留垃圾。
+        try:
+            (child / PROBE_NAME).unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            child.rmdir()
+        except OSError:
+            pass
     return True
