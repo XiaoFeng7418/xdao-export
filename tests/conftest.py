@@ -22,6 +22,14 @@ ARTIFACTS_ROOT = Path(__file__).resolve().parent.parent / ".test-artifacts"
 # （`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）。
 # 最坏情况量到过 45 条无声消失，而报告里一个 failed 都没有。
 # 所以这里盯的是「跳过的是不是只有那两条显式开关的真机用例」。
+#
+# 两条使用约定：
+# 1) **跳过必须写 reason=**。白名单是按理由**文本**匹配的，`skipif(sys.platform != "win32")`
+#    不写 reason 时理由是空串 → 会被判成「意外跳过」，CI 的 Linux 矩阵会红得莫名其妙。
+# 2) 白名单内的整组跳过（无头机器）不算失败，但**一定会打印一行提醒** ——
+#    实测过 Tk 在套件中途亚秒级初始化失败（`Can't find a usable tk.tcl …`），
+#    每次刚好带走 `test_theme.py` 那 10 条：只跳 3~5 条时最容易被当成「全跑过了」，
+#    所以除了「恰好就是那两条真机用例」以外，一律要说一声。
 _SKIP_REASONS_ALLOWED = (
     "XDAO_BROWSER_TEST",
     "XDAO_LIVE_NOTIFY",
@@ -31,6 +39,11 @@ _SKIP_REASONS_ALLOWED = (
     "需要 Windows",
 )
 _SKIP_SAFETY_LIMIT = 5
+
+# 「恰好就是这两条真机用例」＝什么都不用说。其余任何跳过都要留下一行记录：
+# 少跑 1~5 条时最容易被当成全跑过了（实测 Tk 中途抖动一次带走 test_theme 那 10 条，
+# 也见过只带走个别函数级夹具的情况）。
+_EXPECTED_SKIPS = ("browser_login", "live_notify")
 
 # 本次运行里跳过的用例（nodeid, 理由），由下面的 hook 收集。
 _skips: list[tuple[str, str]] = []
@@ -59,15 +72,17 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 —— pytest 的
         for node, reason in _skips
         if not any(token.lower() in reason.lower() for token in _SKIP_REASONS_ALLOWED)
     ]
-    if len(_skips) > _SKIP_SAFETY_LIMIT and not unexpected:
-        # 一整组界面用例被跳过（无头机器）：允许，但要说一声，别当成「全跑过了」。
-        print(f"\n[conftest] 本次跳过了 {len(_skips)} 条（界面/真机用例），未计入通过数。")
-        return
     if unexpected:
         lines = "\n".join(f"  - {node}：{reason}" for node, reason in unexpected)
         raise pytest.UsageError(
             "有测试被意外跳过——这类跳过会让「0 failed」名不副实，请先查清原因：\n" + lines
         )
+    if len(_skips) <= _SKIP_SAFETY_LIMIT and all(
+        any(token in node for token in _EXPECTED_SKIPS) for node, _ in _skips
+    ):
+        return  # 就是那两条真机用例，本来就不该跑
+    # 其余情况（无头机器整组跳过、或者只跳了少数几条）一律说一声：别当成「全跑过了」。
+    print(f"\n[conftest] 本次跳过了 {len(_skips)} 条（界面/真机用例），未计入通过数。")
 
 
 @pytest.fixture
