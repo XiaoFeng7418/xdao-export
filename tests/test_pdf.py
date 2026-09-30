@@ -245,3 +245,59 @@ def test_create_exporter_supports_pdf(out_dir, artifacts_dir):
 def test_registry_pdf_entry_exists():
     assert "pdf" in EXPORTERS
     assert EXPORTERS["pdf"][2] is PdfBuilder
+
+
+# ---------- 浏览器启不来时的降级 ----------
+
+
+def test_save_falls_back_to_html_when_browser_fails(out_dir, monkeypatch):
+    """打包版里浏览器可能起不来（STATUS_BREAKPOINT）。
+
+    这种情况下不能让用户什么都拿不到：改存 HTML，并说明怎么自己打印成 PDF。
+    """
+    builder = PdfBuilder(FakeClient(), browser_path="C:/不存在.exe")
+
+    with pytest.raises(PdfError):
+        # 先确认不允许降级时确实会抛错
+        PdfBuilder(FakeClient(), browser_path="C:/不存在.exe", fallback_html=False).save(
+            sample_thread("降级测试"), "all", out_dir
+        )
+
+    path = builder.save(sample_thread("降级测试"), "all", out_dir)
+    assert path.suffix == ".html"
+    assert path.exists()
+    assert path.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+    assert "降级测试.html" in builder.fallback_note
+    assert "Ctrl+P" in builder.fallback_note
+
+
+def test_fallback_reports_via_progress(out_dir):
+    messages: list[str] = []
+    builder = PdfBuilder(
+        FakeClient(), progress=messages.append, browser_path="C:/不存在.exe"
+    )
+    builder.save(sample_thread(), "all", out_dir)
+    assert any("改为保存 HTML" in m for m in messages)
+
+
+def test_browser_launch_failure_hint_mentions_breakpoint():
+    from xdao.exporters.pdf import browser_launch_failure_hint
+
+    hint = browser_launch_failure_hint(0x80000003)
+    assert "STATUS_BREAKPOINT" in hint
+    assert "HTML" in hint
+
+
+def test_browser_launch_failure_hint_for_other_codes():
+    from xdao.exporters.pdf import browser_launch_failure_hint
+
+    assert "STATUS_BREAKPOINT" not in browser_launch_failure_hint(1)
+
+
+def test_is_frozen_reflects_interpreter(monkeypatch):
+    import xdao.exporters.pdf as pdf_module
+
+    monkeypatch.delattr(pdf_module.sys, "frozen", raising=False)
+    assert pdf_module.is_frozen() is False
+    monkeypatch.setattr(pdf_module.sys, "frozen", True, raising=False)
+    assert pdf_module.is_frozen() is True

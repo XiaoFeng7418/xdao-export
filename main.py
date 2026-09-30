@@ -177,6 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="只做接口连接自检",
     )
+    parser.add_argument(
+        "--pdfdiag",
+        action="store_true",
+        help=argparse.SUPPRESS,  # 排障用：诊断 PDF 导出为何启动不了浏览器
+    )
     return parser
 
 
@@ -317,6 +322,11 @@ def run_cli(args: argparse.Namespace) -> int:
             size = f"（{path.stat().st_size / 1024 / 1024:.1f} MB）" if path.exists() else ""
             print(f"    完成：{path}{size}")
             log_lines.append(f"    完成：{path}{size}")
+            # 例如 PDF 渲染失败改存了 HTML —— 必须在日志里留下原因
+            note = getattr(exporter, "fallback_note", "")
+            if note:
+                print(f"    说明：{note}")
+                log_lines.append(f"    说明：{note}")
         except XdaoError as exc:
             failed.append(raw)
             print(f"    失败：{exc}", file=sys.stderr)
@@ -353,6 +363,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.selftest:
         return selftest()
+
+    if args.pdfdiag:
+        from tools.pdf_diag import main as pdf_diag_main
+
+        return pdf_diag_main()
 
     if args.threads:
         return run_cli(args)

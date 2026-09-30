@@ -15,8 +15,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -77,6 +79,33 @@ def find_browser(explicit: str | Path | None = None) -> BrowserInfo:
     )
 
 
+def is_frozen() -> bool:
+    """当前是否运行在 PyInstaller 打好的可执行文件里。"""
+    return bool(getattr(sys, "frozen", False))
+
+
+def browser_launch_failure_hint(returncode: int) -> str:
+    """针对浏览器启动失败给出更有用的解释。
+
+    实测：打包好的 exe 里启动浏览器会得到 STATUS_BREAKPOINT（0x80000003），
+    试过干净环境、最小 PATH、经 cmd.exe 代启、直接 CreateProcessW 都无法绕开，
+    而同样的命令从命令行手工执行完全正常 —— 属于打包运行时的系统级限制。
+    """
+    hint = ""
+    unsigned = returncode & 0xFFFFFFFF
+    if unsigned == 0x80000003:
+        hint = "（浏览器被系统中断：STATUS_BREAKPOINT）"
+    elif unsigned == 0x80000004:
+        hint = "（浏览器被系统中断：STATUS_SINGLE_STEP）"
+    lines = [f"可以改用 HTML 格式，或在设置里换一个浏览器路径。{hint}"]
+    if is_frozen():
+        lines.append(
+            "另外：当前的打包版在部分机器上无法启动浏览器，"
+            "这一项功能需要从源码运行（python main.py -f pdf）才可用。"
+        )
+    return "\n" + "\n".join(lines)
+
+
 def render_html_to_pdf(
     html: str,
     output_pdf: Path | str,
@@ -84,6 +113,7 @@ def render_html_to_pdf(
     browser_path: str | Path | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     progress=None,
+    work_dir: Path | None = None,
 ) -> Path:
     """把一段 HTML 渲染成 PDF，返回写入的路径。
 
@@ -97,9 +127,9 @@ def render_html_to_pdf(
 
     # 浏览器对非 ASCII 路径支持不稳定，临时文件统一用 ASCII 名。
     token = uuid.uuid4().hex[:8]
-    work_dir = output_pdf.parent
-    work_dir.mkdir(parents=True, exist_ok=True)
-    temp_dir = work_dir / f".xdao-pdf-{token}"
+    staging = Path(work_dir) if work_dir else output_pdf.parent
+    staging.mkdir(parents=True, exist_ok=True)
+    temp_dir = staging / f".xdao-pdf-{token}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     source = temp_dir / "source.html"
     target = temp_dir / "output.pdf"
@@ -121,6 +151,12 @@ def render_html_to_pdf(
             f"--print-to-pdf={target}",
             source.as_uri(),
         ]
+        # 浏览器不要继承本进程的 Tcl/Tk 变量：打包版会设它们，指向与系统版本
+        # 不匹配的 DLL，子进程加载后会直接崩掉。
+        env = dict(os.environ)
+        for key in ("TCL_LIBRARY", "TK_LIBRARY"):
+            env.pop(key, None)
+
         started = time.monotonic()
         try:
             completed = subprocess.run(
@@ -130,6 +166,7 @@ def render_html_to_pdf(
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise PdfError(
@@ -140,8 +177,7 @@ def render_html_to_pdf(
         if not target.exists() or target.stat().st_size == 0:
             detail = (completed.stderr or completed.stdout or "").strip()[-400:]
             raise PdfError(
-                f"{browser.name} 没有生成 PDF（退出码 {completed.returncode}）。\n{detail}\n"
-                "可以改用 HTML 格式，或在设置里换一个浏览器路径。"
+                f"{browser.name} 没有生成 PDF（退出码 {completed.returncode}）。\n{detail}{browser_launch_failure_hint(completed.returncode)}"
             )
 
         # 校验确实是 PDF，避免把错误页当成结果交出去。
@@ -173,12 +209,16 @@ class PdfBuilder:
         filename_template: str | None = None,
         browser_path: str | None = None,
         pdf_timeout: int | None = None,
+        fallback_html: bool = True,
     ) -> None:
         self._client = client
         self._progress = progress
         self.filename_template = filename_template
         self.browser_path = browser_path
         self.timeout = int(pdf_timeout or DEFAULT_TIMEOUT)
+        # 浏览器启不来时是否退而保存 HTML（对用户总比什么都没有强）
+        self.fallback_html = fallback_html
+        self.fallback_note = ""
         # 复用 HTML 导出器：图片内嵌、正文渲染这些逻辑不再重复实现。
         self._html = HtmlBuilder(client, progress=progress, filename_template=filename_template)
 
@@ -220,4 +260,21 @@ class PdfBuilder:
         output_dir = ensure_writable(output_dir)
         self._notify("正在整理 HTML（图片内嵌）…")
         path = output_dir / (sanitize_filename(self.output_name(thread)) + ".pdf")
-        return self.build(thread, scope, path, include_hashes)
+        try:
+            return self.build(thread, scope, path, include_hashes)
+        except PdfError:
+            if not self.fallback_html:
+                raise
+            # 浏览器启不来时，把抓到并渲染好的内容存成 HTML ——
+            # 用户在浏览器里打开后按 Ctrl+P 即可另存为 PDF。
+            self._notify("PDF 渲染失败，改为保存 HTML（可在浏览器里打印成 PDF）…")
+            html_path = output_dir / (sanitize_filename(self.output_name(thread)) + ".html")
+            html_path.write_text(
+                self._html.build(thread, scope, include_hashes), encoding="utf-8"
+            )
+            self.fallback_note = (
+                f"PDF 渲染失败，已改存 {html_path.name}；"
+                "在浏览器里打开它，按 Ctrl+P 选「另存为 PDF」即可得到同样的结果。"
+            )
+            self._notify(self.fallback_note)
+            return html_path
