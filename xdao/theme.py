@@ -130,44 +130,54 @@ _FONTS_RESOLVED = False
 _FONT_CACHE: dict[tuple[str, ...], str] = {}
 
 
-def _first_available(candidates: tuple[str, ...], fallback: str) -> str:
-    """挑系统里第一个装了的字体。探测失败（无 GUI/Tcl 环境）时用 fallback。
-
-    只在进程里探测一次（结果缓存），因为字体列表在运行期不会变。注意根窗口
-    可能已被销毁：那时的 ``tkfont.families()`` 会抛 TclError，所以每个候选
-    都要能安全跳过，绝不能因为字体不存在而影响启动。
-    """
-    global _FONTS_RESOLVED
-    if _FONTS_RESOLVED:
-        return _FONT_CACHE.get(candidates, candidates[0])
-    _FONTS_RESOLVED = True
-
-    available: set[str] = set()
-    for root in (tk._default_root, None):  # noqa: SLF001 —— 没有根窗口时没法枚举字体
-        if root is not None:
+def _available_families() -> set[str]:
+    """系统里可用的字体族（小写）。拿不到就返回空集合，绝不抛异常。"""
+    candidates = []
+    root = tk._default_root  # noqa: SLF001 —— 没有根窗口时枚举不了字体
+    if root is not None:
+        candidates.append(root)
+    candidates.append(None)
+    for source in candidates:
+        if source is not None:
             try:
-                if not root.winfo_exists():
+                if not source.winfo_exists():
                     continue
             except Exception:  # noqa: BLE001 —— 根已销毁
                 continue
         try:
-            available = {name.lower() for name in tkfont.families(root)}
-            break
-        except Exception:  # noqa: BLE001 —— 换了下一个来源再试
-            available = set()
+            return {name.lower() for name in tkfont.families(source)}
+        except Exception:  # noqa: BLE001 —— 换下一个来源再试
+            continue
+    return set()
 
-    chosen = fallback
-    if available:
-        for name in candidates:
-            if name.lower() in available:
-                chosen = name
-                break
-        else:
-            chosen = fallback
+
+def _first_available(candidates: tuple[str, ...], fallback: str) -> str:
+    """挑系统里第一个装了的字体，结果在进程内缓存。
+
+    两条硬约束：
+    1. **有真窗口时才落缓存**。导入期（还没有根窗口）探测不到字体，
+       那时给个结果会一路缓存下去，于是"控件用的字体"和 ``theme.FONT_MONO``
+       在 CI 上对不上（曾经报 ``assert 'Consolas' == 'Cascadia Mono'``）。
+    2. **根窗口可能已被销毁**：销毁后 ``tkfont.families()`` 会抛 TclError，
+       所以每个来源都要能安全跳过，绝不能因为字体不存在而影响启动。
+    """
+    global _FONTS_RESOLVED
+    if _FONTS_RESOLVED:
+        return _FONT_CACHE.get(candidates, candidates[0])
+
+    available = _available_families()
+    if not available:
+        # 还没有窗口（导入期 / 纯 Tcl 测试）：先给候选首个，不落缓存，等有窗口再定
+        return candidates[0]
+
+    for name in candidates:
+        if name.lower() in available:
+            chosen = name
+            break
     else:
-        # 探测不到任何字体（比如纯 Tcl 环境）：退回候选里的第一个
-        chosen = candidates[0]
+        chosen = fallback
     _FONT_CACHE[candidates] = chosen
+    _FONTS_RESOLVED = True
     return chosen
 
 
@@ -187,7 +197,8 @@ def resolve_fonts(root: tk.Misc | None = None) -> tuple[str, str]:
     之后再调用（含根窗口被销毁后）都返回同一份结果 —— 界面里同一个控件
     不能一会儿用一个字体名、一会儿用另一个。
 
-    测试环境（无 GUI / 纯 Tcl）探测不到字体时会退回候选里的第一个，不报错。
+    还没有窗口时（导入期 / 纯 Tcl 测试）**不落缓存**，只给候选里的第一个，
+    等有窗口后再定，否则导入期绑定的族名会一路粘住。
     """
     global FONT_UI, FONT_MONO
     FONT_UI = _first_available(UI_FONT_CANDIDATES, FALLBACK_UI_FONT)

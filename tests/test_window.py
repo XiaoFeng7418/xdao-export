@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
+import sys
 import time
 import tkinter as tk
+from pathlib import Path
 
 import pytest
 
@@ -120,6 +123,24 @@ def columns(app: gui.App) -> tuple[tk.Misc, tk.Misc]:
     return _grid_child(outer, 1, 0), _grid_child(outer, 1, 1)
 
 
+def wait_visible(widget: tk.Misc, width: int = 1, timeout: float = 3.0) -> bool:
+    """等控件真的被映射出来（宽度够）。
+
+    窗口是挪到屏幕外的，Windows 偶尔要过一拍才把它映射上，``winfo_width()``
+    会先报 0。硬断言宽度的用例在那种时候会莫名其妙地挂，所以这里给它一点
+    时间（并顺手 ``update()`` 推进事件），超时再交给断言去失败。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        widget.update_idletasks()
+        widget.update()
+        if widget.winfo_ismapped() and widget.winfo_width() >= width:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 # ---------------------------------------------------------------- 窗口基本形态
 
 
@@ -200,25 +221,89 @@ def test_progress_bar_is_visible(app: gui.App) -> None:
 
 
 def test_start_button_spans_the_column(app: gui.App) -> None:
-    assert app.start_button.winfo_ismapped()
+    assert wait_visible(app.start_button), "开始按钮一直没被映射出来"
     assert app.start_button.winfo_width() >= 250
 
 
 # ---------------------------------------------------------------- 日志区
 
 
+def _widget_font(widget: tk.Misc) -> tuple[str, int]:
+    """读控件的真实字体族名与字号。
+
+    ``cget("font")`` 给回来的是 Tcl 列表字符串：族名带空格时会加花括号，
+    例如 ``'{Cascadia Mono} 9'``。直接 ``split()`` 会把族名截成 ``'{Cascadia'``,
+    必须按 Tcl 列表解析。
+    """
+    parts = widget.tk.splitlist(str(widget.cget("font")))
+    return str(parts[0]), int(parts[1])
+
+
 def test_log_text_is_read_only_and_monospace(app: gui.App) -> None:
     assert str(app.log_text.cget("state")) == "disabled"
-    # cget("font") 返回的是 "Consolas 9" 这样的字符串，跟元组比要对齐格式。
-    # 断言到"是主题认可的等宽字体"即可，不钉死某一个族名：字体探测在导入时
-    # 缓存一次，本机是 Consolas、CI 上可能是别的（曾经因为钉死族名在
-    # windows-latest 上挂过）。
-    family, size = str(app.log_text.cget("font")).split()[:2]
-    allowed = set(theme.MONO_FONT_CANDIDATES) | {theme.FALLBACK_MONO_FONT, theme.FONT_MONO}
-    assert family in allowed, f"日志字体 {family!r} 不在等宽候选里"
+    # 族名不钉死某一个（本机是 Consolas、CI 上可能是别的），但必须跟主题
+    # 此刻认定的等宽字体一致：曾经导入期与有窗口期各探一次，绑出两个族名，
+    # 在 windows-latest 上表现成 assert 'Consolas' == 'Cascadia Mono'。
+    family, size = _widget_font(app.log_text)
+    assert family == theme.FONT_MONO, (
+        f"日志字体 {family!r} 与主题认定的 {theme.FONT_MONO!r} 不一致"
+    )
+    assert family in set(theme.MONO_FONT_CANDIDATES) | {theme.FALLBACK_MONO_FONT}
     assert len(family) <= 16, f"字体名 {family!r} 不像是真的"
-    assert int(size) == theme.SIZE_SMALL
+    assert size == theme.SIZE_SMALL
+    assert wait_visible(app.log_text, width=400), "日志框宽度一直不到 400"
     assert app.log_text.winfo_width() > 400
+
+
+def test_widget_fonts_match_the_theme_after_startup() -> None:
+    """界面控件的字体族必须与 ``theme`` 报的一致 —— 在**全新进程**里验证。
+
+    为什么另起进程：``xdao.gui`` 导入期就算好了模块级字体别名，而那时还没有
+    根窗口，``theme.resolve_fonts`` 只能给出候选里的第一个、且（这一版起）
+    不落缓存。CI 上曾因此出现"控件用 Consolas、主题报 Cascadia Mono"。
+    在同进程里测是不可靠的：别的用例可能早就替我们把字体探测做了。子进程
+    则是干净的导入顺序 —— 跟 `python main.py` 一模一样。
+    """
+    script = (
+        "import tkinter as tk;"
+        "from xdao import gui, theme;"
+        "import_at_import = gui.MONO_FONT[0];"
+        "root = tk.Tk();root.geometry('900x700+3000+3000');"
+        "app = gui.App(root);"
+        "root.update_idletasks();root.update();"
+        "log = str(app.log_text.cget('font'));"
+        "print('|'.join([import_at_import, theme.FONT_MONO, gui.MONO_FONT[0], log]));"
+        "root.destroy()"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert proc.returncode == 0, f"子进程启动失败：{proc.stderr[-800:]}"
+    at_import, theme_mono, module_mono, log_font = proc.stdout.strip().split("|")
+    assert module_mono == theme_mono, (
+        f"模块级 MONO_FONT={module_mono!r} 与 theme.FONT_MONO={theme_mono!r} 分叉"
+    )
+    # 子进程里拿不到 Tcl 解释器，用 tk 的列表解析器读那段字体串
+    tk_family = tk.Tcl().splitlist(log_font)[0]
+    assert tk_family == theme_mono, (
+        f"日志控件字体 {log_font!r} 与主题 {theme_mono!r} 不一致"
+    )
+    # 导入期没有窗口，给的是候选里的第一个 —— 允许与运行期不同，
+    # 但不许被"粘住"（上面两条断言就是在查这件事）。
+    assert at_import in set(theme.MONO_FONT_CANDIDATES)
+
+
+def test_module_font_aliases_follow_the_theme(app: gui.App) -> None:
+    """``setup_style`` 之后，``gui`` 的模块级字体别名必须已经重算过。"""
+    assert gui.MONO_FONT[0] == theme.FONT_MONO
+    assert gui.BODY_FONT[0] == theme.FONT_UI
+    assert gui.SMALL_FONT[0] == theme.FONT_UI
+    assert gui.SECTION_FONT[0] == theme.FONT_UI
+    assert _widget_font(app.log_text)[0] == theme.FONT_MONO
 
 
 def test_log_widget_is_wired_to_the_log_method(app: gui.App) -> None:
