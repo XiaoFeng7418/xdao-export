@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from pathlib import Path
@@ -24,6 +25,27 @@ USER_AGENT = (
 
 # 单张图片体积上限，防止异常响应把内存吃满。
 MAX_IMAGE_BYTES = 24 * 1024 * 1024
+
+# gzip 包固定以这两个字节开头。
+GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _decode_response_body(data: bytes, content_type: str = "") -> bytes:
+    """把响应体还原成它真正的内容。
+
+    实测：登录页的验证码接口把 PNG 包在 gzip 里发回来，HTTP 头却写着
+    ``image/png`` —— 只看 ``Content-Encoding`` 会漏掉。所以这里既认 gzip 魔数，
+    也认 ``Content-Type`` 里的 gzip 字样；解压失败（响应本身就是坏的）原样返回，
+    让调用方按自己的方式报错，而不是在这里抛一个看不出所以然的异常。
+    """
+    if not data:
+        return data
+    if data[:2] != GZIP_MAGIC and "gzip" not in (content_type or "").lower():
+        return data
+    try:
+        return gzip.decompress(data)
+    except (OSError, EOFError, zlib.error):
+        return data
 
 
 class XdaoError(Exception):
@@ -111,6 +133,9 @@ class XdaoClient:
         self.last_page_index = 1
         # 图片本地缓存目录（由外部按需设置，用于跨次导出去重下载）。
         self.image_cache_dir: Path | None = None
+        # 最近一次成功响应的头（键统一小写）。用来判断响应体是否需要额外解码，
+        # 又不必改动 _request 的返回类型、也就不会打断任何替换 _request 的调用方。
+        self._last_response_headers: dict[str, str] = {}
 
     @staticmethod
     def _proxy_from_env() -> str:
@@ -179,6 +204,10 @@ class XdaoClient:
                 req.add_header(key, value)
             try:
                 with self._opener.open(req, timeout=effective_timeout) as resp:
+                    self._last_response_headers = {
+                        str(key).lower(): str(value)
+                        for key, value in resp.headers.items()
+                    }
                     if max_bytes:
                         raw = resp.read(max_bytes + 1)
                         if len(raw) > max_bytes:
@@ -394,6 +423,18 @@ class XdaoClient:
             )
             self._jar.set_cookie(cookie)
 
+    def import_userhash(self, userhash: str) -> str:
+        """把「浏览器登录 / 粘贴饼干」拿到的 userhash 设进 cookie jar，并返回它。
+
+        只做「设进 jar」这一件事：写不写配置文件由调用方决定（界面里的
+        「记住登录状态」是用户的选项，客户端不该替他做主），所以这里不落盘。
+        真正的设值走 :meth:`set_userhash` —— 它会先清掉 jar 里旧的同名 cookie，
+        否则同一请求里会出现两条 userhash，服务端取哪条并不确定。
+        """
+        value = (userhash or "").strip()
+        self.set_userhash(value)
+        return value
+
     def fetch_login_form(self) -> LoginForm:
         login_url = f"{self.SITE}/Member/User/Index/login.html"
         # 有可能被弹到登录页（例如会话过期），跟着跳转走一遍再解析。
@@ -409,7 +450,12 @@ class XdaoClient:
             meta_match = re.search(r'name="__hash__"[^>]*content="([^"]+)"', html)
             if meta_match:
                 hash_value = meta_match.group(1)
-        captcha_bytes = self._request(f"{self.SITE}/Member/User/Index/verify.html")
+        captcha_raw = self._request(f"{self.SITE}/Member/User/Index/verify.html")
+        # 实测：验证码接口把 PNG 包在 gzip 里发回来，头却写着 image/png，
+        # 只认 Content-Encoding 会漏，界面那边就会拿到一堆压缩字节。
+        captcha_bytes = _decode_response_body(
+            captcha_raw, self._last_response_headers.get("content-type", "")
+        )
         return LoginForm(captcha_bytes=captcha_bytes, hash_value=hash_value, login_url=login_url)
 
     def login(self, email: str, password: str, verify: str, hash_value: str = "") -> str:
@@ -501,7 +547,8 @@ class XdaoClient:
                 )
             raise XdaoError(
                 "已登录，但这个账号的饼干列表是空的。请先在浏览器里打开 X 岛用户系统 "
-                "→「饼干」→ 领取并应用一块饼干，再回到程序重新登录。"
+                "→「饼干」→ 领取并应用一块饼干，再回到程序重新登录；"
+                "也可以直接用登录窗口里的「用浏览器登录」。"
             )
 
         cookie_id = ids[0]
@@ -521,7 +568,11 @@ class XdaoClient:
                     userhash = cookie.value
                     break
         if not userhash:
-            raise XdaoError("应用饼干成功，但未能读取到 userhash，请手动粘贴饼干。")
+            raise XdaoError(
+                "应用饼干成功，但没能从这个账号里读到 userhash。"
+                "可以点登录窗口的「用浏览器登录」让它自己取一次，"
+                "或把浏览器里的 cookie 整段粘贴到「直接粘贴饼干登录」里。"
+            )
         self.set_userhash(userhash)
         return userhash
 

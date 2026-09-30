@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 348 项，必须全绿）
+2. **跑测试**（当前基线 485 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 348 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 485 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -377,7 +377,10 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 路线图（尚未实现）
 
-- 无人值守登录 / 验证码识别
+- 无人值守登录（浏览器登录已把这一步缩到只剩验证码）
+  - 备注：实测视觉模型对 X 岛的验证码识别率太低（三张只对一张半），
+    **不要**把基于 OCR / 视觉模型的自动登录写进产品 —— 认错一次就得从头再来，
+    还不如让用户自己点一下浏览器窗口。
 - 监控列表的导入 / 导出
 - PDF 的页边距 / 纸张大小可配置（目前沿用网页的打印样式）
 
@@ -450,16 +453,66 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - **登录失败的文案分型**（v0.6.1）：`gui.describe_login_failure(message) -> (标题, 该做的事)`，
   五种分支（验证码不对 / 密码不对 / 账号有问题 / 登录没有生效 / 这个账号还没有饼干）+ 兜底透传原文，
   `LoginDialog._poll_login` 失败时用它当弹窗标题与正文。
+- **用浏览器登录**（v0.7.0）：新增 `xdao/browser_login.py`，用系统里的 Edge / Chrome 开一个
+  **独立用户目录**的窗口（`--remote-debugging-port=0 --user-data-dir=<配置目录>\browser-profile`，
+  刻意不加 `--headless` / `--guest` / `--incognito`），端口读 `<profile>\DevToolsActivePort` 第一行，
+  再用**纯标准库**手写的 WebSocket 帧层连 CDP，`Network.getCookies` 读 `userhash`
+  （HttpOnly 的也读得到）；没读到就 `apply_leaf_cookie()` 在页面里 `fetch` 一遍 switchTo/export 兜底。
+  界面侧 `gui.BrowserLoginDialog` 的后台线程只往 `queue.Queue` 投消息、主线程 `after` 轮询，
+  退出前 terminate 浏览器进程，不留孤儿。
+  **教训：验证码那一步没法自动化** —— 实测视觉模型对 X 岛的验证码识别率太低（三张只对一张半），
+  所以"真人自己登录一次"才是最小代价方案，不要把基于 OCR 的自动登录写进产品。
+- **粘贴登录更宽容**（v0.7.0）：`browser_login.parse_userhash_input()` 认整段 cookie
+  （`a=1; userhash=ABC; b=2`）、`userhash=ABC`、裸值、带引号换行的粘贴，`looks_like_userhash()`
+  判形态；`LoginDialog._manual_userhash` 解析失败只弹提示、不抛异常。旧版要求用户自己打开
+  浏览器开发者工具从 Cookie 里挑出 `userhash=` 到 `;` 之间的那一段，是登录流程里最容易劝退人的一步。
+- **验证码响应的 gzip 隐患**（v0.7.0）：`verify.html` 实测把 PNG 包在 gzip 里发回来，
+  HTTP 头却写 `image/png`；旧代码只认 `Content-Encoding`，所以字节一直是压缩的。
+  Tk 的 `PhotoImage` 恰好能直接吃压缩字节，这个问题才一直没暴露。
+  `client._decode_response_body(data, content_type)` 按 gzip 魔数兜一层（解压失败原样返回），
+  `_request()` 顺手把最近一次响应头记进 `self._last_response_headers`（键统一小写），
+  `fetch_login_form()` 用它判断 —— **不改 `_request` 的返回类型**，替换 `_request` 的既有夹具不受影响。
+
+## 浏览器登录：两个真机才量得出来的坑（v0.7.0）
+
+跑真机验证的脚本是 `_scratch/e2e_browser_login.py`（在仓库外；打 tag 前跑一次，
+它会启一次真 Edge、真 CDP，登录页截图落在 `_scratch/e2e_browser_login/login_page.png`）。
+
+1. **「`/json/list` 上写着登录页地址」不等于「页面已经能用」。**
+   真机实测：浏览器起来后目标列表里立刻就有
+   `https://www.nmbxd1.com/Member/User/Index/login.html`，但挂上去后 `location.href`
+   一直是 `about:blank`、`document.title` 是空串，`Page.captureScreenshot` /
+   `Runtime.evaluate` 一律超时 —— **文档还没提交**，页面里的 `fetch` 属于别的源。
+   本机走代理时这一步要 **10–12 秒**才提交（有时代理更快就更早）。
+   推论（写测试 / 写健康检查时都适用）：
+   - 断言要分两层：**目标层面**（站点标签在不在、会话挂的是不是它、`apply_leaf_cookie`
+     返回 None）任何情况下都成立，可以当健康判据；**文档层面**（`location.href`、
+     `document.title`）依赖网络是否可达，不能当判据。
+   - 真机脚本要**等文档提交**再截图/断言，否则会得到一张空白页截图和一个假的失败。
+   - `gui.BrowserLoginDialog` 之所以在连上后调一次
+     `browser_login.ensure_login_page(session)`（`xdao/gui.py:780-788`，失败只投 note、
+     不掐流程），就是为了这个窗口期；**它只在启动时调一次**。
+2. **`ensure_login_page()` 不能放进轮询循环。**
+   `session.current_url()` 反映的是**已提交的文档**，不是待加载地址 —— 网络不通时它一直
+   是 `about:blank`，每轮都会判定"不在站内"再导航一次＝反复重载登录页（用户正输密码也照重载）。
+   将来真要周期性校正，必须加"每个标签最多导航一次"的护栏。
+3. **收尾要按实例、不要回头读登记处。** `gui.BrowserLoginDialog._release()` 会把
+   `self._browser` 清成 None；取消若落在「后台线程已登记、`browser.start()` 还在 Popen 里」
+   那一瞬，主线程那次收尾停不掉任何东西（`process` 还是 None）却清空了登记处，后台线程随后
+   真把进程拉起来就**没人 terminate，成了孤儿**。修法是 `_release_browser(self, browser)`
+   按**局部实例引用**收尾（`xdao/gui.py:671-686`），两个"起来之后才发现已取消"的守卫都用它。
+   相应教训：`all(p.returncode is not None for p in processes)` 在 `processes` 为空时**恒真**，
+   旧用例因此会空过 —— 断言孤儿必须先把"进程确实被拉起来"钉死。
 
 ## CI 说明
 
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、348 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、485 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
-- 界面相关的用例（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会
-  自动 skip，Linux CI 上属于预期行为，不算失败。
+- 界面相关的用例（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
+  在没有显示环境的机器上会自动 skip，Linux CI 上属于预期行为，不算失败。
 - **留意**：`compileall` 即使编译失败也返回 0，工作流里已显式 grep 报错，
   改这一步时别退化成无效检查。
 - 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。
@@ -477,6 +530,30 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    日志真实地址在 `results-receiver.actions.githubusercontent.com`，
    带签名的临时 URL 在本机网络下经常被中途掐断（`unexpected EOF`）。
    该脚本自己跟随重定向、去掉 `Authorization` 头（否则云存储回 401）并分段重试。
+
+### 测试替身与真契约（v0.7.0 踩的坑）
+
+1. **替身要跟着真契约长**。库在会话对象上长出新要求（尤其是上下文管理协议、新方法）时，
+   替身会整个漏接，而且表现成一片看着像环境问题的失败。真实案例：`LoginBrowser.start()`
+   一度自己 `with CDPSession(...)` 去确保登录页就绪，而 `tests/test_gui_browser_login.py`
+   里的假会话当时没有 `__enter__` / `__exit__` → `TypeError: object does not support the
+   context manager protocol` 从 `start()` 里逃出去，worker 收到 error，症状却是
+   「浏览器没起来 / 读不到 userhash」。事后在 `tests/test_gui_browser_login.py` 末尾补了
+   两条契约守卫用例：一条用 AST 扫库源码里 `session.<方法>()` 的调用集、断言替身都覆盖到；
+   一条断言 `LoginBrowser.start()` 不许自己开 CDP 会话（这次的根因，防回归）。
+   **加替身时先看一眼真实现，别照着上一次的调用习惯抄。**
+2. **全量结论只认「冻结树 + 重跑」**。在别人还在写的树上跑全量，数字随时会被下一次写入作废。
+   跑之前和跑完之后各对 `xdao/*.py` 与 `tests/*.py` 取一次哈希，两边一致才把结果当数；
+   文档里的测试计数也用这个数字。
+3. **「0 failed」不等于「全跑过了」**。实测撞到过一次 `473 passed, 12 skipped, 0 failed`：
+   `tk.Tk()` 偶发抛 `TclError`，`tests/test_theme.py:28`、`tests/test_window.py:50/96`、
+   `tests/test_gui_browser_login.py` 的模块级夹具就 `pytest.skip("没有可用的显示环境")`，
+   一挂带走一整组界面用例；用强制 `Tk` 抛错的插件量过最坏情况是 **47 条**无声跳过，报告里
+   一个 failed 都没有。所以 `tests/conftest.py` 加了一对 hook：`pytest_report_teststatus`
+   收集跳过项，`pytest_sessionfinish` 收尾核对 —— 白名单外**任何**跳过直接报错；白名单内
+   （`XDAO_BROWSER_TEST` / `XDAO_LIVE_NOTIFY` / 「没有可用的显示环境」/ 仅有平台的 skipif）
+   但数量超过 5 条时打印「本次跳过了 N 条（界面/真机用例），未计入通过数」。
+   **验收测试时用 `pytest -q -p no:cacheprovider -rs`，跳过清单必须正好是那两条真机用例。**
 
 本地跑测试用装好 pytest 的那个解释器（项目源码本身只需标准库）：
 

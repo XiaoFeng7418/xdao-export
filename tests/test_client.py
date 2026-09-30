@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gzip
+
 import pytest
 
-from xdao.client import LoginError, XdaoClient, XdaoError
+from xdao.client import LoginError, XdaoClient, XdaoError, _decode_response_body
 
 # 线上抓到的真实「跳转提示」页（HTTP 200 + JS 跳转，urllib 不会自己跟）。
 JUMP_TO_LOGIN = """<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN">
@@ -156,4 +158,89 @@ def test_login_reports_a_jump_back_to_the_login_page():
     assert "并没有权限访问" in text
     assert "验证码" in text  # 给出可操作的下一步
     assert all("Cookie" not in url for url in calls), "登录没过就不该再去抓饼干列表"
+
+
+# ---- 验证码响应体：实测 verify.html 把 PNG 包在 gzip 里，HTTP 头却写 image/png ----
+
+CAPTCHA_PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+
+
+def test_decode_response_body_unwraps_gzip_when_the_header_says_png():
+    """只看 Content-Encoding 会漏：头写 image/png，体却是 gzip 包。"""
+    packed = gzip.compress(CAPTCHA_PNG)
+    assert packed[:2] == b"\x1f\x8b"  # 前提：压缩后带 gzip 魔数
+
+    assert _decode_response_body(packed, "image/png") == CAPTCHA_PNG
+    # 没有头可用时也必须认（魔数兜底），否则替换 _request 的调用路径会漏。
+    assert _decode_response_body(packed) == CAPTCHA_PNG
+    assert _decode_response_body(packed, "application/octet-stream") == CAPTCHA_PNG
+
+
+def test_decode_response_body_leaves_plain_bodies_alone():
+    assert _decode_response_body(CAPTCHA_PNG, "image/png") == CAPTCHA_PNG
+    assert _decode_response_body(b"<html>login</html>", "text/html") == b"<html>login</html>"
+    assert _decode_response_body(b"", "image/png") == b""
+
+
+def test_decode_response_body_keeps_the_original_when_the_gzip_is_broken():
+    """截断/损坏的响应不该在解码这一层抛异常，交给调用方按原样报错。"""
+    broken = b"\x1f\x8b" + b"\x00" * 8
+    assert _decode_response_body(broken) == broken
+
+
+def test_fetch_login_form_hands_the_gui_a_real_png():
+    """界面拿 PhotoImage 直接吃 captcha_bytes：这里必须是解压后的真 PNG。"""
+    client = XdaoClient()
+    login_html = '<html><body><input name="__hash__" value="HASH123"></body></html>'
+    calls: list[str] = []
+
+    def fake_request(url, data=None, **kwargs):
+        calls.append(url)
+        if "verify.html" in url:
+            return gzip.compress(CAPTCHA_PNG)
+        return login_html.encode("utf-8")
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    form = client.fetch_login_form()
+
+    assert form.captcha_bytes == CAPTCHA_PNG
+    assert form.captcha_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    assert form.hash_value == "HASH123"
+    assert any("verify.html" in url for url in calls)
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes, headers: dict[str, str]) -> None:
+        self._body = body
+        self.headers = headers
+
+    def read(self, size: int = -1) -> bytes:
+        return self._body if size < 0 else self._body[:size]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+class _FakeOpener:
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+
+    def open(self, req, timeout=None):  # 只求签名兼容，不看请求内容
+        return self.response
+
+
+def test_request_records_response_headers_in_lower_case():
+    """fetch_login_form 靠这份头判断要不要解压，键必须统一小写。"""
+    client = XdaoClient()
+    packed = gzip.compress(CAPTCHA_PNG)
+    client._opener = _FakeOpener(_FakeResponse(packed, {"Content-Type": "image/png"}))  # type: ignore[assignment]
+
+    raw = client._request("https://www.nmbxd1.com/Member/User/Index/verify.html")
+
+    assert raw == packed, "头里没写 Content-Encoding: gzip，这一层不该自己解压"
+    assert client._last_response_headers["content-type"] == "image/png"
 

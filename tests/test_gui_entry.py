@@ -100,7 +100,7 @@ def test_describe_login_failure_says_what_to_do_for_a_session_that_did_not_stick
     """实测过：邮箱登录后只看到「未找到可用的饼干」。
 
     真相是跳转提示页被当成了饼干列表。文案必须说清是"这次登录没生效"，
-    并给出两个能马上做的动作（重登 / 改用饼干直接登录）。
+    并给出两个能马上做的动作（重登 / 用浏览器登录）。
     """
     title, body = gui.describe_login_failure(
         "登录后没能进入用户系统（X 岛把请求弹回了登录页。）请重新登录：确认密码正确、"
@@ -108,7 +108,7 @@ def test_describe_login_failure_says_what_to_do_for_a_session_that_did_not_stick
     )
     assert title == "登录没有生效"
     assert "重新" in body
-    assert "改用饼干直接登录" in body
+    assert "用浏览器登录" in body
     assert "未找到可用的饼干" not in title  # 不能再把话盖回那句误导性的提示
 
 
@@ -119,7 +119,7 @@ def test_describe_login_failure_keeps_the_captcha_and_password_hints():
 
     title2, body2 = gui.describe_login_failure("密码错误，请重新输入。")
     assert "密码" in title2
-    assert "改用饼干直接登录" in body2
+    assert "用浏览器登录" in body2
 
 
 def test_describe_login_failure_passes_unknown_errors_through():
@@ -163,3 +163,96 @@ def test_run_installs_a_callback_exception_handler(monkeypatch):
     assert logged, "界面出错时要写进日志面板"
     assert "模拟：某个按钮的回调炸了" in logged[0]
     assert shown and "KeyError" in shown[0][1]
+
+
+# ---- 「直接粘贴饼干登录」：把整段 cookie 贴进来就行，解析交给 browser_login ----
+
+
+class _FakePasteClient:
+    def __init__(self) -> None:
+        self.userhash: str | None = None
+
+    def set_userhash(self, value: str) -> None:
+        self.userhash = value
+
+
+class FakeLoginDialog:
+    """只提供 _manual_userhash 用得到的三样东西，免得真开一个 Tk 窗口。"""
+
+    def __init__(self) -> None:
+        self.client = _FakePasteClient()
+        self.userhash = ""
+        self.destroyed = False
+
+    def destroy(self) -> None:
+        self.destroyed = True
+
+
+def _paste(monkeypatch, text):
+    """把 _manual_userhash 跑一遍，收集它弹过什么框。"""
+    prompts: list[tuple] = []
+    warnings: list[tuple] = []
+    errors: list[tuple] = []
+
+    def fake_askstring(title, prompt, parent=None):
+        prompts.append((title, prompt))
+        return text
+
+    monkeypatch.setattr(gui.simpledialog, "askstring", fake_askstring)
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warnings.append(a))
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda *a, **k: errors.append(a))
+
+    dialog = FakeLoginDialog()
+    gui.LoginDialog._manual_userhash(dialog)
+    return dialog, prompts, warnings, errors
+
+
+def test_manual_userhash_picks_the_value_out_of_a_whole_cookie_string(monkeypatch):
+    """用户从浏览器里复制到的是整段 cookie，不该逼他自己找 userhash= 在哪。"""
+    dialog, _, warnings, errors = _paste(
+        monkeypatch, "other=1; userhash=ABCD1234; sid=xyz; theme=dark"
+    )
+
+    assert dialog.client.userhash == "ABCD1234"
+    assert dialog.userhash == "ABCD1234"
+    assert dialog.destroyed is True
+    assert warnings == [] and errors == []
+
+
+def test_manual_userhash_accepts_a_quoted_value_with_whitespace(monkeypatch):
+    """从浏览器复制出来的值常带引号、换行和空格。"""
+    dialog, _, warnings, errors = _paste(monkeypatch, '  "userhash=EF567890; path=/"  \n')
+
+    assert dialog.client.userhash == "EF567890"
+    assert dialog.destroyed is True
+    assert warnings == [] and errors == []
+
+
+def test_manual_userhash_explains_when_there_is_no_userhash(monkeypatch):
+    """粘错了不能抛异常，也不能把垃圾值当饼干设进去。"""
+    dialog, _, warnings, errors = _paste(monkeypatch, "我复制了一段别的东西")
+
+    assert dialog.client.userhash is None
+    assert dialog.destroyed is False
+    assert errors == []
+    assert warnings, "解析失败要弹一次提示"
+    assert "userhash" in warnings[0][1]
+
+
+def test_manual_userhash_does_nothing_when_the_dialog_is_cancelled(monkeypatch):
+    dialog, _, warnings, errors = _paste(monkeypatch, None)
+
+    assert dialog.client.userhash is None
+    assert dialog.destroyed is False
+    assert warnings == [] and errors == []
+
+
+def test_manual_userhash_prompt_tells_users_not_to_open_devtools(monkeypatch):
+    """提示语本身就是这次改动的交付物：整段粘贴 + 不用开发者工具。"""
+    _, prompts, _, _ = _paste(monkeypatch, None)
+
+    assert prompts, "必须先问一次要粘贴的内容"
+    title, prompt = prompts[0]
+    assert "粘贴" in title
+    assert "整段" in prompt
+    assert "不需要打开开发者工具" in prompt
