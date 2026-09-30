@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from xdao.cache import (
     CachedThreadFetcher,
     ThreadCache,
+    cache_dir_candidates,
     default_cache_dir,
     parse_reply_count,
     parse_thread_id,
     post_fingerprint,
+    resolve_cache_dir,
 )
 from xdao.client import Post, XdaoError
 
@@ -413,8 +416,73 @@ def test_cache_write_failure_is_reported_not_swallowed(artifacts_dir, monkeypatc
     assert len(result.posts) == 7  # 抓取本身照常完成
 
 
-def test_fetch_stops_early_when_cache_dir_unwritable(artifacts_dir, monkeypatch):
-    """缓存目录不可写时应立刻报错，而不是抓完之后才发现。"""
+def test_cache_falls_back_to_a_writable_place(artifacts_dir, monkeypatch):
+    """首选缓存目录写不进去时换一个能写的地方继续，并说明换了地方。
+
+    真实场景：导出目录在只读介质 / 权限受限的位置（用户报过 `D:\\X岛\\.cache`
+    写不进去）。缓存只是加速手段，不该因为它写不进去就整次导出失败。
+    """
+    import xdao.cache as cache_module
+
+    blocked = artifacts_dir / "blocked-cache"
+    good = artifacts_dir / "good-cache"
+
+    def fake_can_write(directory):
+        return Path(directory) != blocked
+
+    monkeypatch.setattr(cache_module, "can_write_dir", fake_can_write)
+    monkeypatch.setattr(cache_module, "cache_dir_candidates", lambda preferred=None: [blocked, good])
+
+    fetcher = CachedThreadFetcher(build_three_page_api(), cache_dir=blocked)
+    assert fetcher.cache_dir == good
+    assert str(blocked) in fetcher.cache_note and str(good) in fetcher.cache_note
+
+    result = fetcher.fetch(7001)
+    assert len(result.posts) == 7
+    assert str(blocked) in result.cache_warning
+    # 换了地方也确实缓存下来了：状态文件写在新的目录里
+    assert (good / "threads" / "7001.json").exists()
+
+
+def test_cache_keeps_the_requested_dir_when_it_is_writable(artifacts_dir):
+    """首选目录能写时不做任何替换，也不留提示。"""
+    import xdao.cache as cache_module
+
+    fetcher = CachedThreadFetcher(build_three_page_api(), cache_dir=artifacts_dir)
+    assert fetcher.cache_dir == artifacts_dir
+    assert fetcher.cache_note == ""
+    assert isinstance(cache_module.can_write_dir(artifacts_dir), bool)
+
+
+def test_cache_dir_candidates_are_ordered_and_unique(artifacts_dir):
+    """候选顺序：用户指定的 → 用户配置目录 → 系统临时目录，且不重复。"""
+    preferred = artifacts_dir / "wanted"
+    candidates = cache_dir_candidates(preferred)
+    assert candidates[0] == preferred
+    assert len(candidates) == len(set(candidates))
+    assert len(candidates) >= 2
+    assert all(isinstance(c, Path) for c in candidates)
+
+
+def test_resolve_cache_dir_returns_note_only_when_it_moves(artifacts_dir, monkeypatch):
+    """能写就原样返回；换了地方就在备注里说明原因和目标。"""
+    import xdao.cache as cache_module
+
+    preferred = artifacts_dir / "preferred"
+    resolved, note = resolve_cache_dir(preferred)
+    assert resolved == preferred and note == ""
+
+    blocked = artifacts_dir / "blocked"
+    good = artifacts_dir / "good"
+    monkeypatch.setattr(cache_module, "can_write_dir", lambda d: Path(d) != blocked)
+    monkeypatch.setattr(cache_module, "cache_dir_candidates", lambda preferred=None: [blocked, good])
+    resolved, note = resolve_cache_dir(blocked)
+    assert resolved == good
+    assert str(blocked) in note and str(good) in note
+
+
+def test_fetch_stops_early_when_no_cache_dir_is_writable(artifacts_dir, monkeypatch):
+    """所有候选位置都写不进去时才报错，而且一个请求都不发。"""
     api = build_three_page_api()
     fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir)
 
@@ -425,6 +493,10 @@ def test_fetch_stops_early_when_cache_dir_unwritable(artifacts_dir, monkeypatch)
         raise OutputDirNotWritable("缓存目录不可写（测试）")
 
     monkeypatch.setattr(cache_module, "ensure_writable", boom)
+    # 只留一个候选，否则真实的兜底目录（用户配置目录）会顶上，测不到"全都写不进去"
+    monkeypatch.setattr(
+        cache_module, "cache_dir_candidates", lambda preferred=None: [artifacts_dir]
+    )
     with pytest.raises(XdaoError, match="缓存"):
         fetcher.fetch(7001)
     assert api.requests == []  # 一个请求都没发出去

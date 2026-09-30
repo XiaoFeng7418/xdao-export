@@ -195,6 +195,38 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 **如果以后要重新尝试**：先验证打包版能否启动浏览器（`--pdfdiag` 隐藏开关，
 源码里在 `tools/pdf_diag.py`）。能启动就说明限制解除了，可以把降级改回直接报错。
 
+## 缓存目录写不进去不再挡住宿主功能（v0.3.2，2026-09-30）
+
+**用户报的问题**：导出到 `D:\X岛` 时报
+`[Errno 13] Permission denied: 'D:\X岛\.cache\.xdao-write-probe'`，
+而 0.1.0 版反而能正常写入。
+
+**原因**：0.1.0 没有缓存层，只往导出目录本身写文件；0.2 之后把「缓存目录可写」
+变成了前置条件，于是**缓存写不进去 → 整个导出在抓取前就退出**，看起来像"目录没权限"。
+用户拿到的错误文案里说的是缓存，而真正写不进去的可能是导出目录本身。
+
+**改法**（`xdao/cache.py` + `xdao/exporters/_shared.py`）：
+
+- `can_write_dir(dir) -> bool`：轻量探测，失败返回 False，不抛异常；
+- `cache_dir_candidates(preferred)`：首选 → `%LOCALAPPDATA%\xdao-export\.cache` →
+  `%APPDATA%\xdao-export\.cache` → `tempfile.gettempdir()\xdao-export\.cache`，去重保序；
+- `resolve_cache_dir(preferred) -> (Path, note)`：能写就原样返回；否则换第一个可写的
+  候选并给出说明文案；全都不可写时返回首选，让上层按原逻辑报错；
+- `CachedThreadFetcher.cache_note` 与 `CachedThread.cache_warning` 把「换了地方」
+  一路带到命令行表头与界面日志；
+- `main.py` / `xdao/gui.py` 的表头与缓存信息行显示的是**真正在用**的目录。
+
+**验证要点**（以后回归时照做）：
+
+1. 首选目录能写 → `resolve_cache_dir` 原样返回、note 为空；
+2. 首选写不进去 → 换到能写的地方，且**缓存真的落在那边**
+   （`pages/<id>/1.json`、`threads/<id>.json` 存在，第二次导出是「下载 0 页」）；
+3. 所有候选都写不进去 → 报错，且**一个请求都不发**（`api.requests == []`）；
+4. 打包版在输出目录不可写时要报 `OutputDirNotWritable: 导出目录不可写：<目录>`，
+   而不是把锅甩给缓存目录。
+
+**注意**：`D:\X岛` 是用户自己的目录，别把测试文件留在里面。
+
 ## 路线图（尚未实现）
 
 - 监控到更新时的桌面通知

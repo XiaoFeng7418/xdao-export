@@ -335,3 +335,16 @@ def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
             "「完全控制」），或程序运行在受限环境里。请换一个可写的目录后重试。"
         ) from exc
     return target
+
+
+def can_write_dir(directory: Path | str) -> bool:
+    """轻量探测：目录能不能写。只回答是或否，不抛异常。
+
+    和 ``ensure_writable`` 探的是同一件事，区别是这里要拿来**换地方重试**
+    （例如缓存目录写不进去时另找一个），所以失败不该炸掉调用方。
+    """
+    try:
+        ensure_writable(directory, kind="")
+    except (OutputDirNotWritable, OSError):
+        return False
+    return True

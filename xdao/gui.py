@@ -15,7 +15,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .cache import CachedThreadFetcher
+from .cache import CachedThreadFetcher, resolve_cache_dir
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
 from .fetcher import parse_thread_id
@@ -1213,10 +1213,16 @@ class App:
     # ---------- 缓存 ----------
 
     def current_cache_dir(self) -> Path:
-        return self.settings.resolved_cache_dir(self.output_var.get().strip())
+        """本次真正会用到的缓存目录。
+
+        设置里填的目录如果写不进去（只读介质、权限受限等），抓取层会自动换个能写的
+        地方，这里保持一致，免得界面显示的目录和实际用的是两个。
+        """
+        return resolve_cache_dir(self.settings.resolved_cache_dir(self.output_var.get().strip()))[0]
 
     def refresh_cache_info(self) -> None:
-        cache_dir = self.current_cache_dir()
+        requested = self.settings.resolved_cache_dir(self.output_var.get().strip())
+        cache_dir, note = resolve_cache_dir(requested)
         threads = 0
         size = 0
         threads_dir = cache_dir / "threads"
@@ -1237,9 +1243,10 @@ class App:
                         size += path.stat().st_size
                     except OSError:
                         pass
-        self.cache_info_var.set(
-            f"缓存：{threads} 个串 · {images} 张图片 · {size / 1024 / 1024:.1f} MB · {cache_dir}"
-        )
+        text = f"缓存：{threads} 个串 · {images} 张图片 · {size / 1024 / 1024:.1f} MB · {cache_dir}"
+        if note:
+            text += f"（原目录 {requested} 写不进去，已自动改用这里）"
+        self.cache_info_var.set(text)
 
     def clear_cache(self) -> None:
         cache_dir = self.current_cache_dir()
@@ -1401,13 +1408,12 @@ class App:
                         )
                     )
                     if getattr(result, "cache_warning", ""):
-                        # 缓存写不进去意味着这次抓取没有留下断点续传的成果，
-                        # 必须说清楚，否则用户会以为下次能续上。
+                        # 缓存出问题意味着这次抓取可能没留下断点续传的成果（换个目录继续、
+                        # 或者干脆没写成），必须说清楚，否则用户会以为下次能续上。
                         self._export_queue.put(
                             (
                                 "log",
-                                f"[{index}/{len(urls)}] 警告：缓存写入失败，"
-                                f"本次抓取不会被复用 —— {result.cache_warning}",
+                                f"[{index}/{len(urls)}] 提示：{result.cache_warning}",
                             )
                         )
                     path = exporter.save(

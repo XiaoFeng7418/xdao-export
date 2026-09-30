@@ -227,12 +227,20 @@ def run_cli(args: argparse.Namespace) -> int:
     template = args.template if args.template is not None else (settings.filename_template or None)
     use_cache = not args.no_cache and settings.use_cache
     cache_dir = Path(args.cache_dir) if args.cache_dir else settings.resolved_cache_dir(output_dir)
+    cache_note = ""
     if use_cache:
+        # 缓存目录写不进去时抓取层会自动换一个能写的地方（缓存不该挡住宿主功能），
+        # 这里先解析一次，好让表头显示的是真正会用到的目录。
+        from xdao.cache import resolve_cache_dir
+
+        cache_dir, cache_note = resolve_cache_dir(cache_dir)
         client.image_cache_dir = cache_dir / "images"
 
     print(f"导出目录：{output_dir}")
     print(f"格式：{format_key}（{EXPORTERS[format_key][1]}）｜范围：{scope}"
           f"｜缓存：{'启用' if use_cache else '关闭'}｜缓存目录：{cache_dir}")
+    if cache_note:
+        print(f"注意：{cache_note}")
     if hashes:
         print(f"只看饼干：{'、'.join(hashes)}")
 
@@ -312,11 +320,10 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"    {len(thread.posts)} 楼 · {result.reason}")
             log_lines.append(f"    抓取：{len(thread.posts)} 楼 · {result.reason}")
             if getattr(result, "cache_warning", ""):
-                print(
-                    f"    警告：缓存写入失败，本次抓取不会被复用 —— {result.cache_warning}",
-                    file=sys.stderr,
-                )
-                log_lines.append(f"    警告：缓存写入失败 —— {result.cache_warning}")
+                # 可能是「换了缓存目录」，也可能是「缓存没写成」——两种情况都要说清楚，
+                # 否则用户会以为下次能续上。
+                print(f"    提示：{result.cache_warning}", file=sys.stderr)
+                log_lines.append(f"    提示：{result.cache_warning}")
             path = exporter.save(thread, scope, output_dir, include_hashes=hashes)
             succeeded += 1
             size = f"（{path.stat().st_size / 1024 / 1024:.1f} MB）" if path.exists() else ""

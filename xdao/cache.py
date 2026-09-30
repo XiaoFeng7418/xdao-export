@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .client import Post, XdaoClient, XdaoError
-from .exporters._shared import OutputDirNotWritable, ensure_writable
+from .exporters._shared import OutputDirNotWritable, can_write_dir, ensure_writable
 
 # 缓存格式版本，结构不兼容时旧缓存自动失效。
 CACHE_VERSION = 1
@@ -239,6 +239,64 @@ def default_cache_dir(base: Path | None = None) -> Path:
     return root / "xdao-export" / DEFAULT_CACHE_DIRNAME
 
 
+def cache_dir_candidates(preferred: Path | str | None = None) -> list[Path]:
+    """缓存目录的候选位置，按优先级排列。
+
+    用户要求的位置永远排第一；后面是「用户配置目录 → 本地配置目录 → 系统临时目录」，
+    用来在首选位置写不进去时顶上（只读的导出目录、受限的桌面环境等）。
+
+    缓存只是加速手段，不该因为它写不进去就让整次导出失败 —— 换一个能写的地方继续，
+    并把换了地方这件事告诉用户。
+    """
+    import os
+    import tempfile
+
+    candidates: list[Path] = []
+    if preferred:
+        candidates.append(Path(preferred))
+    else:
+        candidates.append(default_cache_dir())
+
+    def add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    for env_name in ("LOCALAPPDATA", "APPDATA"):
+        value = os.environ.get(env_name)
+        if value:
+            add(Path(value) / "xdao-export" / DEFAULT_CACHE_DIRNAME)
+    add(Path(tempfile.gettempdir()) / "xdao-export" / DEFAULT_CACHE_DIRNAME)
+    return candidates
+
+
+def resolve_cache_dir(preferred: Path | str | None = None) -> tuple[Path, str]:
+    """挑一个真能写的缓存目录，返回 (目录, 备注)。
+
+    首选能写就原样用它、备注为空；否则按候选顺序找第一个能写的，备注里说明
+    换了地方、原来的为什么不能用。全都写不进去时返回首选位置和空备注，
+    由调用方按原逻辑报错。
+    """
+    options = cache_dir_candidates(preferred)
+    first = options[0]
+    if can_write_dir(first):
+        return first, ""
+    for option in options[1:]:
+        if can_write_dir(option):
+            return option, (
+                f"缓存目录 {first} 写不进去，本次改用 {option}。"
+                "想固定下来可以在设置里改「缓存目录」。"
+            )
+    return first, ""
+
+
+def probe_cache_dir(preferred: Path | str | None = None):
+    """resolve_cache_dir 的薄包装，交给调用方自行处理异常。"""
+    try:
+        return resolve_cache_dir(preferred)
+    except OSError:
+        return Path(preferred) if preferred else default_cache_dir(), ""
+
+
 _THREAD_ID_RE = re.compile(r"(?:^|/t/|/thread/|/id/)(\d{3,})")
 
 
@@ -268,9 +326,16 @@ class CachedThreadFetcher:
         use_cache: bool = True,
     ) -> None:
         self._client = client
-        self.cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
         self._progress = progress
         self.use_cache = use_cache
+        requested = Path(cache_dir) if cache_dir else default_cache_dir()
+        # 缓存写不进去不该让整次导出失败：挑一个能写的位置继续，并把换了地方这件事
+        # 记下来，由调用方在界面/日志里说明（cache_note 最终会并进 CachedThread.cache_warning）。
+        self.cache_note = ""
+        if use_cache:
+            self.cache_dir, self.cache_note = resolve_cache_dir(requested)
+        else:
+            self.cache_dir = requested
 
     def _notify(self, message: str) -> None:
         if self._progress:
@@ -563,6 +628,8 @@ class CachedThreadFetcher:
                     cache.fingerprints[str(post.id)] = post_fingerprint(post)
             cache.save()
 
+        # 「换了缓存目录」这类说明要一直带着走；真正的写入失败优先显示。
+        warning = cache.write_error or self.cache_note
         return CachedThread(
             meta=meta,
             posts=posts,
@@ -573,5 +640,5 @@ class CachedThreadFetcher:
             pages_reused=pages_reused,
             new_posts=new_posts,
             edited_posts=edited_posts,
-            cache_warning=cache.write_error,
+            cache_warning=warning,
         )
