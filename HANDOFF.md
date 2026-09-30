@@ -26,12 +26,15 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 949 项（943 通过）、6 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关
+单元测试 962 项（956 通过）、6 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关
 `XDAO_BROWSER_TEST=1` / `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`）；
 其中界面相关的 62 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。
 
-打包版随 v0.9.0 重新构建，Release **只提供免安装包（zip）**。v0.9.0 给串监控加了
+打包版随 v0.10.0 重新构建，Release **只提供免安装包（zip）**。v0.10.0 修掉了
+「打包版导不出 PDF」（`xdao/browser_flags.py`：冻结环境启动浏览器时加 `--no-sandbox`，
+根因是 Chromium 沙箱层在冻结父进程下初始化失败；源码运行仍带沙箱），
+`--pdfdiag` 诊断同步走这一套参数。v0.9.0 给串监控加了
 **列表导入 / 导出**（`xdao/watch_list.py` 管文件格式：界面「串监控」里的「导出列表 / 导入列表」，
 命令行 `--watch-export` / `--watch-import` / `--watch-import-replace`）：导出只带「怎么监控」，
 不带监控进度（否则换机器后第一轮该出的不出），导入是**合并**、坏条目逐条给中文原因；
@@ -63,9 +66,9 @@ xdao-export/
 ├─ tests/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
 │  ├─ conftest.py          测试夹具 + 两侧硬守卫：用户配置只读、白名单外跳过即失败
-│  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（46）
+│  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（48）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（14）
-│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（123）
+│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（125）
 │  ├─ test_cli.py          命令行参数与入口（38）
 │  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（6）
 │  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出（35）
@@ -76,8 +79,9 @@ xdao-export/
 │  ├─ test_epub.py         EPUB（31）
 │  ├─ test_markdown.py     Markdown（41）
 │  ├─ test_notifications.py 桌面通知（28）
-│  ├─ test_pdf.py          PDF 渲染与路由（35）
+│  ├─ test_pdf.py          PDF 渲染与路由（37）
 │  ├─ test_pdf_opts.py     PDF 纸张/边距/缩放/页码选项（325）
+│  ├─ test_browser_flags.py 打包运行时给浏览器补的开关（7）
 │  ├─ test_pdf_render.py   PDF 真机渲染 4 条（默认跳过，`XDAO_PDF_TEST=1`）
 │  ├─ test_settings.py     配置读写（25）
 │  ├─ test_live_notify.py  真机通知（1，默认跳过）
@@ -87,6 +91,7 @@ xdao-export/
    ├─ __init__.py          版本号
    ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理、响应体解包
    ├─ browser_login.py     浏览器登录：找 Edge/Chrome、DevTools 端口、进程管理、取饼干
+   ├─ browser_flags.py     打包运行时给浏览器补的开关（冻结环境加 --no-sandbox）
    ├─ cdp.py               CDP 传输层（帧协议 + CDPSession），登录与 PDF 渲染共用
    ├─ cache.py             页面缓存、CachedThreadFetcher、断点续传与增量判定
    ├─ fetcher.py           抓取流程与兼容层（ThreadFetcher 不带缓存）

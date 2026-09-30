@@ -1,11 +1,16 @@
-"""诊断：打包版为什么启动不了浏览器。
+"""诊断：这台机器上能不能用浏览器渲染 PDF。
 
-用打包版本的命令行入口跑一份自检：
-1. 显示它看到的浏览器路径、工作目录、关键环境变量；
-2. 直接用同一套参数启动浏览器，打印退出码与输出；
-3. 分别测试「继承当前环境」与「干净环境」两种方式。
+用打包版（或源码）的命令行入口跑一份自检：
+1. 显示它看到的浏览器路径、工作目录、关键环境变量、这次要补的附加参数；
+2. 直接用与正式实现同一套参数启动浏览器，打印退出码与输出；
+3. 分别测试「继承当前环境」「干净环境」「最小 PATH」「经 cmd 启动」几种方式。
 
-用法（用打包版运行）：xdao-export.exe --selftest 之外的入口见 main.py 的 --pdfdiag，
+历史：v0.3.0 起打包版启动浏览器会拿到 ``STATUS_BREAKPOINT``，当时就是靠这个工具
+一步步排除的；v0.10.0 由 ``xdao/browser_flags.py`` 自动补 ``--no-sandbox`` 修好。
+现在它仍然有用 —— 换了浏览器、装了安全软件、用户报「导出 PDF 失败」时，
+先看这里的第一行与「浏览器附加参数」。
+
+用法（用打包版运行）：``xdao-export.exe --pdfdiag``（隐藏开关，见 main.py），
 或者直接用源码运行本文件。
 """
 
@@ -17,6 +22,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+if __package__ in (None, ""):
+    # 直接 ``python tools/pdf_diag.py`` 跑时，sys.path[0] 是 tools/ 而不是仓库根目录，
+    # 下面的 ``xdao`` 就导不到。经 main.py 的 --pdfdiag 进来时不需要这一步。
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from xdao.browser_flags import launch_flags
 from xdao.exporters.pdf import find_browser
 
 
@@ -25,6 +36,7 @@ def show_environment() -> None:
     print("  sys.executable :", sys.executable)
     print("  sys.frozen     :", getattr(sys, "frozen", False))
     print("  _MEIPASS       :", getattr(sys, "_MEIPASS", "(无)"))
+    print("  浏览器附加参数  :", launch_flags() or "（无）")
     print("  当前工作目录    :", Path.cwd())
     print("  临时目录        :", tempfile.gettempdir())
     for key in ("TEMP", "TMP", "TCL_LIBRARY", "TK_LIBRARY", "PYTHONHOME", "PYTHONPATH", "PATH"):
@@ -97,6 +109,9 @@ def try_launch(
         "--disable-extensions",
         "--print-to-pdf-no-header",
         f"--print-to-pdf={target}",
+        # 与正式实现保持一致：打包版不带这个开关时浏览器会被系统中断
+        # （STATUS_BREAKPOINT），诊断工具漏掉它就会给出误导性的「启动失败」。
+        *launch_flags(),
         source.as_uri(),
     ]
     stdout_file = work / "browser.out"

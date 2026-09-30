@@ -32,6 +32,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import browser_flags
+from ..browser_flags import launch_flags
 from ..cdp import CDPSession, CdpError
 from ..client import XdaoClient
 from ..pdf_opts import DEFAULT_PAPER, PdfOptions
@@ -90,16 +92,21 @@ def find_browser(explicit: str | Path | None = None) -> BrowserInfo:
 
 
 def is_frozen() -> bool:
-    """当前是否运行在 PyInstaller 打好的可执行文件里。"""
-    return bool(getattr(sys, "frozen", False))
+    """当前是否运行在 PyInstaller 打好的可执行文件里。
+
+    判据只有一处（``browser_flags``），免得两处各写一份、哪天改歪一处。
+    """
+    return browser_flags.is_frozen()
 
 
 def browser_launch_failure_hint(returncode: int) -> str:
     """针对浏览器启动失败给出更有用的解释。
 
-    实测：打包好的 exe 里启动浏览器会得到 STATUS_BREAKPOINT（0x80000003），
-    试过干净环境、最小 PATH、经 cmd.exe 代启、直接 CreateProcessW 都无法绕开，
-    而同样的命令从命令行手工执行完全正常 —— 属于打包运行时的系统级限制。
+    实测：打包版里的 Chrome/Edge 会在读参数阶段被系统中断
+    （``STATUS_BREAKPOINT``，0x80000003）。v0.10.0 起冻结环境会自动补
+    ``--no-sandbox`` 绕开它（见 ``browser_flags``），所以这个提示只在
+    「补了开关还是起不来」时才出现 —— 那种情况多半是浏览器路径不对、
+    或者安全软件拦下了进程。
     """
     hint = ""
     unsigned = returncode & 0xFFFFFFFF
@@ -110,8 +117,8 @@ def browser_launch_failure_hint(returncode: int) -> str:
     lines = [f"可以改用 HTML 格式，或在设置里换一个浏览器路径。{hint}"]
     if is_frozen():
         lines.append(
-            "另外：当前的打包版在部分机器上无法启动浏览器，"
-            "这一项功能需要从源码运行（python main.py -f pdf）才可用。"
+            "另外：打包版启动浏览器时如果被安全软件拦下，"
+            "可以改用 HTML 格式，或从源码运行（python main.py -f pdf）。"
         )
     return "\n" + "\n".join(lines)
 
@@ -219,6 +226,8 @@ def _render_with_command_line(
             "--disable-extensions",
             "--print-to-pdf-no-header",
             f"--print-to-pdf={target}",
+            # 打包版必须补的开关（冻结环境里浏览器会被系统中断，见 browser_flags 的说明）。
+            *launch_flags(),
             source.as_uri(),
         ]
         # 浏览器不要继承本进程的 Tcl/Tk 变量：打包版会设它们，指向与系统版本

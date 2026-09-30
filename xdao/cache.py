@@ -292,7 +292,15 @@ def cache_dir_candidates(preferred: Path | str | None = None) -> list[Path]:
         value = os.environ.get(env_name)
         if value:
             add(Path(value) / "xdao-export" / DEFAULT_CACHE_DIRNAME)
-    add(Path(tempfile.gettempdir()) / "xdao-export" / DEFAULT_CACHE_DIRNAME)
+    # 系统临时目录只是最后的备选；问不到就少一个候选，不耽误导出。
+    # 打包版实测过它会在冻结环境里抛 FileNotFoundError（"No usable temporary
+    # directory found in [...]"，v0.10.0 真机核验时撞上），而缓存目录的探测本来
+    # 就允许「这一处写不进去就换下一处」——所以这里必须自己兜住，否则整次导出
+    # 会跟着一起失败。
+    try:
+        add(Path(tempfile.gettempdir()) / "xdao-export" / DEFAULT_CACHE_DIRNAME)
+    except Exception:
+        pass
     return candidates
 
 
