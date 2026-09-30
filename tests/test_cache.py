@@ -481,6 +481,31 @@ def test_resolve_cache_dir_returns_note_only_when_it_moves(artifacts_dir, monkey
     assert str(blocked) in note and str(good) in note
 
 
+def test_cache_warning_explains_an_unwritable_cache_dir(artifacts_dir, monkeypatch):
+    """缓存目录写不进去时，提示里要说清后果和下一步，而不是只甩一句 errno。
+
+    用户报过的场景：缓存目录跟着导出目录走，而导出目录只有上一级可写，
+    于是 ``.cache`` 建得出来、``.cache\\pages`` 拒绝访问。
+    """
+    import xdao.cache as cache_module
+
+    def refuse(self, page, payload):
+        # 模拟 store_page 的真实行为：pages 子目录建不出来
+        detail = f"PermissionError: [Errno 13] Permission denied: '{self.pages_dir}'"
+        self.write_error = detail
+        self.fetch_error = detail
+
+    monkeypatch.setattr(cache_module.ThreadCache, "store_page", refuse)
+
+    fetcher = CachedThreadFetcher(build_three_page_api(), cache_dir=artifacts_dir)
+    result = fetcher.fetch(7001)
+    assert len(result.posts) == 7  # 导出照常完成，缓存写不动不拦路
+    warning = result.cache_warning
+    assert "PermissionError" in warning
+    assert str(artifacts_dir) in warning
+    assert "断点续传" in warning and "设置 → 缓存" in warning
+
+
 def test_fetch_stops_early_when_no_cache_dir_is_writable(artifacts_dir, monkeypatch):
     """所有候选位置都写不进去时才报错，而且一个请求都不发。"""
     api = build_three_page_api()

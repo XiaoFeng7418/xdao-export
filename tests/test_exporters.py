@@ -411,6 +411,37 @@ def test_probe_file_looks_like_a_normal_export(out_dir):
     assert PROBE_NAME.endswith((".tmp", ".txt", ".log"))
 
 
+def test_can_write_dir_probes_a_subdirectory(out_dir, monkeypatch):
+    """能不能写要**往下一层**探：这一级能写、下一级不能写，算不能写。
+
+    用户报过的真实场景：``D:\\X岛\\.cache`` 建得出来，``.cache\\pages`` 拒绝访问。
+    只探表层会把这种目录判成"能写"，于是「缓存目录写不进去就换个地方」的兜底
+    逻辑永远不触发，缓存文件每次都在同一个地方撞墙。
+    """
+    from xdao.exporters._shared import can_write_dir
+
+    assert can_write_dir(out_dir) is True
+
+    real_mkdir = Path.mkdir
+
+    def fake_mkdir(self, *args, **kwargs):
+        # 只让"探针子目录"这一级失败，模拟权限只放开到上一级的目录
+        if "xdao-write-test.tmp.d" in self.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    assert can_write_dir(out_dir) is False
+
+
+def test_can_write_dir_leaves_no_litter(out_dir):
+    """探测要自己收拾干净：不留探针文件，也不留探针目录。"""
+    from xdao.exporters._shared import PROBE_NAME, can_write_dir
+
+    assert can_write_dir(out_dir) is True
+    assert list(out_dir.iterdir()) == []
+
+
 @pytest.mark.parametrize("key", ["html", "txt", "markdown", "epub"])
 def test_save_creates_missing_directory_and_writes(out_dir, key):
     """目录不存在时要自己建出来（预检失败不再是拦路虎）。"""

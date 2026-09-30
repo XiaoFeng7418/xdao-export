@@ -70,6 +70,22 @@ def test_run_reports_fatal_when_app_init_fails(monkeypatch):
     assert calls and "配置文件损坏" in str(calls[0][1])
 
 
+def test_describe_export_failure_explains_permission_errors(tmp_path):
+    """写盘被拒时不能只甩一句 errno —— 要说清哪个目录、往哪换、还能查什么。"""
+    target = tmp_path / "输出目录" / "某串.html"
+    text = gui.describe_export_failure(PermissionError(13, "Permission denied", str(target)))
+    assert "PermissionError" in text
+    assert "输出目录" in text  # 指到具体目录，而不是笼统的"导出失败"
+    assert "文档" in text  # 给出一个大概率能写的地方
+    assert "安全软件" in text or "受控文件夹" in text  # 换目录仍失败时的原因
+
+
+def test_describe_export_failure_passes_other_errors_through():
+    """非权限类异常保持原样，别加无关的建议。"""
+    text = gui.describe_export_failure(ValueError("模板占位符写错了"))
+    assert text == "ValueError: 模板占位符写错了"
+
+
 def test_run_installs_a_callback_exception_handler(monkeypatch):
     """Tk 回调异常不能依赖 stderr —— 打包版没有 stderr。"""
     root = FakeRoot()

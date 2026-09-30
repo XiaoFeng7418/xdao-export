@@ -78,6 +78,27 @@ def setup_style(root: tk.Tk) -> ttk.Style:
     return style
 
 
+def describe_export_failure(exc: BaseException) -> str:
+    """把导出线程里的异常翻成一句能让用户动手的话。
+
+    ``PermissionError`` 现在是最常见的一种（用户反复报「导出目录不可写」），
+    只甩一句 ``[Errno 13] Permission denied`` 帮不上忙：得说清是哪个目录、
+    建议换到「文档」这种默认能写的地方，以及常见原因是什么。
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    if not isinstance(exc, PermissionError):
+        return text
+    target = getattr(exc, "filename", None) or ""
+    where = f"目录 {Path(target).parent}" if target else "导出目录"
+    return (
+        f"{text}\n    Windows 不允许往{where}写文件。先换个目录试试 —— "
+        "「文档」（%USERPROFILE%\\Documents）或桌面下的新建文件夹一般都能写；"
+        "如果是可移动磁盘，检查写保护开关；如果换了目录仍然这样，"
+        "多半是安全软件（受控文件夹访问、勒索软件防护）在拦截，"
+        "把本程序加入白名单即可。"
+    )
+
+
 class LoginDialog(tk.Toplevel):
     def __init__(self, master: tk.Tk, client: XdaoClient) -> None:
         super().__init__(master)
@@ -1523,7 +1544,7 @@ class App:
                 except Exception as exc:
                     failed.append(url)
                     self._export_queue.put(
-                        ("log", f"[{index}/{len(urls)}] 失败：{type(exc).__name__}: {exc}")
+                        ("log", f"[{index}/{len(urls)}] 失败：{describe_export_failure(exc)}")
                     )
 
             self._export_queue.put(
