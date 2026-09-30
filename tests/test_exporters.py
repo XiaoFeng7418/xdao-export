@@ -419,9 +419,11 @@ def test_txt_save_without_template_uses_title(out_dir):
 
 
 def test_registry_lists_all_formats():
-    assert set(EXPORTERS) == {"html", "txt", "markdown", "epub"}
+    assert set(EXPORTERS) == {"html", "pdf", "txt", "markdown", "epub"}
     for key, (label, suffix, cls) in EXPORTERS.items():
         assert label and suffix.startswith(".") and isinstance(cls, type)
+    # 格式键与扩展名要一一对应，界面与命令行都靠它推导文件名
+    assert EXPORTERS["pdf"][1] == ".pdf"
 
 
 def test_create_exporter_returns_right_class_and_falls_back():
@@ -433,7 +435,10 @@ def test_create_exporter_returns_right_class_and_falls_back():
 
 @pytest.mark.parametrize("key", ["html", "txt", "markdown", "epub"])
 def test_create_exporter_accepts_template_and_saves(out_dir, key):
-    """四种格式都必须支持文件名模板，并且真的落盘。"""
+    """四种格式都必须支持文件名模板，并且真的落盘。
+
+    PDF 单独测：它需要本机浏览器，不适合放进这个参数化列表。
+    """
     client = FakeClient()
     exporter = create_exporter(key, client, filename_template="[{id}] {title}")
     thread = sample_thread("模板测试")
