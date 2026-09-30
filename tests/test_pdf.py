@@ -1,12 +1,13 @@
 """PDF 导出器的测试。
 
-全部用「假浏览器」替代真实浏览器：一个 .cmd 包一层 Python 脚本，
+全部用「假浏览器」替代真实浏览器：一层平台对应的启动脚本包一层 Python 脚本，
 读取 --print-to-pdf 参数并写出文件，从而在不启动浏览器的前提下验证完整调用链。
 真实浏览器的渲染结果由 tests/test_pdf_render.py 单独覆盖（需要浏览器，默认跳过）。
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,8 @@ from xdao.exporters.pdf import (
 
 ARTIFACTS = Path(__file__).resolve().parent.parent / ".test-artifacts"
 
+IS_WINDOWS = os.name == "nt"
+
 
 @pytest.fixture
 def out_dir() -> Path:
@@ -35,13 +38,50 @@ def out_dir() -> Path:
     return path
 
 
+def make_fake_exe(directory: Path, stem: str) -> Path:
+    """造一个「看起来像可执行文件」的空壳，跨平台可用。
+
+    Windows 要 .exe 后缀，POSIX 上只要求有执行位（真正的可执行性由
+    render_html_to_pdf 的返回码校验兜住）。
+    """
+    if IS_WINDOWS:
+        path = directory / f"{stem}.exe"
+        path.write_bytes(b"MZ")
+    else:
+        path = directory / stem
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+    return path
+
+
 def make_fake_browser(
-    artifacts_dir: Path, *, write_pdf: bool = True, content: bytes = b"%PDF-1.4 fake"
+    artifacts_dir: Path,
+    *,
+    write_pdf: bool = True,
+    content: bytes = b"%PDF-1.4 fake",
+    is_windows: bool | None = None,
+    python_exe: str | None = None,
+    shell_stem: str = "sh",
 ) -> Path:
-    """造一个假的浏览器可执行文件，返回 .cmd 的路径。
+    """造一个假的浏览器可执行文件，返回可执行包装脚本的路径。
+
+    Windows 上是 .cmd 批处理，其他平台上是带执行位的 sh 脚本 —— 早先只写
+    .cmd，导致 Linux 上 subprocess 直接 PermissionError（CI 抓到的就是它）。
 
     参数会记录到同目录的 flags.txt，供用例断言"到底传了什么给浏览器"。
+    ``is_windows`` / ``python_exe`` 允许在 Windows 上验证 POSIX 分支
+    （见 tools/posix_check.py）。
     """
+    if is_windows is None:
+        is_windows = IS_WINDOWS
+    exe = python_exe or sys.executable
+    if shell_stem != "sh":
+        # POSIX shebang 要按文件名找解释器，Windows 上验证时指向 Git 自带的 sh。
+        exe_posix = str(exe).replace("\\", "/")
+        interpreter = f"#!{exe_posix}\n"
+    else:
+        interpreter = "#!/bin/sh\n"
+
     script = artifacts_dir / "fake_browser_impl.py"
     flags_file = artifacts_dir / "flags.txt"
     script.write_text(
@@ -59,11 +99,20 @@ def make_fake_browser(
         "sys.exit(0)\n",
         encoding="utf-8",
     )
-    wrapper = artifacts_dir / "fake_browser.cmd"
-    wrapper.write_text(
-        "@echo off\r\n" f'"{sys.executable}" "{script}" %*\r\n' "exit /b %ERRORLEVEL%\r\n",
-        encoding="utf-8",
-    )
+    if is_windows:
+        wrapper = artifacts_dir / "fake_browser.cmd"
+        wrapper.write_text(
+            "@echo off\r\n" f'"{exe}" "{script}" %*\r\n' "exit /b %ERRORLEVEL%\r\n",
+            encoding="utf-8",
+        )
+    else:
+        wrapper = artifacts_dir / "fake_browser.sh"
+        # 解释器路径可能带空格，用引号包住；SCRIPT 由 shell 原样展开。
+        wrapper.write_text(
+            interpreter + f'exec "{exe}" "{script}" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
     return wrapper
 
 
@@ -71,8 +120,7 @@ def make_fake_browser(
 
 
 def test_find_browser_uses_explicit_path(artifacts_dir):
-    exe = artifacts_dir / "mybrowser.exe"
-    exe.write_bytes(b"MZ")
+    exe = make_fake_exe(artifacts_dir, "mybrowser")
     info = find_browser(exe)
     assert info.path == exe
     assert "mybrowser" in info.name
@@ -94,14 +142,25 @@ def test_find_browser_reports_when_none_installed(monkeypatch):
 def test_find_browser_prefers_first_candidate(monkeypatch, artifacts_dir):
     import xdao.exporters.pdf as pdf_module
 
-    first = artifacts_dir / "chrome.exe"
-    second = artifacts_dir / "msedge.exe"
-    first.write_bytes(b"MZ")
-    second.write_bytes(b"MZ")
+    first = make_fake_exe(artifacts_dir, "chrome")
+    second = make_fake_exe(artifacts_dir, "msedge")
     monkeypatch.setattr(pdf_module, "BROWSER_CANDIDATES", (str(first), str(second)))
     info = find_browser()
     assert info.path == first
     assert info.name == "Chrome"
+
+
+def test_fake_browser_is_actually_executable(artifacts_dir):
+    """守住这次 CI 抓到的坑：造出来的假浏览器必须真能被执行。"""
+    browser = make_fake_browser(artifacts_dir)
+    assert browser.exists()
+    completed = subprocess.run(
+        [str(browser), "--print-to-pdf=" + str(artifacts_dir / "probe.pdf")],
+        capture_output=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
+    assert (artifacts_dir / "flags.txt").exists()
 
 
 # ---------- render_html_to_pdf ----------
