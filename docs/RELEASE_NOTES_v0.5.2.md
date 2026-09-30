@@ -35,7 +35,9 @@ v0.5.1 放宽了写权限预检（探针写不动不再拦住导出），但随�
 
 ## 下载
 
-- `xdao-export-v0.5.2-win64.zip`（推荐）：免安装，解压后双击 `xdao-export.exe`。
+- `xdao-export-v0.5.2-win64.zip`（推荐，也是唯一的附件）：**免安装包**，解压后双击
+  `xdao-export.exe`；里面有 `诊断写入.ps1`，写不进去时用它定位。不做任何解压动作，
+  中文路径与受限环境都能启动。
 - 单文件版自 v0.5.1 起不再提供：PyInstaller 的单文件版在含中文的路径下会直接
   报 `Could not create temporary directory!`，属于打包器的限制，不是程序本身的问题。
 
