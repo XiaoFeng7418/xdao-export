@@ -469,7 +469,8 @@ def test_result_json_is_readable_chinese(cache_file: Path) -> None:
 def test_cache_path_lives_next_to_the_config() -> None:
     path = update_check.cache_path()
     assert path.name == "update-check.json"
-    assert path.parent.exists(), "缓存目录应当已经在配置目录下"
     from xdao.settings import app_config_dir
 
+    # 只比路径，不碰真实文件系统：CI 的 Linux 机器上配置目录还没建，
+    # 断言 path.parent.exists() 会红（本机 Windows 因为跑过程序所以是绿的）。
     assert path.parent == app_config_dir()
