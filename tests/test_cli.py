@@ -243,3 +243,30 @@ def test_unexpected_error_in_cli_is_caught(monkeypatch, capsys):
     assert "PermissionError" in err
     assert "模拟的意外错误" in err
     assert "Traceback" not in err
+
+
+def test_needs_console_only_for_command_line_usage():
+    """双击开界面（无参数）不该去连控制台，命令行用法才连。"""
+    from main import _needs_console
+
+    assert _needs_console([]) is False
+    assert _needs_console(["50000001"]) is False  # 只给串号：可能是在终端里导出
+    assert _needs_console(["--version"]) is True
+    assert _needs_console(["--help"]) is True
+    assert _needs_console(["--selftest"]) is True
+    assert _needs_console(["--watch", "--no-notify"]) is True
+    assert _needs_console(["--cache-dir=D:\\x"]) is True
+
+
+def test_attach_parent_console_is_skipped_outside_frozen_build(monkeypatch):
+    """源码运行时不动任何标准流（否则测试和终端都会被搅乱）。"""
+    import main as main_module
+
+    monkeypatch.delattr(main_module.sys, "frozen", raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(main_module, "_needs_console", lambda argv=None: calls.append("asked") or True)
+
+    main_module._attach_parent_console(["--version"])
+
+    assert calls == []
+
