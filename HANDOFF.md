@@ -25,13 +25,15 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 338 项（337 通过）、1 个真机用例默认跳过（都离线，无需联网）；
+单元测试 348 项（347 通过）、1 个真机用例默认跳过（都离线，无需联网）；
 其中界面相关的 50 项（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会自动 skip。
 
-打包版随 v0.6.0 重新构建，Release **只提供免安装包（zip）**。这一版做了两件路线图上的事：
+打包版随 v0.6.1 重新构建，Release **只提供免安装包（zip）**。v0.6.0 做了两件路线图上的事：
 **单页失败自动补抓与重试队列**（某个页抓失败不再中断整趟，失败页最后统一补抓，补不上会
 明说缺第几页；顺带修掉"缓存把缺页谎报成完整"的真 bug），以及**暗色模式切换入口**
-（右上角「配色」下拉框，选完记住）。写不进去的目录不再让整趟白跑：
+（右上角「配色」下拉框，选完记住）。v0.6.1 修掉「邮箱登录失败时误报未找到可用的饼干」：
+X 岛的跳转提示页（HTTP 200 + JS 跳转）以前被当成饼干列表解析，现在认得跳转页、会跟着跳，
+并按落点分三种情况说清原因。写不进去的目录不再让整趟白跑：
 `choose_writable_dir()` 会自动换到 `%LOCALAPPDATA%\xdao-export\导出` 并说明换了地方。
 单文件版从 v0.5.1 起不再提供：它的启动器会把内容解压到系统临时目录，解压路径里带中文/
 非 ASCII 字符（例如 `D:\某中文目录\…`）时会在 Python 代码运行前就弹出
@@ -52,9 +54,9 @@ xdao-export/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
 │  ├─ conftest.py          artifacts_dir 夹具（替代 tmp_path）
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（46）
-│  ├─ test_client.py       客户端层：Cookie 管理、userhash 解析（2）
+│  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析（9）
 │  ├─ test_cli.py          命令行参数与入口（12）
-│  ├─ test_gui_entry.py    界面入口与错误文案（6）
+│  ├─ test_gui_entry.py    界面入口与错误文案（9）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
 │  ├─ test_watcher.py      监控与配置（27）
 │  ├─ test_epub.py         EPUB（31）
