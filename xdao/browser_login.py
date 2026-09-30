@@ -38,6 +38,12 @@ from typing import Callable, Mapping
 
 USER_DATA_DIR_NAME = "browser-profile"
 LOGIN_URL = "https://www.nmbxd1.com/Member/User/Index/login.html"
+# 收进程树时走哪条路（taskkill / kill）。写成模块级常量、测试改它，而不是去改
+# ``os.name``：``os`` 是全局共享的模块对象，改 ``os.name`` 会顺带改掉 ``pathlib``
+# 的行为（它按 ``os.name`` 在模块级决定 ``Path`` 用哪个具体类）；Linux 上一边把
+# ``os.name`` 改成 "nt" 一边有小用例失败，pytest 格式化失败信息时构造 ``WindowsPath``
+# 就会直接 `NotImplementedError`，把真正的失败盖成 INTERNALERROR。
+_IS_WINDOWS = os.name == "nt"
 COOKIE_LIST_PATH = "/Member/User/Cookie/index.html"
 COOKIE_SITE = "https://www.nmbxd1.com"
 
@@ -290,7 +296,7 @@ def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
     任何一步失败都不抛异常 —— 收尾阶段的报错不该盖住真正的问题。
     """
     try:
-        if os.name == "nt":
+        if _IS_WINDOWS:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 stdin=subprocess.DEVNULL,

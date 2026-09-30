@@ -823,7 +823,7 @@ def test_stop_escalates_to_a_whole_tree_kill(
     def fake_run(command: list[str], **kwargs: object) -> None:
         commands.append(list(command))
 
-    monkeypatch.setattr(bl.os, "name", "nt")
+    monkeypatch.setattr(bl, "_IS_WINDOWS", True)
     monkeypatch.setattr(bl.subprocess, "run", fake_run)
     browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "profile")
     browser.process = _StubbornProcess()  # type: ignore[assignment]
@@ -842,7 +842,7 @@ def test_stop_swallows_a_failing_tree_kill(
     def boom(command: list[str], **kwargs: object) -> None:
         raise OSError("taskkill 不可用")
 
-    monkeypatch.setattr(bl.os, "name", "nt")
+    monkeypatch.setattr(bl, "_IS_WINDOWS", True)
     monkeypatch.setattr(bl.subprocess, "run", boom)
     browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "profile")
     browser.process = _StubbornProcess()  # type: ignore[assignment]
@@ -853,7 +853,7 @@ def test_stop_swallows_a_failing_tree_kill(
 def test_kill_process_tree_uses_kill_off_windows(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(bl.os, "name", "posix")
+    monkeypatch.setattr(bl, "_IS_WINDOWS", False)
     process = _StubbornProcess()
     bl._kill_process_tree(process)  # type: ignore[arg-type]
     assert process.killed

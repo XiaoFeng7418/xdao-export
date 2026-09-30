@@ -63,7 +63,7 @@ jobs:
           echo "全部文件编译通过"
 
       - name: 单元测试
-        run: python -m pytest -q
+        run: python -m pytest -q -rs
 
       - name: 命令行入口可用
         run: |
