@@ -46,6 +46,8 @@
 - 单文件版：`xdao-export-v0.5.0.exe`。只有一个文件、方便携带，但它在系统临时目录
   不可写的环境里会打不开（报 `Could not create temporary directory!`）。遇到这种情况
   请改用上面的免安装包。
+- 免安装包里的 exe 从这一版起改叫 `xdao-export.exe`（以前叫 `X岛串导出工具.exe`）。
+  中文名的 exe 在个别工具链里会被截断或乱码，换成 ASCII 名字更稳；程序本身没有变化。
 
 ## 升级提示
 
