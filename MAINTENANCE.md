@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 219 项，必须全绿）
+2. **跑测试**（当前基线 228 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 219 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 228 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -227,6 +227,47 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 
 **注意**：`D:\X岛` 是用户自己的目录，别把测试文件留在里面。
 
+## 入口处不许漏出 traceback（v0.3.3，2026-09-30）
+
+**用户报的问题**：打包版弹出 PyInstaller 的「Unhandled exception in script」对话框，
+内容是 `PermissionError: [WinError 5] 拒绝访问。: 'D:\Windows'`，
+traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`。
+
+**原因**：那行 `mkdir` 没有 try/except。异常穿过 `run_cli`（`main()` 当时只是
+`return run_cli(args)`），在 windowed 打包版里被 PyInstaller 启动器接住并展示成对话框。
+
+**改法**：
+
+- `main.py` 的 `mkdir` 包 `try/except OSError` → `XdaoError`，文案含路径、`strerror`、
+  错误码和「请换一个当前账户可写的目录」；**`raise ... from None`** 才能不带出 traceback 链；
+- `main()` 的 `if args.threads:` 分支整体 try：`KeyboardInterrupt → 130`、
+  `XdaoError → 1`、其他 `Exception → 打印类型与信息 + issue 地址 → 1`；
+- `if __name__ == "__main__":` 是最后一道网，连参数解析和启动界面都包住，
+  `SystemExit` 原样放行，其余转成 `启动失败：…` + 提示删 `config.json`；
+- `xdao/gui.py`：`start()` 在抓取前先 `ensure_writable(output_dir)`，不可写就弹对话框返回；
+  导出线程体改名 `worker_body()`，外面套 `worker()` 兜住一切并投一条日志 + `done` 事件；
+  监控线程同样兜底（`监控出错：…`）。
+
+**回归要点**：
+
+1. `python main.py 50000001 -o <一个文件> -f txt` → 退出码 1、stderr 含「导出目录没法创建」、
+   **不含 `Traceback`**；
+2. `main_module.run_cli` 抛任意异常时 `main()` 返回 1 且同样不含 `Traceback`
+   （见 `tests/test_cli.py` 的两个用例）；
+3. 界面里点「开始导出」，输出目录不可写时要**立刻**弹说明对话框，不能等抓取跑完；
+4. 打包版验收时故意拿一个不可写的输出目录跑一次，确认没有 traceback 对话框；
+5. `tests/test_gui_entry.py`：`tk.Tk()` 失败 / `App` 初始化失败都要走 `_report_fatal`
+   并以退出码 1 结束；`run()` 必须给 `root.report_callback_exception` 装处理器
+   （**打包版没有 stderr**，Tk 回调异常默认就是往 stderr 打印的，
+   于是会一路穿到 PyInstaller 启动器变成错误对话框）；
+6. 打包版 `xdao-export.exe --version` 必须是可读中文（由 `main._open_utf8_console()` 保证），
+   不能是 `X������������ 0.3.3` 这种乱码。
+
+**怎么验收打包版的界面**：本机 `Start-Process -PassThru` 对 GUI 进程会卡住不返回，
+改用 `python tools/gui_probe.py --exe <exe 路径>` —— 启动、等 9 秒、枚举窗口标题、
+强制结束并给出结论；标题是「Unhandled exception in script」就说明启动失败。
+把输出目录设成用户的 `D:\X岛`（config 里的默认值）时最容易暴露界面层的兜底问题。
+
 ## 路线图（尚未实现）
 
 - 监控到更新时的桌面通知
@@ -244,13 +285,15 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 - **CI**：每次推送/PR 自动跑离线测试（`.github/workflows/tests.yml`），
   Linux 3.10/3.12 + Windows 3.12 三个环境；打 tag 时额外校验版本号与 tag 一致
 - 仓库维护脚本（体检 / 推送 / 发布 / 同步 / 清理）
+- **错误处理收敛**（v0.3.3）：入口全程兜底，任何失败都只输出一句人话 + 非零退出码，
+  打包版不会再弹 traceback 对话框
 
 ## CI 说明
 
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、219 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、228 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - **留意**：`compileall` 即使编译失败也返回 0，工作流里已显式 grep 报错，
   改这一步时别退化成无效检查。
