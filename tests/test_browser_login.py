@@ -500,7 +500,7 @@ def test_cdp_session_accepts_both_ws_and_http_addresses(
         ]
 
     monkeypatch.setattr(bl, "_http_json", fake_list)
-    session = bl.CDPSession(given)
+    session = bl._new_session(given)
     assert session.page_ws_url() == "ws://127.0.0.1:9222/devtools/page/XYZ"
     assert seen == [expected_list_url]
 
@@ -510,7 +510,7 @@ def test_cdp_session_reports_a_browser_without_page_targets(
 ) -> None:
     monkeypatch.setattr(bl, "_http_json", lambda url, timeout=5.0: [{"type": "browser"}])
     with pytest.raises(bl.BrowserLoginError):
-        bl.CDPSession("http://127.0.0.1:9222/json/list").page_ws_url()
+        bl._new_session("http://127.0.0.1:9222/json/list").page_ws_url()
 
 
 def test_page_ws_url_prefers_our_site_over_browser_dialogs(
@@ -542,7 +542,7 @@ def test_page_ws_url_prefers_our_site_over_browser_dialogs(
             {"type": "browser", "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/browser/x"},
         ],
     )
-    session = bl.CDPSession("http://127.0.0.1:9222/json/list")
+    session = bl._new_session("http://127.0.0.1:9222/json/list")
     assert session.page_ws_url().endswith("/devtools/page/SITE")
 
 
@@ -565,7 +565,7 @@ def test_page_ws_url_prefers_a_real_web_page_over_a_blank_tab(
             },
         ],
     )
-    session = bl.CDPSession("http://127.0.0.1:9222/json/list")
+    session = bl._new_session("http://127.0.0.1:9222/json/list")
     assert session.page_ws_url().endswith("/devtools/page/OTHER")
 
 
@@ -582,7 +582,7 @@ def test_page_ws_url_falls_back_to_a_blank_tab(monkeypatch: pytest.MonkeyPatch) 
             }
         ],
     )
-    session = bl.CDPSession("http://127.0.0.1:9222/json/list")
+    session = bl._new_session("http://127.0.0.1:9222/json/list")
     assert session.page_ws_url().endswith("/devtools/page/BLANK")
 
 
@@ -610,7 +610,7 @@ def test_resolve_page_url_waits_for_the_site_page(monkeypatch: pytest.MonkeyPatc
         return rounds[min(len(reads) - 1, 1)]
 
     monkeypatch.setattr(bl, "_http_json", fake_list)
-    session = bl.CDPSession("http://127.0.0.1:9222/json/list", timeout=5.0)
+    session = bl._new_session("http://127.0.0.1:9222/json/list", timeout=5.0)
     assert session._resolve_page_url().endswith("/devtools/page/SITE")
     assert len(reads) == 2
 
@@ -630,7 +630,7 @@ def test_resolve_page_url_gives_up_and_uses_what_is_there(
             }
         ],
     )
-    session = bl.CDPSession("http://127.0.0.1:9222/json/list", timeout=0.3)
+    session = bl._new_session("http://127.0.0.1:9222/json/list", timeout=0.3)
     assert session._resolve_page_url().endswith("/devtools/page/BLANK")
 
 
@@ -679,7 +679,7 @@ def test_ensure_login_page_passes_a_real_failure_on() -> None:
 
 def test_cdp_session_rejects_an_address_that_is_neither_ws_nor_http() -> None:
     with pytest.raises(bl.BrowserLoginError):
-        bl.CDPSession("ftp://127.0.0.1:9222/x").page_ws_url()
+        bl._new_session("ftp://127.0.0.1:9222/x").page_ws_url()
 
 
 def test_cdp_session_connect_resolves_an_http_address_first(
@@ -699,7 +699,7 @@ def test_cdp_session_connect_resolves_an_http_address_first(
         ]
 
     monkeypatch.setattr(bl, "_http_json", fake_list)
-    session = bl.CDPSession("http://127.0.0.1:9222/json/list", timeout=2.0)
+    session = bl._new_session("http://127.0.0.1:9222/json/list", timeout=2.0)
     with pytest.raises(bl.BrowserLoginError):
         session.connect()
     assert calls == ["http://127.0.0.1:9222/json/list"]
@@ -719,7 +719,7 @@ def test_frame_reader_keeps_the_leftover_bytes() -> None:
 
 def test_session_demuxes_replies_by_id() -> None:
     """按报文 id 分发是收帧线程的核心规则，这里绕开 socket 直接验它。"""
-    session = bl.CDPSession("ws://127.0.0.1:9222/devtools/browser/x")
+    session = bl._new_session("ws://127.0.0.1:9222/devtools/browser/x")
     waiter: queue.Queue[dict | None] = queue.Queue(maxsize=1)
     session._waiters[7] = waiter  # 直接放一个假等待者：这条规则不依赖网络
     session._dispatch(json.dumps({"id": 7, "result": {"ok": 1}}).encode("utf-8"))
@@ -733,7 +733,7 @@ def test_session_demuxes_replies_by_id() -> None:
 
 
 def test_session_close_is_safe_before_connect() -> None:
-    session = bl.CDPSession("ws://127.0.0.1:9222/devtools/browser/x")
+    session = bl._new_session("ws://127.0.0.1:9222/devtools/browser/x")
     session.close()
     session.close()
     with pytest.raises(bl.BrowserLoginError):
@@ -881,7 +881,7 @@ def test_kill_process_tree_uses_kill_off_windows(
 def test_cdp_session_enter_connects() -> None:
     """``with`` 进来就连上：连不上要当场报错，不能装作没事。"""
     with pytest.raises(bl.BrowserLoginError):
-        with bl.CDPSession("ws://127.0.0.1:1/devtools/page/x", timeout=1.0):
+        with bl._new_session("ws://127.0.0.1:1/devtools/page/x", timeout=1.0):
             pass
 
 
@@ -1038,8 +1038,12 @@ def test_public_api_surface_matches_the_ui_contract() -> None:
         "info",
         "profile",
         "proxy",
+        "start_url",
     }
     assert inspect.signature(bl.build_args).parameters["proxy"].default == ""
+    assert inspect.signature(bl.build_args).parameters["start_url"].default == bl.LOGIN_URL
+    # 按名字建会话（``_new_session``）会把本站点前缀带进去，界面层走的就是这条路。
+    assert set(inspect.signature(bl._new_session).parameters) == {"ws_url", "timeout"}
     assert inspect.signature(bl.CDPSession.__init__).parameters["timeout"].default == 15.0
     assert inspect.signature(bl.CDPSession.call).parameters["timeout"].default == 15.0
     assert inspect.signature(bl.CDPSession.evaluate).parameters["await_promise"].default is False
@@ -1128,7 +1132,7 @@ def test_real_browser_reports_a_devtools_port() -> None:
             )
             # 起始地址是 build_args 给的登录页，所以这个标签必须已经在列表里。
             assert site is not None, targets
-            with bl.CDPSession(list_url, timeout=20.0) as session:
+            with bl._new_session(list_url, timeout=20.0) as session:
                 # 必须挂在站内那个标签上：挂到浏览器自己的页面（空标签、自带的对话框页）上时，
                 # 脚本里的 fetch 是跨源请求，饼干一律读不到 —— 真机上就是这么发现
                 # edge://sync-confirmation-dialog/ 排在登录页前面的。

@@ -81,10 +81,6 @@ _INTERNAL_URL_PREFIXES = (
 )
 
 
-class BrowserLoginError(Exception):
-    """浏览器登录流程里可以直接展示给用户看的错误。"""
-
-
 @dataclass(frozen=True)
 class BrowserInfo:
     """一个候选浏览器：名字只用于界面提示，路径才是真正要启动的东西。"""
@@ -195,11 +191,18 @@ def user_data_dir(config_dir: Path) -> Path:
     return Path(config_dir) / USER_DATA_DIR_NAME
 
 
-def build_args(info: BrowserInfo, profile: Path, proxy: str = "") -> list[str]:
+def build_args(
+    info: BrowserInfo,
+    profile: Path,
+    proxy: str = "",
+    start_url: str = LOGIN_URL,
+) -> list[str]:
     """拼启动参数。
 
     刻意不加的几项都有原因：``--headless`` 用户看不见窗口就没法登录；
     ``--guest`` / ``--incognito`` 用完即弃，留不住登录态，下次还得重来。
+
+    ``start_url`` 默认是登录页；PDF 渲染这类「不需要人看」的场景会传本地文件地址。
     """
     args = [
         info.path,
@@ -211,7 +214,7 @@ def build_args(info: BrowserInfo, profile: Path, proxy: str = "") -> list[str]:
     ]
     if proxy:
         args.append(f"--proxy-server={proxy}")
-    args.append(LOGIN_URL)
+    args.append(start_url)
     return args
 
 
@@ -257,7 +260,7 @@ def ensure_login_page(session: "CDPSession") -> bool:
     """
     try:
         current = session.current_url()
-    except BrowserLoginError:
+    except CdpError:
         current = ""
     if urllib.parse.urlsplit(current).hostname == _site_host():
         return False
@@ -273,13 +276,13 @@ def parse_devtools_port(text: str) -> int:
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
-        raise BrowserLoginError("浏览器的调试端口文件是空的，启动可能没成功。")
+        raise CdpError("浏览器的调试端口文件是空的，启动可能没成功。")
     try:
         port = int(lines[0])
     except ValueError as exc:
-        raise BrowserLoginError(f"调试端口文件的内容不对：{lines[0][:40]}") from exc
+        raise CdpError(f"调试端口文件的内容不对：{lines[0][:40]}") from exc
     if not 0 < port < 65536:
-        raise BrowserLoginError(f"调试端口超出范围：{port}")
+        raise CdpError(f"调试端口超出范围：{port}")
     return port
 
 
@@ -328,11 +331,13 @@ class LoginBrowser:
         profile: Path,
         proxy: str = "",
         timeout: float = 20.0,
+        start_url: str = LOGIN_URL,
     ) -> None:
         self.info = info
         self.profile = Path(profile)
         self.proxy = proxy
         self.timeout = timeout
+        self.start_url = start_url or LOGIN_URL
         self.process: subprocess.Popen[bytes] | None = None
         self.port = 0
         self.ws_path = ""
@@ -351,7 +356,7 @@ class LoginBrowser:
             pass
         try:
             self.process = subprocess.Popen(
-                build_args(self.info, self.profile, self.proxy),
+                build_args(self.info, self.profile, self.proxy, self.start_url),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -359,14 +364,14 @@ class LoginBrowser:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except OSError as exc:
-            raise BrowserLoginError(f"启动 {self.info.name} 失败：{exc}") from exc
+            raise CdpError(f"启动 {self.info.name} 失败：{exc}") from exc
 
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 code = self.process.returncode
                 self.stop()
-                raise BrowserLoginError(
+                raise CdpError(
                     f"{self.info.name} 启动后立刻退出了（退出码 {code}）。"
                     "如果是手动指定的路径，请确认它真的是浏览器；"
                     "也可以换一个浏览器再试。"
@@ -379,7 +384,7 @@ class LoginBrowser:
                 try:
                     # 文件刚建好时可能只写了一半，读到半截就当还没好，继续等。
                     self.port, self.ws_path = _parse_devtools_file(text)
-                except BrowserLoginError:
+                except CdpError:
                     self.port, self.ws_path = 0, ""
                 if self.port:
                     self.browser_ws_url = f"ws://127.0.0.1:{self.port}{self.ws_path}"
@@ -387,7 +392,7 @@ class LoginBrowser:
             time.sleep(_POLL_INTERVAL)
 
         self.stop()
-        raise BrowserLoginError(
+        raise CdpError(
             f"等了 {self.timeout:g} 秒还没等到 {self.info.name} 的调试端口。"
             "请确认浏览器能正常打开；装了安全软件时也可能拦下调试端口。"
         )
@@ -395,7 +400,7 @@ class LoginBrowser:
     def devtools_http(self, path: str) -> str:
         """拼出 CDP 的 HTTP 地址（``/json/list``、``/json/version`` 都在它下面）。"""
         if not self.port:
-            raise BrowserLoginError("浏览器还没启动，调试端口未知。")
+            raise CdpError("浏览器还没启动，调试端口未知。")
         return f"http://127.0.0.1:{self.port}/{path.lstrip('/')}"
 
     def stop(self) -> None:
@@ -436,481 +441,72 @@ def browser_open(
 
 
 # ---------------------------------------------------------------- 协议层
+#
+# 帧协议与 CDP 会话都在 ``xdao/cdp.py`` 里：浏览器登录与 PDF 渲染共用同一条通道，
+# 这一层不再留在本模块。下面这组名字是**兼容出口**：本模块的既有调用方
+# （界面层、测试、真机脚本）一直按这些名字引用，保留别名就不用全体改一遍。
+from .cdp import (
+    OPCODE_BINARY,
+    OPCODE_CLOSE,
+    OPCODE_CONTINUATION,
+    OPCODE_PING,
+    OPCODE_PONG,
+    OPCODE_TEXT,
+    CDPSession,
+    CdpError,
+    Frame,
+    _FrameReader,
+    _SITE_WAIT,
+    _accept_key,
+    _http_json,
+    _split_ws_url,
+    _ws_handshake,
+    build_frame,
+    http_json,  # noqa: F401  —— _http_json 的公开名
+    read_frame,
+)
+
+# ``BrowserLoginError`` 是历史名字（报错文案没变，类也确实是同一个），
+# 放在这里是因为它要等 cdp 的名字导入进来才能绑定。
+BrowserLoginError = CdpError
 
 
-def _accept_key(key: str) -> str:
-    """算出握手应答里的 Sec-WebSocket-Accept（RFC 6455）。"""
-    digest = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()
-    return base64.b64encode(digest).decode("ascii")
+# 站点地址前缀交给会话：``connect()`` 靠它挑对页面标签，
+# 这样 cdp.py 自己不必知道业务站点是哪个。
+SITE_URLS = (COOKIE_SITE, LOGIN_URL)
 
 
-def _split_ws_url(ws_url: str) -> tuple[str, int, str]:
-    """把 ``ws://主机:端口/路径`` 拆成三段。"""
-    parts = urllib.parse.urlsplit(ws_url)
-    if parts.scheme != "ws" or not parts.hostname:
-        raise BrowserLoginError(f"调试地址不是合法的 WebSocket 地址：{ws_url}")
-    path = parts.path or "/"
-    if parts.query:
-        path = f"{path}?{parts.query}"
-    return parts.hostname, parts.port or 80, path
+def _new_session(ws_url: str, timeout: float = 15.0) -> CDPSession:
+    """建一条会话：带上「本站点」前缀，并让会话用本模块的 ``_http_json`` 读标签列表。
 
-
-def _http_json(url: str, timeout: float = 5.0) -> object:
-    """读一个本地 HTTP 接口（CDP 的 ``/json/list``）。
-
-    显式关掉代理：调试端口在 127.0.0.1 上，而用户可能开着系统代理，
-    走代理会连不上自己机器上的端口。
+    两个名字都在**调用时**从本模块的名字表里取：
+    * ``CDPSession`` —— 调用方（界面测试）会替换本模块的 ``CDPSession`` 来塞替身，
+      必须取替换后的那个，不能是导入时就绑死的类对象；
+    * ``_http_json`` —— 老代码里读 ``/json/list`` 就发生在本模块，把「怎么读」
+      显式交给会话，替换这个名字才仍然换得掉会话的行为。
     """
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(url, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8", "replace"))
-    except (OSError, ValueError) as exc:
-        raise BrowserLoginError(f"读取浏览器的调试接口失败：{exc}") from exc
-
-
-def _ws_handshake(sock: socket.socket, ws_url: str, timeout: float = 10.0) -> bytes:
-    """完成 WebSocket 握手，返回「握手响应之后可能已经读到的余包」。
-
-    为什么要把余包交回去：服务端常把 101 响应和自己的第一帧写在同一个 TCP 段里，
-    直接丢掉会把第一帧吃掉（表现成「发出去的命令永远等不到应答」）。
-    """
-    host, port, path = _split_ws_url(ws_url)
-    key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
-    request = (
-        f"GET {path} HTTP/1.1\r\n"
-        f"Host: {host}:{port}\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        f"Sec-WebSocket-Key: {key}\r\n"
-        "Sec-WebSocket-Version: 13\r\n\r\n"
-    )
-    sock.settimeout(timeout)
-    sock.sendall(request.encode("ascii"))
-
-    buffer = b""
-    while b"\r\n\r\n" not in buffer:
-        chunk = sock.recv(4096)
-        if not chunk:
-            raise BrowserLoginError("和浏览器建立调试连接时被对方关闭了。")
-        buffer += chunk
-    head, _, leftover = buffer.partition(b"\r\n\r\n")
-    lines = head.decode("latin-1").split("\r\n")
-    if "101" not in lines[0]:
-        raise BrowserLoginError(f"调试地址拒绝了 WebSocket 升级：{lines[0].strip()}")
-    fields: dict[str, str] = {}
-    for line in lines[1:]:
-        name, _, value = line.partition(":")
-        fields[name.strip().lower()] = value.strip()
-    if fields.get("sec-websocket-accept") != _accept_key(key):
-        raise BrowserLoginError("调试地址的 WebSocket 应答校验失败，可能不是 CDP 端口。")
-    return leftover
-
-
-def build_frame(
-    payload: bytes,
-    opcode: int = OPCODE_TEXT,
-    mask: bytes | None = None,
-    fin: bool = True,
-) -> bytes:
-    """拼一个客户端帧。
-
-    RFC 要求客户端发出的每一帧都要掩码；``mask`` 只为测试能固定字节而留。
-    """
-    if mask is None:
-        mask = secrets.token_bytes(4)
-    if len(mask) != 4:
-        raise BrowserLoginError("WebSocket 掩码必须是 4 字节。")
-    header = bytearray([(0x80 if fin else 0x00) | opcode])
-    length = len(payload)
-    if length < 126:
-        header.append(0x80 | length)
-    elif length < 1 << 16:
-        header.append(0x80 | 126)
-        header += struct.pack(">H", length)
-    else:
-        header.append(0x80 | 127)
-        header += struct.pack(">Q", length)
-    header += mask
-    return bytes(header) + bytes(
-        byte ^ mask[index % 4] for index, byte in enumerate(payload)
+    names = globals()
+    return names["CDPSession"](
+        ws_url,
+        timeout=timeout,
+        site_urls=list(SITE_URLS),
+        http_json=names["_http_json"],
     )
 
 
-def read_frame(read_exact: Callable[[int], bytes]) -> Frame:
-    """读一帧。
+def _pick_page(pages: list[dict]) -> dict:
+    """挑一个页面标签：优先本站点，其次任意非内部页，最后兜底第一个。"""
+    from .cdp import pick_page, pick_site_page
 
-    参数是「读满 n 个字节」的函数，这样帧层能脱离 socket 单独测
-    （用 socketpair 造一对假连接即可）。服务端的帧本不带掩码，
-    真带了也照着解，兼容性白捡。
-    """
-    first, second = read_exact(2)
-    fin = bool(first & 0x80)
-    opcode = first & 0x0F
-    masked = bool(second & 0x80)
-    length = second & 0x7F
-    if length == 126:
-        (length,) = struct.unpack(">H", read_exact(2))
-    elif length == 127:
-        (length,) = struct.unpack(">Q", read_exact(8))
-    mask = read_exact(4) if masked else b""
-    payload = read_exact(length) if length else b""
-    if masked:
-        payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-    return Frame(fin=fin, opcode=opcode, payload=payload)
+    site = pick_site_page(pages, list(SITE_URLS))
+    return site if site is not None else pick_page(pages)
 
 
-class _FrameReader:
-    """把 socket 上的连续字节切成帧。
+def _pick_site_page(pages: list[dict]) -> dict | None:
+    """挑出属于本站点的标签；没有就返回 None。"""
+    from .cdp import pick_site_page
 
-    握手时多读出来的余包要先塞回缓冲区，否则第一帧当场就丢了。
-    """
-
-    def __init__(self, sock: socket.socket, initial: bytes = b"") -> None:
-        self._sock = sock
-        self._buffer = bytearray(initial)
-
-    def read_exact(self, count: int) -> bytes:
-        while len(self._buffer) < count:
-            chunk = self._sock.recv(65536)
-            if not chunk:
-                raise BrowserLoginError("调试连接被浏览器关闭了。")
-            self._buffer += chunk
-        data = bytes(self._buffer[:count])
-        del self._buffer[:count]
-        return data
-
-    def read_frame(self) -> Frame:
-        return read_frame(self.read_exact)
-
-
-def _describe_exception(details: object) -> str:
-    """从 Runtime.evaluate 的 exceptionDetails 里挖出一句能看的原因。"""
-    if not isinstance(details, dict):
-        return str(details)
-    exception = details.get("exception")
-    if isinstance(exception, dict):
-        for key in ("description", "value"):
-            text = exception.get(key)
-            if text:
-                return str(text)
-    return str(details.get("text") or details)
-
-
-class CDPSession:
-    """一条 CDP 连接。
-
-    为什么单开一个读线程：WebSocket 是全双工通道，应答可能和事件通知混在一起、
-    也可能乱序到达，而调用方只想要「发一条命令、等这条命令的结果」。
-    所以收帧交给一个专职线程，按报文 id 把结果投进各自的队列，
-    外部线程只碰队列，不碰 socket。
-    """
-
-    def __init__(self, ws_url: str, timeout: float = 15.0) -> None:
-        self._ws_url = ws_url
-        self._timeout = timeout
-        self._sock: socket.socket | None = None
-        self._frames: _FrameReader | None = None
-        self._reader: threading.Thread | None = None
-        self._waiters: dict[int, queue.Queue[dict | None]] = {}
-        self._ids = itertools.count(1)
-        self._state_lock = threading.Lock()
-        self._send_lock = threading.Lock()
-        self._failure = ""
-
-    # ---------- 连接管理 ----------
-
-    def page_ws_url(self) -> str:
-        """从 ``/json/list`` 里挑一个页面标签的调试地址（读一次就定，不等）。
-
-        浏览器端点（``/devtools/browser/…``）只能做 Target 层面的操作，
-        ``Network.getCookies`` / ``Runtime.evaluate`` 必须挂在页面标签上。
-
-        构造参数既可以是 ``ws://`` 地址，也可以是 CDP 的 HTTP 地址
-        （``http://127.0.0.1:<端口>/json/list``）—— 界面层自己启动浏览器时
-        就是这么拼地址的，两条路都认，省得调用方先想清楚该给哪一种。
-
-        要连的时候别用这个：``connect()`` 会等站点页面开出来再挂上去
-        （刚启动那会儿只有空标签），这里只回答「现在有哪个页面」。
-        """
-        pages = self._page_targets()
-        if not pages:
-            raise BrowserLoginError("浏览器里没有可用的页面标签，读不到登录状态。")
-        return str(_pick_page(pages)["webSocketDebuggerUrl"])
-
-    def _page_targets(self) -> list[dict]:
-        """读一次 ``/json/list``，只留能挂上去的页面标签。"""
-        targets = _http_json(self._list_url(), self._timeout)
-        return [
-            target
-            for target in (targets if isinstance(targets, list) else [])
-            if isinstance(target, dict)
-            and target.get("type") == "page"
-            and target.get("webSocketDebuggerUrl")
-        ]
-
-    def _resolve_page_url(self) -> str:
-        """等站点页面出现，再把它交给 connect()。
-
-        为什么不一次定生死：浏览器是先把调试端口写进 ``DevToolsActivePort``、
-        再加载命令行给的地址的 —— 端口文件一出现就连，页面列表里可能只有一个空标签，
-        真机上还见过 Edge 自带的 ``edge://sync-confirmation-dialog/``。
-        挂到那种页面上，页面里的 ``fetch`` 属于别的源，读饼干会一直读空，
-        用户明明登录了程序却说没登录。所以这里给它几秒把登录页开出来。
-        一直没等到（比如网断了）就退回 ``_pick_page()``，让调用方拿到一个能用的连接，
-        读不到东西自然会返回空。
-        """
-        deadline = time.monotonic() + min(_SITE_WAIT, self._timeout)
-        fallback: str | None = None
-        while True:
-            pages = self._page_targets()
-            if pages:
-                site = _pick_site_page(pages)
-                if site is not None:
-                    return str(site["webSocketDebuggerUrl"])
-                if fallback is None:
-                    fallback = str(_pick_page(pages)["webSocketDebuggerUrl"])
-            if time.monotonic() >= deadline:
-                if fallback is not None:
-                    return fallback
-                raise BrowserLoginError("浏览器里没有可用的页面标签，读不到登录状态。")
-            time.sleep(_POLL_INTERVAL)
-
-    def _list_url(self) -> str:
-        """把构造参数归一成 ``/json/list`` 的 HTTP 地址。"""
-        parts = urllib.parse.urlsplit(self._ws_url)
-        if parts.scheme in ("http", "https"):
-            if not parts.hostname:
-                raise BrowserLoginError(f"调试接口地址不合法：{self._ws_url}")
-            path = parts.path if parts.path not in ("", "/") else "/json/list"
-            return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "", ""))
-        host, port, _ = _split_ws_url(self._ws_url)
-        return f"http://{host}:{port}/json/list"
-
-    def connect(self) -> None:
-        """建立连接并开始收帧。
-
-        给的是浏览器端点、或者干脆是 ``/json/list`` 那种 HTTP 地址时，
-        会自动换成页面标签 —— 调用方不必先想清楚该连哪个。
-        换的时候会等站点页面开出来（见 ``_resolve_page_url``）。
-        """
-        if self._sock is not None:
-            return
-        url = self._ws_url
-        if urllib.parse.urlsplit(url).scheme != "ws":
-            url = self._resolve_page_url()
-        elif _split_ws_url(url)[2].startswith("/devtools/browser"):
-            url = self._resolve_page_url()
-        host, port, _ = _split_ws_url(url)
-        try:
-            sock = socket.create_connection((host, port), timeout=self._timeout)
-        except OSError as exc:
-            raise BrowserLoginError(
-                f"连不上浏览器的调试端口（{host}:{port}）：{exc}"
-            ) from exc
-        try:
-            leftover = _ws_handshake(sock, url, self._timeout)
-        except OSError as exc:
-            sock.close()
-            raise BrowserLoginError(f"和浏览器的调试连接握手失败：{exc}") from exc
-        except BrowserLoginError:
-            sock.close()
-            raise
-        # 之后靠 close() 打断阻塞读：用户可能盯着登录页发呆很久，空闲不算超时。
-        sock.settimeout(None)
-        self._sock = sock
-        self._ws_url = url
-        self._frames = _FrameReader(sock, leftover)
-        self._reader = threading.Thread(target=self._read_loop, name="cdp-reader", daemon=True)
-        self._reader.start()
-
-    def close(self) -> None:
-        """关掉连接，不抛异常。"""
-        self._fail("调试连接已关闭。")
-        sock, self._sock = self._sock, None
-        if sock is not None:
-            try:
-                with self._send_lock:
-                    sock.sendall(build_frame(b"", OPCODE_CLOSE))
-            except (OSError, BrowserLoginError):
-                pass
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                sock.close()
-            except OSError:
-                pass
-        reader, self._reader = self._reader, None
-        if reader is not None and reader.is_alive():
-            reader.join(timeout=2.0)
-
-    def __enter__(self) -> "CDPSession":
-        """``with`` 进来就连上 —— 界面层不必记得先调 connect()。"""
-        self.connect()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
-        self.close()
-        return False
-
-    # ---------- 收帧 ----------
-
-    def _fail(self, reason: str) -> None:
-        """记下断线原因，并把所有等待者叫醒（拿 None 表示「不用等了」）。"""
-        with self._state_lock:
-            self._failure = reason
-            waiters = list(self._waiters.values())
-            self._waiters.clear()
-        for waiter in waiters:
-            waiter.put(None)
-
-    def _read_loop(self) -> None:
-        message: bytearray | None = None
-        try:
-            while True:
-                frame = self._must_read_frame()
-                if frame.opcode == OPCODE_CLOSE:
-                    raise BrowserLoginError("浏览器关闭了调试连接。")
-                if frame.opcode == OPCODE_PING:
-                    self._send(build_frame(frame.payload, OPCODE_PONG))
-                    continue
-                if frame.opcode == OPCODE_PONG:
-                    continue
-                if frame.opcode in (OPCODE_TEXT, OPCODE_BINARY):
-                    message = bytearray(frame.payload)
-                elif frame.opcode == OPCODE_CONTINUATION:
-                    if message is None:
-                        continue  # 没收到过起始帧，这半截只能丢
-                    message += frame.payload
-                else:
-                    continue
-                if frame.fin and message is not None:
-                    self._dispatch(bytes(message))
-                    message = None
-        except (OSError, BrowserLoginError) as exc:
-            self._fail(str(exc) or "调试连接中断了。")
-        except Exception as exc:  # noqa: BLE001 - 后台线程里漏出去的异常没人接得住
-            self._fail(f"读取调试连接时出错：{exc}")
-
-    def _must_read_frame(self) -> Frame:
-        frames = self._frames
-        if frames is None:
-            raise BrowserLoginError("调试连接还没建立。")
-        return frames.read_frame()
-
-    def _dispatch(self, data: bytes) -> None:
-        """按报文 id 把结果投给等待者；没有 id 的是事件通知，本模块不需要。"""
-        try:
-            message = json.loads(data.decode("utf-8", "replace"))
-        except ValueError:
-            return
-        if not isinstance(message, dict):
-            return
-        message_id = message.get("id")
-        if not isinstance(message_id, int):
-            return
-        with self._state_lock:
-            waiter = self._waiters.pop(message_id, None)
-        if waiter is not None:
-            waiter.put(message)
-
-    def _send(self, raw: bytes) -> None:
-        sock = self._sock
-        if sock is None:
-            raise BrowserLoginError("调试连接还没建立，发不出命令。")
-        with self._send_lock:
-            try:
-                sock.sendall(raw)
-            except OSError as exc:
-                raise BrowserLoginError(f"向浏览器发送命令失败：{exc}") from exc
-
-    # ---------- 命令 ----------
-
-    def call(
-        self, method: str, params: dict | None = None, timeout: float = 15.0
-    ) -> dict:
-        """发一条 CDP 命令并等它的应答，返回 ``result`` 字典。
-
-        超时按单次调用算：浏览器可能长时间没有动作（用户在慢慢登录），
-        所以不做全局超时，只保证一次调用不会把界面卡住。
-        """
-        self.connect()
-        if self._failure:
-            raise BrowserLoginError(self._failure)
-        waiter: queue.Queue[dict | None] = queue.Queue(maxsize=1)
-        with self._state_lock:
-            message_id = next(self._ids)
-            self._waiters[message_id] = waiter
-        payload: dict = {"id": message_id, "method": method}
-        if params:
-            payload["params"] = params
-        try:
-            self._send(build_frame(json.dumps(payload).encode("utf-8")))
-        except BaseException:
-            with self._state_lock:
-                self._waiters.pop(message_id, None)
-            raise
-        try:
-            response = waiter.get(timeout=timeout)
-        except queue.Empty:
-            with self._state_lock:
-                self._waiters.pop(message_id, None)
-            raise BrowserLoginError(
-                f"等浏览器返回 {method} 超时（{timeout:g} 秒）。"
-            ) from None
-        if response is None:
-            raise BrowserLoginError(self._failure or "调试连接已断开。")
-        error = response.get("error")
-        if error:
-            detail = error.get("message") if isinstance(error, dict) else error
-            raise BrowserLoginError(f"浏览器拒绝了 {method}：{detail}")
-        result = response.get("result")
-        return result if isinstance(result, dict) else {}
-
-    def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
-        """读浏览器里的 cookie。
-
-        这条路是「不打扰用户」的关键：``Network.getCookies`` 直接读浏览器自己的
-        cookie 存储，不需要页面脚本参与，HttpOnly 的 userhash 一样拿得到。
-        """
-        params = {"urls": urls if urls else [COOKIE_SITE + "/"]}
-        result = self.call("Network.getCookies", params)
-        cookies = result.get("cookies")
-        if not isinstance(cookies, list):
-            return []
-        return [cookie for cookie in cookies if isinstance(cookie, dict)]
-
-    def evaluate(self, expression: str, await_promise: bool = False) -> str:
-        """在页面里跑一段脚本，把结果当字符串拿回来。
-
-        ``await_promise=True`` 时页面里的 fetch 才会跑完再返回，
-        「应用一块饼干」那一步全靠它。
-        """
-        result = self.call(
-            "Runtime.evaluate",
-            {
-                "expression": expression,
-                "awaitPromise": await_promise,
-                "returnByValue": True,
-            },
-        )
-        if result.get("exceptionDetails"):
-            raise BrowserLoginError(
-                f"页面脚本执行出错：{_describe_exception(result['exceptionDetails'])}"
-            )
-        remote = result.get("result")
-        value = remote.get("value") if isinstance(remote, dict) else None
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        return json.dumps(value, ensure_ascii=False)
-
-    def current_url(self) -> str:
-        """当前页面地址，界面层用它判断用户是不是还停在登录页。"""
-        return self.evaluate("location.href")
+    return pick_site_page(pages, list(SITE_URLS))
 
 
 # ---------------------------------------------------------------- 饼干
@@ -1082,7 +678,7 @@ def apply_leaf_cookie(session: CDPSession) -> str | None:
     """
     try:
         value = session.evaluate(build_apply_cookie_script(), await_promise=True)
-    except BrowserLoginError:
+    except CdpError:
         return None
     value = (value or "").strip()
     return value if looks_like_userhash(value) else None
