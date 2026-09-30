@@ -207,9 +207,8 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 
 1. 先用诊断开关 `main.py --pdfdiag` / `python tools/pdf_diag.py` 确认打包版里
    浏览器到底能不能起来（会打印 `sys.frozen` 与「浏览器附加参数」）；
-2. 冻结探针（PyInstaller `console=True` 打包一个小脚本，见 `_scratch/pdfprobe.spec`）
-   里直接调 `render_html_to_pdf`，**同一次运行里对照「不给开关 / 给开关」**，
-   排除机器与网络因素；
+2. 冻结探针（PyInstaller `console=True` 打包一个小脚本）里直接调 `render_html_to_pdf`，
+   **同一次运行里对照「不给开关 / 给开关」**，排除机器与网络因素；
 3. 用 `CreateProcessW` 之类的启动方式矩阵逐个换（见下表），直到变量收敛到一个开关。
 
 **排除表**（都实测过，全部不是）：
@@ -248,6 +247,31 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 **回归要点**：`tests/test_browser_flags.py` 钉住开关常量与冻结判据的映射、
 `tests/test_pdf.py` 与 `tests/test_browser_login.py` 各有一条「参数里必须带上开关」的用例
 （都做过变异校验：删掉参数传递就会红）。真机核验见下面「冻结环境 PDF」一段。
+
+**以后要再写冻结探针，照这个来**（2026-10-01 一次性踩了四个坑）：
+
+1. 用 `.spec` 文件而不是一串命令行参数。`Analysis(..., pathex=[仓库根])` 必须写，
+   否则 `from xdao import …` 会被记成 missing module、PYZ 里根本没有 `xdao`，
+   冻结后 `ModuleNotFoundError: No module named 'xdao'`（运行期再往 `sys.path`
+   里塞仓库根也没用 —— 那是源码运行的做法）。
+2. 显式列 `hiddenimports`。极简入口脚本的分析图走不到标准库，冻结后会
+   `ModuleNotFoundError: No module named 'json'`；改成把 `json`、`json.decoder`、
+   `urllib.error`、`urllib.parse` 与 `xdao.*` 全部点名后才齐。想确认打进去了没有，
+   用 `PyInstaller.archive.readers` 的 `CArchiveReader`/`ZlibArchiveReader` 把
+   `PYZ.pyz` 的模块名列出来，别猜。
+3. **对照组要在同一次运行里、而且要还原被改的模块常量**。第一版探针把
+   `browser_flags.FROZEN_EXTRA_FLAGS` 改成 `()` 模拟旧版之后就**没还原**，
+   后一轮「按真实常量」其实还是空开关 —— 测出来的「带开关」数据全是假的，
+   差点得出「`--no-sandbox` 对登录没用」的错误结论。现在先把「命令行里有没有那个开关」
+   断言掉，再谈页面能不能用。
+4. 小程序的 stdout 也要防一手：Python 在 Windows 上按本机代码页（GBK）写 stdout，
+   转述 PowerShell 输出时混进一个替换字符就 `UnicodeEncodeError`，整轮探针当场断掉；
+   探针里自己把 `sys.stdout` 换成按 UTF-8 写、装不下就转义的包装器。
+
+另外两条与探针无关但同样会咬人的：`Page.captureScreenshot` 返回的是
+`{"data": "<base64>"}` 而不是裸 base64（直接喂给 `b64decode` 会
+`TypeError: argument should be a bytes-like object or ASCII string, not 'dict'`）；
+`Get-Content` 默认按 ANSI 读文件，UTF-8 日志看上去会是乱码，加 `-Encoding utf8`。
 
 ## 缓存目录写不进去不再挡住宿主功能（v0.3.2，2026-09-30）
 
@@ -410,6 +434,11 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **打包版登录窗口也核过了**（v0.10.1）：v0.10.0 只量了 PDF 那条路，这一版在冻结真机里
+  同样把「启动浏览器 → 连 CDP → 等登录页 → 读标题 → 截图」跑了一遍。结论是**症状要分两种**：
+  不带 `--no-sandbox` 时进程起得来、调试端口也有，但页面永不提交、截图一直 `Internal error`
+  （崩的是渲染器，不是进程）；带上之后落在登录页、标题「用户登录 - User System - X岛揭示板」、
+  截图 27,910 字节。功能零改动，改的是文档里的说法与核验范围。
 - 四种格式（HTML / TXT / Markdown / EPUB）＋ **PDF**（v0.3.0，走本机浏览器无头渲染）
 - 断点续传、增量更新、图片缓存
 - 串更新监控
@@ -591,6 +620,15 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `is_frozen() = True | launch_flags() = ['--no-sandbox']`，同一次运行里
   「不给开关 → `PdfError: Chrome 没有生成 PDF（退出码 2147483651）`，给开关 → 成功，
   65,290 字节 / `%PDF` 是 / 1 页 / 612.0x792.0pt」。
+  **登录窗口那条路 2026-10-01 也单独量过**（`_scratch/loginverify_frozen.py` + `loginverify.spec`，
+  同一台机器、同一次运行里两轮对照）：
+  - 不给开关：浏览器**进程起来了**（pid 有、调试端口写出来了、CDP 连得上），
+    但页面既不提交也不报错 —— 地址与标题一直是空的，`Page.captureScreenshot`
+    连试三次都是 `Internal error`；
+  - 给开关：地址 `https://www.nmbxd1.com/Member/User/Index/login.html`、
+    标题「用户登录 - User System - X岛揭示板」、截图 27,910 字节。
+  所以「有头启动也一样崩」这句话当年说得太粗 —— 崩的不是进程，是渲染器：
+  窗口可能开得出来，登录页永远加载不了。补开关的理由不变，症状要按实际写。
 - **行尾判据只有一条：工作区字节 vs 索引 blob**（v0.10.0 的返工教训）。
   编辑工具把 `tests/test_browser_login.py`、`xdao/browser_login.py` 两个 LF 文件写成了
   整份 CRLF；`.gitattributes` 是 `* text=auto eol=lf`，所以 `git diff --numstat` 只显示
