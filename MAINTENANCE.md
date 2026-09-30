@@ -362,6 +362,9 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - **监控桌面通知**（v0.4.0）：有新楼时弹 Windows 通知 + 提示音，同串 15 分钟一次
 - **界面重做**（v0.5.0）：两栏布局、统一主题（`theme.py`）、自绘控件（`widgets.py`）、
   四个对话框统一风格；`CardFaint.TLabel` 缺失与 `Card` 死宽度两个老问题一并修掉
+- **不再用探针文件拦路**（v0.5.1）：`ensure_writable` 只在目录连创建都做不到时失败，
+  探针写不动只当预警 —— 修掉「0.1.0 能导出、0.5.0 说目录不可写」那类误报；
+  同时停发在中文路径下打不开的单文件版
 - 命令行入口与 `--selftest`
 - **CI**：每次推送/PR 自动跑离线测试（`.github/workflows/tests.yml`），
   Linux 3.10/3.12 + Windows 3.12 三个环境；打 tag 时额外校验版本号与 tag 一致
