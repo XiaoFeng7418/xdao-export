@@ -1436,12 +1436,12 @@ class App:
             messagebox.showwarning("提示", "请选择导出目录。")
             return
 
-        # 先确认这个目录写不写得进去：写不进去时立刻说清楚原因，
-        # 而不是抓取跑到一半才失败（用户报过 343 秒后才报权限错误）。
+        # 这个目录连"建出来"都做不到时才拦下（例如路径指向不存在又无权创建的盘）。
+        # 只写不进探针文件不算数 —— 那正是 v0.5.0 把用户挡在门外的那次教训。
         try:
             ensure_writable(output_dir)
         except OutputDirNotWritable as exc:
-            messagebox.showerror("导出目录不可写", str(exc))
+            messagebox.showerror("导出目录不可用", str(exc))
             return
 
         self.persist_prefs()
