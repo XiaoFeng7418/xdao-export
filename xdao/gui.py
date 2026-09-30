@@ -443,6 +443,23 @@ class SettingsDialog(tk.Toplevel):
             justify="left",
         ).grid(row=15, column=1, sticky="w", padx=10)
 
+        ttk.Label(frame, text="PDF 浏览器").grid(row=16, column=0, sticky="w", **pad)
+        browser_row = ttk.Frame(frame)
+        browser_row.grid(row=16, column=1, sticky="ew", **pad)
+        self.browser_var = tk.StringVar(value=settings.pdf_browser)
+        ttk.Entry(browser_row, textvariable=self.browser_var, width=26).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(
+            browser_row, text="…", style="Secondary.TButton", width=3, command=self._choose_browser
+        ).pack(side="left", padx=(6, 0))
+        ttk.Label(
+            frame,
+            text="导出 PDF 时调用的浏览器（无头模式渲染）。留空表示自动查找 Chrome 或 Edge。",
+            style="Muted.TLabel",
+            wraplength=340,
+        ).grid(row=17, column=1, sticky="w", padx=10)
+
         buttons = ttk.Frame(self, padding=(16, 0, 16, 14))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
@@ -455,6 +472,15 @@ class SettingsDialog(tk.Toplevel):
         if chosen:
             self.cache_var.set(chosen)
 
+    def _choose_browser(self) -> None:
+        chosen = filedialog.askopenfilename(
+            title="选择浏览器可执行文件",
+            parent=self,
+            filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")],
+        )
+        if chosen:
+            self.browser_var.set(chosen)
+
     def _save(self) -> None:
         from .settings import DEFAULT_RETRIES, DEFAULT_THROTTLE, DEFAULT_TIMEOUT
 
@@ -463,6 +489,7 @@ class SettingsDialog(tk.Toplevel):
         settings.use_cache = bool(self.use_cache_var.get())
         settings.cache_dir = self.cache_var.get().strip()
         settings.filename_template = self.template_var.get().strip()
+        settings.pdf_browser = self.browser_var.get().strip()
 
         def _num(raw: str, fallback: float, minimum: float) -> float:
             try:
@@ -1348,6 +1375,7 @@ class App:
                 progress=lambda msg: self._export_queue.put(("log", msg)),
                 filename_template=template,
                 image_mode=self.current_image_mode(),
+                browser_path=self.settings.pdf_browser or None,
             )
 
             succeeded = 0

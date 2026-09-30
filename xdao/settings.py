@@ -54,6 +54,8 @@ class AppSettings:
     include_hashes: str = ""
     # EPUB 的图片处理方式：embed 内嵌 / url 仅链接 / drop 丢弃
     image_mode: str = "embed"
+    # 导出 PDF 时使用的浏览器；留空表示自动探测 Chrome / Edge
+    pdf_browser: str = ""
 
     # ---------- 缓存 ----------
     use_cache: bool = True
@@ -97,6 +99,7 @@ class AppSettings:
         self.include_hashes = str(data.get("include_hashes") or "")
         image_mode = str(data.get("image_mode") or "embed")
         self.image_mode = image_mode if image_mode in ("embed", "url", "drop") else "embed"
+        self.pdf_browser = str(data.get("pdf_browser") or "")
         self.use_cache = bool(data.get("use_cache", True))
         self.cache_dir = str(data.get("cache_dir") or "")
         self.watch_interval = _as_float(data.get("watch_interval"), DEFAULT_WATCH_INTERVAL)
@@ -121,6 +124,7 @@ class AppSettings:
                 "filename_template": self.filename_template,
                 "include_hashes": self.include_hashes,
                 "image_mode": self.image_mode,
+                "pdf_browser": self.pdf_browser,
                 "use_cache": self.use_cache,
                 "cache_dir": self.cache_dir,
                 "watch_interval": self.watch_interval,
