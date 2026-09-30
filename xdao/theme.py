@@ -125,27 +125,57 @@ UI_FONT_CANDIDATES = (
 )
 MONO_FONT_CANDIDATES = ("Cascadia Mono", "Consolas", "JetBrains Mono", "Menlo", "DejaVu Sans Mono")
 
+#: 字体只探测一次；``_FONT_CACHE`` 按候选元组缓存结果
+_FONTS_RESOLVED = False
+_FONT_CACHE: dict[tuple[str, ...], str] = {}
+
 
 def _first_available(candidates: tuple[str, ...], fallback: str) -> str:
-    """挑系统里第一个装了的字体。探测失败（无 GUI/Tcl 环境）时用 fallback。"""
-    try:
-        root = tk._default_root  # noqa: SLF001 —— 没有根窗口时没法枚举字体
-        if root is None:
-            return candidates[0]
-        available = {name.lower() for name in tkfont.families(root)}
+    """挑系统里第一个装了的字体。探测失败（无 GUI/Tcl 环境）时用 fallback。
+
+    只在进程里探测一次（结果缓存），因为字体列表在运行期不会变。注意根窗口
+    可能已被销毁：那时的 ``tkfont.families()`` 会抛 TclError，所以每个候选
+    都要能安全跳过，绝不能因为字体不存在而影响启动。
+    """
+    global _FONTS_RESOLVED
+    if _FONTS_RESOLVED:
+        return _FONT_CACHE.get(candidates, candidates[0])
+    _FONTS_RESOLVED = True
+
+    available: set[str] = set()
+    for root in (tk._default_root, None):  # noqa: SLF001 —— 没有根窗口时没法枚举字体
+        if root is not None:
+            try:
+                if not root.winfo_exists():
+                    continue
+            except Exception:  # noqa: BLE001 —— 根已销毁
+                continue
+        try:
+            available = {name.lower() for name in tkfont.families(root)}
+            break
+        except Exception:  # noqa: BLE001 —— 换了下一个来源再试
+            available = set()
+
+    chosen = fallback
+    if available:
         for name in candidates:
             if name.lower() in available:
-                return name
-        return fallback
-    except Exception:  # noqa: BLE001 —— 字体探测失败不该影响启动
-        return candidates[0]
+                chosen = name
+                break
+        else:
+            chosen = fallback
+    else:
+        # 探测不到任何字体（比如纯 Tcl 环境）：退回候选里的第一个
+        chosen = candidates[0]
+    _FONT_CACHE[candidates] = chosen
+    return chosen
 
 
 FALLBACK_UI_FONT = "TkDefaultFont"
 FALLBACK_MONO_FONT = "TkFixedFont"
 
 
-#: 界面字体名（导入时先给个默认值；``resolve_fonts`` 在有了根窗口后探测真实值）
+#: 界面字体名（导入时给个默认值；``resolve_fonts`` 在有了根窗口后探测真实值）
 FONT_UI = "Microsoft YaHei UI"
 FONT_MONO = "Consolas"
 
@@ -153,8 +183,11 @@ FONT_MONO = "Consolas"
 def resolve_fonts(root: tk.Misc | None = None) -> tuple[str, str]:
     """探测可用字体并更新模块级 ``FONT_UI`` / ``FONT_MONO``，返回两者。
 
-    ``gui.setup_style`` 在根窗口建好后调用它，这样测试环境（无 GUI）不会
-    因为枚举字体失败而报错。
+    ``gui.setup_style`` 在根窗口建好后调用它；探测结果在进程内缓存，
+    之后再调用（含根窗口被销毁后）都返回同一份结果 —— 界面里同一个控件
+    不能一会儿用一个字体名、一会儿用另一个。
+
+    测试环境（无 GUI / 纯 Tcl）探测不到字体时会退回候选里的第一个，不报错。
     """
     global FONT_UI, FONT_MONO
     FONT_UI = _first_available(UI_FONT_CANDIDATES, FALLBACK_UI_FONT)

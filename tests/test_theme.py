@@ -122,6 +122,21 @@ def test_resolve_fonts_without_window_keeps_working() -> None:
     assert isinstance(mono, str) and mono
 
 
+def test_font_detection_is_cached_after_the_root_is_gone(window: tk.Tk) -> None:
+    """字体探测结果在进程内缓存：根窗口销毁后再调用也不会变、不会抛。
+
+    这条是为了防回归：曾经 `_first_available` 每次都重新枚举字体，
+    导入时（无根窗口）拿到一个名字、有窗口后拿到另一个名字，于是
+    「控件的字体」和「theme.FONT_MONO」在 CI 上对不上。
+    """
+    first = theme.resolve_fonts(window)
+    dropped = tk.Toplevel(window)
+    dropped.destroy()
+    after = theme.resolve_fonts(None)
+    assert after == first
+    assert theme.mono()[0] == first[1]
+
+
 # ---------------------------------------------------------------- ttk 样式
 
 
