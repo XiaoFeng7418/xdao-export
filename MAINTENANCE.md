@@ -137,7 +137,6 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
 - 无人值守登录 / 验证码识别
 - 单页失败时的自动补抓与重试队列
 - 监控列表的导入 / 导出
-- GitHub Actions 自动跑 pytest（需先确认 runner 能装依赖）
 - PDF 的页边距 / 纸张大小可配置（目前沿用网页的打印样式）
 
 ## 已完成
@@ -146,4 +145,17 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
 - 断点续传、增量更新、图片缓存
 - 串更新监控
 - 命令行入口与 `--selftest`
+- **CI**：每次推送/PR 自动跑离线测试（`.github/workflows/tests.yml`），
+  Linux 3.10/3.12 + Windows 3.12 三个环境；打 tag 时额外校验版本号与 tag 一致
 - 仓库维护脚本（体检 / 推送 / 发布 / 同步 / 清理）
+
+## CI 说明
+
+- 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
+  （用例全部离线，用测试替身替代网络）。
+- 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
+- 检查项：语法编译、218 项单元测试、CLI 可用性、格式注册表完整性；
+  Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
+- **留意**：`compileall` 即使编译失败也返回 0，工作流里已显式 grep 报错，
+  改这一步时别退化成无效检查。
+- 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。
