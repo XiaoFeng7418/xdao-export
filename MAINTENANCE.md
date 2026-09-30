@@ -170,6 +170,17 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    以及打包进 zip 的 `诊断写入.ps1` / `使用说明.txt`。
    工具脚本里的本机路径（`gh.exe`、自装 Python）也要避免写死：用环境变量后取，
    如 `tools/make_release.py` 的 `gh_token()`（`XDAO_GH` / `GITHUB_TOKEN`）。
+   **2026-09-30 又收紧了一层：连「听谁说的」也不写。**
+   提交信息、文档、发布说明、代码注释、测试 docstring 里不要出现
+   「有人报过…」「收到反馈说…」「按某方的要求…」这类**引用来源**的说法；
+   把现象和规则写清楚就行 —— 举例：不写「有人报过导出目录不可写」，
+   写「导出目录不可写时要给一句人话，而不是把 traceback 丢出去」。
+   需要交代背景时用客观时间或场景：「2026-09-30 实测」「真实场景：…」。
+   清历史要动整条链，步骤是：备份（`git clone --mirror`）→ 改文件 →
+   `git filter-branch --force --tree-filter … --msg-filter … --tag-name-filter cat -- --all`
+   → 把标签重新指向清洗后的提交（`filter-branch` 可能丢标签）→ 强推 master 与**每个**标签
+   → 核对远端每个标签与 Release 正文（正文要单独 `PATCH`）。工作树必须先提交干净，
+   否则报 `Cannot rewrite branches: You have unstaged changes.`
    **标签也算公开材料**：GitHub 会为每个标签自动生成 "Source code" 压缩包，
    所以打完标签之后又清洗过历史文件的话，要把标签挪到清洗后的提交上
    （`git tag -f -a <标签> -m "<标签>" <提交>`，再 `git push origin refs/tags/<标签> --force`）。
