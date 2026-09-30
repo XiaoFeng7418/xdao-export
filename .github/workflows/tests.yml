@@ -37,6 +37,9 @@ jobs:
       # 确保没有任何网络代理干扰离线用例
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
+      # Linux 矩阵没有 $DISPLAY，界面用例按预期整组跳过。声明这一点，conftest 的跳过守卫
+      # 才不会把「按预期跳过」当成不干净的运行（守卫默认要求界面用例必须真跑到）。
+      XDAO_HEADLESS: "1"
     steps:
       - uses: actions/checkout@v4
 

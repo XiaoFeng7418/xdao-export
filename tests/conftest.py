@@ -8,6 +8,7 @@ pytest 自己新建的 ``tmp_path`` 会在写入时报「拒绝访问」。
 
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -62,8 +63,11 @@ def pytest_report_teststatus(report, config):
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 —— pytest 的签名就是这样
     """收尾时核对：跳过清单只允许出现白名单里的理由。
 
-    允许无头机器把界面用例整组跳过，但**不许**悄悄多跳 —— 这条检查不会让本来
-    能过的运行失败，只会在「有些用例其实没跑」时把话说出来。
+    两条规矩：
+    - **白名单外的跳过**：直接报错（pytest 的 UsageError 会退出码 4），不能只打印；
+    - 白名单内但**不是那两条真机用例**（无头机器整组跳过界面用例）：打印一句，
+      并把退出码改成 1 —— 2026-10-01 实测过一次：界面用例因显示环境抖了一下整组跳过
+      （上一秒还全绿），报告仍是「0 failed」；只打印的话 CI 依旧一片绿，没人会看见。
     """
     if not _skips:
         return
@@ -81,8 +85,16 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 —— pytest 的
         any(token in node for token in _EXPECTED_SKIPS) for node, _ in _skips
     ):
         return  # 就是那两条真机用例，本来就不该跑
-    # 其余情况（无头机器整组跳过、或者只跳了少数几条）一律说一声：别当成「全跑过了」。
-    print(f"\n[conftest] 本次跳过了 {len(_skips)} 条（界面/真机用例），未计入通过数。")
+    # 其余情况（界面用例整组跳过、或者只跳了少数几条）一律说一声，并且让这次运行算失败。
+    # 例外：CI 的 Linux 矩阵本来就跑不了界面用例（没有 $DISPLAY），由工作流显式声明
+    # ``XDAO_HEADLESS=1``；那种「按预期跳过」不算不干净，但话还是要说。
+    print(
+        f"\n[conftest] 本次跳过了 {len(_skips)} 条（界面/真机用例），未计入通过数。"
+    )
+    if os.environ.get("XDAO_HEADLESS") == "1":
+        return
+    print("[conftest] 这不是一次干净的运行（只有声明了 XDAO_HEADLESS=1 的无头环境才允许），请重跑。")
+    session.exitstatus = 1
 
 
 @pytest.fixture
