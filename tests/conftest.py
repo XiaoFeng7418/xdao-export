@@ -110,16 +110,22 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 —— pytest 的
 
 
 def _real_user_config_path() -> Path | None:
-    """用户真实配置文件的位置；算不出来（没 APPDATA）时返回 None。
+    """用户真实配置文件的位置；算不出来时返回 None。
 
-    故意在**每次调用时**重新读环境变量，而不是复用 ``xdao.settings`` 里那个
-    模块级路径：这样就算用例临时改了 ``APPDATA``，这里说的仍然是本机真实路径。
+    **必须照抄 ``xdao.settings.app_config_dir()`` 的规则**（有 ``APPDATA`` 用它，
+    否则回到 ``~/.xdao-export``）：2026-10-01 的 CI 上 Linux 两个矩阵红了三条用例，
+    原因就是这个函数原先「没有 ``APPDATA`` 就返回 None」—— 在 Linux 上 APPDATA
+    本来就不存在，于是守卫整个没装，``test_config_isolation.py`` 那三条等着报错的
+    用例自然 `DID NOT RAISE`（**本地 Windows 永远复现不出来**）。
+    走库自己的函数而不是手写一遍，也顺手保证两边不会各自漂移。
+
+    故意在**每次调用时**重新算，而不是复用 ``xdao.settings`` 里那个模块级路径：
+    这样就算用例临时改了 ``APPDATA``，这里说的仍然是本机真实路径。
     """
-    base = os.environ.get("APPDATA")
-    if not base:
-        return None
     try:
-        return (Path(base) / "xdao-export" / "config.json").resolve()
+        from xdao.settings import app_config_dir
+
+        return (app_config_dir() / "config.json").resolve()
     except OSError:  # pragma: no cover - 路径不可解析时宁可不拦
         return None
 

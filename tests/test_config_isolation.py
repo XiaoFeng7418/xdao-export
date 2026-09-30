@@ -38,6 +38,22 @@ def temp_settings(path: Path) -> type[AppSettings]:
     return _TempSettings
 
 
+def test_temp_apdata_is_still_recognised_as_the_real_config(
+    tmp_path, monkeypatch
+) -> None:
+    """守卫在「没有 APPDATA 的平台」上也必须装上（照抄库的路径规则）。
+
+    2026-10-01 的 CI 上 Linux 两个矩阵红了三条用例，根因就是守卫的
+    ``_real_user_config_path()`` 原先写成「没有 ``APPDATA`` 就返回 None」——
+    Linux 上 APPDATA 本来就不存在，守卫于是整个没装，等着报错的用例全成了
+    ``DID NOT RAISE``。本地 Windows 永远复现不出来。这里把 ``APPDATA``
+    临时改到别处，验证落点会跟着变（而不是「有 APPDATA 就只认本机那一份」）。
+    """
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert app_config_dir() == tmp_path / "xdao-export"
+    assert AppSettings().config_path == tmp_path / "xdao-export" / "config.json"
+
+
 def test_constructing_with_the_real_config_path_is_allowed():
     """构造本身不拦：默认落点指向用户配置是要被测的行为。"""
     settings = AppSettings()
