@@ -1,12 +1,20 @@
 """用 GitHub Git Data API 把本地提交推送到远端。
 
-为什么需要它：本机受限环境下 git 的 HTTPS 传输不可用
-（schannel 拿不到 TLS 凭据、openssl 连接被重置），但 gh 的 API 通道正常。
-于是改为直接调用 Git Data API 重建对象。
+为什么还需要它：本机 git 的 HTTPS 传输长期不可用（schannel 拿不到 TLS 凭据、
+openssl 连接被重置），但 gh 的 API 通道一直正常，于是改为直接调用 Git Data API
+重建对象。**2026-09-30 起本机配好了代理（127.0.0.1:7890），`git push` 已经可用**，
+日常推送优先用 git；本脚本保留给代理不可用时的备用通道，也用于需要逐对象校验的场景。
 
-关键点：Git 对象是内容寻址的。只要 blob 内容、树结构、提交元数据
-（tree / parent / author / committer / 时间 / 提交说明）完全一致，
-重建出来的 commit sha 就与本地**完全相同**——脚本会逐对象校验这一点。
+注意：走 API 创建提交时，远端对象是 GitHub 按收到的字段重新生成的，**对象字节由
+GitHub 决定**（它保留我们送上去的时区偏移，但接口读回来的日期一律被改写成 UTC）。
+所以：
+- 本地对象的 sha **能**逐字节复算校验（`git cat-file commit` 原文 + `git hash-object`）；
+- 远端对象的 sha **无法**从接口返回值复算 —— 原始偏移量（本机 `+0800`）在接口里
+  已经丢失，而偏移量是提交对象的一部分。这不是"远端历史被篡改"，只是写法不同。
+- **提交说明的结尾换行也是对象的一部分，而且本地历史里两种形态都有**：多数提交
+  以 `\n` 收尾，少数没有。所以消息必须用 `git cat-file commit` 原样取，
+  不能用 `git log --pretty=%B`（它会擅自补一个换行）。
+- 想让两边 sha 完全一致，只能用 `git push` 把本地对象原样送上去（代理已配好）。
 
 用法：
     python tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
@@ -23,7 +31,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 API = "https://api.github.com"
@@ -82,6 +90,17 @@ def git(*args: str) -> bytes:
     return result.stdout
 
 
+def commit_message(sha: str) -> str:
+    """原样取出一条提交的说明（逐字节，含或不含结尾换行都保持原样）。
+
+    不能用 `git log --pretty=%B`：它会给没有结尾换行的说明擅自补一个 `\n`，
+    于是拼出来的对象多一个字节、sha 与本地对不上（本地历史里确实两种都有）。
+    """
+    raw = git("cat-file", "commit", sha)
+    _, _, body = raw.partition(b"\n\n")
+    return body.decode("utf-8")
+
+
 def local_commits() -> list[dict]:
     """按从旧到新的顺序读取本地全部提交及其树结构。"""
     shas = git("rev-list", "--reverse", "HEAD").decode().split()
@@ -92,7 +111,8 @@ def local_commits() -> list[dict]:
             "--format=%T%n%P%n%an%n%ae%n%aI%n%cn%n%ce%n%cI",
             sha,
         ).decode("utf-8").split("\n")
-        message = git("log", "-1", "--pretty=%B", sha).decode("utf-8").rstrip("\n")
+        # 提交说明必须原样取（见 commit_message 的注释：%B 会补换行，不能用来拼对象）。
+        message = commit_message(sha)
         tree_shas = git("ls-tree", "-r", "-z", sha)
         entries = []
         for raw in tree_shas.split(b"\0"):
@@ -114,6 +134,10 @@ def local_commits() -> list[dict]:
                 "committer_name": meta[5],
                 "committer_email": meta[6],
                 "committer_date": meta[7],
+                # git 提交对象的原始写法（`{epoch} {±HHMM}`），拼对象字节时用它；
+                # 送 Git Data API 仍用上面的 ISO 写法（两种写法接口都收）。
+                "author_date_git": git_date(meta[4]),
+                "committer_date_git": git_date(meta[7]),
                 "message": message,
                 "entries": entries,
             }
@@ -156,6 +180,138 @@ def _same_instant(a: str, b: str) -> bool:
     if right.tzinfo is None:
         right = right.replace(tzinfo=timezone.utc)
     return left == right
+
+
+def git_ident(date_text: str, name: str, email: str) -> str:
+    """把任意写法的时间转成 git 提交对象里的 `{epoch} {±HHMM}` 写法。
+
+    实测（2026-09-30）：GitHub 的提交对象**会保留**我们送上去的偏移量，
+    例如送 `2026-09-05T22:44:23+08:00` 存下来就是 `1788619463 +0800`；
+    但 **接口读回来的 date 一律被改写成 `...Z`**。所以偏移量从接口那边
+    是拿不回来的 —— 这也正是「树一样、sha 不一样」无法从接口侧弥合的根因。
+    """
+    return f"{name} <{email}> {git_date(date_text)}"
+
+
+def git_date(date_text: str) -> str:
+    """把带时区的时间写成 git 提交对象里的 `{epoch} {±HHMM}`。"""
+    moment = datetime.fromisoformat(date_text.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    total = int((moment.utcoffset() or timedelta(0)).total_seconds())
+    sign = "-" if total < 0 else "+"
+    total = abs(total)
+    return f"{int(moment.timestamp())} {sign}{total // 3600:02d}{(total % 3600) // 60:02d}"
+
+
+def _api_date_to_git(value: str) -> str:
+    """把 GitHub 返回的 ISO 时间转成 git 提交对象里的写法。"""
+    from datetime import datetime
+
+    if not value:
+        return ""
+    text = value.replace("Z", "+00:00")
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    offset = moment.utcoffset() or timedelta(0)
+    total = int(offset.total_seconds())
+    sign = "-" if total < 0 else "+"
+    total = abs(total)
+    return f"{int(moment.timestamp())} {sign}{total // 3600:02d}{(total % 3600) // 60:02d}"
+
+
+def git_commit_object(commit: dict, *, tree: str, parents: list[str], message: str) -> bytes:
+    """按 git 的规范拼出提交对象的原始字节（用于自己算 sha）。
+
+    时间必须用 `{epoch} {±HHMM}` 写法；commit 字典里的 `author_date` 是 ISO 写法
+    （那是喂给 API 的），所以优先用 `author_date_git`。
+    """
+    author_date = commit.get("author_date_git") or git_date(commit["author_date"])
+    committer_date = commit.get("committer_date_git") or git_date(commit["committer_date"])
+    lines = [f"tree {tree}"]
+    lines += [f"parent {p}" for p in parents]
+    lines.append(f"author {commit['author_name']} <{commit['author_email']}> {author_date}")
+    lines.append(
+        f"committer {commit['committer_name']} <{commit['committer_email']}> {committer_date}"
+    )
+    # 提交对象 = 头部 + 一个空行 + 提交说明，说明按原样拼，**不要补也不要删换行**。
+    # 实测（2026-09-30）本地历史里两种形态都有：多数提交的说明以 `\n` 收尾，
+    # 但有 7 条没有（`6749e5bc`、`67847a7b`、`a7e00042`、`bc94f2fa`、`93fb0f53`、
+    # `6d0b59aa`、`5e7713e3`）。所以消息必须来自 `git cat-file commit`（逐字节原样），
+    # 不能用 `git log --pretty=%B` —— 后者会擅自补一个换行，导致 sha 算不对。
+    return ("\n".join(lines) + "\n\n" + message).encode("utf-8")
+
+
+def commit_object_probe(commit: dict, *, tree: str, parents: list[str]) -> str:
+    """返回一段人类可读的说明：这条提交的对象字节如何复算出来。
+
+    用于在没有 `git cat-file` 原文字节时（例如校验远端对象）判断差异出在哪。
+    """
+    body = commit["message"]
+    candidates = {
+        "原样": body,
+        "去掉尾换行": body.rstrip("\n"),
+        "补一个尾换行": body if body.endswith("\n") else body + "\n",
+    }
+    tried = []
+    for label, text in candidates.items():
+        raw = git_commit_object(commit, tree=tree, parents=parents, message=text)
+        tried.append(f"{label}={_sha_of(raw)[:8]}")
+    return "候选复算：" + "，".join(tried)
+
+
+def _sha_of(raw: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha1(b"commit " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+
+def diagnose_commit_mismatch(commit: dict, tree: str, remote: dict, created: str) -> str:
+    """弄清"树一样但 sha 不一样"到底差在哪。
+
+    两种情况要分开说，不然就是在猜：
+      ① 本地这份能用「本地字段 + 本地父链」复算出本地 sha → 本地对象没毛病，
+         那差异必然出在远端那份字节上；
+      ② 远端那份的字节**无法**从接口返回值复算出来 → 因为接口把日期改写成 UTC
+         （`...Z`），偏移量（例如 `+0800`）拿不回来，而偏移量是提交对象的一部分。
+         这种情况只能靠 `git push` 把本地对象原样送上去，接口通道弥合不了。
+    """
+    parents = [p["sha"] for p in (remote.get("parents") or [])]
+    remote_message = remote.get("message") or ""
+
+    def sha_for(message: str, use_remote_meta: bool) -> str:
+        payload = commit
+        if use_remote_meta:
+            payload = dict(commit)
+            payload["author_name"] = (remote.get("author") or {}).get("name", commit["author_name"])
+            payload["author_email"] = (remote.get("author") or {}).get("email", commit["author_email"])
+            payload["author_date_git"] = _api_date_to_git((remote.get("author") or {}).get("date", ""))
+            payload["committer_name"] = (remote.get("committer") or {}).get("name", commit["committer_name"])
+            payload["committer_email"] = (remote.get("committer") or {}).get("email", commit["committer_email"])
+            payload["committer_date_git"] = _api_date_to_git(
+                (remote.get("committer") or {}).get("date", "")
+            )
+        return _sha_of(git_commit_object(payload, tree=tree, parents=parents, message=message))
+
+    local_ok = sha_for(commit["message"], use_remote_meta=False) == commit["sha"]
+    if not local_ok:
+        return (
+            "本地提交对象就无法复算（连本地 sha 都对不上）——"
+            "本地历史可能被重写过，请检查 `git log` 与工作区状态"
+        )
+    if sha_for(remote_message, use_remote_meta=True) == created:
+        delta = "提交说明" if remote_message != commit["message"] else "作者/提交时间/父提交"
+        return f"远端对象可复算，差异在：{delta}"
+    return (
+        "远端对象无法用接口返回值复算：接口返回的日期被改写成 UTC（`...Z`），"
+        "原始时区偏移（本机是 `+0800`）丢失，而偏移量是提交对象的一部分。"
+        "接口通道因此无法让两边 sha 对齐，需要用 `git push` 把本地对象原样送上去"
+        "（本机已有可用代理，见文件头说明）"
+    )
 
 
 def _same_commit(local_commit: dict, remote_commit: dict) -> bool:
@@ -345,6 +501,7 @@ def main(argv: list[str]) -> int:
     print("2) 构建树与提交")
     cache: dict = {}
     new_shas = []
+    sha_mismatch = False
     for commit in pending:
         entries = [e for e in commit["entries"] if e["path"] not in exclude]
         tree_sha = build_path_tree(entries, args.repo, token, cache)
@@ -382,13 +539,15 @@ def main(argv: list[str]) -> int:
                 f"内容因排除项与本地不同）  {commit['message'].splitlines()[0][:40]}"
             )
         else:
-            # 树相同但 sha 不同：GitHub 会把时区规范化成 UTC，
-            # 于是同一时刻、同一内容的提交算出不同的 sha。这是正常的，
-            # 采用远端算出的那个，保证后续提交的父链连得上。
+            # 树相同但 sha 不同：以前一律归因为"GitHub 规范化了时区"，
+            # 这是错的——真正的根因多半是对象字节不一致（例如消息末尾换行被吃掉）。
+            # 这里逐字段复算 sha，指出到底差在哪，避免把 bug 藏起来。
+            reason = diagnose_commit_mismatch(commit, tree_sha, result, created)
             print(
-                f"    提交 {created[:8]}（本地 {commit['sha'][:8]}，"
-                f"时区写法被规范化）  {commit['message'].splitlines()[0][:40]}"
+                f"    提交 {created[:8]}（本地 {commit['sha'][:8]}，{reason}）"
+                f"  {commit['message'].splitlines()[0][:40]}"
             )
+            sha_mismatch = True
         new_shas.append(created)
         parent = created
 
@@ -405,7 +564,14 @@ def main(argv: list[str]) -> int:
         api(token, "POST", f"/repos/{args.repo}/git/refs",
             {"ref": f"refs/heads/{args.branch}", "sha": final})
     print(f"   {args.branch} -> {final[:8]}")
-    print("完成，远端提交与本地逐一对应。")
+    if sha_mismatch:
+        print(
+            "警告：有提交的 sha 与本地不一致（原因见上）。这会让本地与远端的提交"
+            "\n      看起来像两条历史，`repo_check.py` 的「本地提交都已推送」也会误报。"
+            "\n      确认远端文件与本地一致后，可用 `git push --force-with-lease` 让两边 sha 对齐。"
+        )
+    else:
+        print("完成，远端提交与本地逐一对应（sha 完全相同）。")
     return 0
 
 
