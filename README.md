@@ -42,12 +42,12 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.2.2** 提供两个附件，**功能完全一样**，按环境挑一个：
+最新版 **v0.3.1** 提供两个附件，**功能完全一样**，按环境挑一个：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.2.2-win64.zip` | **推荐**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动。 |
-| `xdao-export-v0.2.2.exe` | 单文件版，只有一个文件更好携带。每次启动会把内容解压到系统临时目录。 |
+| `xdao-export-v0.3.1-win64.zip` | **推荐**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**。 |
+| `xdao-export-v0.3.1.exe` | 单文件版，只有一个文件更好携带。每次启动会把内容解压到系统临时目录。 |
 
 > **如果单文件版弹出「Could not create temporary directory!」**：这是 PyInstaller 单文件模式的
 > 启动器在 Python 代码运行前就失败了 —— 当前环境的系统临时目录不可写。程序本身没问题，
@@ -55,7 +55,11 @@ https://github.com/XiaoFeng7418/xdao-export/releases
 >
 > 免安装包解压后，`xdao-export.exe` 与 `_internal` 文件夹**必须放在一起**，不要只把 exe 单独拷走。
 
-更早的版本：`v0.2.0`（同样的功能，但只发布过单文件版与 zip）、`v0.1.0`（只有 HTML / TXT 导出）。
+> **打包版目前导不出 PDF**：PyInstaller 冻结进程启动 Chrome / Edge 时会被系统中断
+> （退出码 `0x80000003`）。此时程序**不会报错卡住**，而是自动改存 HTML 并告诉你怎么打印成 PDF。
+> 想要真正的 PDF，请从源码运行 `python main.py <串号> -f pdf`。
+
+更早的版本：`v0.2.2` / `v0.2.0`（只有 HTML / TXT / Markdown / EPUB）、`v0.1.0`（只有 HTML / TXT 导出）。
 想运行最新代码也可以直接按下面的方式从源码启动。
 
 ## 从源码运行
