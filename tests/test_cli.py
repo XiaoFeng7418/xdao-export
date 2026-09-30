@@ -203,3 +203,43 @@ def test_success_also_writes_log(out_dir, monkeypatch):
     text = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
     assert "成功 1 / 1" in text
     assert "结果.html" in text
+
+
+def test_invalid_output_dir_gives_clean_error(capsys):
+    """导出目录没法创建时要给一句人话，而不是把 traceback 抛给用户。
+
+    用户报过：把导出目录填成 `D:\\Windows` 这类位置时，打包版直接弹出
+    「Unhandled exception in script」和一大段 traceback。
+    """
+    blocker = ARTIFACTS / "cli-not-a-dir"
+    blocker.parent.mkdir(parents=True, exist_ok=True)
+    if blocker.exists():
+        blocker.unlink()
+    blocker.write_text("我是一个文件，不是文件夹", encoding="utf-8")
+
+    try:
+        code = main(["50000001", "-f", "txt", "-o", str(blocker)])
+    finally:
+        blocker.unlink(missing_ok=True)
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "导出目录没法创建" in err
+    assert "Traceback" not in err
+
+
+def test_unexpected_error_in_cli_is_caught(monkeypatch, capsys):
+    """命令行模式里没预料到的异常也要变成一句人话 + 退出码 1。"""
+    import main as main_module
+
+    def boom(args):
+        raise PermissionError("模拟的意外错误")
+
+    monkeypatch.setattr(main_module, "run_cli", boom)
+    code = main_module.main(["50000001", "-f", "txt", "-o", str(ARTIFACTS)])
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "PermissionError" in err
+    assert "模拟的意外错误" in err
+    assert "Traceback" not in err
