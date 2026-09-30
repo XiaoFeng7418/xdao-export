@@ -44,7 +44,10 @@ def try_launch(
     minimal_path: bool = False,
     via_cmd: bool = False,
 ) -> None:
-    work = Path(tempfile.gettempdir()) / f"xdao-pdfdiag-{label.replace(' ', '_')}"
+    # 产物一律放在仓库内的 .test-artifacts 下：诊断会生成浏览器 profile 与
+    # 崩溃转储，绝不能写到仓库里，也不该散落在系统临时目录。
+    root = Path(__file__).resolve().parent.parent / ".test-artifacts" / "pdfdiag"
+    work = root / f"run-{label.replace(' ', '_').replace('/', '_')}"
     work.mkdir(parents=True, exist_ok=True)
     source = work / "source.html"
     source.write_text("<!DOCTYPE html><html><body><h1>诊断</h1></body></html>", encoding="utf-8")
@@ -146,15 +149,9 @@ def main() -> int:
     show_environment()
     print("\n=== 直接启动浏览器 ===")
     try_launch("管道捕获输出", clean_env=False)
+    try_launch("重定向到文件", clean_env=False, use_pipes=False)
     try_launch("最小PATH", clean_env=False, use_pipes=False, minimal_path=True)
-    try_launch("经 cmd + 最小PATH", clean_env=False, use_pipes=False, via_cmd=True, minimal_path=True)
-    try_launch(
-        "最小PATH+干净目录",
-        clean_env=False,
-        use_pipes=False,
-        minimal_path=True,
-        cwd=Path(tempfile.gettempdir()),
-    )
+    try_launch("经cmd启动", clean_env=False, use_pipes=False, via_cmd=True)
     return 0
 
 
