@@ -99,6 +99,9 @@ class OfflineSettings:
         self.watch_interval = 300.0
         self.verify_cached = False
         self.watch_targets: list = []
+        # 监控分支会读这两个（--watch 才有机会碰到上面那条 AttributeError）。
+        self.notify = False
+        self.notify_interval = 0.0
 
     @classmethod
     def load(cls) -> "OfflineSettings":
@@ -343,4 +346,293 @@ def test_attach_parent_console_is_skipped_outside_frozen_build(monkeypatch):
     main_module._attach_parent_console(["--version"])
 
     assert calls == []
+
+
+# ------------------------------------------------------- PDF 纸张 / 边距（命令行）
+#
+# 命令行的职责只有两件：把用户给的值（或配置里的值）凑成 PdfOptions 传给导出器，
+# 以及值写错时说一句中文、别开工。真实渲染由 tests/test_pdf_render.py 覆盖。
+
+
+def capture_pdf_options(monkeypatch, thread_id: int = 5005) -> list:
+    """记下 create_exporter 收到的 pdf_options；不真导出、不联网。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    seen: list = []
+
+    class FakeExporter:
+        def save(self, thread, scope, output_dir, include_hashes=None):
+            path = Path(output_dir) / "结果.pdf"
+            path.write_text("ok", encoding="utf-8")
+            return path
+
+    def fake_create_exporter(*args, **kwargs):
+        seen.append(kwargs.get("pdf_options"))
+        return FakeExporter()
+
+    monkeypatch.setattr(exporters_module, "create_exporter", fake_create_exporter)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_fake_fetcher(thread_id, "测试串"))
+    return seen
+
+
+def test_parser_knows_pdf_page_options():
+    args = build_parser().parse_args(
+        [
+            "7001",
+            "-f",
+            "pdf",
+            "--pdf-paper",
+            "a4",
+            "--pdf-orientation",
+            "landscape",
+            "--pdf-margin",
+            "narrow",
+            "--pdf-margin-mm",
+            "12.5",
+            "--pdf-scale",
+            "0.9",
+            "--pdf-pages",
+            "1-3,5",
+        ]
+    )
+    assert args.pdf_paper == "a4"
+    assert args.pdf_orientation == "landscape"
+    assert args.pdf_margin == "narrow"
+    assert args.pdf_margin_mm == "12.5"
+    assert args.pdf_scale == "0.9"  # 字符串：非法值好说中文，不走 argparse 的英文 exit 2
+    assert args.pdf_pages == "1-3,5"
+
+
+def test_parser_pdf_options_are_none_when_not_given():
+    """没写这些开关时必须是 None，才能区分「用户没给」与「用户给了 default」。"""
+    args = build_parser().parse_args(["7001"])
+    for name in ("pdf_paper", "pdf_orientation", "pdf_margin", "pdf_margin_mm", "pdf_scale", "pdf_pages"):
+        assert getattr(args, name) is None
+    assert args.pdf_no_background is False
+
+
+def test_pdf_help_text_comes_from_pdf_opts():
+    """--help 里要列出可选值，且用的是 pdf_opts 的中文标签（而不是另抄一份）。"""
+    import main as main_module
+    from xdao import pdf_opts
+
+    help_text = main_module._pdf_value_help("PAPER_LABELS")
+    assert pdf_opts.PAPER_LABELS["a4"] in help_text
+    assert "跟随网页样式" in help_text
+
+    parser_help = build_parser().format_help()
+    for flag in ("--pdf-paper", "--pdf-pages", "--pdf-no-background"):
+        assert flag in parser_help
+
+
+def test_pdf_options_are_passed_to_the_exporter(out_dir, monkeypatch, capsys):
+    seen = capture_pdf_options(monkeypatch)
+
+    code = main(
+        [
+            "5005",
+            "-f",
+            "pdf",
+            "-o",
+            str(out_dir),
+            "--pdf-paper",
+            "a4",
+            "--pdf-orientation",
+            "landscape",
+            "--pdf-margin",
+            "narrow",
+            "--pdf-margin-mm",
+            "12.5",
+            "--pdf-scale",
+            "0.9",
+            "--pdf-pages",
+            "1-3,5",
+        ]
+    )
+
+    assert code == 0
+    options = seen[0]
+    assert (options.paper, options.orientation) == ("a4", "landscape")
+    assert options.margin_mm == 12.5  # 自定义毫米数盖过 narrow 预设
+    assert options.scale == 0.9
+    assert options.page_ranges == "1-3,5"
+    assert options.background is True
+    assert options.needs_cdp is True
+
+    out = capsys.readouterr().out
+    assert "PDF 设置" in out  # 生效的设置要说一声，别让用户猜
+    assert "A4" in out and "横向" in out
+
+
+def test_old_config_gets_v070_behaviour(out_dir, monkeypatch, capsys):
+    """老配置（一个 pdf_* 键都没有）→ 全默认，且不打扰用户。"""
+    from xdao.pdf_opts import PdfOptions
+
+    seen = capture_pdf_options(monkeypatch, 5006)
+
+    code = main(["5006", "-f", "pdf", "-o", str(out_dir)])
+
+    assert code == 0
+    assert seen[0] == PdfOptions()
+    assert seen[0].needs_cdp is False  # 不套纸张参数 = 升级前的成品外观
+    assert "PDF 设置" not in capsys.readouterr().out
+
+
+def test_settings_values_are_used_and_cli_wins(out_dir, monkeypatch, capsys):
+    """配置里的纸张/边距生效；命令行显式给的那一项盖过配置，其余仍取配置。"""
+    import xdao.settings as settings_module
+
+    class PdfSettings(OfflineSettings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pdf_paper = "a3"
+            self.pdf_orientation = "landscape"
+            self.pdf_margin = "wide"
+            self.pdf_margin_mm = ""
+            self.pdf_scale = "0.8"
+            self.pdf_background = False
+            self.pdf_page_ranges = "2,4"
+
+    seen = capture_pdf_options(monkeypatch, 5007)
+    monkeypatch.setattr(settings_module, "AppSettings", PdfSettings)
+
+    code = main(["5007", "-f", "pdf", "-o", str(out_dir), "--pdf-paper", "a5"])
+
+    assert code == 0
+    options = seen[0]
+    assert options.paper == "a5"  # 命令行赢
+    assert options.orientation == "landscape"  # 没给的仍取配置
+    assert options.scale == 0.8
+    assert options.background is False
+    assert options.page_ranges == "2,4"
+
+    out = capsys.readouterr().out
+    assert "A5" in out and "不打印背景" in out
+
+
+def test_margin_also_accepts_a_plain_millimetre_number(out_dir, monkeypatch):
+    """``--pdf-margin 18`` 也是合法的（pdf_opts 允许直接写毫米数）。"""
+    seen = capture_pdf_options(monkeypatch, 5010)
+
+    code = main(["5010", "-f", "pdf", "-o", str(out_dir), "--pdf-margin", "18"])
+
+    assert code == 0
+    assert seen[0].margin_mm == 18.0
+
+
+def test_no_background_is_reported_even_though_paper_is_default(out_dir, monkeypatch, capsys):
+    """只关了背景时也要报一声：纸张没改，成品外观却变了。"""
+    seen = capture_pdf_options(monkeypatch, 5009)
+
+    code = main(["5009", "-f", "pdf", "-o", str(out_dir), "--pdf-no-background"])
+
+    assert code == 0
+    assert seen[0].background is False
+    assert seen[0].is_default is True  # is_default 只看纸张/边距/缩放
+    out = capsys.readouterr().out
+    assert "PDF 设置" in out and "不打印背景" in out
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "expected"),
+    (
+        ("--pdf-pages", "5-2", "页码"),
+        ("--pdf-scale", "5", "缩放"),
+        ("--pdf-scale", "abc", "缩放"),
+        ("--pdf-margin", "thin", "边距"),
+        ("--pdf-margin-mm", "999", "边距"),
+        ("--pdf-paper", "b5", "纸张"),
+        ("--pdf-orientation", "斜", "方向"),
+    ),
+)
+def test_illegal_pdf_values_stop_before_any_work(monkeypatch, capsys, flag, value, expected):
+    """非法值：一句中文 + 退出码 2，而且不建目录、不抓取、不导出。"""
+    import shutil
+
+    target = ARTIFACTS / "pdf-参数有误时不该建的目录"
+    shutil.rmtree(target, ignore_errors=True)
+
+    seen = capture_pdf_options(monkeypatch, 5008)
+
+    code = main(["5008", "-f", "pdf", "-o", str(target), flag, value])
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "PDF 参数有误" in err
+    assert expected in err and value in err  # 说清是哪一项、收到的是什么
+    assert "Traceback" not in err
+    assert seen == []  # 导出器根本没被创建
+    assert not target.exists()  # 参数不对就不该先动手
+
+
+def test_pdf_flags_are_still_checked_for_other_formats(out_dir, monkeypatch, capsys):
+    """写错 PDF 参数时哪怕这次导的是网页版也要拦下来。
+
+    宁可让人看到「参数有误」，也别把一个错别字悄悄咽掉、让人以为生效了。
+    """
+    code = main(["5011", "-f", "html", "-o", str(out_dir), "--pdf-pages", "5-2"])
+
+    assert code == 2
+    assert "PDF 参数有误" in capsys.readouterr().err
+
+
+def test_pdf_settings_are_not_logged_for_other_formats(out_dir, monkeypatch, capsys):
+    """导 HTML 时不该出现 PDF 设置那一行。"""
+    import xdao.settings as settings_module
+
+    class PdfSettings(OfflineSettings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pdf_paper = "a3"
+
+    capture_pdf_options(monkeypatch, 5012)
+    monkeypatch.setattr(settings_module, "AppSettings", PdfSettings)
+
+    code = main(["5012", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert "PDF 设置" not in capsys.readouterr().out
+
+
+def test_watch_mode_hands_pdf_options_to_every_check(out_dir, monkeypatch):
+    """串监控也要用上 PDF 纸张/边距 —— 只接手动导出那条路是看不出来的漏洞。"""
+    import xdao.watcher as watcher_module
+
+    patch_offline(monkeypatch)
+    calls: list[tuple] = []
+    empty = watcher_module.WatchResult(target=watcher_module.WatchTarget("5009"))
+
+    def fake_check(client, target, out, **kwargs):
+        calls.append((target, kwargs))
+        return empty
+
+    # 停在「检查完一轮」那一刻，不真的进后台循环。
+    # 注意：main.run_cli 是在函数里 `from xdao.watcher import check_once` 的，
+    # 所以只能打 watcher 模块上的名字，模块对象上打 main.check_once 会 AttributeError。
+    monkeypatch.setattr(watcher_module, "check_once", fake_check)
+    monkeypatch.setattr(watcher_module, "watch_forever", lambda *a, **k: None)
+
+    code = main(
+        [
+            "5009",
+            "--watch",
+            "-f",
+            "pdf",
+            "-o",
+            str(out_dir),
+            "--pdf-paper",
+            "a3",
+            "--pdf-margin",
+            "none",
+            "--pdf-browser",
+            "C:/假浏览器.exe",
+        ]
+    )
+
+    assert code == 0
+    assert calls, "监控一轮都没跑"
+    target, kwargs = calls[0]
+    assert target.format_key == "pdf"
+    options = kwargs["pdf_options"]
+    assert (options.paper, options.margin) == ("a3", "none")
+    assert kwargs["browser_path"] == "C:/假浏览器.exe"
 

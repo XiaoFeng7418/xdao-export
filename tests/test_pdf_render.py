@@ -108,5 +108,77 @@ def test_real_browser_default_keeps_the_page_style(artifacts_dir: Path) -> None:
     assert abs(width - A4_WIDTH_PT) <= TOLERANCE_PT, (width, height)
 
 
+# ---------- 页边距与页码：也用「页数」这条可观察的性质来验证 ----------
+#
+# 页边距不会改变纸张大小，所以 MediaBox 看不出来。可观察的性质是**一页能装多少内容**：
+# 一页的可放高度 = 纸张高度 − 上下边距。下面这份稿子的正文块高度是拿真机扫出来的
+# 断层（见 `_scratch/probe_margin_pages.py`）：A4 高 297mm 时，
+#   245mm → 四种边距都是 1 页；255mm → 只有在「宽」翻页；
+#   **265mm → 无边距/窄边距仍是 1 页，普通/宽边距翻成 2 页**；285mm → 无边距也翻页。
+# 取 265mm 就能用页数直接证明边距真的传给了浏览器、且宽边距确实比无边距少装东西。
+MARGIN_SENSITIVE_BLOCK_MM = 265
+MARGIN_SAMPLE_HTML = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<style>@page {{ size: A4; }} html, body {{ margin: 0; padding: 0; }}
+.block {{ height: {MARGIN_SENSITIVE_BLOCK_MM}mm; background: #eef; }}</style></head>
+<body><div class="block">边距测试</div></body></html>
+"""
+
+PAGE_OBJECT_RE = re.compile(rb"/Type\s*/Page[^s]")
+
+
+def page_count(path: Path) -> int:
+    """数产物里有几个页面对象（纯标准库）。"""
+    return len(PAGE_OBJECT_RE.findall(path.read_bytes()))
+
+
+@pytest.mark.skipif(
+    not (_REAL_BROWSER and _INTEGRATION_ENABLED),
+    reason="需要本机装了浏览器，并且显式设 XDAO_PDF_TEST=1 才跑（默认跳过）",
+)
+def test_real_browser_honours_the_margins(artifacts_dir: Path) -> None:
+    """无边距与宽边距必须装得下不同多的内容 —— 页数会因此不同。"""
+    assert _REAL_BROWSER is not None
+    counts = {}
+    for margin, expected in (("none", 1), ("wide", 2)):
+        target = artifacts_dir / f"margin_{margin}.pdf"
+        render_html_to_pdf(
+            MARGIN_SAMPLE_HTML,
+            target,
+            browser_path=str(_REAL_BROWSER.path),
+            options=PdfOptions(paper="a4", margin=margin),
+            timeout=180,
+        )
+        counts[margin] = page_count(target)
+        assert counts[margin] == expected, (margin, counts)
+    assert counts["none"] < counts["wide"], counts
+
+
+@pytest.mark.skipif(
+    not (_REAL_BROWSER and _INTEGRATION_ENABLED),
+    reason="需要本机装了浏览器，并且显式设 XDAO_PDF_TEST=1 才跑（默认跳过）",
+)
+def test_real_browser_honours_the_page_ranges(artifacts_dir: Path) -> None:
+    """只导出前 1 页：两页的稿子应该只剩一页。
+
+    这条同时钉住一个容易漏的路由：只填页码时其他项全是默认，如果拿
+    ``PdfOptions.is_default`` 判断走哪条路，`pageRanges` 会被静默丢掉。
+    """
+    assert _REAL_BROWSER is not None
+    full = artifacts_dir / "ranges_full.pdf"
+    part = artifacts_dir / "ranges_first.pdf"
+    common = dict(browser_path=str(_REAL_BROWSER.path), timeout=180)
+    render_html_to_pdf(
+        MARGIN_SAMPLE_HTML, full, options=PdfOptions(paper="a4", margin="wide"), **common
+    )
+    render_html_to_pdf(
+        MARGIN_SAMPLE_HTML,
+        part,
+        options=PdfOptions(paper="a4", margin="wide", page_ranges="1"),
+        **common,
+    )
+    assert page_count(full) == 2, page_count(full)
+    assert page_count(part) == 1, "页码范围没生效，产物还是两页"
+
+
 if __name__ == "__main__":  # pragma: no cover - 手动跑一把
     raise SystemExit(pytest.main([__file__, "-v", "-s"]))

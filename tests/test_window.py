@@ -59,7 +59,7 @@ def isolated_settings():
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     def fake_load(cls):  # noqa: ANN001 - 模拟 classmethod
-        settings = cls()
+        settings = cls(_path=base / "config.json")
         settings.output_dir = str(out_dir)
         settings.cache_dir = str(cache_dir)
         settings.use_cache = True
@@ -69,16 +69,14 @@ def isolated_settings():
         return settings
 
     original_load = AppSettings.load
-    original_save = AppSettings.save
     AppSettings.load = classmethod(fake_load)
-    # 保存也必须挡掉：``App.persist_prefs()`` 会调它。漏了这一道，跑一次界面用例
-    # 就会把用户真实的 %APPDATA%\xdao-export\config.json 覆盖成测试目录。
-    AppSettings.save = lambda self: None
+    # 配置落点是临时目录（上面传了 _path），`persist_prefs()` 里的 `save()` 写的是
+    # 自己家，不必再换成空壳；`tests/conftest.py` 的守卫只拦「落点是用户真实配置」
+    # 的写入，正好不会误伤这条路径。
     try:
         yield
     finally:
         AppSettings.load = original_load
-        AppSettings.save = original_save
         shutil.rmtree(base, ignore_errors=True)
 
 
