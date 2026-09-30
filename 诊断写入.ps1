@@ -1,4 +1,4 @@
-# 写入诊断：帮你找出「为什么程序写不进去这个目录」
+﻿# 写入诊断：帮你找出「为什么程序写不进去这个目录」
 #
 # 用法（二选一）：
 #   1. 双击同目录下的「诊断写入-双击运行.cmd」
@@ -79,8 +79,13 @@ if (Test-Path -LiteralPath $configPath) {
     }
 }
 
-$targets = @('D:\', 'D:\X岛', 'D:\X岛\.cache', 'C:\X岛导出', (Join-Path $desktop 'xdao-写入测试'))
-if ($desktop) { $targets += $desktop }
+# 各个盘符的根目录：不写死盘符，用户机器上有几个盘就测几个
+$targets = @()
+foreach ($drive in (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root })) {
+    $targets += ($drive.Root)
+}
+$targets += (Join-Path $desktop 'xdao-写入测试')
+$targets += $desktop
 $targets += $configured
 $more = @(
     (Join-Path $docs 'xdao-写入测试'),
@@ -99,7 +104,7 @@ foreach ($dir in $targets) {
 }
 
 Write-Head '关键目录的权限（谁被允许写）'
-foreach ($dir in (@('D:\X岛') + $configured + @($desktop)) | Where-Object { $_ } | Select-Object -Unique) {
+foreach ($dir in ($configured + @($desktop)) | Where-Object { $_ } | Select-Object -Unique) {
     Write-Line ("  [{0}]" -f $dir)
     if (-not (Test-Path -LiteralPath $dir)) { Write-Line '    目录不存在' 'DarkYellow'; continue }
     try {
@@ -166,7 +171,7 @@ if ($script:logPath) {
 
 Write-Head '结论怎么看'
 Write-Line '  · 只有某几个是 ✗、LOCALAPPDATA 那行是 ✓  → 换个导出目录就能用（这一版起程序也会自动换）'
-Write-Line '  · D:\ 和 D:\X岛 都是 ✗                  → 整个 D 盘写不进去（写保护 / 只读挂载 / 安全软件）'
+Write-Line '  · 每个盘符根目录都是 ✗                    → 磁盘写保护 / 只读挂载 / 安全软件拦全局写入'
 Write-Line '  · 桌面/文档是 ✗、LOCALAPPDATA 是 ✓        → 受控文件夹访问在拦截，加白名单或换目录'
 Write-Line '  · 所有行都是 ✗                          → 系统级限制，多半是安全软件或磁盘只读'
 Write-Line ''

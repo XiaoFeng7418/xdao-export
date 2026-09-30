@@ -1,0 +1,21 @@
+# 行尾统一按仓库里的实际内容存盘，不做任何自动转换。
+# 背景：这个仓库的文件原本是混着的（README/HANDOFF/MAINTENANCE 是 CRLF，
+# 源码与其他文档是 LF），而编辑器的默认设置不一样，一次改动就可能把整个文件
+# 的行尾翻掉、提交出一份"每一行都变了"的假 diff。定成 text=auto 之后，
+# 存进 Git 的永远是 LF，检出到 Windows 也不再自动换成 CRLF。
+* text=auto eol=lf
+
+# Windows 批处理必须留 CRLF，否则个别环境（老 cmd.exe）解析会出问题。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# PowerShell 脚本同样按 CRLF 存：Windows PowerShell 5.1 对 LF 的 .ps1 支持没问题，
+# 但保持 CRLF 更符合 Windows 上编辑器的预期。
+*.ps1 text eol=crlf
+
+# 二进制文件不要当文本处理
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.exe binary
