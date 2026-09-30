@@ -379,33 +379,49 @@ def test_ensure_writable_creates_missing_directory(out_dir):
 def test_ensure_writable_tolerates_a_failed_probe(out_dir, monkeypatch):
     """探针写不动**不等于**目录不可写，导出不能被它拦下。
 
-    用户真报过这个：目录用别的程序（甚至旧版本）都能写，只有本程序的
-    ``.xdao-write-probe`` 被拦，于是程序直接弹「导出目录不可写」拒绝开工。
+    用户真报过这个：目录用别的程序（甚至旧版本）都能写，只有本程序的探针文件
+    被拦，于是程序直接弹「导出目录不可写」拒绝开工。
     """
     from pathlib import Path as _Path
+
+    from xdao.exporters._shared import PROBE_NAME
 
     real_write_text = _Path.write_text
 
     def fake_write_text(self, *args, **kwargs):
-        if self.name == ".xdao-write-probe":
+        if self.name == PROBE_NAME:
             raise PermissionError(13, "Permission denied")
         return real_write_text(self, *args, **kwargs)
 
     monkeypatch.setattr(_Path, "write_text", fake_write_text)
     assert ensure_writable(out_dir) == out_dir
     # 探针没留下垃圾
-    assert not (out_dir / ".xdao-write-probe").exists()
+    assert not (out_dir / PROBE_NAME).exists()
+
+
+def test_probe_file_looks_like_a_normal_export(out_dir):
+    """探针必须是普通文件名，不能是隐藏的点文件。
+
+    2026-09-30 的教训：探针叫 ``.xdao-write-probe`` 时被安全软件单独挡掉，
+    探出来的结论跟真实导出物毫无关系，于是误报"目录不可写"。
+    """
+    from xdao.exporters._shared import PROBE_NAME
+
+    assert not PROBE_NAME.startswith(".")
+    assert PROBE_NAME.endswith((".tmp", ".txt", ".log"))
 
 
 @pytest.mark.parametrize("key", ["html", "txt", "markdown", "epub"])
 def test_save_creates_missing_directory_and_writes(out_dir, key):
     """目录不存在时要自己建出来（预检失败不再是拦路虎）。"""
+    from xdao.exporters._shared import PROBE_NAME
+
     target = out_dir / "临时子目录"
     exporter = create_exporter(key, FakeClient())
     path = exporter.save(sample_thread(), "all", target)
     assert path.exists() and path.stat().st_size > 0
     assert ensure_writable(target) == target
-    assert not (target / ".xdao-write-probe").exists()
+    assert not (target / PROBE_NAME).exists()
 
 
 def test_txt_save_without_template_uses_title(out_dir):
