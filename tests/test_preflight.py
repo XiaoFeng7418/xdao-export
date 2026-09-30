@@ -270,7 +270,12 @@ def test_run_local_checks_uses_the_given_paths_without_loading_settings(
     assert not report.failures
 
 
-def test_run_local_checks_reports_a_broken_config_file_without_raising(tmp_path) -> None:
+def test_run_local_checks_reports_a_broken_config_file_without_raising(
+    tmp_path, monkeypatch
+) -> None:
+    # 浏览器那一项要盯住：CI 的 Linux 机器上没装 Edge / Chrome，不替换的话
+    # 失败清单里会多一条「浏览器」，断言在本机绿、在 CI 红。
+    monkeypatch.setattr(preflight, "find_browser", lambda explicit, env: _ok_browser())
     path = tmp_path / "config.json"
     path.write_text("{坏的", encoding="utf-8")
     report = preflight.run_local_checks(
