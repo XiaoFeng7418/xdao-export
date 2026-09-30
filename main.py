@@ -334,6 +334,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="监控模式下不弹桌面通知（默认开启）",
     )
     parser.add_argument(
+        "--watch-export",
+        metavar="文件",
+        default=None,
+        help="把监控列表导出成文件（默认合并进现有列表）",
+    )
+    parser.add_argument(
+        "--watch-import",
+        metavar="文件",
+        default=None,
+        help="把监控列表文件导入进来（和现在这份合并，不覆盖）",
+    )
+    parser.add_argument(
+        "--watch-import-replace",
+        action="store_true",
+        help="配 --watch-import 用：用文件里的列表替换现有列表",
+    )
+    parser.add_argument(
         "--selftest",
         action="store_true",
         help="只做接口连接自检",
@@ -630,11 +647,78 @@ def run_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _watch_list_command(args) -> int | None:
+    """处理 ``--watch-export`` / ``--watch-import``。
+
+    这两件事**不碰网络**：列表本来就存在配置里，搬移一份不需要登录，
+    所以必须抢在建客户端、连接口之前返回 —— 没网也该能用。
+    """
+    from xdao import watch_list
+    from xdao.settings import AppSettings
+    from xdao.watcher import WatchTarget
+
+    settings = AppSettings.load()
+    if args.watch_export:
+        targets = [WatchTarget.from_dict(d) for d in settings.watch_targets]
+        try:
+            written = watch_list.export_targets(targets, args.watch_export)
+        except watch_list.WatchListError as exc:
+            print(f"导出监控列表失败：{exc}", file=sys.stderr)
+            return 2
+        print(f"已导出 {len(targets)} 个监控串：{written}")
+        if not targets:
+            print("（列表是空的，所以文件里没有条目。）")
+        return 0
+
+    if not args.watch_import:
+        return None
+
+    existing = [WatchTarget.from_dict(d) for d in settings.watch_targets]
+    try:
+        result = watch_list.import_targets(existing, args.watch_import)
+    except watch_list.WatchListError as exc:
+        print(f"导入监控列表失败：{exc}", file=sys.stderr)
+        return 2
+
+    if args.watch_import_replace:
+        # 「替换」= 列表变成文件里那些条目，**包括文件里和现在完全一样的那几条** ——
+        # 少了 result.duplicates，「替换」会把它们连着旧列表一起丢掉，列表直接清空。
+        merged = list(result.added) + list(result.duplicates)
+        kept = len(result.duplicates)
+    else:
+        merged = existing + list(result.added)
+        kept = 0
+    settings.watch_targets = [t.to_dict() for t in merged]
+    settings.save()
+    verb = "替换为" if args.watch_import_replace else "合并"
+    tail = f"（其中 {kept} 个本来就一样）" if kept else ""
+    print(f"已{verb} {len(result.added)} 个监控串{tail}，现在共 {len(merged)} 个。")
+    duplicates = {"这份列表里已经有了（同一个串、同样的设置）"}
+    for reason, who in result.skipped:
+        # 「已经有了」在合并时是「不用管」，在替换时是「原本就在、留着」——
+        # 都印成「跳过」会让人以为这条被丢了。
+        mark = "保留" if args.watch_import_replace and reason in duplicates else "跳过"
+        print(f"  {mark} {who}：{reason}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.selftest:
         return selftest()
+
+    if args.watch_export or args.watch_import:
+        if args.watch_export and args.watch_import:
+            print("--watch-export 与 --watch-import 只能用一个。", file=sys.stderr)
+            return 2
+        return _watch_list_command(args) or 0
+
+    if args.watch_import_replace:
+        # 单独给这个开关的话，不接「启动图形界面」那条路 —— 那会让用户以为
+        # 参数生效了（界面起来、列表没动），必须当场说清楚。
+        print("--watch-import-replace 要配 --watch-import 用。", file=sys.stderr)
+        return 2
 
     if args.pdfdiag:
         from tools.pdf_diag import main as pdf_diag_main

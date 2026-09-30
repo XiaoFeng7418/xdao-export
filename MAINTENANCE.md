@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 899 项，必须全绿）
+2. **跑测试**（当前基线 949 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 899 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 949 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -381,7 +381,6 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   - 备注：实测视觉模型对 X 岛的验证码识别率太低（三张只对一张半），
     **不要**把基于 OCR / 视觉模型的自动登录写进产品 —— 认错一次就得从头再来，
     还不如让用户自己点一下浏览器窗口。
-- 监控列表的导入 / 导出
 
 ## 已完成
 
@@ -512,6 +511,32 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `AppSettings.load.__name__ != "load"` 就**直接退让**，否则会把别人（module 作用域夹具）已经
   换上的替身永久留在类上（实测 24 条界面用例全红）。临时配置的正确写法是**派生子类**并把
   `_path` 声明成 `default_factory=lambda: path`。
+- **监控列表能备份 / 还原**（v0.9.0）：新模块 `xdao/watch_list.py` 管文件格式，
+  界面（`WatchDialog` 的「导出列表 / 导入列表」）与命令行（`--watch-export` /
+  `--watch-import` / `--watch-import-replace`）共用同一套读写。三个定下来就不好改的决定：
+  1. **导出文件只带「怎么监控」，不带「监控到哪儿了」** —— `state` / `last_check` /
+     `last_error` / `exports` / `last_export_path` 都是跟着缓存目录跑的临时状态，
+     跟着文件搬到另一台机器会让它以为"已经导出过了"，第一轮该出的不出。
+  2. **`thread_id` 一律按文件重算**，不信文件里写的串号 —— 监控键
+     `xdao.watcher.target_key` 是按串号拼的，串号被改过之后一份状态会挂到另一个串上，
+     表现成「明明有新回复却一直报无更新」。顺带把认不出串号的网址补成规范形式。
+  3. **导入是合并、不是替换**（按 `target_key` 去重；想替换用 `--watch-import-replace`）。
+     **「替换」的判据是「只留下文件里那些条目」，包括文件里和现在完全一样的那几条** ——
+     最早的写法是 `merged = result.added`，而「同一个串、同样的设置」被算进了
+     `result.skipped`，于是替换之后**列表被清空**（用户以为只是换成文件里那份）。
+     现在这些条目单独记在 `result.duplicates` 里，替换时一起留下，命令行也把
+     「已经有了」印成「保留」而不是「跳过」（真机冒烟 `_scratch/smoke_watch_list_cli.py`
+     踩出来的；`tests/test_cli.py` 有专门的回归用例）。
+  文件层面的坏（不存在 / 超 10 MiB / 不是 JSON / 没有 `targets`）抛 `WatchListError`，
+  条目层面的坏逐条跳过并把中文原因回给用户 —— **坏一条不该毁掉整份文件**。
+  还有一个只在真机截图上看得见的坑：导入/导出按钮原先挤在「添加 / 移除 / 间隔 / 校验」
+  那一行右边，**被整条裁到窗口外**，用例全绿而用户看不见。它们现在单独占一行，
+  `WatchDialog` 的高度也跟着加了一行（`760x520`）。教训：**加了控件要重新截图看一眼**，
+  用例只能证明对象存在，证明不了它出现在窗口里。
+  **另一个坑：改文档别把行尾换掉。** 这几个 Markdown 在 git 里是 CRLF，用 Python
+  默认的 `write_text` 读改写之后整份变成 LF，`git diff` 里 1000 多行全是行尾变化，
+  真正的改动被埋掉（`HANDOFF.md` 37 行真改动显示成 549 行）。改完用
+  `_scratch/fix_line_endings_v090.py` 那种方式核一遍 `git diff --stat`。
 
 ## 浏览器登录：两个真机才量得出来的坑（v0.7.0）
 
@@ -549,7 +574,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、899 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、949 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
   在没有显示环境的机器上会自动 skip，Linux CI 上属于预期行为，不算失败。

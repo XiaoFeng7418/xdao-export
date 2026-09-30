@@ -662,3 +662,231 @@ def test_gui_watch_check_hands_pdf_options_to_every_check(artifacts_dir, monkeyp
     options = calls[0]["pdf_options"]
     assert (options.paper, options.margin) == ("a3", "none")
     assert calls[0]["browser_path"] == "C:/假浏览器.exe"
+
+# ---------- 监控列表的导入 / 导出（界面这条路） ----------
+
+
+class _WatchApp:
+    """只实现 ``WatchDialog._export_list()/_import_list()`` 会用到的那点东西。"""
+
+    def __init__(self, settings, targets, root=None) -> None:
+        self.settings = settings
+        self.watch_targets = list(targets)
+        self.persisted = 0
+        self._watching = False
+        self.root = root
+
+    def persist_watch_targets(self) -> None:
+        self.settings.watch_targets = [t.to_dict() for t in self.watch_targets]
+        self.persisted += 1
+
+    def _collect_urls(self):
+        return []
+
+    def stop_watching(self) -> None:
+        self._watching = False
+
+    def start_watching(self, interval, verify_cached) -> None:  # pragma: no cover
+        self._watching = True
+
+
+def _open_watch(root, app) -> gui.WatchDialog:
+    app.root = root
+    dialog = gui.WatchDialog(app)
+    root.update()
+    return dialog
+
+
+def test_watch_dialog_exports_the_list_to_the_chosen_file(dialog_root, artifacts_dir, monkeypatch):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(
+        settings,
+        [gui.WatchTarget("https://www.nmbxd1.com/t/7001234", format_key="txt")],
+    )
+    out = artifacts_dir / "监控列表.json"
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **k: str(out))
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: None)
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._export_list()
+        assert "已导出 1 个监控串" in dialog.status_var.get()
+    finally:
+        _close(dialog)
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert [t["thread_id"] for t in payload["targets"]] == [7001234]
+    assert payload["targets"][0]["hashes"] == []
+
+
+def test_watch_dialog_export_of_an_empty_list_changes_nothing(dialog_root, artifacts_dir, monkeypatch):
+    """空列表不导出：免得用户拿到一份空文件还以为备份好了。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [])
+    asked: list = []
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **k: asked.append(k) or "")
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: None)
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._export_list()
+    finally:
+        _close(dialog)
+
+    assert asked == [], "空列表不该弹出保存对话框"
+
+
+def test_watch_dialog_import_merges_and_persists(dialog_root, artifacts_dir, monkeypatch):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [gui.WatchTarget("7001111")])
+    source = artifacts_dir / "来.json"
+    source.write_text(
+        json.dumps({"targets": [{"url_or_id": "7002222"}, {"url_or_id": "7003333"}]}),
+        encoding="utf-8",
+    )
+    shown: list[str] = []
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: str(source))
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, text, **k: shown.append(text))
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._import_list()
+        assert "导入完成" in dialog.status_var.get()
+        assert [t.thread_id for t in app.watch_targets] == [7001111, 7002222, 7003333]
+        assert app.persisted == 1, "导入之后必须写回配置，否则关掉窗口就白导了"
+    finally:
+        _close(dialog)
+
+    assert settings.watch_targets[1]["url_or_id"] == "7002222"
+    assert shown and "新增 2 条" in shown[0]
+
+
+def test_watch_dialog_import_shows_why_entries_were_skipped(dialog_root, artifacts_dir, monkeypatch):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [])
+    source = artifacts_dir / "来.json"
+    source.write_text(
+        json.dumps({"targets": [{"url_or_id": "7002222", "format_key": "docx"}]}),
+        encoding="utf-8",
+    )
+    shown: list[str] = []
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: str(source))
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, text, **k: shown.append(text))
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._import_list()
+    finally:
+        _close(dialog)
+
+    assert shown and "格式认不出：docx" in shown[0]
+    assert app.watch_targets == []
+
+
+def test_watch_dialog_import_of_a_broken_file_shows_an_error(dialog_root, artifacts_dir, monkeypatch):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [])
+    broken = artifacts_dir / "坏.json"
+    broken.write_text("不是 JSON", encoding="utf-8")
+    errors: list[str] = []
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: str(broken))
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, text, **k: errors.append(text))
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._import_list()
+    finally:
+        _close(dialog)
+
+    assert errors and "不是有效的 JSON" in errors[0]
+    assert app.persisted == 0, "导入失败不该动配置"
+
+def _walk(widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from _walk(child)
+
+
+def _text_of(widget) -> str:
+    try:
+        return str(widget.cget("text"))
+    except tk.TclError:  # pragma: no cover - 不是所有控件都有 text
+        return ""
+
+
+def _content_root(dialog):
+    """找到真正装内容的那个框（对话框里是个可滚动的 Card）。"""
+    assert len(dialog.winfo_children()) == 1, "对话框结构变了，这条断言要跟着改"
+    box = dialog.winfo_children()[0]
+    assert len(box.winfo_children()) == 1, "对话框结构变了，这条断言要跟着改"
+    return box.winfo_children()[0]
+
+
+def test_watch_dialog_leaves_room_for_every_row(dialog_root, artifacts_dir):
+    """对话框得留够高度，不能让底下那行按钮被裁掉。
+
+    2026-10-01 真机截图抓到的：导入 / 导出挤在「添加 / 移除 / 间隔 / 校验」那一行右边，
+    被整条裁到窗口外 —— 控件对象都在、用例全绿，用户却看不见。
+
+    ⚠️ 说清楚这条断言的力度：本机 Tk 缩放下（``tk scaling`` ≈ 1.33）内容只要 415 逻辑像素，
+    把窗口改回 480 它照样过 —— **它不是那次裁切的复现器**，真正的元凶是显示缩放
+    （Tk 用逻辑像素、内容按缩放变大）。所以这里只钉住「今天这个布局在本机量得下」，
+    谁要再往对话框里加一行，请自觉同步 ``self.geometry``；别把它当成能抓裁切的哨兵。
+    """
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [gui.WatchTarget("7001234")])
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        for _ in range(10):
+            dialog_root.update()
+        assert dialog.winfo_height() > 1, "对话框没量到尺寸"
+        content = _content_root(dialog)
+        needed = content.winfo_reqheight()
+        room = content.winfo_height()
+        assert needed > 100, f"内容高度量得不对劲（{needed}）"
+        assert needed <= room, f"窗口装不下监控列表的内容（需要 {needed}，只给了 {room}）"
+    finally:
+        _close(dialog)
+
+
+def test_watch_dialog_shows_import_export_on_their_own_row(dialog_root, artifacts_dir):
+    """导入 / 导出单独占一行，而且在最底下那行按钮的上面。
+
+    事件顺序：最底下是「开始监控 / 关闭 / 立即检查一次」，它上面那行才是「导入 / 导出」。
+    挤回「添加 / 移除 / 间隔 / 校验」那一行右边时，导入 / 导出会跟「移除选中」同高 → 红。
+    """
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [])
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        for _ in range(10):
+            dialog_root.update()
+        rows: dict[int, set[str]] = {}
+        for widget in _walk(dialog):
+            text = _text_of(widget)
+            if text in {"开始监控", "关闭", "立即检查一次", "导出列表", "导入列表", "移除选中"}:
+                rows.setdefault(widget.winfo_rooty(), set()).add(text)
+        assert len(rows) >= 3, f"按钮挤成了 {len(rows)} 行：{rows}"
+        by_y = [rows[key] for key in sorted(rows)]
+        last, before_last = by_y[-1], by_y[-2]
+        assert "开始监控" in last, f"最底下那行应当是开始监控：{by_y}"
+        assert {"导出列表", "导入列表"} <= before_last, f"导入/导出应当单独占一行：{by_y}"
+        assert "移除选中" not in before_last, f"导入/导出又挤回添加那一行了：{by_y}"
+    finally:
+        _close(dialog)
+
+
+def test_watch_dialog_has_both_list_io_buttons(dialog_root, artifacts_dir):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [])
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        labels = {_text_of(w) for w in _walk(dialog)}
+    finally:
+        _close(dialog)
+
+    assert "导出列表" in labels
+    assert "导入列表" in labels
