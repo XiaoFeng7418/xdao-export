@@ -19,6 +19,8 @@ DEFAULT_TIMEOUT = 20.0
 DEFAULT_RETRIES = 2
 DEFAULT_THROTTLE = 0.08
 DEFAULT_WATCH_INTERVAL = 300.0
+# 同一个串两次桌面通知的最小间隔：监控每轮都可能报"有更新"，不节流会刷屏。
+DEFAULT_NOTIFY_INTERVAL = 900.0
 
 
 def app_config_dir() -> Path:
@@ -65,6 +67,9 @@ class AppSettings:
     watch_interval: float = DEFAULT_WATCH_INTERVAL
     verify_cached: bool = False
     watch_targets: list[dict] = field(default_factory=list)
+    # 监控到更新时弹桌面通知；同一串的提醒间隔（秒），避免刷屏
+    notify: bool = True
+    notify_interval: float = DEFAULT_NOTIFY_INTERVAL
 
     extra: dict = field(default_factory=dict)
 
@@ -107,6 +112,10 @@ class AppSettings:
         raw_targets = data.get("watch_targets")
         if isinstance(raw_targets, list):
             self.watch_targets = [t for t in raw_targets if isinstance(t, dict)]
+        self.notify = bool(data.get("notify", True))
+        self.notify_interval = _as_float(
+            data.get("notify_interval"), DEFAULT_NOTIFY_INTERVAL
+        )
         self.extra = data.get("extra") or {}
 
     def save(self) -> None:
@@ -130,6 +139,8 @@ class AppSettings:
                 "watch_interval": self.watch_interval,
                 "verify_cached": self.verify_cached,
                 "watch_targets": list(self.watch_targets),
+                "notify": self.notify,
+                "notify_interval": self.notify_interval,
                 "extra": self.extra,
             }
             self._path.write_text(

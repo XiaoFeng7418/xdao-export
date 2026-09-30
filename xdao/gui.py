@@ -21,8 +21,9 @@ from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
 from .exporters._shared import OutputDirNotWritable, ensure_writable
 from .fetcher import parse_thread_id
+from .notifications import Notifier
 from .settings import AppSettings
-from .watcher import WatchTarget, check_once, describe_targets, watch_forever
+from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
 
 
 ACCENT = "#3b82f6"
@@ -810,6 +811,8 @@ class App:
         self.watch_queue: queue.Queue = queue.Queue()
         self._watching = False
         self._watch_stop: threading.Event | None = None
+        # 桌面通知在主线程（_poll_watch）里发，这样通知失败也不会影响监控线程
+        self._watch_notifier: Notifier | None = None
         self._watch_dialog: WatchDialog | None = None
 
         root.title("X岛串导出")
@@ -927,6 +930,12 @@ class App:
         self.use_cache_var = tk.BooleanVar(value=self.settings.use_cache)
         ttk.Checkbutton(
             format_frame, text="使用本地缓存", variable=self.use_cache_var
+        ).pack(side="left", padx=(14, 0))
+
+        # 监控到更新时的桌面通知
+        self.notify_var = tk.BooleanVar(value=self.settings.notify)
+        ttk.Checkbutton(
+            format_frame, text="监控时弹桌面通知", variable=self.notify_var
         ).pack(side="left", padx=(14, 0))
 
         # EPUB 的图片处理方式（只在选 EPUB 时可用）
@@ -1114,6 +1123,7 @@ class App:
         self.settings.format_key = self.current_format()
         self.settings.include_hashes = self.hashes_var.get().strip()
         self.settings.use_cache = bool(self.use_cache_var.get())
+        self.settings.notify = bool(self.notify_var.get())
         self.settings.image_mode = self.current_image_mode()
         self.settings.save()
 
@@ -1543,6 +1553,13 @@ class App:
         self._watch_stop = stop_event
         self._watching = True
 
+        notifier = None
+        if self.notify_var.get():
+            notifier = Notifier(min_interval=self.settings.notify_interval)
+            if not notifier.available():
+                self.log("提示：当前环境发不出桌面通知，更新只会写进这份日志。")
+        self._watch_notifier = notifier
+
         def worker() -> None:
             self.watch_queue.put(
                 f"监控已启动，每 {int(interval)} 秒检查一次（{len(targets)} 个串）。"
@@ -1557,6 +1574,7 @@ class App:
                     cache_dir=cache_dir,
                     on_result=lambda result: self.watch_queue.put(result),
                     verify_cached=verify_cached,
+                    notifier=notifier,
                 )
             except Exception as exc:  # noqa: BLE001 —— 监控线程也不能把 traceback 弹给用户
                 self.watch_queue.put(f"监控出错：{type(exc).__name__}: {exc}")
@@ -1575,6 +1593,7 @@ class App:
         if self._watch_stop:
             self._watch_stop.set()
         self._watching = False
+        self._watch_notifier = None
         self.log("已请求停止监控。")
         self.refresh_watch_status()
 
@@ -1631,6 +1650,8 @@ class App:
                 self.log(f"监控 No.{target.label}：{label} → {item.exported.name}")
             else:
                 self.log(f"监控 No.{target.label}：{item.reason or '无更新'}")
+            if notify_result(self._watch_notifier, item):
+                self.log(f"    ↳ 已弹桌面通知（No.{target.label}）")
         if got:
             self.refresh_cache_info()
             self.refresh_watch_status()

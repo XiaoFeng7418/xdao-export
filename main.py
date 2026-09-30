@@ -195,6 +195,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="监控检查间隔（默认 300 秒，最小 15 秒）",
     )
     parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="监控模式下不弹桌面通知（默认开启）",
+    )
+    parser.add_argument(
         "--selftest",
         action="store_true",
         help="只做接口连接自检",
@@ -226,7 +231,7 @@ def run_cli(args: argparse.Namespace) -> int:
     from xdao.client import XdaoClient, XdaoError
     from xdao.exporters import EXPORTERS, ThreadData, create_exporter
     from xdao.settings import AppSettings
-    from xdao.watcher import WatchTarget, check_once, watch_forever
+    from xdao.watcher import WatchTarget, check_once, notify_result, watch_forever
 
     settings = AppSettings.load()
     client = XdaoClient(
@@ -306,14 +311,24 @@ def run_cli(args: argparse.Namespace) -> int:
         def progress(message: str) -> None:
             print(f"    {message}")
 
+        notifier = None
+        if settings.notify and not args.no_notify:
+            from xdao.notifications import Notifier
+
+            notifier = Notifier(min_interval=settings.notify_interval)
+            tip = "能发桌面通知" if notifier.available() else "当前环境发不出桌面通知，只会在终端打印"
+            print(f"桌面通知：开（{tip}）")
+
         try:
             # 先跑一轮并把抓取过程打出来，然后进入静默循环。
             for target in targets:
-                check_once(client, target, output_dir, cache_dir=cache_dir,
-                           progress=progress, verify_cached=args.verify)
+                result = check_once(client, target, output_dir, cache_dir=cache_dir,
+                                    progress=progress, verify_cached=args.verify)
+                notify_result(notifier, result)
             watch_forever(
                 client, targets, output_dir, max(15.0, interval),
                 cache_dir=cache_dir, on_result=on_result, verify_cached=args.verify,
+                notifier=notifier,
             )
         except KeyboardInterrupt:
             print("\n已停止监控。")
