@@ -72,6 +72,13 @@ class CachedThread:
     edited_posts: int = 0
     # 缓存不可写时的原因；非空说明这次抓取没有留下断点续传的成果。
     cache_warning: str = ""
+    # 补抓之后依然没拿到内容的页号（升序）。非空表示这份产物是缺页的，
+    # 调用方必须显式告诉用户，不能让缺页悄悄溜过去。
+    failed_pages: list[int] = field(default_factory=list)
+    # 补抓过程/缺页的一句话说明，供日志与界面显示；空串表示这次一次失败都没有。
+    retry_note: str = ""
+    # 产物是否明确不完整（缺页，或撞上页数上限没抓完）。界面据此给不同的提示。
+    truncated: bool = False
 
     def fingerprint_pairs(self) -> list[tuple[int, str, str]]:
         """(页号, 楼层 id, 指纹) 三元组，用于回写缓存。"""
@@ -126,6 +133,19 @@ class ThreadCache:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
+
+    def contiguous_pages(self) -> int:
+        """从第 1 页开始**连续**存在的页数。
+
+        必须是"连续"：某一页抓失败时它两侧的页可能都已经落盘了，
+        若只数"有没有页面文件"就会以为中间不缺页 —— 那样下次抓取会
+        误判成"缓存完整"而少抓一截（实测过：第 4 页失败后紧接着的
+        下一次导出会直接复用缺页的缓存）。
+        """
+        page = 1
+        while self.load_page(page) is not None:
+            page += 1
+        return page - 1
 
     def store_page(self, page: int, payload: dict) -> None:
         try:
@@ -325,16 +345,34 @@ def parse_thread_id(value: str | int | None) -> int | None:
 class CachedThreadFetcher:
     """带缓存的串抓取器。"""
 
+    #: 某一页彻底抓不到时，隔多久重试（秒）。取一下就能连上的抖动，
+    #: 靠这个等待躲过去；太长的等待会让用户以为程序卡死。
+    RETRY_DELAY = 2.0
+    #: 每一页最多补抓几轮（0 = 失败就停，即 v0.5.3 的行为）。
+    RETRY_ATTEMPTS = 2
+
     def __init__(
         self,
         client: XdaoClient,
         cache_dir: Path | None = None,
         progress=None,
         use_cache: bool = True,
+        retry_attempts: int | None = None,
+        retry_delay: float | None = None,
     ) -> None:
         self._client = client
         self._progress = progress
         self.use_cache = use_cache
+        # 补抓次数/间隔可在构造时覆盖（测试里调成 0 或 0 秒，免得白等）。
+        self.retry_attempts = (
+            self.RETRY_ATTEMPTS if retry_attempts is None else max(0, int(retry_attempts))
+        )
+        self.retry_delay = self.RETRY_DELAY if retry_delay is None else max(0.0, float(retry_delay))
+        # 最近一次页面抓取失败的原因（str 类接口错误 / 接口报错 / 非预期内容），
+        # 供补抓失败后的说明文字使用。
+        self._last_page_error = ""
+        # 补抓救回来的页数（只在最后汇总时报告一次）。
+        self._retried_ok = 0
         requested = Path(cache_dir) if cache_dir else default_cache_dir()
         # 缓存写不进去不该让整次导出失败：挑一个能写的位置继续，并把换了地方这件事
         # 记下来，由调用方在界面/日志里说明（cache_note 最终会并进 CachedThread.cache_warning）。
@@ -424,11 +462,25 @@ class CachedThreadFetcher:
 
         # ---- 判定是否需要抓取 ----
         cached_first = cached_pages.get(1)
+        # `cache.pages` 的语义是"从第 1 页起、中间不缺页的那一段有多长"
+        # （由 contiguous_pages() 维护，见 _assemble）。缓存能不能直接用，
+        # 要同时满足两件事：那段长度和缓存里的页数对得上（天然成立，防脏数据），
+        # 以及它已经盖到接口报的总页数。后者才是关键：
+        #   * 盖满了、回复数也没变 → 一次请求都不用多花，直接用（默认行为）；
+        #   * 首页接口没报总页数（page_count == 1）→ 跟以前一样只刷新第 1 页；
+        #   * 只盖住前几页、串后面还有页（含"中间某页当时没抓下来、
+        #     后面几页却已落盘"那种）→ 必须去补，不能在这儿提前返回，
+        #     否则下一次导出会一直复用中间缺页的缓存（实测踩过这个坑）。
+        cache_covers = (
+            bool(cached_pages)
+            and len(cached_pages) >= cache.pages
+            and cache.pages >= page_count
+        )
         if (
             self.use_cache
             and cached_first is not None
             and cache.reply_count == reply_count
-            and len(cached_pages) == max(1, min(cache.pages, page_count))
+            and (cache_covers or page_count <= 1)
         ):
             if not verify_cached:
                 payloads = dict(cached_pages)
@@ -512,28 +564,57 @@ class CachedThreadFetcher:
         if self.use_cache:
             cache.store_page(1, first)
 
+        # 抓不下来的页先记进"重试队列"，不再像以前那样当场 break 把后面
+        # 所有页一起丢掉。原因：接口偶发超时/限流/返回空壳时，旧行为会静默
+        # 少抓一大截，用户拿到的产物缺页却看不出来。
+        failed: set[int] = set()
+        attempted = 0
+        capped = False
         for index, page in enumerate(pages_to_fetch, start=1):
-            if len(payloads) >= page_count or index > max_pages:
+            if len(payloads) >= page_count:
                 break
-            remaining = max(0, page_count - reused - fetched)
-            self._notify(f"正在抓取第 {page} 页…（还需下载 {remaining} 页）")
-            payload = self._client.fetch_thread_page(thread_id, page)
-            if isinstance(payload, str):
+            if index > max_pages:
+                # 撞上页数上限，剩下的页一个都没抓 —— 产物必然不完整。
+                capped = True
                 break
-            if isinstance(payload, dict) and payload.get("success") is False:
+            attempted = page
+            status = self._process_page(
+                thread_id, page, payloads, cache=cache, failed=failed
+            )
+            if status == "ok":
+                fetched += 1
+            elif status == "fail":
+                # 这一页这次没成功；先跳过它，让后面还没试过的页先抓
+                # （排队的代价最小），等第一遍跑完再统一补抓。
+                continue
+            else:  # end：接口说到头了，重试没有意义
                 break
-            if not isinstance(payload, dict):
-                break
-            parsed = self._client.parse_thread_page(payload, page)
-            if page > 1 and len(parsed["posts"]) <= 1:
-                # 第 2 页起只有主帖，视为已到末尾。
-                break
-            payloads[page] = payload
-            fetched += 1
-            if self.use_cache:
-                cache.store_page(page, payload)
-            if page > 1 and not parsed["posts"][1:]:
-                break
+
+        if failed and self.retry_attempts:
+            retried, retry_reach = self._retry_failed_pages(
+                thread_id, page_count, payloads, cache=cache, failed=failed
+            )
+            fetched += retried
+            attempted = max(attempted, retry_reach)
+
+        # 只在"确实试过的页"里统计缺页：报出来的每一页都得是真抓过又失败的，
+        # 否则「第 12 页没抓到」这种话会冤枉一堆根本没请求过的页。
+        # pages_to_fetch 是自第 2 页起的连续区间，失败页是跳过而不是终止循环，
+        # 所以 attempted 一定覆盖 [2, attempted]，统计不会有漏。
+        attempts = len(pages_to_fetch)
+        missing = sorted(page for page in range(1, attempted + 1) if page not in payloads)
+        if attempts >= 3 and len(failed) >= max(2, int(attempts * 0.5)):
+            # 试过的页里有一半以上都失败：多半是网络断了/被限流，不是单页偶发。
+            # 只报"抓过又失败的那几页"会让用户以为只差一两页，其实后面全没试过；
+            # 把收尾点之后的页也算进缺页里（收尾点 ≤ 最大失败页 + 失败页数，
+            # 因为失败页是流水账、跳过的页之间最多隔着"失败页个数"页）。
+            stop_at = max(missing) + len(failed)
+            failed.update(
+                page
+                for page in range(1, min(page_count, stop_at) + 1)
+                if page not in payloads
+            )
+            missing = sorted(failed)
 
         reason = (
             "首次抓取"
@@ -549,7 +630,90 @@ class CachedThreadFetcher:
             pages_fetched=fetched,
             previous_reply_count=cache.reply_count,
             previous_post_ids=previous_ids,
+            failed_pages=failed,
+            page_count=page_count,
+            capped=capped,
         )
+
+    def _process_page(
+        self,
+        thread_id: int,
+        page: int,
+        payloads: dict[int, dict],
+        *,
+        cache: ThreadCache,
+        failed: set[int],
+    ) -> str:
+        """抓一页并解析，返回 ``"ok"`` / ``"fail"`` / ``"end"``。
+
+        这里**不再直接 break**：失败（``"fail"``）只是把页号丢进重试队列。
+        真正"到末尾了"的信号（第 2 页起只有主帖、解析后没有回复）返回
+        ``"end"`` —— 那不是错误，重试也没有意义。
+        """
+        self._last_page_error = ""
+        self._notify(f"正在抓取第 {page} 页…")
+        raw = self._client.fetch_thread_page(thread_id, page)
+        if isinstance(raw, str):
+            failed.add(page)
+            self._last_page_error = raw
+            return "fail"
+        if isinstance(raw, dict) and raw.get("success") is False:
+            failed.add(page)
+            self._last_page_error = str(raw.get("error") or "接口返回失败")
+            return "fail"
+        if not isinstance(raw, dict):
+            failed.add(page)
+            self._last_page_error = f"接口返回了非预期内容：{type(raw).__name__}"
+            return "fail"
+        parsed = self._client.parse_thread_page(raw, page)
+        if page > 1 and not parsed["posts"]:
+            # 空页：接口说这页什么都没有，当作到底。
+            return "end"
+        payloads[page] = raw
+        if self.use_cache:
+            cache.store_page(page, raw)
+        failed.discard(page)
+        if page > 1 and len(parsed["posts"]) <= 1:
+            # 只有主帖、没有回复，也说明后面没内容了。
+            return "end"
+        return "ok"
+
+    def _retry_failed_pages(
+        self,
+        thread_id: int,
+        page_count: int,
+        payloads: dict[int, dict],
+        *,
+        cache: ThreadCache,
+        failed: set[int],
+    ) -> tuple[int, int]:
+        """补抓失败页；返回 ``(补上的页数, 补抓时请求到的最大页号)``。
+
+        每一轮只等一次 ``retry_delay``：服务器忙时连着敲反而更糟。
+        最后一轮仍失败的页留在 ``failed`` 里，由 :meth:`_assemble` 报到
+        界面/日志上 —— 缺页这件事必须让用户看见。
+        """
+        fetched = 0
+        reach = 0
+        for round_no in range(1, self.retry_attempts + 1):
+            pending = sorted(page for page in failed if page <= page_count)
+            if not pending:
+                break
+            waiting = "、".join(str(page) for page in pending)
+            self._notify(
+                f"有 {len(pending)} 页没抓下来（第 {waiting} 页），"
+                f"第 {round_no}/{self.retry_attempts} 次补抓…"
+            )
+            if self.retry_delay:
+                time.sleep(self.retry_delay)
+            for page in pending:
+                reach = max(reach, page)
+                if self._process_page(
+                    thread_id, page, payloads, cache=cache, failed=failed
+                ) == "ok":
+                    fetched += 1
+                    self._retried_ok += 1
+        return fetched, reach
 
     # ---------- 组装 ----------
 
@@ -564,11 +728,17 @@ class CachedThreadFetcher:
         pages_fetched: int = 0,
         previous_reply_count: int | None = None,
         previous_post_ids: set[str] | None = None,
+        failed_pages: set[int] | None = None,
+        page_count: int = 0,
+        capped: bool = False,
     ) -> CachedThread:
         """把若干页原始数据合并成完整的串内容，并回写缓存状态。
 
         ``previous_post_ids`` 是本轮抓取之前缓存里已有的楼层 id：
         只有"上次就有、这次指纹变了"才算被编辑，否则一律算新增楼层。
+        ``failed_pages`` 是补抓之后仍然缺的页号，会原样带进结果里。
+        ``page_count`` 是接口自称的总页数，``capped`` 表示撞上了页数上限
+        没抓完 —— 两者一起决定 ``truncated``（产物是否明确不完整）。
         """
         posts: list[Post] = []
         seen: set[int] = set()
@@ -626,7 +796,11 @@ class CachedThreadFetcher:
 
         if self.use_cache:
             cache.reply_count = reply_count
-            cache.pages = max(cache.pages, last_page)
+            # 只把"从第 1 页起连续存在"的页数记成已抓范围：某一页失败时它后面
+            # 的页可能已经落盘了，若直接记 max(page)，下一页抓取会误判成
+            # "缓存完整"而复用中间缺页的缓存（实测踩过：第 4 页失败后，
+            # 下一次导出直接复用了缺页的缓存，用户拿到的产物还是缺的）。
+            cache.pages = max(cache.pages, cache.contiguous_pages())
             cache.last_page_hash = ThreadCache.hash_payload(payloads[last_page])
             cache.last_page_count = last_page
             cache.last_fetch_at = time.time()
@@ -646,6 +820,33 @@ class CachedThreadFetcher:
 
         # 「换了缓存目录」这类说明要一直带着走；真正的写入失败优先显示。
         warning = cache.write_error or self.cache_note
+
+        missing = sorted(int(page) for page in (failed_pages or ()))
+        last_page = max(payloads) if payloads else 0
+        # 产物不完整有两种来源：补抓之后仍缺页，或者撞上页数上限没抓完。
+        truncated = bool(missing) or capped
+        retry_note = ""
+        if missing:
+            shown = "、".join(str(page) for page in missing[:8])
+            more = f" 等 {len(missing)} 页" if len(missing) > 8 else ""
+            reason_text = f"（最近一次失败原因：{self._last_page_error}）" if self._last_page_error else ""
+            # 说明"整份产物只到第几页"：缺页后面的页会整段消失，只说"少了第 3 页"
+            # 会低估损失（用户实测过：以为只差一页，其实后面半篇都没了）。
+            stopped = f"这份产物只到第 {last_page} 页" if last_page else "这份产物没有抓到内容"
+            retry_note = (
+                f"第 {shown}{more} 页补抓 {self.retry_attempts} 次仍未成功{reason_text}："
+                f"{stopped}，缺页后面的内容不会出现在成品里。"
+                "稍后请再导一次，通常就能补齐"
+                "（已经抓下来的页都存进缓存了，重跑只会补缺的那些页）。"
+            )
+        elif capped:
+            retry_note = (
+                f"这次只抓到第 {last_page} 页（串比这长），剩下的页没有抓："
+                "可以用「抓取范围 → 指定页码」分批导出，或把页数上限调大后重跑。"
+            )
+        elif getattr(self, "_retried_ok", 0):
+            retry_note = f"有 {self._retried_ok} 页第一次没抓下来，补抓成功。"
+
         return CachedThread(
             meta=meta,
             posts=posts,
@@ -657,4 +858,7 @@ class CachedThreadFetcher:
             new_posts=new_posts,
             edited_posts=edited_posts,
             cache_warning=warning,
+            failed_pages=missing,
+            retry_note=retry_note,
+            truncated=truncated,
         )

@@ -541,3 +541,196 @@ def test_fetch_without_cache_skips_the_check(artifacts_dir, monkeypatch):
     monkeypatch.setattr(cache_module, "ensure_writable", boom)
     result = fetcher.fetch(7001)
     assert len(result.posts) == 7
+
+
+# ---------- 单页失败自动补抓（重试队列） ----------
+
+
+class FlakyApi(FakeApi):
+    """前 ``times`` 次请求指定页时返回失败，之后正常返回。
+
+    用来模拟"接口偶发超时/限流"：一次导出里某一页第一次没抓下来。
+    """
+
+    def __init__(self, pages: dict[int, dict], flaky: dict[int, int]) -> None:
+        super().__init__(pages)
+        self._flaky = dict(flaky)
+        self.failures: dict[int, int] = {}
+
+    def fetch_thread_page(self, thread_id: int, page: int = 1) -> dict:
+        if self._flaky.get(page, 0) > 0:
+            self._flaky[page] -= 1
+            self.failures[page] = self.failures.get(page, 0) + 1
+            self.requests.append((thread_id, page))
+            return "网络错误：连接被重置（测试）"
+        return super().fetch_thread_page(thread_id, page)
+
+
+def always_fail_api(pages: dict[int, dict], bad: set[int]) -> FlakyApi:
+    """本来会返回的页，硬是失败到永远 —— 用来验证"缺页必须报出来"。"""
+    return FlakyApi(pages, {page: 99 for page in bad})
+
+
+def make_fetcher(api, artifacts_dir, **kwargs) -> CachedThreadFetcher:
+    """测试里一律把补抓间隔调成 0，免得白等。"""
+    kwargs.setdefault("retry_delay", 0.0)
+    kwargs.setdefault("retry_attempts", 2)
+    return CachedThreadFetcher(api, cache_dir=artifacts_dir, **kwargs)
+
+
+def test_flaky_page_is_retried_and_recovered(artifacts_dir):
+    """某一页第一次失败、补抓成功：产物完整，并说明补抓过。"""
+    api = FlakyApi(
+        {
+            1: make_page(7001, 1, [make_reply(101)], reply_count=4, page_count=3),
+            2: make_page(7001, 2, [make_reply(102)], reply_count=4, page_count=3),
+            3: make_page(7001, 3, [make_reply(103)], reply_count=4, page_count=3),
+        },
+        flaky={2: 1},
+    )
+    fetcher = make_fetcher(api, artifacts_dir)
+    result = fetcher.fetch(7001)
+
+    assert api.requests == [(7001, 1), (7001, 2), (7001, 3), (7001, 2)]
+    assert [post.id for post in result.posts] == [7001, 101, 102, 103]
+    assert result.failed_pages == []
+    assert "补抓成功" in result.retry_note
+    # 抓到的页都进了缓存，下次不用再抓
+    assert (artifacts_dir / "pages" / "7001" / "2.json").exists()
+
+
+def test_all_retries_failing_reports_the_missing_page(artifacts_dir):
+    """补抓次数用尽仍失败：明确报出缺哪一页，而不是安静地少一截。"""
+    api = always_fail_api(
+        {
+            1: make_page(7001, 1, [make_reply(101)], reply_count=6, page_count=4),
+            2: make_page(7001, 2, [make_reply(102)], reply_count=6, page_count=4),
+            3: make_page(7001, 3, [make_reply(103)], reply_count=6, page_count=4),
+            4: make_page(7001, 4, [make_reply(104)], reply_count=6, page_count=4),
+        },
+        bad={3},
+    )
+    fetcher = make_fetcher(api, artifacts_dir)
+    result = fetcher.fetch(7001)
+
+    assert api.failures[3] == 3  # 第一次 + 两次补抓
+    assert (7001, 4) in api.requests  # 失败的那页不影响后面继续抓
+    assert result.failed_pages == [3]
+    assert result.truncated is True  # 缺页 = 产物不完整，界面据此弹提示
+    assert "第 3 页" in result.retry_note
+    assert "2 次" in result.retry_note
+    assert "再导一次" in result.retry_note
+    assert [post.id for post in result.posts] == [7001, 101, 102, 104]
+
+
+def test_retry_can_be_switched_off(artifacts_dir):
+    """retry_attempts=0 时一页都不补抓（老行为，供排障与测试用）。"""
+    api = always_fail_api(
+        {
+            1: make_page(7001, 1, [make_reply(101)], reply_count=4, page_count=3),
+            2: make_page(7001, 2, [make_reply(102)], reply_count=4, page_count=3),
+            3: make_page(7001, 3, [make_reply(103)], reply_count=4, page_count=3),
+        },
+        bad={2},
+    )
+    fetcher = make_fetcher(api, artifacts_dir, retry_attempts=0)
+    result = fetcher.fetch(7001)
+
+    assert api.failures[2] == 1  # 只试了一次
+    assert result.failed_pages == [2]
+    assert "0 次" in result.retry_note
+
+
+def test_missing_page_warning_says_which_pages_never_got_tried(artifacts_dir):
+    """大面积失败时不能只报"差一页"：后面没试过的页也要如实算进缺页。"""
+    pages = {
+        page: make_page(7001, page, [make_reply(100 + page)], reply_count=100, page_count=8)
+        for page in range(1, 9)
+    }
+    api = always_fail_api(pages, bad={2, 3, 4, 5, 6})
+    fetcher = make_fetcher(api, artifacts_dir)
+    result = fetcher.fetch(7001)
+
+    assert result.failed_pages == [2, 3, 4, 5, 6]
+    assert "等 5 页" in result.retry_note or "第 2、3、4、5、6 页" in result.retry_note
+
+
+def test_failed_page_is_refetched_before_the_cached_ones(artifacts_dir):
+    """补抓只补缺的那一页：已经抓下来的页走缓存，不重复请求。"""
+    pages = {
+        1: make_page(7001, 1, [make_reply(101)], reply_count=6, page_count=4),
+        2: make_page(7001, 2, [make_reply(102)], reply_count=6, page_count=4),
+        3: make_page(7001, 3, [make_reply(103)], reply_count=6, page_count=4),
+        4: make_page(7001, 4, [make_reply(104)], reply_count=6, page_count=4),
+    }
+    first_api = always_fail_api(pages, bad={4})
+    first = make_fetcher(first_api, artifacts_dir).fetch(7001)
+    assert first.failed_pages == [4]  # 第 4 页怎么都抓不下来
+
+    again = FlakyApi(pages, flaky={})
+    result = make_fetcher(again, artifacts_dir).fetch(7001)
+
+    assert again.requests == [(7001, 1), (7001, 4)]  # 第 2、3 页复用缓存，只补缺的第 4 页
+    assert result.failed_pages == []
+    assert [post.id for post in result.posts] == [7001, 101, 102, 103, 104]
+
+
+def test_thread_with_more_pages_than_the_cache_fetches_the_tail(artifacts_dir):
+    """串又长了一页：缓存只盖住前 3 页时必须去补第 4 页。
+
+    这是"中间某页当时没抓下来"留下的坑：缓存里第 1~3 页都在、回复数也变了，
+    以前会直接判定"缓存够用"就把缺页的那份产物交出去。
+    """
+    three = {
+        page: make_page(7001, page, [make_reply(100 + page)], reply_count=6, page_count=3)
+        for page in range(1, 4)
+    }
+    first = make_fetcher(FakeApi(three), artifacts_dir).fetch(7001)
+    assert first.failed_pages == []
+    assert first.truncated is False
+
+    four = dict(three)
+    four[4] = make_page(7001, 4, [make_reply(104)], reply_count=8, page_count=4)
+    # 前 3 页的回复数也一起变了，否则会走"回复数未变化"的那条快捷分支。
+    for page in range(1, 4):
+        four[page] = make_page(
+            7001, page, [make_reply(100 + page)], reply_count=8, page_count=4
+        )
+    api = FakeApi(four)
+    result = make_fetcher(api, artifacts_dir).fetch(7001)
+
+    assert (7001, 4) in api.requests  # 新长出来的那一页真的去抓了
+    assert (7001, 2) not in api.requests and (7001, 3) not in api.requests  # 已经有的不重抓
+    assert [post.id for post in result.posts] == [7001, 101, 102, 103, 104]
+    assert result.failed_pages == []
+    assert result.truncated is False
+
+
+def test_page_cap_marks_the_result_incomplete(artifacts_dir):
+    """撞上页数上限：产物照样写，但必须说明"只抓到第几页"。"""
+    pages = {
+        page: make_page(7001, page, [make_reply(100 + page)], reply_count=6, page_count=4)
+        for page in range(1, 5)
+    }
+    api = FakeApi(pages)
+    result = make_fetcher(api, artifacts_dir).fetch(7001, max_pages=1)
+
+    assert (7001, 3) not in api.requests  # 到上限就停手，不再往下抓
+    assert result.truncated is True
+    assert result.failed_pages == []  # 不是失败，是"没抓完"
+    assert "只抓到第" in result.retry_note
+    assert "页数上限" in result.retry_note
+
+
+def test_fatal_api_error_still_raises(artifacts_dir):
+    """第 1 页就报"串不存在"：这是硬错误，不许被补抓机制吞成半份产物。"""
+    fetcher = make_fetcher(FakeApi({}), artifacts_dir)
+
+    class MissingApi(FakeApi):
+        def fetch_thread_page(self, thread_id: int, page: int = 1) -> dict:
+            return {"success": False, "error": "该串不存在"}
+
+    missing = CachedThreadFetcher(MissingApi({}), cache_dir=artifacts_dir, retry_delay=0.0)
+    with pytest.raises(XdaoError, match="该串不存在"):
+        missing.fetch(7001)
+    assert fetcher is not None
