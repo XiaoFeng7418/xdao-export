@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 338 项，必须全绿）
+2. **跑测试**（当前基线 348 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 338 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 348 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -424,13 +424,28 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - **被接口拒绝时给出下一步**（v0.6.0）：`describe_export_failure` 认「必须登入 / 领取饼干」，
   说明是服务端不认 userhash 并指向重新登录/手动粘贴；`set_userhash` 设置前先清掉同名旧 cookie
   （否则请求头会出现两条 `userhash`）
+- **认得「跳转提示」页**（v0.6.1）：X 岛失败时用 ThinkPHP 的跳转模板回话，**HTTP 状态是 200**，
+  靠页面里的 JS 自己跳 —— 浏览器会跳，`urllib` 不会。旧版把这张页面当饼干列表解析，
+  一个 id 都找不到就抛「未找到可用的饼干」，把真正的失败原因盖掉（用户报的邮箱登录问题）。
+  现在 `XdaoClient.jump_page_url()` 认 `跳转提示` / `id="href"`（两种属性顺序都试）、
+  `jump_page_message()` 取 `class="error"|"success"` 那段文字，
+  `_request_following_jumps(url, max_jumps=2)` 遇到跳转页就跟着走并返回 `(响应体, 最终地址)`
+  （相对地址补 `self.SITE`、同一地址不重复跟）；`fetch_login_form()`、`apply_cookie()`、
+  `switchTo` 那一跳都走它。`apply_cookie()` 按最终落点分三种情况：
+  被弹回登录页 → `LoginError`「登录后没能进入用户系统」；有服务端原话 → 「没能读取饼干列表」；
+  都没有 → 才说「这个账号的饼干列表是空的」。
+  **教训：接口 200 不等于内容页面，解析前先看是不是跳转页；测试样例必须用线上真实 HTML，
+  手写的假数据里没有跳转页，这个 bug 正是因此漏过去的。**
+- **登录失败的文案分型**（v0.6.1）：`gui.describe_login_failure(message) -> (标题, 该做的事)`，
+  五种分支（验证码不对 / 密码不对 / 账号有问题 / 登录没有生效 / 这个账号还没有饼干）+ 兜底透传原文，
+  `LoginDialog._poll_login` 失败时用它当弹窗标题与正文。
 
 ## CI 说明
 
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、338 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、348 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会
   自动 skip，Linux CI 上属于预期行为，不算失败。
