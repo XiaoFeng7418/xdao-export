@@ -25,13 +25,13 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 311 个全部通过、1 个真机用例默认跳过（都离线，无需联网）；
+单元测试 313 个全部通过、1 个真机用例默认跳过（都离线，无需联网）；
 其中界面相关的 37 项（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会自动 skip。
 
 打包版随 v0.5.3 重新构建，Release **只提供免安装包（zip）**。写不进去的目录不再让整趟白跑：
 `choose_writable_dir()` 会自动换到 `%LOCALAPPDATA%\xdao-export\导出` 并说明换了地方。
 单文件版从 v0.5.1 起不再提供：它的启动器会把内容解压到系统临时目录，解压路径里带中文/
-非 ASCII 字符（例如 `D:\小玩意\…`）时会在 Python 代码运行前就弹出
+非 ASCII 字符（例如 `D:\某中文目录\…`）时会在 Python 代码运行前就弹出
 `Could not create temporary directory!`，而这取决于用户把文件放在哪儿 —— 详见
 `MAINTENANCE.md` 与各版本的 Release 说明。
 
@@ -137,11 +137,11 @@ xdao-export/
 
 ### 7. 打包（PyInstaller）
 
-- 使用自装 Python：`C:\Users\14515\Documents\Codex\python3129\python.exe`（Python 3.12.9）
+- 使用自装 Python：`<本机 Python>\python.exe`（Python 3.12.9）
   + PyInstaller 6.22.2。
 - 打包前必须设置环境变量：
-  - `TCL_LIBRARY=C:\Users\14515\Documents\Codex\python3129\tcl\tcl8.6`
-  - `TK_LIBRARY=C:\Users\14515\Documents\Codex\python3129\tcl\tk8.6`
+  - `TCL_LIBRARY=<本机 Python>\tcl\tcl8.6`
+  - `TK_LIBRARY=<本机 Python>\tcl\tk8.6`
 - 命令：`python -m PyInstaller --onefile --windowed --clean --name "X岛串导出工具" main.py`
 - 注意：`python3129\Lib\site-packages\PyInstaller\utils\hooks\tcl_tk.py` 已被手动打过补丁
   （利用 TCL_LIBRARY/TK_LIBRARY 绕过本机 Tcl 检测问题）。
@@ -155,12 +155,12 @@ xdao-export/
    - 测试用 `tests/conftest.py` 的 `artifacts_dir` 夹具，不要用 `tmp_path`；
    - 测试产物目录 `.test-artifacts/` 已提交进版本库。
 2. **pytest 不在项目自带解释器里。** 已装进 DSH 运行时：
-   `C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe`
+   `<本机 Python>\python.exe`
    跑测试：
    ```powershell
-   Set-Location 'D:\小玩意\xdao-export'
+   Set-Location '<仓库目录>'
    $env:PYTHONIOENCODING='utf-8'
-   & 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe' -X utf8 -m pytest -q
+   & '<本机 Python>\python.exe' -X utf8 -m pytest -q
    ```
    不要给这个解释器设 `TCL_LIBRARY`/`TK_LIBRARY`（那是 python3129 的路径，版本冲突会导致
    tkinter 起不来）。
@@ -178,7 +178,7 @@ xdao-export/
   - `v0.2.0` → 附件 `xdao-export-v0.2.0.exe`（当前版本，含四种格式与缓存/监控）
   - `v0.1.0` → 附件 `xdao-export-v0.1.0.exe`（旧版）
 - 提交作者已设为私密邮箱 `XiaoFeng7418@users.noreply.github.com`。
-- gh 便携版：`C:\Users\14515\Documents\Codex\2026-09-05\w-x\work\ghcli\bin\gh.exe`
+- gh 便携版：`<本机>\ghcli\bin\gh.exe`
   （全局 gitconfig 里已把它配成 github.com 的凭据助手，正常终端里 `git push` 不需要再输密码）。
 - **打包好的 exe 不进源码树**，只作为 Release 附件发布（`.gitignore` 已排除）。
 
@@ -189,8 +189,8 @@ xdao-export/
 写成 `https://` 会直接 TLS 失败）。分支映射已配好：本地 `main` ↔ 远端 `master`。
 
 ```powershell
-Set-Location 'D:\小玩意\xdao-export'
-$py = 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+Set-Location '<仓库目录>'
+$py = '<本机 Python>\python.exe'
 
 # 日常推送（两边 sha 完全一致）
 git push origin main:refs/heads/master

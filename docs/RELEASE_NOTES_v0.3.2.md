@@ -10,8 +10,8 @@
 **开始抓取之前**就报错退出：
 
 ```
-失败：缓存目录不可写：D:\X岛\.cache
-[Errno 13] Permission denied: 'D:\X岛\.cache\.xdao-write-probe'
+失败：缓存目录不可写：<盘符>\X岛\.cache
+[Errno 13] Permission denied: '<盘符>\X岛\.cache\xdao-write-test.tmp'
 ```
 
 这解释了为什么「旧版能用、新版不能用」：0.1.0 根本没有缓存层，只往导出目录写文件，
@@ -24,7 +24,7 @@
 → `%APPDATA%\xdao-export\.cache` → 系统临时目录），并且**明确告诉你换了地方**：
 
 ```
-注意：缓存目录 D:\X岛\.cache 写不进去，本次改用 C:\Users\你\AppData\Local\xdao-export\.cache。
+注意：缓存目录 <盘符>\X岛\.cache 写不进去，本次改用 C:\Users\你\AppData\Local\xdao-export\.cache。
 想固定下来可以在设置里改「缓存目录」。
 ```
 
@@ -39,10 +39,10 @@
 关掉缓存即可，导出功能完全不受影响：
 
 ```powershell
-xdao-export.exe 50000001 -o D:\X岛 --no-cache
+xdao-export.exe 50000001 -o <盘符>\X岛 --no-cache
 ```
 
-源码运行则是 `python main.py 50000001 -o D:\X岛 --no-cache`。
+源码运行则是 `python main.py 50000001 -o <盘符>\X岛 --no-cache`。
 
 ### 其它
 

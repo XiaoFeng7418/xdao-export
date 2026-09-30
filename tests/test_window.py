@@ -69,11 +69,16 @@ def isolated_settings():
         return settings
 
     original_load = AppSettings.load
+    original_save = AppSettings.save
     AppSettings.load = classmethod(fake_load)
+    # 保存也必须挡掉：``App.persist_prefs()`` 会调它。漏了这一道，跑一次界面用例
+    # 就会把用户真实的 %APPDATA%\xdao-export\config.json 覆盖成测试目录。
+    AppSettings.save = lambda self: None
     try:
         yield
     finally:
         AppSettings.load = original_load
+        AppSettings.save = original_save
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -338,11 +343,41 @@ def test_epub_image_row_follows_the_format(app: gui.App) -> None:
 
 
 def _stub_export_thread(monkeypatch) -> None:
-    """别让 start() 真的开线程跑导出：这里只验目录挑选那一段。"""
+    """别让 start() 真的开线程跑导出：只验它进门前那几步。"""
     monkeypatch.setattr(
         gui.threading, "Thread", lambda *a, **k: type("T", (), {"start": lambda self: None})()
     )
     monkeypatch.setattr(gui.App, "_poll_export", lambda self: None)
+
+
+def test_start_wires_the_resolved_directory_into_the_progress(
+    app: gui.App, monkeypatch, tmp_path: Path
+) -> None:
+    """``start()`` 拿 ``prepare_export_dir()`` 的结果开工，并把目录写进日志。
+
+    这里只验"进门那几步"，不验导出本身：线程被换成空壳，``_poll_export`` 也被挡掉。
+    """
+    chosen = tmp_path / "导出"
+    chosen.mkdir()
+    app.output_var.set(str(chosen))
+    app.settings.userhash = "TESTHASH"
+    monkeypatch.setattr(gui, "ensure_writable", lambda *a, **k: chosen)
+    monkeypatch.setattr(gui, "choose_writable_dir", lambda path, **k: _keep(path))
+    _stub_export_thread(monkeypatch)
+
+    app.start(["https://www.nmbxd1.com/t/69540387"])
+
+    assert app._exporting is True  # noqa: SLF001
+    content = app.log_text.get("1.0", "end")
+    assert f"导出目录：{chosen}" in content
+    assert "开始导出" in content
+    app._exporting = False  # noqa: SLF001
+
+
+def _keep(path: str):
+    from xdao.exporters._shared import DirChoice
+
+    return DirChoice(Path(path), [], False)
 
 
 def test_start_moves_to_a_writable_directory(app: gui.App, monkeypatch, tmp_path: Path) -> None:
@@ -369,16 +404,15 @@ def test_start_moves_to_a_writable_directory(app: gui.App, monkeypatch, tmp_path
     monkeypatch.setattr(gui, "ensure_writable", lambda *a, **k: blocked)
     monkeypatch.setattr(gui.messagebox, "showwarning", lambda title, msg: shown.append((title, msg)))
     monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: shown.append((title, msg)))
-    _stub_export_thread(monkeypatch)
 
-    app.start(["https://www.nmbxd1.com/t/69540387"])
+    resolved = app.prepare_export_dir()
 
+    assert resolved == str(fallback_dir)
     assert app.output_var.get() == str(fallback_dir)
     assert fallback_dir.is_dir(), "兜底目录要当场建出来，否则第一次导出就写不进去"
     assert shown and shown[0][0] == "导出目录已自动改到能写的位置"
     assert str(fallback_dir) in shown[0][1]
     assert str(fallback_dir) in app.log_text.get("1.0", "end")
-    app._exporting = False  # noqa: SLF001
 
 
 def test_start_keeps_a_user_chosen_directory(app: gui.App, monkeypatch, tmp_path: Path) -> None:
@@ -399,11 +433,28 @@ def test_start_keeps_a_user_chosen_directory(app: gui.App, monkeypatch, tmp_path
     monkeypatch.setattr(gui, "choose_writable_dir", fake_choose)
     monkeypatch.setattr(gui, "ensure_writable", lambda *a, **k: blocked)
     monkeypatch.setattr(gui.messagebox, "showwarning", lambda title, msg: None)
-    _stub_export_thread(monkeypatch)
 
-    app.start(["https://www.nmbxd1.com/t/69540387"])
+    resolved = app.prepare_export_dir()
 
     assert captured["allow_fallback"] is False
+    assert resolved == str(blocked)
     assert app.output_var.get() == str(blocked), "用户选的目录不能被偷偷改掉"
     assert str(blocked) in app.log_text.get("1.0", "end")
-    app._exporting = False  # noqa: SLF001
+
+
+def test_prepare_export_dir_stops_when_the_directory_cannot_be_created(
+    app: gui.App, monkeypatch
+) -> None:
+    """连目录都建不出来时返回 None（``start()`` 靠它决定不往下走）。"""
+    from xdao.exporters._shared import OutputDirNotWritable
+
+    warnings: list[tuple[str, str]] = []
+
+    def refuse(path):
+        raise OutputDirNotWritable("导出目录不可用：权限拒绝")
+
+    monkeypatch.setattr(gui, "ensure_writable", refuse)
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: warnings.append((title, msg)))
+
+    assert app.prepare_export_dir() is None
+    assert warnings and warnings[0][0] == "导出目录不可用"

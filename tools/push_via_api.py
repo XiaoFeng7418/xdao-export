@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import subprocess
 import sys
 import time
@@ -35,7 +36,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 API = "https://api.github.com"
-GH = r"C:\Users\14515\Documents\Codex\2026-09-05\w-x\work\ghcli\bin\gh.exe"
 
 
 class ApiError(RuntimeError):
@@ -43,7 +43,15 @@ class ApiError(RuntimeError):
 
 
 def gh_token() -> str:
-    result = subprocess.run([GH, "auth", "token"], capture_output=True, text=True)
+    """取 GitHub 令牌：优先环境变量，其次 PATH 上的 gh（可用 XDAO_GH 指定路径）。"""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        return token.strip()
+    gh = os.environ.get("XDAO_GH") or "gh"
+    try:
+        result = subprocess.run([gh, "auth", "token"], capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise ApiError(f"找不到 gh（{gh}）；请先 gh auth login，或设置 XDAO_GH") from exc
     if result.returncode != 0 or not result.stdout.strip():
         raise ApiError(f"取不到 gh 令牌：{result.stderr.strip()}")
     return result.stdout.strip()

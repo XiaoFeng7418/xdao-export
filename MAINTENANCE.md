@@ -8,15 +8,15 @@
 1. **体检**
 
    ```powershell
-   Set-Location 'D:\小玩意\xdao-export'
-   $py = 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+   Set-Location '<仓库目录>'
+   $py = '<本机 Python>\python.exe'
    & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
    ```
 
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 311 项，必须全绿）
+2. **跑测试**（当前基线 313 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -54,8 +54,8 @@
 ## 发布新版本的完整流程
 
 ```powershell
-Set-Location 'D:\小玩意\xdao-export'
-$py = 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+Set-Location '<仓库目录>'
+$py = '<本机 Python>\python.exe'
 
 # 1) 改版本号（xdao/__init__.py），跑测试
 & $py -X utf8 -m pytest -q
@@ -63,9 +63,9 @@ $py = 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\
 # 2) 打包（只打 onedir 免安装包；单文件版自 v0.5.1 起不再提供 —— 它的启动器在
 #    中文/非 ASCII 路径下会在 Python 代码运行前就失败：Could not create temporary directory!）
 #    注意必须设 TCL_LIBRARY / TK_LIBRARY，否则打包出的程序缺 Tcl/Tk
-$env:TCL_LIBRARY='C:\Users\14515\Documents\Codex\python3129\tcl\tcl8.6'
-$env:TK_LIBRARY='C:\Users\14515\Documents\Codex\python3129\tcl\tk8.6'
-$pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
+$env:TCL_LIBRARY='<本机 Python>\tcl\tcl8.6'
+$env:TK_LIBRARY='<本机 Python>\tcl\tk8.6'
+$pypi = '<本机 Python>\python.exe'
 & $pypi -m PyInstaller --onedir --windowed --clean --noconfirm --name "xdao-export" main.py
 
 # 3) 组装免安装包（exe + _internal + 使用说明.txt），压缩成
@@ -86,7 +86,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 # 6) 发布
 & $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag vX.Y.Z `
     --name "vX.Y.Z：..." --notes-file docs/RELEASE_NOTES_vX.Y.Z.md `
-    --asset 'D:\小玩意\xdao-export-vX.Y.Z-win64.zip' `
+    --asset '<盘符>\xdao-export-vX.Y.Z-win64.zip' `
     --asset 'dist\xdao-export-vX.Y.Z.exe'
 
 # 7) 收尾：确认体检全绿
@@ -156,13 +156,27 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 311 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 313 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
 7. **涉及浏览器的验证要在受限模式外跑**：PDF 导出会启动 Chrome / Edge，
    而浏览器需要命名管道通信，沙箱内必然失败（`mojo ... platform_channel` 报拒绝访问）。
    这是环境限制，不是代码问题。
+8. **公开材料里不许出现真实盘符/目录名/串标题**。
+   写文档、发布说明、报错示例、提交信息时一律用占位写法：`<盘符>\X岛`、`<盘符>\串`、
+   `%LOCALAPPDATA%\xdao-export\导出`、`Desktop\某目录\`。注意公开的地方不只是仓库文件，
+   **还包括 GitHub 的 Release 说明正文**（它由 `docs/RELEASE_NOTES_*.md` 上传而来），
+   以及打包进 zip 的 `诊断写入.ps1` / `使用说明.txt`。
+   工具脚本里的本机路径（`gh.exe`、自装 Python）也要避免写死：用环境变量后取，
+   如 `tools/make_release.py` 的 `gh_token()`（`XDAO_GH` / `GITHUB_TOKEN`）。
+9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
+   `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
+   被测试替换过、`save` 没有，结果是把**用户真实的
+   `%APPDATA%\xdao-export\config.json` 覆盖成测试目录**（2026-09-30 真的发生过：
+   用户的登录饼干被写成 `TESTHASH`、导出目录变成 pytest 临时目录）。
+   `tests/test_window.py` 的 `isolated_settings` 现在把 `AppSettings.save` 也换成了空函数，
+   再加用例时不要绕过它。
 
 ## 已知限制：打包版无法导出 PDF（2026-09-30 查明）
 
@@ -197,8 +211,8 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 
 ## 缓存目录写不进去不再挡住宿主功能（v0.3.2，2026-09-30）
 
-**用户报的问题**：导出到 `D:\X岛` 时报
-`[Errno 13] Permission denied: 'D:\X岛\.cache\.xdao-write-probe'`，
+**用户报的问题**：导出到 `<盘符>\X岛` 时报
+`[Errno 13] Permission denied: '<盘符>\X岛\.cache\xdao-write-test.tmp'`，
 而 0.1.0 版反而能正常写入。
 
 **原因**：0.1.0 没有缓存层，只往导出目录本身写文件；0.2 之后把「缓存目录可写」
@@ -225,7 +239,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 4. 打包版在输出目录不可写时要报 `OutputDirNotWritable: 导出目录不可写：<目录>`，
    而不是把锅甩给缓存目录。
 
-**注意**：`D:\X岛` 是用户自己的目录，别把测试文件留在里面。
+**注意**：`<盘符>\X岛` 是用户自己的目录，别把测试文件留在里面。
 
 ## 入口处不许漏出 traceback（v0.3.3，2026-09-30）
 
@@ -277,7 +291,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 **怎么验收打包版的界面**：本机 `Start-Process -PassThru` 对 GUI 进程会卡住不返回，
 改用 `python tools/gui_probe.py --exe <exe 路径>` —— 启动、等 9 秒、枚举窗口标题、
 强制结束并给出结论；标题是「Unhandled exception in script」就说明启动失败。
-把输出目录设成用户的 `D:\X岛`（config 里的默认值）时最容易暴露界面层的兜底问题。
+把输出目录设成用户的 `<盘符>\X岛`（config 里的默认值）时最容易暴露界面层的兜底问题。
 
 ## 桌面通知（v0.4.0，2026-09-30）
 
@@ -366,7 +380,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   探针写不动只当预警 —— 修掉「0.1.0 能导出、0.5.0 说目录不可写」那类误报；
   同时停发在中文路径下打不开的单文件版
 - **写权限往下探一层**（v0.5.2）：`can_write_dir()` 既试建探针文件也试建临时子目录，
-  两级都成功才算可写。教训来自 `D:\X岛\.cache` 建得出来、`.cache\pages` 拒绝访问 ——
+  两级都成功才算可写。教训来自 `<盘符>\X岛\.cache` 建得出来、`.cache\pages` 拒绝访问 ——
   只探表层会把这种目录判成"能写"，于是"写不进去就换地方"的兜底永远不触发。
   推论：**任何"换个能写的地方"的探测，都必须探到实际要创建的那一层**，否则兜底是装饰。
   同版把写盘失败的提示改成可执行的（指出目录、建议换到文档目录、提示查安全软件白名单）
@@ -389,7 +403,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、311 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、313 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会
   自动 skip，Linux CI 上属于预期行为，不算失败。
@@ -414,5 +428,5 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 本地跑测试用装好 pytest 的那个解释器（项目源码本身只需标准库）：
 
 ```powershell
-& 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe' -m pytest -q
+& '<本机 Python>\python.exe' -m pytest -q
 ```

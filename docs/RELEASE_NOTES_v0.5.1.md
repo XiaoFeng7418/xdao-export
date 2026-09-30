@@ -6,8 +6,8 @@
 
 0.5.0 在开始抓取前会往导出目录里写一个探针文件 `.xdao-write-probe`，写不进去就直接弹：
 
-> 导出目录不可写：D:\串
-> [Errno 13] Permission denied: 'D:\串\.xdao-write-probe'
+> 导出目录不可写：<盘符>\串
+> [Errno 13] Permission denied: '<盘符>\串\.xdao-write-probe'
 
 问题在于：**探针文件能不能写，和导出结果能不能写，不是一回事**。安全软件、组策略、
 只读介质、按文件名拦截的规则，都可能只挡这一个点开头的文件，而真正要生成的
@@ -27,7 +27,7 @@
 
 单文件版（`xdao-export-vX.Y.Z.exe`）的启动器会先把内容解压到系统临时目录再运行。
 只要解压目标的路径里带中文/非 ASCII 字符，或者临时目录不可写，它在 Python 代码跑起来之前
-就会弹出 `Could not create temporary directory!` —— 实测把同一个 exe 放在 `D:\小玩意\…`
+就会弹出 `Could not create temporary directory!` —— 实测把同一个 exe 放在 `D:\某中文目录\…`
 下必挂，放到纯 ASCII 路径下就正常。这取决于用户把文件放在哪儿，程序自己兜不住，
 所以从这一版起**只提供免安装包（zip）**，不再提供单文件版。
 

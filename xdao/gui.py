@@ -1444,23 +1444,15 @@ class App:
             if line.strip()
         ]
 
-    def start(self, urls: list[str] | None = None) -> None:
-        if self._exporting:
-            return
-        if not self.settings.userhash:
-            messagebox.showwarning("提示", "请先登录或设置饼干。")
-            self.open_login()
-            return
+    def prepare_export_dir(self) -> str | None:
+        """定下这一趟的导出目录；拦下不可用的情况时返回 None。
 
-        urls = urls if urls is not None else self._collect_urls()
-        if not urls:
-            messagebox.showwarning("提示", "请至少输入一个串网址。")
-            return
-
+        单独抽出来是为了能直接测（``start()`` 会真的开线程、还会把偏好写进配置）。
+        """
         output_dir = self.output_var.get().strip()
         if not output_dir:
             messagebox.showwarning("提示", "请选择导出目录。")
-            return
+            return None
 
         # 这个目录连"建出来"都做不到时才拦下（例如路径指向不存在又无权创建的盘）。
         # 只写不进探针文件不算数 —— 那正是 v0.5.0 把用户挡在门外的那次教训。
@@ -1468,15 +1460,13 @@ class App:
             ensure_writable(output_dir)
         except OutputDirNotWritable as exc:
             messagebox.showerror("导出目录不可用", str(exc))
-            return
+            return None
 
         # 用户报过：抓取全成功、写文件时权限拒绝，整趟白跑（Windows 的受控文件夹访问
         # 默认保护桌面/文档）。所以先挑一个真写得进去的目录 —— 挑不到原位就自动换。
         # 用户在命令行/界面上显式写死的目录不换地方，只把问题说清楚。
         allow_fallback = not self._dir_pinned
-        choice = choose_writable_dir(
-            output_dir, kind="导出", allow_fallback=allow_fallback
-        )
+        choice = choose_writable_dir(output_dir, kind="导出", allow_fallback=allow_fallback)
         output_dir = str(choice.path)
         if choice.fallback:
             # 兜底位置可能是第一次用，先建出来（探测只确认"写得进去"，不负责留下目录）。
@@ -1496,6 +1486,25 @@ class App:
                 "想固定用别的位置：把导出目录换成不受保护的地方（例如自建的文件夹），"
                 "或在安全软件里把本程序加入白名单。",
             )
+        return output_dir
+
+    def start(self, urls: list[str] | None = None) -> None:
+        if self._exporting:
+            return
+        if not self.settings.userhash:
+            messagebox.showwarning("提示", "请先登录或设置饼干。")
+            self.open_login()
+            return
+
+        urls = urls if urls is not None else self._collect_urls()
+        if not urls:
+            messagebox.showwarning("提示", "请至少输入一个串网址。")
+            return
+
+        resolved = self.prepare_export_dir()
+        if resolved is None:
+            return
+        output_dir = resolved
 
         self.persist_prefs()
         self.apply_settings_to_client()
