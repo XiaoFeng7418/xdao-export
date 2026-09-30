@@ -26,7 +26,7 @@ from .exporters import EXPORTERS, ThreadData, create_exporter
 from .exporters._shared import OutputDirNotWritable, choose_writable_dir, ensure_writable
 from .fetcher import parse_thread_id
 from .notifications import Notifier
-from . import pdf_opts, theme
+from . import pdf_opts, theme, watch_list
 from .settings import AppSettings
 from .theme import apply_theme, font, mono, resolve_fonts
 from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
@@ -1336,8 +1336,11 @@ class WatchDialog(tk.Toplevel):
         self.configure(bg=BG)
         self.app = app
         self.title("监控串更新")
-        self.geometry("760x480")
-        self.minsize(660, 420)
+        # 高度要装下「列表 + 一行添加/间隔/校验 + 一行导入导出 + 一行开始监控」。
+        # 2026-10-01 加了导入/导出那一行之后必须同步加高，否则底下的按钮被裁掉
+        # （截图才看得出来：控件都在，就是看不见）。
+        self.geometry("760x520")
+        self.minsize(660, 460)
         self.transient(app.root)
 
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(2)))
@@ -1394,6 +1397,23 @@ class WatchDialog(tk.Toplevel):
             variable=self.verify_var,
             style="Card.TCheckbutton",
         ).pack(side="left", padx=(theme.gap(2.5), 0))
+
+        # 列表的备份 / 还原单独占一行：760 宽的一行塞不下「添加 / 移除 / 间隔 /
+        # 校验 / 导入 / 导出」六个控件 —— 挤在右边会被整条裁掉，看起来像没有这两个按钮
+        # （2026-10-01 真机截图才发现，光看用例是绿的）。
+        list_io = ttk.Frame(card.body, style="Card.TFrame")
+        list_io.pack(fill="x", pady=(theme.gap(1.5), 0))
+        ttk.Label(
+            list_io,
+            text="列表可以备份成文件，换台机器或重装之后导回来。",
+            style="CardMuted.TLabel",
+        ).pack(side="left")
+        ttk.Button(
+            list_io, text="导出列表", style="Secondary.TButton", command=self._export_list
+        ).pack(side="right")
+        ttk.Button(
+            list_io, text="导入列表", style="Secondary.TButton", command=self._import_list
+        ).pack(side="right", padx=(0, theme.gap(1.5)))
 
         actions = ttk.Frame(card.body, style="Card.TFrame")
         actions.pack(fill="x", pady=(theme.gap(2), 0))
@@ -1474,6 +1494,65 @@ class WatchDialog(tk.Toplevel):
             self._refresh()
         if not self.app.watch_targets and self.app._watching:
             self._stop()
+
+    # ---------- 列表的导入 / 导出 ----------
+
+    def _export_list(self) -> None:
+        if not self.app.watch_targets:
+            messagebox.showinfo("提示", "监控列表是空的，没有可导出的内容。", parent=self)
+            return
+        chosen = filedialog.asksaveasfilename(
+            title="导出监控列表",
+            parent=self,
+            defaultextension=watch_list.FILE_SUFFIX,
+            initialfile=watch_list.suggested_filename(),
+            filetypes=[("监控列表", f"*{watch_list.FILE_SUFFIX}"), ("所有文件", "*.*")],
+        )
+        if not chosen:
+            return
+        try:
+            written = watch_list.export_targets(self.app.watch_targets, chosen)
+        except watch_list.WatchListError as exc:
+            messagebox.showerror("导出失败", str(exc), parent=self)
+            return
+        self.status_var.set(f"已导出 {len(self.app.watch_targets)} 个监控串。")
+        messagebox.showinfo(
+            "导出完成",
+            f"已导出 {len(self.app.watch_targets)} 个监控串：\n{written}",
+            parent=self,
+        )
+
+    def _import_list(self) -> None:
+        chosen = filedialog.askopenfilename(
+            title="导入监控列表",
+            parent=self,
+            filetypes=[("监控列表", f"*{watch_list.FILE_SUFFIX}"), ("所有文件", "*.*")],
+        )
+        if not chosen:
+            return
+        try:
+            result = watch_list.import_targets(self.app.watch_targets, chosen)
+        except watch_list.WatchListError as exc:
+            messagebox.showerror("导入失败", str(exc), parent=self)
+            return
+        if result.added:
+            # 追加、不是替换：用户手上这份列表是他自己攒的，导入只做「并进来」。
+            self.app.watch_targets.extend(result.added)
+            self.app.persist_watch_targets()
+            self._refresh()
+        self.status_var.set(f"导入完成：{result.summary}。")
+        lines = [f"文件里有 {result.total} 条，{result.summary}。"]
+        if result.skipped:
+            shown = result.skipped[:10]
+            lines.append("")
+            lines.append("跳过的条目：")
+            lines.extend(f"· {who}：{reason}" for reason, who in shown)
+            if len(result.skipped) > len(shown):
+                lines.append(f"…另有 {len(result.skipped) - len(shown)} 条。")
+        if not result.added and not result.skipped:
+            lines.append("")
+            lines.append("（文件里一条都没有。）")
+        messagebox.showinfo("导入完成", "\n".join(lines), parent=self)
 
     # ---------- 监控开关 ----------
 

@@ -26,12 +26,16 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 899 项（893 通过）、6 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关
+单元测试 949 项（943 通过）、6 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关
 `XDAO_BROWSER_TEST=1` / `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`）；
 其中界面相关的 62 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。
 
-打包版随 v0.8.0 重新构建，Release **只提供免安装包（zip）**。v0.8.0 把 PDF 从「完全跟随
+打包版随 v0.9.0 重新构建，Release **只提供免安装包（zip）**。v0.9.0 给串监控加了
+**列表导入 / 导出**（`xdao/watch_list.py` 管文件格式：界面「串监控」里的「导出列表 / 导入列表」，
+命令行 `--watch-export` / `--watch-import` / `--watch-import-replace`）：导出只带「怎么监控」，
+不带监控进度（否则换机器后第一轮该出的不出），导入是**合并**、坏条目逐条给中文原因；
+同版修掉「导入/导出按钮被裁到窗口外」（改成单独占一行）。v0.8.0 把 PDF 从「完全跟随
 网页打印样式」变成可配置（纸张 / 方向 / 边距 / 缩放 / 背景 / 页码范围），界面的「PDF 页面」
 一块、命令行 `--pdf-*` 参数、串监控的每一轮检查三处都接上了同一套选项；**全默认时输出与
 上一版逐字节相同**（仍走原来的命令行渲染），改过任何一项才切到 CDP 的
@@ -58,30 +62,38 @@ xdao-export/
 ├─ .test-artifacts/        测试产物目录（已提交占位文件，见"踩坑"一节）
 ├─ tests/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
-│  ├─ conftest.py          artifacts_dir 夹具（替代 tmp_path）
+│  ├─ conftest.py          测试夹具 + 两侧硬守卫：用户配置只读、白名单外跳过即失败
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（46）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（14）
-│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（115）
-│  ├─ test_cli.py          命令行参数与入口（12）
-│  ├─ test_gui_entry.py    界面入口与错误文案（14）
+│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（123）
+│  ├─ test_cli.py          命令行参数与入口（38）
+│  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（6）
+│  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出（35）
 │  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（12，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
-│  ├─ test_watcher.py      监控与配置（27）
+│  ├─ test_watcher.py      监控与配置（30）
+│  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（33）
 │  ├─ test_epub.py         EPUB（31）
 │  ├─ test_markdown.py     Markdown（41）
 │  ├─ test_notifications.py 桌面通知（28）
-│  ├─ test_pdf.py          PDF 渲染（22）
+│  ├─ test_pdf.py          PDF 渲染与路由（35）
+│  ├─ test_pdf_opts.py     PDF 纸张/边距/缩放/页码选项（325）
+│  ├─ test_pdf_render.py   PDF 真机渲染 4 条（默认跳过，`XDAO_PDF_TEST=1`）
+│  ├─ test_settings.py     配置读写（25）
 │  ├─ test_live_notify.py  真机通知（1，默认跳过）
 │  ├─ test_theme.py        配色/字体/间距/ttk 样式（25，需真 Tk）
 │  └─ test_window.py       主窗口布局回归（25，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号
    ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理、响应体解包
-   ├─ browser_login.py     浏览器登录：找 Edge/Chrome、DevTools 端口、手写 WebSocket 帧层 + CDP 取饼干
+   ├─ browser_login.py     浏览器登录：找 Edge/Chrome、DevTools 端口、进程管理、取饼干
+   ├─ cdp.py               CDP 传输层（帧协议 + CDPSession），登录与 PDF 渲染共用
    ├─ cache.py             页面缓存、CachedThreadFetcher、断点续传与增量判定
    ├─ fetcher.py           抓取流程与兼容层（ThreadFetcher 不带缓存）
    ├─ watcher.py           WatchTarget / check_once / watch_forever
+   ├─ watch_list.py        监控列表的导入 / 导出（文件格式与容错）
    ├─ settings.py          AppSettings：本机配置读写
+   ├─ pdf_opts.py          PDF 选项（纸张/方向/边距/缩放/背景/页码）唯一来源
    ├─ notifications.py     桌面通知（Windows Toast 用哨兵 AUMID / macOS / Linux）
    ├─ theme.py             配色 / 字体 / 间距 / ttk 样式（界面视觉唯一来源）
    ├─ widgets.py           自绘控件：Card、StatusPill、ModernProgress、FlatText
@@ -93,6 +105,7 @@ xdao-export/
       ├─ html.py           HtmlBuilder
       ├─ txt.py            TxtBuilder
       ├─ markdown.py       MarkdownBuilder
+      ├─ pdf.py            PdfBuilder：全默认走浏览器命令行，改过选项走 CDP
       └─ epub.py           EpubBuilder（纯标准库手写 EPUB 3）
 ```
 
@@ -260,10 +273,8 @@ git push origin main:refs/heads/master
 
 ## 八、后续可做（暂未实现）
 
-与 `MAINTENANCE.md` 的「路线图（尚未实现）」保持一致（PDF 导出、桌面通知、单页补抓与重试、
-CI 都已经实现，见那份文件的「已完成」）：
+与 `MAINTENANCE.md` 的「路线图（尚未实现）」保持一致（PDF 纸张/边距、监控列表导入导出、
+桌面通知、单页补抓与重试、CI 都已经实现，见那份文件的「已完成」）：
 
 - 无人值守登录：浏览器登录（v0.7.0）已经把这一步缩到只剩验证码。
   实测视觉模型对 X 岛的验证码识别率太低（三张只对一张半），短期不要做。
-- 监控列表的导入 / 导出（在几台机器之间迁移监控用）。
-- PDF 的页边距 / 纸张大小可配置（目前沿用网页的打印样式）。

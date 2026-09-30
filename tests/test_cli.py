@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -636,3 +637,152 @@ def test_watch_mode_hands_pdf_options_to_every_check(out_dir, monkeypatch):
     assert (options.paper, options.margin) == ("a3", "none")
     assert kwargs["browser_path"] == "C:/假浏览器.exe"
 
+
+# ---------- 监控列表的导入 / 导出（--watch-export / --watch-import） ----------
+
+
+class SettingsWithTargets(OfflineSettings):
+    """带一两个监控串的配置替身。"""
+
+    targets: list = []
+
+    @classmethod
+    def load(cls) -> "SettingsWithTargets":
+        obj = cls()
+        obj.watch_targets = [dict(t) for t in cls.targets]
+        return obj
+
+
+@pytest.fixture()
+def watch_settings(monkeypatch):
+    """把配置换成带监控串的替身；返回记录下来的 save() 调用。"""
+    import xdao.settings as settings_module
+
+    saved: list[list] = []
+    SettingsWithTargets.targets = [
+        {
+            "url_or_id": "https://www.nmbxd1.com/t/7001111",
+            "scope": "all",
+            "format_key": "html",
+            "include_hashes": [],
+            "image_mode": "embed",
+        }
+    ]
+    monkeypatch.setattr(settings_module, "AppSettings", SettingsWithTargets)
+    monkeypatch.setattr(
+        SettingsWithTargets, "save", lambda self: saved.append(list(self.watch_targets))
+    )
+    yield SettingsWithTargets, saved
+    SettingsWithTargets.targets = []
+
+
+def test_watch_export_writes_the_list_without_touching_the_network(watch_settings, tmp_path):
+    """导出不连网、不需要串号参数 —— 列表本来就存在配置里。"""
+    out = tmp_path / "列表.json"
+    code = main(["--watch-export", str(out)])
+    assert code == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert [t["thread_id"] for t in payload["targets"]] == [7001111]
+
+
+def test_watch_import_merges_into_the_existing_list(watch_settings, tmp_path):
+    _, saved = watch_settings
+    source = tmp_path / "来.json"
+    source.write_text(
+        json.dumps({"targets": [{"url_or_id": "7002222"}]}, ensure_ascii=False), encoding="utf-8"
+    )
+
+    code = main(["--watch-import", str(source)])
+
+    assert code == 0
+    assert saved, "导入之后必须把列表存进配置"
+    ids = [t["url_or_id"] for t in saved[0]]
+    assert ids == ["https://www.nmbxd1.com/t/7001111", "7002222"]
+
+
+def test_watch_import_replace_replaces_the_list(watch_settings, tmp_path):
+    _, saved = watch_settings
+    source = tmp_path / "来.json"
+    source.write_text(
+        json.dumps({"targets": [{"url_or_id": "7002222"}]}, ensure_ascii=False), encoding="utf-8"
+    )
+
+    code = main(["--watch-import", str(source), "--watch-import-replace"])
+
+    assert code == 0
+    assert [t["url_or_id"] for t in saved[0]] == ["7002222"]
+
+
+def test_watch_import_replace_keeps_entries_that_match_the_existing_list(
+    watch_settings, tmp_path
+):
+    """真机踩到的坑：文件里那条**现在就已经监控着**时，「替换」不能把它当垃圾丢掉。
+
+    之前的写法是 ``merged = result.added``，而「同一个串、同样的设置」会被算进
+    ``result.skipped`` —— 于是替换之后列表里一条不剩（用户以为只是把列表换成
+    文件里那些，结果清空了）。现在这些条目单独记在 ``result.duplicates`` 里。
+    """
+    _, saved = watch_settings
+    source = tmp_path / "来.json"
+    source.write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {"url_or_id": "7001111"},  # 配置里本来就有这一条
+                    {"url_or_id": "7002222"},  # 这一条是新的
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    code = main(["--watch-import", str(source), "--watch-import-replace"])
+
+    assert code == 0
+    # 配置里的 url_or_id 是怎么写就怎么留（既有的那条是完整网址，新来的那条是裸串号），
+    # 所以这里按串号比，别按字面比 —— 字面比会在两条「其实都在」时误报。
+    from xdao.watcher import parse_thread_id
+
+    got = [parse_thread_id(t["url_or_id"]) for t in saved[0]]
+    assert got == [7002222, 7001111], (
+        "替换只能丢掉「不在文件里」的条目，不能丢掉「本来就在、文件里也有」的条目"
+    )
+
+
+def test_watch_import_reports_skipped_entries(watch_settings, tmp_path, capsys):
+    source = tmp_path / "来.json"
+    source.write_text(
+        json.dumps({"targets": [{"url_or_id": "7002222", "format_key": "docx"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    code = main(["--watch-import", str(source)])
+
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "跳过" in printed
+    assert "格式认不出：docx" in printed
+
+
+def test_watch_import_bad_file_exits_with_two(watch_settings, tmp_path, capsys):
+    broken = tmp_path / "坏.json"
+    broken.write_text("这不是 JSON", encoding="utf-8")
+
+    code = main(["--watch-import", str(broken)])
+
+    assert code == 2
+    assert "不是有效的 JSON" in capsys.readouterr().err
+
+
+def test_watch_export_and_import_together_are_refused(watch_settings, tmp_path, capsys):
+    code = main(["--watch-export", str(tmp_path / "a.json"), "--watch-import", str(tmp_path / "b.json")])
+    assert code == 2
+    assert "只能用一个" in capsys.readouterr().err
+
+
+def test_replace_without_import_is_refused_instead_of_opening_the_gui(watch_settings, capsys):
+    """单独给这个开关绝不能落到「启动图形界面」那条路 —— 用户会以为生效了。"""
+    code = main(["--watch-import-replace"])
+    assert code == 2
+    assert "要配 --watch-import 用" in capsys.readouterr().err
