@@ -170,20 +170,17 @@ def _same_commit(local_commit: dict, remote_commit: dict) -> bool:
 def find_pushed_prefix(local: list[dict], remote: list[dict]) -> int:
     """返回「本地提交中已经推到远端」的个数。
 
-    以提交说明 + 作者邮箱 + 作者时间比对：即使因为排除大文件导致 tree 与
-    sha 不同，也能认出同一条改动，从而只推送新增的部分，不再重建历史。
+    以提交说明 + 作者邮箱 + 作者时间比对：即使因为排除大文件、重写提交等原因
+    导致 tree 与 sha 不同，也能认出同一条改动，从而只推送新增的部分。
 
-    对齐方式：先在远端链里找到本地第一个提交所在的位置，再逐个往下比。
-    远端链可能比本地长（例如历史上重复推送过），所以不能按位置直接对齐。
-
-    注意：这里用的是 Git Data API 的原始提交对象（字段为 author / message），
-    不是 commits 列表接口的 commit.author 结构。
+    对齐方式：在远端链里找**能连续匹配最多个本地提交**的起点。
+    远端链常比本地长（重跑推送、修正提交都会留下同名的旧副本），
+    因此不能只认某一次匹配 —— 取最长匹配才不会漏判或误报。
     """
     if not local or not remote:
         return 0
-    # 从最近的位置往回找：远端可能因为历史原因留有同一批提交的旧副本，
-    # 必须对齐到最新那一次，否则会把已经推过的提交又推一遍。
-    for start in range(len(remote) - 1, -1, -1):
+    best = 0
+    for start in range(len(remote)):
         if not _same_commit(local[0], remote[start]):
             continue
         matched = 0
@@ -192,8 +189,8 @@ def find_pushed_prefix(local: list[dict], remote: list[dict]) -> int:
             if position >= len(remote) or not _same_commit(local_commit, remote[position]):
                 break
             matched += 1
-        return matched
-    return 0
+        best = max(best, matched)
+    return best
 
 
 def blob_content(sha: str) -> bytes:
