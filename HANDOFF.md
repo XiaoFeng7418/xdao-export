@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 485 项（483 通过）、2 个真机用例默认跳过（都离线，无需联网；跳过的那两条要显式开关
+单元测试 493 项（491 通过）、2 个真机用例默认跳过（都离线，无需联网；跳过的那两条要显式开关
 `XDAO_BROWSER_TEST=1` / `XDAO_LIVE_NOTIFY=1`）；
 其中界面相关的 62 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。
