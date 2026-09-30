@@ -442,6 +442,134 @@ def test_can_write_dir_leaves_no_litter(out_dir):
     assert list(out_dir.iterdir()) == []
 
 
+# ---------- 导出目录写不进去时换地方（v0.5.3）----------
+
+
+def test_choose_writable_dir_keeps_the_requested_directory(tmp_path):
+    """能写就原样返回，不多此一举换地方，也不产生说明。"""
+    from xdao.exporters._shared import choose_writable_dir
+
+    choice = choose_writable_dir(tmp_path)
+    assert choice.path == tmp_path
+    assert choice.notes == []
+    assert choice.fallback is False
+
+
+def test_choose_writable_dir_moves_to_localappdata_when_blocked(tmp_path, monkeypatch):
+    """请求的目录写不进去时，自动改用 LOCALAPPDATA 下的位置。
+
+    这就是用户 2026-09-30 遇到的场景：导出目录设在桌面下的新文件夹，
+    抓取全部成功、写文件时 ``[Errno 13]``（受控文件夹访问只放行白名单程序），
+    整趟白跑。
+    """
+    from xdao.exporters import _shared
+
+    local = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+    blocked = tmp_path / "桌面" / "新建文件夹"
+
+    choice = _shared.choose_writable_dir(blocked, probe=lambda path: path != blocked)
+
+    assert choice.fallback is True
+    assert choice.path.parent == local / "xdao-export"
+    assert choice.path.name == "导出"
+    text = "".join(choice.notes)
+    assert str(blocked) in text and str(choice.path) in text
+    assert "受控文件夹访问" in text
+
+
+def test_choose_writable_dir_falls_back_to_temp_when_localappdata_blocked(tmp_path, monkeypatch):
+    """LOCALAPPDATA 也不可用时，退到 %TEMP%。"""
+    from xdao.exporters import _shared
+
+    local = tmp_path / "LocalAppData"
+    temp = tmp_path / "Temp"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("TEMP", str(temp))
+
+    choice = _shared.choose_writable_dir(
+        tmp_path / "blocked", probe=lambda path: str(path).startswith(str(temp))
+    )
+
+    assert choice.fallback is True
+    assert choice.path == temp / "xdao-export"
+
+
+def test_choose_writable_dir_never_overwrites_an_earlier_fallback(tmp_path, monkeypatch):
+    """兜底目录已存在时换一个带序号的名字：两次导出的成品别互相覆盖。"""
+    from xdao.exporters import _shared
+
+    local = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    first = local / "xdao-export" / "导出"
+    first.mkdir(parents=True)
+
+    choice = _shared.choose_writable_dir(
+        tmp_path / "blocked", probe=lambda path: path != tmp_path / "blocked"
+    )
+
+    assert choice.path.name == "导出-2"
+
+
+def test_choose_writable_dir_pinned_keeps_the_directory_but_explains(tmp_path):
+    """用户显式指定的目录不换地方（allow_fallback=False），但要说清为什么不能用。"""
+    from xdao.exporters._shared import choose_writable_dir
+
+    blocked = tmp_path / "被拦的目录"
+    choice = choose_writable_dir(blocked, allow_fallback=False, probe=lambda path: False)
+
+    assert choice.path == blocked
+    assert choice.fallback is False
+    assert "写不进去" in "".join(choice.notes)
+
+
+def test_choose_writable_dir_reports_when_everything_fails(tmp_path, monkeypatch):
+    """连兜底位置都写不进去时，如实报错而不是假装换了地方。"""
+    from xdao.exporters import _shared
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+    blocked = tmp_path / "blocked"
+
+    choice = _shared.choose_writable_dir(blocked, probe=lambda path: False)
+
+    assert choice.path == blocked
+    assert choice.fallback is False
+    assert "也不行" in "".join(choice.notes)
+
+
+def test_fallback_dirs_stay_inside_appdata_and_temp(tmp_path, monkeypatch):
+    """兜底候选必须落在 %LOCALAPPDATA% / %TEMP% 里。
+
+    受控文件夹访问保护的是桌面/文档/图片/视频，只有这两个位置是明确留给
+    用户程序写数据的 —— 兜底候选跑到别处就等于没兜底。
+    """
+    from xdao.exporters._shared import fallback_dirs
+
+    local = tmp_path / "LocalAppData"
+    temp = tmp_path / "Temp"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("TEMP", str(temp))
+
+    dirs = fallback_dirs()
+    assert dirs[0].parent == local / "xdao-export"
+    assert dirs[1] == temp / "xdao-export"
+
+
+def test_choose_writable_dir_creates_nothing_while_probing(tmp_path):
+    """探测（真身 can_write_dir）不会在磁盘上留下文件。
+
+    目录本身会被建出来（不然没法探下一层），但探针文件与探针子目录必须清干净。
+    """
+    from xdao.exporters._shared import choose_writable_dir
+
+    target = tmp_path / "新目录"
+    choice = choose_writable_dir(target)
+    assert choice.path == target
+    assert list(target.iterdir()) == []
+
+
 @pytest.mark.parametrize("key", ["html", "txt", "markdown", "epub"])
 def test_save_creates_missing_directory_and_writes(out_dir, key):
     """目录不存在时要自己建出来（预检失败不再是拦路虎）。"""

@@ -23,7 +23,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from .cache import CachedThreadFetcher, resolve_cache_dir
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
-from .exporters._shared import OutputDirNotWritable, ensure_writable
+from .exporters._shared import OutputDirNotWritable, choose_writable_dir, ensure_writable
 from .fetcher import parse_thread_id
 from .notifications import Notifier
 from . import theme
@@ -91,11 +91,11 @@ def describe_export_failure(exc: BaseException) -> str:
     target = getattr(exc, "filename", None) or ""
     where = f"目录 {Path(target).parent}" if target else "导出目录"
     return (
-        f"{text}\n    Windows 不允许往{where}写文件。先换个目录试试 —— "
-        "「文档」（%USERPROFILE%\\Documents）或桌面下的新建文件夹一般都能写；"
-        "如果是可移动磁盘，检查写保护开关；如果换了目录仍然这样，"
-        "多半是安全软件（受控文件夹访问、勒索软件防护）在拦截，"
-        "把本程序加入白名单即可。"
+        f"{text}\n    Windows 不允许往{where}写文件。最常见的原因是安全软件的"
+        "「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），"
+        "它默认只放行白名单程序写「桌面 / 文档 / 图片 / 视频」这几个位置；"
+        "本程序这一版起会自动改用 %LOCALAPPDATA%\\xdao-export\\导出 这类不受保护的位置，"
+        "也可以手动把导出目录换过去，或把本程序加入白名单。"
     )
 
 
@@ -786,6 +786,10 @@ class App:
         self._export_queue: queue.Queue = queue.Queue()
         self._exporting = False
         self._last_failed: list[str] = []
+        # 用户在「更改…」里亲手选过导出目录吗？选过就尊重他的选择（只报错、不换地方），
+        # 没选过（用配置里的默认值）才允许导出时自动改到能写的位置。
+        # 放在进入主循环之前赋值，start() 永远晚于它执行。
+        self._dir_pinned = False
         self._cookie_queue: queue.Queue = queue.Queue()
 
         # 监控状态
@@ -1273,6 +1277,7 @@ class App:
         )
         if chosen:
             self.output_var.set(chosen)
+            self._dir_pinned = True
             self.refresh_cache_info()
 
     def open_folder(self) -> None:
@@ -1465,6 +1470,33 @@ class App:
             messagebox.showerror("导出目录不可用", str(exc))
             return
 
+        # 用户报过：抓取全成功、写文件时权限拒绝，整趟白跑（Windows 的受控文件夹访问
+        # 默认保护桌面/文档）。所以先挑一个真写得进去的目录 —— 挑不到原位就自动换。
+        # 用户在命令行/界面上显式写死的目录不换地方，只把问题说清楚。
+        allow_fallback = not self._dir_pinned
+        choice = choose_writable_dir(
+            output_dir, kind="导出", allow_fallback=allow_fallback
+        )
+        output_dir = str(choice.path)
+        if choice.fallback:
+            # 兜底位置可能是第一次用，先建出来（探测只确认"写得进去"，不负责留下目录）。
+            try:
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+            except OSError:  # pragma: no cover - 探测刚说过能写，走到这里基本是磁盘满
+                pass
+            # 只改界面上显示的目录，不动用户的设置：这一趟写兜底位置，下次仍按他设的试。
+            self.output_var.set(output_dir)
+        for note in choice.notes:
+            self.log(note)
+        if choice.notes and choice.fallback:
+            messagebox.showwarning(
+                "导出目录已自动改到能写的位置",
+                "\n\n".join(choice.notes)
+                + f"\n\n本次的成品都会放在：\n{output_dir}\n\n"
+                "想固定用别的位置：把导出目录换成不受保护的地方（例如自建的文件夹），"
+                "或在安全软件里把本程序加入白名单。",
+            )
+
         self.persist_prefs()
         self.apply_settings_to_client()
 
@@ -1476,6 +1508,7 @@ class App:
             f"开始导出：{len(urls)} 个串，格式 {self.current_format()}，"
             f"缓存 {'启用' if self.use_cache_var.get() else '关闭'}。"
         )
+        self.log(f"导出目录：{output_dir}")
 
         def worker_body() -> None:
             scope = self.scope_var.get()
@@ -1612,10 +1645,12 @@ class App:
             messagebox.showwarning(
                 "部分失败",
                 f"成功 {succeeded} / {total} 个串。\n\n失败 {len(failed)} 个，原因见日志区，"
-                "可点「重试失败项」重跑。",
+                f"可点「重试失败项」重跑。\n\n成功的文件在：\n{output_dir}",
             )
         else:
-            messagebox.showinfo("完成", f"成功导出 {succeeded} / {total} 个串。")
+            messagebox.showinfo(
+                "完成", f"成功导出 {succeeded} / {total} 个串。\n\n文件在：\n{output_dir}"
+            )
 
     # ---------- 监控 ----------
 

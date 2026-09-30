@@ -12,10 +12,13 @@
 from __future__ import annotations
 
 from ._shared import (
+    DirChoice,
     OutputDirNotWritable,
     ThreadData,
+    choose_writable_dir,
     derive_filename,
     ensure_writable,
+    fallback_dirs,
     fetch_image,
     guess_mime,
     iter_post_image_urls,
@@ -86,6 +89,7 @@ def create_exporter(
 
 __all__ = [
     "EXPORTERS",
+    "DirChoice",
     "EpubBuilder",
     "HtmlBuilder",
     "MarkdownBuilder",
@@ -94,9 +98,11 @@ __all__ = [
     "PdfError",
     "ThreadData",
     "TxtBuilder",
+    "choose_writable_dir",
     "create_exporter",
     "derive_filename",
     "ensure_writable",
+    "fallback_dirs",
     "fetch_image",
     "find_browser",
     "guess_mime",
