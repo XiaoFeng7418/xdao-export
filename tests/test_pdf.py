@@ -360,3 +360,185 @@ def test_is_frozen_reflects_interpreter(monkeypatch):
     assert pdf_module.is_frozen() is False
     monkeypatch.setattr(pdf_module.sys, "frozen", True, raising=False)
     assert pdf_module.is_frozen() is True
+
+
+# ---------- 渲染路径路由（纸张/边距只走 CDP） ----------
+
+
+def test_default_options_go_through_the_command_line(out_dir, artifacts_dir, monkeypatch):
+    """全默认（跟随网页样式）必须还是走命令行，输出与老版本一致。"""
+    import xdao.exporters.pdf as pdf_module
+    from xdao.pdf_opts import PdfOptions
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        pdf_module, "print_html_to_pdf", lambda *a, **k: calls.append("cdp") or a[1]
+    )
+    browser = make_fake_browser(artifacts_dir)
+    target = out_dir / "默认.pdf"
+
+    pdf_module.render_html_to_pdf(
+        "<html><body>你好</body></html>",
+        target,
+        browser_path=browser,
+        options=PdfOptions(),
+    )
+
+    assert calls == []
+    assert (browser.parent / "flags.txt").exists(), "命令行没被调用"
+
+
+def test_custom_options_go_through_cdp(out_dir, artifacts_dir, monkeypatch):
+    """改过纸张时不能再走命令行：命令行没有纸张开关。"""
+    import xdao.exporters.pdf as pdf_module
+    from xdao.pdf_opts import PdfOptions
+
+    seen: list[object] = []
+
+    def fake_cdp(html, output_pdf, **kwargs):
+        seen.append(kwargs.get("options"))
+        return Path(output_pdf)
+
+    monkeypatch.setattr(pdf_module, "print_html_to_pdf", fake_cdp)
+    target = out_dir / "a3.pdf"
+    options = PdfOptions(paper="a3")
+
+    result = pdf_module.render_html_to_pdf(
+        "<html></html>", target, browser_path="C:/随便.exe", options=options
+    )
+
+    assert result == target
+    assert seen == [options]
+
+
+def test_page_ranges_alone_also_go_through_cdp(out_dir, monkeypatch):
+    """只填页码也必须走 CDP。
+
+    ``is_default`` 不看 ``page_ranges``，用它判断的话「用户填了 1-3 页」会被
+    当成没改过而走命令行，页码被静默丢掉 —— 这条用例钉的就是这个。
+    """
+    import xdao.exporters.pdf as pdf_module
+    from xdao.pdf_opts import PdfOptions
+
+    seen: list[object] = []
+
+    def fake_cdp(html, output_pdf, **kwargs):
+        seen.append(kwargs.get("options"))
+        return Path(output_pdf)
+
+    monkeypatch.setattr(pdf_module, "print_html_to_pdf", fake_cdp)
+    pdf_module.render_html_to_pdf(
+        "<html></html>",
+        out_dir / "页码.pdf",
+        browser_path="C:/随便.exe",
+        options=PdfOptions(page_ranges="1-3"),
+    )
+
+    assert len(seen) == 1, "只填页码时也必须走 CDP"
+
+
+def test_builder_passes_pdf_options_to_the_renderer(monkeypatch):
+    """PdfBuilder 必须把它拿到的选项交给渲染层，不然界面上改了也白改。"""
+    import xdao.exporters.pdf as pdf_module
+    from xdao.pdf_opts import PdfOptions
+
+    seen: list[object] = []
+
+    def fake_render(html, output_pdf, **kwargs):
+        seen.append(kwargs.get("options"))
+        return Path(output_pdf)
+
+    monkeypatch.setattr(pdf_module, "render_html_to_pdf", fake_render)
+    options = PdfOptions(paper="a4", margin="narrow", scale=1.2)
+    builder = PdfBuilder(FakeClient(), browser_path="C:/随便.exe", pdf_options=options)
+    builder.render_pdf("<html></html>", Path("."), Path("out.pdf"))
+
+    assert seen == [options]
+
+
+def test_builder_without_options_still_renders(monkeypatch):
+    import xdao.exporters.pdf as pdf_module
+
+    seen: list[object] = []
+
+    def fake_render(html, output_pdf, **kwargs):
+        seen.append(kwargs.get("options"))
+        return Path(output_pdf)
+
+    monkeypatch.setattr(pdf_module, "render_html_to_pdf", fake_render)
+    builder = PdfBuilder(FakeClient(), browser_path="C:/随便.exe")
+    builder.render_pdf("<html></html>", Path("."), Path("out.pdf"))
+
+    assert seen == [None]
+
+
+def test_cdp_params_drop_css_page_size_when_paper_is_explicit():
+    """显式纸张时绝不能带 preferCSSPageSize —— 带了纸张就白选了。
+
+    真机实测：两者同时出现时浏览器改以页面 CSS 的 ``@page size`` 为准
+    （用户选 A3 出 A4），而且时对时错；见 ``_scratch/cmp_pdf_paths.py``。
+    """
+    from xdao.exporters.pdf import _cdp_params
+    from xdao.pdf_opts import PdfOptions
+
+    params = _cdp_params(PdfOptions(paper="a3"))
+    assert "preferCSSPageSize" not in params
+    assert params["paperWidth"] == 11.69
+    assert params["paperHeight"] == 16.54
+
+    # 跟随网页样式时才让页面自己决定纸张。
+    assert _cdp_params(PdfOptions())["preferCSSPageSize"] is True
+
+    # 边距也交给页面时不影响这个判断。
+    landscape = _cdp_params(PdfOptions(paper="a3", orientation="landscape"))
+    assert "preferCSSPageSize" not in landscape
+    assert landscape["paperWidth"] == 16.54
+
+
+# ---------- CDP 结果的解码 ----------
+
+def test_decode_pdf_data_accepts_base64_pdf():
+    import base64
+
+    from xdao.exporters.pdf import _decode_pdf_data
+
+    raw = b"%PDF-1.4 hello"
+    assert _decode_pdf_data({"data": base64.b64encode(raw).decode("ascii")}) == raw
+
+
+@pytest.mark.parametrize(
+    ("result", "match"),
+    [
+        ({}, "空的"),
+        (None, "空的"),
+        # 非法 base64：必须报「解不开」。默认的 b64decode 会静默丢掉非法字符，
+        # 那样会变成「结果是空的」，看不出真正的原因。
+        ({"data": "这不是 base64"}, "解不开"),
+        # 合法 base64 但不是 PDF（b"hello"）。
+        ({"data": "aGVsbG8="}, "不是有效"),
+    ],
+)
+def test_decode_pdf_data_rejects_bad_payloads(result, match):
+    from xdao.exporters.pdf import _decode_pdf_data
+
+    with pytest.raises(PdfError, match=match):
+        _decode_pdf_data(result)
+
+
+def test_check_and_move_rejects_empty_file(out_dir):
+    from xdao.exporters.pdf import _check_and_move
+
+    target = out_dir / "空.pdf"
+    target.write_bytes(b"")
+    with pytest.raises(PdfError, match="空"):
+        _check_and_move(target, out_dir / "结果.pdf")
+
+
+def test_check_and_move_rejects_non_pdf(out_dir):
+    from xdao.exporters.pdf import _check_and_move
+
+    target = out_dir / "假.pdf"
+    target.write_bytes(b"<html>not a pdf</html>")
+    with pytest.raises(PdfError, match="不是有效"):
+        _check_and_move(target, out_dir / "结果.pdf")
+

@@ -34,6 +34,7 @@ ARTIFACTS_ROOT = Path(__file__).resolve().parent.parent / ".test-artifacts"
 _SKIP_REASONS_ALLOWED = (
     "XDAO_BROWSER_TEST",
     "XDAO_LIVE_NOTIFY",
+    "XDAO_PDF_TEST",
     "没有可用的显示环境",  # 无头机器上界面用例只能跳过（CI 的 Linux 矩阵就是这样）
     "只有 Windows",
     "只有 macOS",
