@@ -458,3 +458,127 @@ def test_prepare_export_dir_stops_when_the_directory_cannot_be_created(
 
     assert app.prepare_export_dir() is None
     assert warnings and warnings[0][0] == "导出目录不可用"
+
+
+# --------------------------------------------------------------- 收尾不能崩
+
+
+def test_finish_reports_the_directory_without_a_local_output_dir(
+    app: gui.App, monkeypatch
+) -> None:
+    """``_finish()`` 不许引用 ``start()`` 的局部变量 ``output_dir``。
+
+    2026-09-30 用户实测：一趟导出结束后弹「NameError: name 'output_dir' is not
+    defined」—— ``_finish`` 是 ``_poll_export`` 从队列回调里调的，那里根本
+    看不到 ``start()`` 的局部变量，只能读实例上的值。
+    """
+    dialogs: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, msg: dialogs.append((title, msg))
+    )
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, msg: dialogs.append((title, msg))
+    )
+    app._output_dir = r"<盘符>\X岛备份"  # noqa: SLF001
+
+    app._finish(0, 1, ["https://www.nmbxd1.com/t/68204233"], 18.4, [])  # noqa: SLF001
+
+    assert dialogs, "部分失败时必须弹提示"
+    assert dialogs[0][0] == "部分失败"
+    assert r"<盘符>\X岛备份" in dialogs[0][1]
+    assert app._exporting is False  # noqa: SLF001
+    assert app._last_failed == ["https://www.nmbxd1.com/t/68204233"]  # noqa: SLF001
+
+
+def test_finish_falls_back_to_the_output_box_when_the_instance_value_is_missing(
+    app: gui.App, monkeypatch
+) -> None:
+    """实例值万一没落下，收尾也要给出一个目录，而不是抛异常。"""
+    app.output_var.set(r"<盘符>\某人选的目录")
+    app._output_dir = ""  # noqa: SLF001
+
+    assert app._resolved_output_dir() == r"<盘符>\某人选的目录"  # noqa: SLF001
+
+
+# ------------------------------------------------------------------ 暗色模式
+
+
+def test_theme_switch_repaints_and_keeps_what_the_user_typed(
+    app: gui.App, monkeypatch
+) -> None:
+    """切主题：配色真的换掉、界面重画、日志与串网址都还在。"""
+    requests: list[tuple[str, str, object]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, msg: requests.append((title, msg, None))
+    )
+    app.urls_text.insert("1.0", "https://www.nmbxd1.com/t/12345678")
+    app.log("切主题之前的一行日志")
+    app.root.update_idletasks()
+    light_card = gui.CARD
+    light_log_bg = app.log_text.cget("bg")
+
+    changed = app.switch_theme("dark")
+    app.root.update_idletasks()
+
+    assert changed is True
+    assert app._theme_name == "dark"  # noqa: SLF001
+    assert app.settings.theme_name == "dark"
+    assert theme.PALETTE.name == "dark"
+    assert gui.CARD == theme.DARK.surface
+    assert gui.CARD != light_card
+    assert app.log_text.cget("bg") == theme.DARK.surface_sunken
+    assert app.log_text.cget("bg") != light_log_bg
+    assert app.style.lookup("TFrame", "background") == theme.DARK.bg
+    assert "切主题之前的一行日志" in app.log_text.get("1.0", "end")
+    assert "https://www.nmbxd1.com/t/12345678" in app.urls_text.get("1.0", "end")
+    assert app._theme_var.get() == "dark"  # noqa: SLF001
+    assert "深色" in app.log_text.get("1.0", "end")
+
+    # 切回浅色，别把深色主题漏给后面的用例（根窗口是本模块共用的）
+    assert app.switch_theme("light") is True
+    app.root.update_idletasks()
+    assert gui.CARD == theme.LIGHT.surface
+    assert not requests, "没在忙，不该弹「正在忙」"
+
+
+def test_theme_switch_is_skipped_for_the_same_palette(app: gui.App) -> None:
+    """已经是这个配色就不用重画（返回 False）。"""
+    app.switch_theme("light")
+
+    assert app.switch_theme("light") is False
+    assert app._theme_name == "light"  # noqa: SLF001
+
+
+def test_theme_selector_refuses_to_switch_while_exporting(app: gui.App, monkeypatch) -> None:
+    """导出/监控跑着的时候不换配色：提示一句，下拉框回退，界面不动。"""
+    notices: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, msg: notices.append((title, msg))
+    )
+    before = gui.CARD
+    app._exporting = True  # noqa: SLF001
+    app._theme_var.set("dark")  # noqa: SLF001
+
+    app._on_theme_selected()  # noqa: SLF001
+
+    assert notices and notices[0][0] == "正在忙"
+    assert app._theme_name == "light"  # noqa: SLF001
+    assert app._theme_var.get() == "light"  # noqa: SLF001
+    assert gui.CARD == before
+    app._exporting = False  # noqa: SLF001
+
+
+def test_open_dialogs_follow_the_theme(app: gui.App, monkeypatch) -> None:
+    """已经打开的对话框也要跟着换色（它们不在界面重建范围内）。"""
+    dialog = tk.Toplevel(app.root)
+    frame = tk.Frame(dialog, bg=theme.LIGHT.surface)
+    frame.pack()
+    app.root.update_idletasks()
+    try:
+        app.switch_theme("dark")
+        app.root.update_idletasks()
+
+        assert frame.cget("bg") == theme.DARK.surface
+    finally:
+        dialog.destroy()
+        app.switch_theme("light")

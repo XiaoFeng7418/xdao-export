@@ -302,10 +302,23 @@ class XdaoClient:
     # ---------- 登录 ----------
 
     def set_userhash(self, userhash: str) -> None:
-        """手动设置饼干（userhash）。"""
+        """手动设置饼干（userhash）。
+
+        登录、换饼干、读配置各会调一次，旧值必须清掉：同一个 jar 里留下
+        两条同名 cookie 时，请求头会变成
+        ``Cookie: userhash=新; userhash=旧``，服务端取哪一条并不确定 ——
+        实测过这种情况，登录成功却仍被接口回「必须登入领取饼干后才可以访问」。
+        """
         from http.cookiejar import Cookie
 
         value = userhash.strip()
+        # 先清掉 jar 里所有旧的 userhash，避免同名 cookie 叠加。
+        for cookie in list(self._jar):
+            if cookie.name == "userhash":
+                try:
+                    self._jar.clear(cookie.domain, cookie.path, cookie.name)
+                except KeyError:  # pragma: no cover - 已经被清掉了
+                    pass
         for domain in ("nmbxd1.com", ".nmbxd1.com", "api.nmb.best", ".api.nmb.best"):
             cookie = Cookie(
                 version=0,

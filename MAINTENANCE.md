@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 313 项，必须全绿）
+2. **跑测试**（当前基线 338 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 313 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 338 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -367,10 +367,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 ## 路线图（尚未实现）
 
 - 无人值守登录 / 验证码识别
-- 单页失败时的自动补抓与重试队列
 - 监控列表的导入 / 导出
 - PDF 的页边距 / 纸张大小可配置（目前沿用网页的打印样式）
-- 暗色配色已经写好（`theme.DARK`）但还没做切换入口
 
 ## 已完成
 
@@ -401,13 +399,38 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 仓库维护脚本（体检 / 推送 / 发布 / 同步 / 清理）
 - **错误处理收敛**（v0.3.3）：入口全程兜底，任何失败都只输出一句人话 + 非零退出码，
   打包版不会再弹 traceback 对话框
+- **单页失败自动补抓 / 重试队列**（v0.6.0）：抓取循环里任何一页失败只是**记下来**，
+  后面的页照抓；第一遍跑完对失败页统一补抓（`RETRY_ATTEMPTS = 2`、`RETRY_DELAY = 2.0`，
+  每轮只等一次；`retry_attempts=0` 可关）。补不上的页进 `CachedThread.failed_pages`，
+  `retry_note` 如实写明缺第几页、补了几次、最近一次失败原因；只在试过的页一半以上失败时
+  （多半断网/限流）才把"连试都没试"的尾页一起算进缺失。撞 `max_pages` 时
+  `truncated = True` 并说明只抓到第几页。界面额外弹一次「有串没抓全」。
+  **两个真 bug 一并修掉**：① `cache.pages` 以前写的是 `max(payloads)`（最大页号），
+  中间缺页时缓存仍声称完整，下次导出直接复用缺页缓存 → 改成 `cache.contiguous_pages()`
+  （从第 1 页起连续存在的页数）。② 光改成"连续前缀"还不够：`len(cached_pages) >= cache.pages`
+  恒真，必须再跟接口报的 `page_count` 比一次
+  （`cache_covers = bool(cached_pages) and len(cached_pages) >= cache.pages and cache.pages >= page_count`），
+  否则缺页永远补不上。**教训：任何"缓存够不够用"的判断都要同时看连续前缀与接口报的总页数。**
+- **暗色模式**（v0.6.0）：右上角「配色」下拉框，`theme.set_palette` + `App.switch_theme`
+  重建界面（销毁 `_widget_roots` 里的控件再 `_build_ui(keep_log)`），配色存进
+  `AppSettings.theme_name`（`_apply` 用 `PALETTES` 白名单校验，写 `"theme"`）。
+  切主题的三个坑：① `from .theme import PALETTE` 是**导入期旧对象**，必须用
+  `_PAL = theme.PALETTE` + `refresh_colors()`；② `refresh_open_dialogs` 的 `previous`
+  要在 `refresh_colors()` **之前**取，否则 `color_map` 变成"新→新"，对话框纹丝不动；
+  ③ 日志框建出来就是 `state="disabled"`，重建时先 `state="normal"` 再 insert，否则旧日志全丢。
+- **收尾不再崩**（v0.6.0）：`_finish()` 以前读 `start()` 的局部变量 `output_dir`
+  （从队列回调里根本看不到），导出正常却弹 `NameError: name 'output_dir' is not defined`，
+  改成 `self._output_dir` + `_resolved_output_dir()` 兜底。
+- **被接口拒绝时给出下一步**（v0.6.0）：`describe_export_failure` 认「必须登入 / 领取饼干」，
+  说明是服务端不认 userhash 并指向重新登录/手动粘贴；`set_userhash` 设置前先清掉同名旧 cookie
+  （否则请求头会出现两条 `userhash`）
 
 ## CI 说明
 
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、313 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、338 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会
   自动 skip，Linux CI 上属于预期行为，不算失败。

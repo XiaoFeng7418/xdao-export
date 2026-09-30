@@ -86,6 +86,16 @@ def test_describe_export_failure_passes_other_errors_through():
     assert text == "ValueError: 模板占位符写错了"
 
 
+def test_describe_export_failure_explains_a_rejected_cookie():
+    """接口回「必须登入领取饼干」时，要告诉用户去重新登录，而不是只贴原文。"""
+    from xdao.client import XdaoError
+
+    text = gui.describe_export_failure(XdaoError("必须登入领取饼干后才可以访问"))
+    assert "必须登入领取饼干后才可以访问" in text  # 原文保留
+    assert "登录" in text  # 指明下一步动作
+    assert "饼干" in text
+
+
 def test_run_installs_a_callback_exception_handler(monkeypatch):
     """Tk 回调异常不能依赖 stderr —— 打包版没有 stderr。"""
     root = FakeRoot()
