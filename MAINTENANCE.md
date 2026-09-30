@@ -16,7 +16,7 @@
    13 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 218 项，必须全绿）
+2. **跑测试**（当前基线 219 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -92,7 +92,7 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
 3. **API 创建的提交会被规范化时区**（传 `+08:00`、存成 UTC），所以同一提交在本地
    与远端可能算出不同 sha —— 内容一致即视为正常，不要据此判定推送失败。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 218 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 219 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -154,8 +154,28 @@ $pypi = 'C:\Users\14515\Documents\Codex\python3129\python.exe'
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、218 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、219 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - **留意**：`compileall` 即使编译失败也返回 0，工作流里已显式 grep 报错，
   改这一步时别退化成无效检查。
 - 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。
+
+### 两个已经踩过的 CI 坑
+
+1. **测试夹具不能写死 Windows 形态**。`tests/test_pdf.py` 里造「假浏览器」时，
+   原先只生成 `fake_browser.cmd`，结果 ubuntu 两个 job 全部挂在单元测试：
+   `PermissionError: [Errno 13] Permission denied: .../fake_browser.cmd`。
+   现在按平台生成 .cmd 或带执行位的 sh 脚本，并加了回归用例
+   `test_fake_browser_is_actually_executable` 保证夹具本身真能被执行。
+   **本机预演**：`python tools/posix_check.py`（借 Git 自带的 sh.exe 跑 POSIX 分支，
+   没有 Linux 也能提前发现这类问题）。
+2. **取 Actions 日志用 `tools/ci_logs.py`**，不要用 `gh run view --log`：
+   日志真实地址在 `results-receiver.actions.githubusercontent.com`，
+   带签名的临时 URL 在本机网络下经常被中途掐断（`unexpected EOF`）。
+   该脚本自己跟随重定向、去掉 `Authorization` 头（否则云存储回 401）并分段重试。
+
+本地跑测试用装好 pytest 的那个解释器（项目源码本身只需标准库）：
+
+```powershell
+& 'C:\Users\14515\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe' -m pytest -q
+```
