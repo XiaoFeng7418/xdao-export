@@ -37,6 +37,14 @@
   出现 `--version` / `--help` / `--selftest` 这类开关，程序就先 `AttachConsole` 到父控制台
   再重新打开标准流；双击启动（没有父控制台）时什么也不做，界面照旧。
 
+## 下载哪个
+
+- **推荐**：`xdao-export-v0.4.0-win64.zip`（免安装包）。解压后双击里面的 `xdao-export.exe`
+  就能用，不需要装 Python；`_internal` 文件夹要和 exe 放在一起，别单独把 exe 拖出来。
+- 单文件版：`xdao-export-v0.4.0.exe`。只有一个文件、方便携带，但它在系统临时目录
+  不可写的环境里会打不开（报 `Could not create temporary directory!`）。遇到这种情况
+  请改用上面的免安装包。
+
 ## 升级提示
 
 - 配置项新增 `notify`（默认 `true`）与 `notify_interval`（默认 `900` 秒）；
