@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_release import ApiError, gh_token, request_json  # noqa: E402
 from push_via_api import find_pushed_prefix, local_commits, remote_chain  # noqa: E402
+from repo_info import expected_description, expected_topics  # noqa: E402
 
 OK = "✓"
 WARN = "!"
@@ -90,8 +91,20 @@ def main(argv: list[str]) -> int:
         report.add(OK, "设置", f"描述：{info['description'][:40]}…")
     else:
         report.add(WARN, "设置", "仓库没有描述")
+    if (info.get("description") or "").strip() != expected_description():
+        report.add(
+            WARN, "设置",
+            "描述与代码里的导出格式不一致："
+            f"跑 python tools/repo_info.py --repo {args.repo} --apply",
+        )
+    else:
+        report.add(OK, "设置", "描述与代码里的导出格式一致")
     topics = info.get("topics") or []
-    report.add(OK if topics else WARN, "设置", f"话题 {len(topics)} 个" + (f"：{', '.join(topics[:6])}" if topics else "（未设置）"))
+    missing_topics = [t for t in expected_topics() if t not in topics]
+    topic_line = f"话题 {len(topics)} 个" + (f"：{', '.join(topics[:6])}" if topics else "（未设置）")
+    if missing_topics:
+        topic_line += f"（缺少 {', '.join(missing_topics)}，用 tools/repo_info.py --apply 补）"
+    report.add(OK if topics and not missing_topics else WARN, "设置", topic_line)
     license_id = (info.get("license") or {}).get("spdx_id")
     report.add(OK if license_id else WARN, "设置", f"许可：{license_id or '未识别'}")
 

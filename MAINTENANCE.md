@@ -13,7 +13,7 @@
    & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
    ```
 
-   13 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
+   14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
 2. **跑测试**（当前基线 219 项，必须全绿）
@@ -27,11 +27,29 @@
    | 告警 | 处理方式 |
    |---|---|
    | 本地有提交未推送 | `git push origin main:refs/heads/master`（优先；代理不可用时才用 `tools/push_via_api.py`） |
+   | 描述与代码里的导出格式不一致 | `& $py -X utf8 tools/repo_info.py --repo XiaoFeng7418/xdao-export --apply` |
+   | 话题缺少 xxx | 同上（一条命令同时修描述与话题） |
    | 版本号与 Release 不一致 | 升 `xdao/__init__.py` 的版本号 → 打包 → 发新 Release |
    | 附件名含非 ASCII | 用 `make_release.py` 改名或重传（中文名会被 GitHub 截断成单字符） |
    | 开放 issue / PR | 阅读、回复；是 bug 就修并补单元测试 |
 
 4. **看用户反馈**：Release 下载次数、issue、Star。
+
+## 仓库门面（描述与话题）由代码推导
+
+仓库描述里写着「支持哪些导出格式」，而格式是会变的：v0.3.0 加了 PDF，描述却一直停在
+「HTML / TXT / Markdown / EPUB」，一直到 v0.3.1 发完才被发现。**所以别再手改描述**：
+
+- 唯一的真相是 `xdao/exporters/__init__.py` 里的 `EXPORTERS` 注册表；
+- `tools/repo_info.py` 按它推导出描述与话题，`repo_check.py` 用同一份推导做体检；
+- 加新格式后体检会直接报「描述与代码里的导出格式不一致」，跑一次 `--apply` 就修好；
+- 想改描述文案就改 `tools/repo_info.py` 顶部的 `DESCRIPTION_TEMPLATE`（上限 350 字符，
+  脚本会自己拦截超长）；想改话题就改同一个文件里的 `BASE_TOPICS` / `FORMAT_TOPICS`。
+
+```powershell
+& $py -X utf8 tools/repo_info.py --repo XiaoFeng7418/xdao-export           # 只检查
+& $py -X utf8 tools/repo_info.py --repo XiaoFeng7418/xdao-export --apply   # 同步
+```
 
 ## 发布新版本的完整流程
 
