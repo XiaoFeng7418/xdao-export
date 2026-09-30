@@ -170,6 +170,10 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    以及打包进 zip 的 `诊断写入.ps1` / `使用说明.txt`。
    工具脚本里的本机路径（`gh.exe`、自装 Python）也要避免写死：用环境变量后取，
    如 `tools/make_release.py` 的 `gh_token()`（`XDAO_GH` / `GITHUB_TOKEN`）。
+   **标签也算公开材料**：GitHub 会为每个标签自动生成 "Source code" 压缩包，
+   所以打完标签之后又清洗过历史文件的话，要把标签挪到清洗后的提交上
+   （`git tag -f -a <标签> -m "<标签>" <提交>`，再 `git push origin refs/tags/<标签> --force`）。
+   2026-09-30 就这么处理过 `v0.5.2` / `v0.5.3`：附件内容不变，只让标签指向清洗后的树。
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
    被测试替换过、`save` 没有，结果是把**用户真实的
