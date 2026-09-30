@@ -442,6 +442,11 @@ def run_cli(args: argparse.Namespace) -> int:
             )
             print(f"    {len(thread.posts)} 楼 · {result.reason}")
             log_lines.append(f"    抓取：{len(thread.posts)} 楼 · {result.reason}")
+            if getattr(result, "retry_note", ""):
+                # 缺页/撞上限这类"产物不完整"必须显式说出来：旧版本是静默少抓一大截，
+                # 用户拿到半份成品还以为抓完了。
+                print(f"    注意：{result.retry_note}", file=sys.stderr)
+                log_lines.append(f"    注意：{result.retry_note}")
             if getattr(result, "cache_warning", ""):
                 # 可能是「换了缓存目录」，也可能是「缓存没写成」——两种情况都要说清楚，
                 # 否则用户会以为下次能续上。
