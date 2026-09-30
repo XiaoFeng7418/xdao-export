@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
+from .browser_flags import launch_flags
+
 USER_DATA_DIR_NAME = "browser-profile"
 LOGIN_URL = "https://www.nmbxd1.com/Member/User/Index/login.html"
 # 收进程树时走哪条路（taskkill / kill）。写成模块级常量、测试改它，而不是去改
@@ -203,6 +205,9 @@ def build_args(
     ``--guest`` / ``--incognito`` 用完即弃，留不住登录态，下次还得重来。
 
     ``start_url`` 默认是登录页；PDF 渲染这类「不需要人看」的场景会传本地文件地址。
+
+    打包好的 exe 里还要补 ``--no-sandbox``（冻结环境里浏览器会以 STATUS_BREAKPOINT
+    直接退出），补哪几个由 ``browser_flags`` 决定 —— 源码运行不带这个开关。
     """
     args = [
         info.path,
@@ -211,6 +216,7 @@ def build_args(
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate",
+        *launch_flags(),
     ]
     if proxy:
         args.append(f"--proxy-server={proxy}")

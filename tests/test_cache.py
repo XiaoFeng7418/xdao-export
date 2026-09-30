@@ -464,6 +464,56 @@ def test_cache_dir_candidates_are_ordered_and_unique(artifacts_dir):
     assert all(isinstance(c, Path) for c in candidates)
 
 
+def test_cache_dir_candidates_survive_a_broken_temp_dir(artifacts_dir, monkeypatch):
+    """问不到系统临时目录时少一个候选，而不是把整次导出带走。
+
+    真实场景（v0.10.0 打包版真机核验）：冻结出来的 exe 里
+    ``tempfile.gettempdir()`` 会抛
+    ``FileNotFoundError: [Errno 2] No usable temporary directory found in [...]``，
+    而 ``cache_dir_candidates()`` 每次导出都会走一遍，于是整次导出直接失败。
+    缓存只是加速手段，候选少一个不该有这种后果。
+    """
+    import tempfile
+
+    import xdao.cache as cache_module
+
+    def boom() -> str:
+        raise FileNotFoundError(
+            2,
+            "No usable temporary directory found in ['C:\\\\Temp', 'C:\\\\tmp']",
+        )
+
+    monkeypatch.setattr(tempfile, "gettempdir", boom)
+    monkeypatch.setenv("LOCALAPPDATA", str(artifacts_dir / "local"))
+    monkeypatch.setenv("APPDATA", str(artifacts_dir / "roaming"))
+
+    preferred = artifacts_dir / "wanted"
+    candidates = cache_dir_candidates(preferred)
+
+    assert candidates[0] == preferred
+    assert str(artifacts_dir / "local") in [str(item.parent.parent) for item in candidates]
+    assert str(artifacts_dir / "roaming") in [str(item.parent.parent) for item in candidates]
+    assert all("Temp" not in str(item) for item in candidates)
+    assert len(candidates) == 3  # 首选 + LOCALAPPDATA + APPDATA，临时目录那一条没了
+
+
+def test_cache_dir_candidates_keep_the_temp_dir_when_it_works(artifacts_dir, monkeypatch):
+    """反过来：临时目录问得到时照旧排进候选，别把兜底写过头。"""
+    import tempfile
+
+    from xdao.cache import DEFAULT_CACHE_DIRNAME
+
+    temp_root = artifacts_dir / "Temp"
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    preferred = artifacts_dir / "wanted"
+    candidates = cache_dir_candidates(preferred)
+
+    assert candidates == [preferred, temp_root / "xdao-export" / DEFAULT_CACHE_DIRNAME]
+
+
 def test_resolve_cache_dir_returns_note_only_when_it_moves(artifacts_dir, monkeypatch):
     """能写就原样返回；换了地方就在备注里说明原因和目标。"""
     import xdao.cache as cache_module

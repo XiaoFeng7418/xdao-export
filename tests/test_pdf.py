@@ -195,6 +195,44 @@ def test_render_writes_pdf_and_passes_expected_flags(out_dir, artifacts_dir):
     assert any("完成" in m for m in messages)
 
 
+def test_render_passes_no_sandbox_when_frozen(out_dir, artifacts_dir, monkeypatch):
+    """打包版渲染 PDF 时必须带上 ``--no-sandbox``。
+
+    冻结进程里不带这个开关，浏览器会在读参数阶段就被系统中断
+    （退出码 ``2147483651``），一个字节的 PDF 都出不来 ——
+    2026-10-01 在冻结探针上实测过（见 ``xdao/browser_flags.py`` 的排除表）。
+    这里守的是「命令行渲染这条路确实接上了开关」。
+    """
+    import xdao.exporters.pdf as pdf_module
+    from xdao import browser_flags
+
+    browser = make_fake_browser(artifacts_dir)
+    monkeypatch.setattr(browser_flags, "is_frozen", lambda: True)
+    monkeypatch.setattr(pdf_module, "browser_flags", browser_flags)
+
+    render_html_to_pdf("<html></html>", out_dir / "冻结.pdf", browser_path=browser)
+
+    flags = (browser.parent / "flags.txt").read_text(encoding="utf-8")
+    assert "--no-sandbox" in flags
+    # 开关得是这次现算出来的，不能是靠别处塞进来的。
+    assert browser_flags.FROZEN_EXTRA_FLAGS == ("--no-sandbox",)
+    # 开关必须排在本地文件地址之前，否则会被浏览器当成网址。
+    assert flags.index("--no-sandbox") < flags.index("source.html")
+
+
+def test_render_keeps_the_sandbox_in_source_runs(out_dir, artifacts_dir, monkeypatch):
+    """源码运行（``python main.py``）不该出现 ``--no-sandbox``。"""
+    from xdao import browser_flags
+
+    browser = make_fake_browser(artifacts_dir)
+    monkeypatch.setattr(browser_flags, "is_frozen", lambda: False)
+
+    render_html_to_pdf("<html></html>", out_dir / "源码.pdf", browser_path=browser)
+
+    flags = (browser.parent / "flags.txt").read_text(encoding="utf-8")
+    assert "--no-sandbox" not in flags
+
+
 def test_render_works_in_chinese_directory(out_dir, artifacts_dir):
     """导出目录与文件名都含中文时，临时文件名仍应是 ASCII，且结果落到正确位置。"""
     chinese_dir = out_dir / "中文目录"
@@ -310,9 +348,10 @@ def test_registry_pdf_entry_exists():
 
 
 def test_save_falls_back_to_html_when_browser_fails(out_dir, monkeypatch):
-    """打包版里浏览器可能起不来（STATUS_BREAKPOINT）。
+    """浏览器起不来时（路径写错、装了安全软件、机器上其实没装）不能让用户什么都拿不到。
 
-    这种情况下不能让用户什么都拿不到：改存 HTML，并说明怎么自己打印成 PDF。
+    改存 HTML，并说明怎么自己打印成 PDF。打包版当年的 STATUS_BREAKPOINT
+    已经在 v0.10.0 修掉（见 ``browser_flags``），但这条兜底仍然要留着。
     """
     builder = PdfBuilder(FakeClient(), browser_path="C:/不存在.exe")
 

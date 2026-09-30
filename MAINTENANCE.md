@@ -16,7 +16,7 @@
    14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 949 项，必须全绿）
+2. **跑测试**（当前基线 962 项，必须全绿）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -156,7 +156,7 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 949 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是 962 项离线用例，新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -193,13 +193,26 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
    `tests/test_window.py` 的 `isolated_settings` 现在把 `AppSettings.save` 也换成了空函数，
    再加用例时不要绕过它。
 
-## 已知限制：打包版无法导出 PDF（2026-09-30 查明）
+## 打包版导不出 PDF：已修（v0.3.0 发现，v0.10.0 修掉，2026-10-01）
 
-**现象**：免安装包 / 单文件版执行 `-f pdf` 时，浏览器子进程返回
+**原现象**：免安装包 / 单文件版执行 `-f pdf` 时，浏览器子进程返回
 `2147483651`（`0x80000003`，STATUS_BREAKPOINT），PDF 无法生成；
 而源码运行（`python main.py -f pdf`）完全正常。
 
-**已排除的原因**（都实测过，全部不是）：
+**根因**：**Chromium 的沙箱层在「父进程是冻结程序」时初始化失败**。
+所以真正管用的开关只有一个：`--no-sandbox`。打包版会在启动浏览器时自动带上它
+（`xdao/browser_flags.py`），源码运行仍然带沙箱。
+
+**怎么找出来的**（以后遇到同类「冻结进程里子进程崩」照这个顺序）：
+
+1. 先用诊断开关 `main.py --pdfdiag` / `python tools/pdf_diag.py` 确认打包版里
+   浏览器到底能不能起来（会打印 `sys.frozen` 与「浏览器附加参数」）；
+2. 冻结探针（PyInstaller `console=True` 打包一个小脚本，见 `_scratch/pdfprobe.spec`）
+   里直接调 `render_html_to_pdf`，**同一次运行里对照「不给开关 / 给开关」**，
+   排除机器与网络因素；
+3. 用 `CreateProcessW` 之类的启动方式矩阵逐个换（见下表），直到变量收敛到一个开关。
+
+**排除表**（都实测过，全部不是）：
 
 | 假设 | 结果 |
 |---|---|
@@ -208,21 +221,33 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 | 工作目录在打包目录，DLL 搜索命中打包的运行库 | 换干净工作目录仍崩 |
 | 用管道捕获输出导致句柄继承问题 | 改为重定向到文件仍崩 |
 | 进程树继承问题 | 经 `cmd.exe` 代启仍无效 |
-| 完全脱离句柄继承 | 用 ctypes 直接 `CreateProcessW`（无句柄继承）后 `WaitForSingleObject`，浏览器仍不产出 |
+| 句柄继承 | 关掉全部可继承句柄仍崩 |
+| 进程在作业对象里（job object） | `IsProcessInJob` 显示**不在**作业里 |
+| 完全脱离句柄继承 | 用 ctypes 直接 `CreateProcessW`（`bInheritHandles=False`）仍崩 |
+| `CREATE_BREAKAWAY_FROM_JOB` | 仍崩 |
+| 换解释器/壳启动（PowerShell、`cmd /c start`、`Start-Process`） | 仍崩 |
+| 显卡相关 `--disable-gpu` | 仍崩 |
+| 渲染器代码完整性 `RendererCodeIntegrity` | 仍崩 |
+| 各种细粒度沙箱开关（`--disable-gpu-sandbox`、`--disable-setuid-sandbox`、`--no-zygote`、`--single-process`、NetworkServiceSandbox、JIT 沙箱、seccomp 过滤） | 全部仍崩 |
+| 只换 headless 新旧实现（`--headless=old`） | 仍崩（headed 也一样崩，与无头无关） |
 | Chrome 自身有问题 | 从**命令行手工**用完全相同的参数启动，正常生成 PDF（32 KB） |
+| **`--no-sandbox`** | **成功**（0 退出码，出 PDF） |
 
-**结论**：从 PyInstaller 冻结进程创建浏览器子进程时，Chrome 会在启动阶段被系统中断，
-属于打包运行时的系统级限制，本项目无法绕过。
+**当年为什么会误判成「系统级限制、无法绕过」**：只试了 Tcl/Tk、环境变量、工作目录、
+管道句柄、进程树这几类「自家代码的嫌疑」，没试 Chromium 自己的开关；
+而手工从命令行启动又恰好因为父进程不是冻结程序而正常，于是把根因归到了系统上。
 
-**应对**（v0.3.1 起）：
+**应对**（v0.10.0 起）：
 
-- 打包版遇到这种情况会**自动降级**：把内容存成 HTML，并在日志里写明
-  「在浏览器里打开它按 Ctrl+P 另存为 PDF」；
-- 需要真正的 PDF 时，用源码运行：`python main.py <串号> -f pdf -o <目录>`；
-- 错误信息里会显示 `STATUS_BREAKPOINT` 与降级提示，便于以后排查。
+- 打包版（`sys.frozen` 为真）启动浏览器时自动带 `--no-sandbox`，**PDF 照常导出**；
+- 源码运行不带这个开关，沙箱保持完好；
+- 渲染的还是本程序自己写出来的本地 HTML（内容来自抓取到的串），不接受远程页面；
+- `PdfBuilder.save()` 的 HTML 降级**保留**：路径写错、安全软件拦下、机器上其实没装浏览器时
+  仍然用得上，降级时给的提示也按新的原因重写了（不再提「需要从源码运行」）。
 
-**如果以后要重新尝试**：先验证打包版能否启动浏览器（`--pdfdiag` 隐藏开关，
-源码里在 `tools/pdf_diag.py`）。能启动就说明限制解除了，可以把降级改回直接报错。
+**回归要点**：`tests/test_browser_flags.py` 钉住开关常量与冻结判据的映射、
+`tests/test_pdf.py` 与 `tests/test_browser_login.py` 各有一条「参数里必须带上开关」的用例
+（都做过变异校验：删掉参数传递就会红）。真机核验见下面「冻结环境 PDF」一段。
 
 ## 缓存目录写不进去不再挡住宿主功能（v0.3.2，2026-09-30）
 
@@ -377,7 +402,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 路线图（尚未实现）
 
-- 无人值守登录（浏览器登录已把这一步缩到只剩验证码）
+- 无人值守登录（浏览器登录已把这一步缩到只剩验证码）—— **已定论不做**：验证码必须
+  真人认一次，没有可靠的自动化办法（详见下面的备注）。
   - 备注：实测视觉模型对 X 岛的验证码识别率太低（三张只对一张半），
     **不要**把基于 OCR / 视觉模型的自动登录写进产品 —— 认错一次就得从头再来，
     还不如让用户自己点一下浏览器窗口。
@@ -511,6 +537,11 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `AppSettings.load.__name__ != "load"` 就**直接退让**，否则会把别人（module 作用域夹具）已经
   换上的替身永久留在类上（实测 24 条界面用例全红）。临时配置的正确写法是**派生子类**并把
   `_path` 声明成 `default_factory=lambda: path`。
+- **打包版能导出 PDF 了**（v0.10.0）：原先打包版 `-f pdf` 会被
+  `2147483651`（STATUS_BREAKPOINT）挡下、自动降级成 HTML，根因是 **Chromium 的沙箱层在
+  「父进程是冻结程序」时初始化失败**，加 `--no-sandbox` 即通（`xdao/browser_flags.py`
+  只在 `sys.frozen` 为真时加；源码运行仍带沙箱）；同版把 `--pdfdiag` 诊断对齐到同一套参数、
+  把「需要从源码运行」的旧提示改写掉。详见「打包版导不出 PDF：已修」一节。
 - **监控列表能备份 / 还原**（v0.9.0）：新模块 `xdao/watch_list.py` 管文件格式，
   界面（`WatchDialog` 的「导出列表 / 导入列表」）与命令行（`--watch-export` /
   `--watch-import` / `--watch-import-replace`）共用同一套读写。三个定下来就不好改的决定：
@@ -536,7 +567,44 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   **另一个坑：改文档别把行尾换掉。** 这几个 Markdown 在 git 里是 CRLF，用 Python
   默认的 `write_text` 读改写之后整份变成 LF，`git diff` 里 1000 多行全是行尾变化，
   真正的改动被埋掉（`HANDOFF.md` 37 行真改动显示成 549 行）。改完用
-  `_scratch/fix_line_endings_v090.py` 那种方式核一遍 `git diff --stat`。
+  `_scratch/check_line_endings.py` 那种方式核一遍 `git diff --stat`。
+- **打包版能导出 PDF 了**（v0.10.0）：新增 `xdao/browser_flags.py`
+  （`FROZEN_EXTRA_FLAGS = ("--no-sandbox",)`、`is_frozen()`、`launch_flags(*, frozen=None)`），
+  `xdao/exporters/pdf.py` 的命令行渲染路径与 `xdao/browser_login.py` 的 `build_args()`
+  都在参数里摊上 `launch_flags()`。**根因、排除表与回归要点写在上面
+  「打包版导不出 PDF：已修」一节**，改这块之前先读它。另外两件事一起做了：
+  1. `tools/pdf_diag.py`（`--pdfdiag`）跟着用同一套参数并打印「浏览器附加参数」——
+     诊断必须和正式实现走同一条路，否则它给出的「启动失败」是误导；直接
+     `python tools/pdf_diag.py` 时要自己把仓库根塞进 `sys.path`（否则
+     `ModuleNotFoundError: No module named 'xdao'`）。
+  2. `exporters/pdf.py` 的 `is_frozen()` 委托给 `browser_flags.is_frozen()`，
+     **判据只留一处**；`browser_launch_failure_hint()` 的文案重写成「多半是浏览器路径
+     不对或安全软件拦下」，并且只在冻结环境才追加第二段。
+  3. `xdao/cache.py:295` 的 `tempfile.gettempdir()` 包了兜底：缓存候选列表本来就有
+     「这一处写不进去就换下一处」的设计，问不到系统临时目录应当只是**少一个候选**，
+     而不是让整次导出失败（真机核验时撞到过 `No usable temporary directory found in [...]`）。
+     这条路径的候选少了不会被静默忽略 —— `resolve_cache_dir()` 照样会把换目录的事写进备注。
+     用例：`tests/test_cache.py::test_cache_dir_candidates_survive_a_broken_temp_dir` /
+     `::test_cache_dir_candidates_keep_the_temp_dir_when_it_works`（去掉兜底会红）。
+  **真机核验必须用冻结 exe，不能靠改 `sys.frozen` 的单元用例**：
+  `_scratch/pdf_frozen_verify.py`（PyInstaller `console=True`）打印
+  `is_frozen() = True | launch_flags() = ['--no-sandbox']`，同一次运行里
+  「不给开关 → `PdfError: Chrome 没有生成 PDF（退出码 2147483651）`，给开关 → 成功，
+  65,290 字节 / `%PDF` 是 / 1 页 / 612.0x792.0pt」。
+- **行尾判据只有一条：工作区字节 vs 索引 blob**（v0.10.0 的返工教训）。
+  编辑工具把 `tests/test_browser_login.py`、`xdao/browser_login.py` 两个 LF 文件写成了
+  整份 CRLF；`.gitattributes` 是 `* text=auto eol=lf`，所以 `git diff --numstat` 只显示
+  真改动（25/6 行）、`git status` 却一直报 `M`，`git diff` 不过滤时会打出整文件。
+  两个错误判据都试过，都得出过错误结论：①`git show HEAD:<文件>` 给的是**规范化成 LF**
+  的内容（README 显示 0 个 CRLF），而索引里的 blob 其实是 **CRLF** —— 别拿它当期望；
+  ②`git ls-files --eol` 的 `attr/` 列说的是「规范化之后该是什么」，据此把该是 CRLF 的
+  `诊断写入.ps1` / `诊断写入-双击运行.cmd` 误改成了 LF。**正解是 `git checkout -- <文件>`**
+  （直接从索引取原始字节写回）。工具是 `_scratch/check_line_endings.py`：
+  `git ls-files -s` 取索引 blob 逐个比字节，`git check-attr eol` 判「这个文件本来就该是
+  什么行尾」，输出分【行尾被翻过】/【按 .gitattributes 就该这样】/【有内容改动】/
+  【可疑】四类，只有【可疑】（字节不同而 `git diff` 是空的）才返回 1；`--fix` 等价于
+  上面那条 checkout。**「有内容改动」这一类是必须的**：不加的话每个正在改的文件都会被
+  误报成「行尾被翻」。
 
 ## 浏览器登录：两个真机才量得出来的坑（v0.7.0）
 
@@ -574,7 +642,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、949 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、962 项单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
   在没有显示环境的机器上会自动 skip，Linux CI 上属于预期行为，不算失败。
@@ -620,8 +688,14 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    但数量超过 5 条时打印「本次跳过了 N 条（界面/真机用例），未计入通过数」。
    **验收测试时用 `pytest -q -p no:cacheprovider -rs`，跳过清单必须正好是那两条真机用例。**
 
-本地跑测试用装好 pytest 的那个解释器（项目源码本身只需标准库）：
+本地跑测试用装好 pytest 的那个解释器（项目源码本身只需标准库）。
+**本机要把 Tcl/Tk 的库目录指出来**，否则 `tk.Tk()` 会报
+`TclError: invalid command name "tcl_findLibrary"`，整组界面用例被当成
+「没有可用的显示环境」跳过（2026-10-01 实测：不设环境变量时是
+`944 passed, 16 skipped`，退出码 1；设上之后是 `956 passed, 6 skipped`，退出码 0）：
 
 ```powershell
-& '<本机 Python>\python.exe' -m pytest -q
+$env:TCL_LIBRARY = '<本机 Python>\tcl\tcl8.6'
+$env:TK_LIBRARY  = '<本机 Python>\tcl\tk8.6'
+& '<本机 Python>\python.exe' -X utf8 -m pytest -q -p no:cacheprovider -rs
 ```

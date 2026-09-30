@@ -325,6 +325,31 @@ def test_build_args_adds_proxy_only_when_asked() -> None:
     assert proxied[-1] == bl.LOGIN_URL
 
 
+def test_build_args_carries_the_frozen_launch_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """打包版必须补 ``--no-sandbox``：不补的话浏览器在冻结进程里根本起不来。
+
+    这条守的是「接线」—— ``build_args`` 得真的去问 ``browser_flags``，
+    开关本身的值由 ``tests/test_browser_flags.py`` 守。
+    """
+    info = bl.BrowserInfo(name="Edge", path=r"C:\somewhere\msedge.exe")
+    monkeypatch.setattr(bl, "launch_flags", lambda: ["--no-sandbox"])
+    args = bl.build_args(info, Path("p"))
+    assert "--no-sandbox" in args
+    # 开关必须落在 URL 之前，否则会被浏览器当成网址而不是参数。
+    assert args.index("--no-sandbox") < args.index(bl.LOGIN_URL)
+    assert args[-1] == bl.LOGIN_URL
+
+
+def test_build_args_stays_clean_when_flags_are_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """源码运行（``python main.py``）不该多出任何开关，也不该多出空串。"""
+    info = bl.BrowserInfo(name="Edge", path=r"C:\somewhere\msedge.exe")
+    monkeypatch.setattr(bl, "launch_flags", lambda: [])
+    args = bl.build_args(info, Path("p"))
+    assert "--no-sandbox" not in args
+    assert args[-1] == bl.LOGIN_URL
+    assert args[-2] == "--disable-features=Translate"
+
+
 # ---------------------------------------------------------------- 端口文件
 
 
