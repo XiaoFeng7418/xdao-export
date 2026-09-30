@@ -25,9 +25,31 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
+
+
+def _open_utf8_console() -> None:
+    """让命令行输出用 UTF-8，否则中文在 GBK 控制台里会变成乱码。
+
+    打包版（尤其是 `--windowed` 构建）不会自己设 UTF-8，Windows 控制台拿到的是
+    按本地代码页（cp936）解读的 UTF-8 字节，于是 `X岛串导出工具 0.3.3` 显示成
+    `X������������ 0.3.3`。既然这一版的重点就是「让错误信息能读懂」，
+    输出编码也必须一起修。窗口模式（--windowed）下没有控制台，直接跳过。
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:  # --windowed 打包版：没有控制台
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 —— 编码修不好也不该影响导出
+            pass
+
+
+_open_utf8_console()
 
 
 def selftest() -> int:
@@ -220,7 +242,18 @@ def run_cli(args: argparse.Namespace) -> int:
         print("提醒：未登录，只能读取每个串的前 100 页。用 --cookie 或先运行图形界面登录。", file=sys.stderr)
 
     output_dir = Path(args.output or settings.output_dir or (Path.home() / "Documents" / "X岛备份"))
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # 走到这里时还没有任何导出器参与，所以要自己把错误讲清楚；
+        # 用户报过「导出到 D:\Windows 之类的目录 → 直接弹未处理异常对话框」。
+        reason = exc.strerror or str(exc)
+        raise XdaoError(
+            f"导出目录没法创建：{output_dir}\n{reason}"
+            f"（错误码 {exc.errno}）\n"
+            "常见原因：这个位置不允许当前账户写入，或者路径里有一段不是文件夹。\n"
+            "请换一个当前账户可写的目录（例如「文档」下的文件夹）后重试。"
+        ) from None
     format_key = args.format or settings.format_key or "html"
     scope = args.scope or settings.scope or "all"
     hashes = _collect_hashes(args.hashes) or settings.parse_hashes()
@@ -377,7 +410,26 @@ def main(argv: list[str] | None = None) -> int:
         return pdf_diag_main()
 
     if args.threads:
-        return run_cli(args)
+        # 兜底：跑到这一步说明是命令行模式，绝不能让未处理的异常穿透到用户面前
+        # —— 打包版会把 traceback 弹成「Unhandled exception in script」对话框。
+        from xdao.client import XdaoError
+
+        try:
+            return run_cli(args)
+        except KeyboardInterrupt:
+            print("已中断。", file=sys.stderr)
+            return 130
+        except XdaoError as exc:
+            print(f"失败：{exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:  # noqa: BLE001 —— 这里就是要兜住一切
+            print(f"失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+            print(
+                "这是没预料到的错误。请把上面这行连同复现步骤发到项目 issue："
+                "https://github.com/XiaoFeng7418/xdao-export/issues",
+                file=sys.stderr,
+            )
+            return 1
 
     # 没有任何串号参数 → 启动图形界面。
     from xdao.gui import run
@@ -387,4 +439,22 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # 最后一道网：连参数解析、读配置、启动界面都算在内，任何没被接住的异常
+    # 都转换成一句人话 + 非零退出码，而不是让打包版弹出 traceback 对话框。
+    try:
+        code = main()
+    except KeyboardInterrupt:
+        print("已中断。", file=sys.stderr)
+        code = 130
+    except BaseException as exc:  # noqa: BLE001 —— 入口处的兜底
+        if isinstance(exc, SystemExit):
+            raise
+        print(f"启动失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            "如果这是配置或目录问题：可以删掉 %APPDATA%\\xdao-export\\config.json 后重试；"
+            "其他情况请把这个错误发到 "
+            "https://github.com/XiaoFeng7418/xdao-export/issues",
+            file=sys.stderr,
+        )
+        code = 1
+    raise SystemExit(code)

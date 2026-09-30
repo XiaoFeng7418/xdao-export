@@ -12,12 +12,14 @@ import queue
 import threading
 import time
 import tkinter as tk
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .cache import CachedThreadFetcher, resolve_cache_dir
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
+from .exporters._shared import OutputDirNotWritable, ensure_writable
 from .fetcher import parse_thread_id
 from .settings import AppSettings
 from .watcher import WatchTarget, check_once, describe_targets, watch_forever
@@ -1348,6 +1350,14 @@ class App:
             messagebox.showwarning("提示", "请选择导出目录。")
             return
 
+        # 先确认这个目录写不写得进去：写不进去时立刻说清楚原因，
+        # 而不是抓取跑到一半才失败（用户报过 343 秒后才报权限错误）。
+        try:
+            ensure_writable(output_dir)
+        except OutputDirNotWritable as exc:
+            messagebox.showerror("导出目录不可写", str(exc))
+            return
+
         self.persist_prefs()
         self.apply_settings_to_client()
 
@@ -1360,7 +1370,7 @@ class App:
             f"缓存 {'启用' if self.use_cache_var.get() else '关闭'}。"
         )
 
-        def worker() -> None:
+        def worker_body() -> None:
             scope = self.scope_var.get()
             format_key = self.current_format()
             include_hashes = self.parse_hashes()
@@ -1433,6 +1443,19 @@ class App:
             self._export_queue.put(
                 ("done", (succeeded, len(urls), failed, time.time() - started))
             )
+
+        def worker() -> None:
+            # 这个线程里任何漏出来的异常都会让打包版弹出「Unhandled exception in script」
+            # 对话框（用户看到过一次），所以在这里兜底，转成界面上的一条日志 + 结束事件。
+            try:
+                worker_body()
+            except Exception as exc:  # noqa: BLE001 —— 兜住线程里的一切
+                self._export_queue.put(
+                    ("log", f"导出没能开始/继续：{type(exc).__name__}: {exc}")
+                )
+                self._export_queue.put(
+                    ("done", (0, len(urls), list(urls), 0.0))
+                )
 
         threading.Thread(target=worker, daemon=True).start()
         self.root.after(50, self._poll_export)
@@ -1524,17 +1547,22 @@ class App:
             self.watch_queue.put(
                 f"监控已启动，每 {int(interval)} 秒检查一次（{len(targets)} 个串）。"
             )
-            watch_forever(
-                self.client,
-                targets,
-                Path(output_dir),
-                interval,
-                stop_event=stop_event,
-                cache_dir=cache_dir,
-                on_result=lambda result: self.watch_queue.put(result),
-                verify_cached=verify_cached,
-            )
-            self.watch_queue.put("监控已停止。")
+            try:
+                watch_forever(
+                    self.client,
+                    targets,
+                    Path(output_dir),
+                    interval,
+                    stop_event=stop_event,
+                    cache_dir=cache_dir,
+                    on_result=lambda result: self.watch_queue.put(result),
+                    verify_cached=verify_cached,
+                )
+            except Exception as exc:  # noqa: BLE001 —— 监控线程也不能把 traceback 弹给用户
+                self.watch_queue.put(f"监控出错：{type(exc).__name__}: {exc}")
+                self._watching = False
+            finally:
+                self.watch_queue.put("监控已停止。")
 
         threading.Thread(target=worker, daemon=True).start()
         self.log(f"监控已启动：每 {int(interval)} 秒检查 {len(targets)} 个串。")
@@ -1611,6 +1639,49 @@ class App:
 
 
 def run() -> None:
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+    except Exception as exc:  # noqa: BLE001 —— 打包版（--windowed）没有 stderr，崩了就是一片空白
+        _report_fatal("启动界面失败", exc)
+        raise SystemExit(1) from None
+
+    # Tk 回调里抛出的异常默认交给 report_callback_exception，而它默认往 stderr 打印；
+    # 打包版没有 stderr，于是异常会一路穿到 PyInstaller 启动器，弹成
+    # 「Unhandled exception in script」对话框。这里改成写日志 + 弹对话框。
+    def on_tk_error(exc_type, exc_value, exc_tb) -> None:  # pragma: no cover - 需要真实事件循环
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        app.log(f"界面出错（已记录，程序继续运行）：\n{text}")
+        try:
+            messagebox.showerror("界面出错", f"{exc_type.__name__}: {exc_value}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    root.report_callback_exception = on_tk_error
+
+    try:
+        app = App(root)
+    except Exception as exc:  # noqa: BLE001
+        _report_fatal("启动界面失败", exc)
+        raise SystemExit(1) from None
+
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        pass
+
+
+def _report_fatal(title: str, exc: BaseException) -> None:
+    """界面起不来时的最后一道输出：尽量弹个对话框，弹不出来也别再抛异常。"""
+    detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    try:
+        import tkinter.messagebox as fallback_box
+
+        fallback_box.showerror(
+            title,
+            f"{type(exc).__name__}: {exc}\n\n"
+            "常见原因：配置文件损坏，或导出目录不可用。\n"
+            "可以删掉 %APPDATA%\\xdao-export\\config.json 后重试。\n\n"
+            f"详细信息：\n{detail[-1200:]}",
+        )
+    except Exception:  # noqa: BLE001
+        pass
