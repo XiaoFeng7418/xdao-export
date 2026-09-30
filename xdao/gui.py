@@ -28,12 +28,17 @@ from .fetcher import parse_thread_id
 from .notifications import Notifier
 from . import theme
 from .settings import AppSettings
-from .theme import PALETTE, apply_theme, font, mono, resolve_fonts
+from .theme import apply_theme, font, mono, resolve_fonts
 from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
 from .widgets import Card, ModernProgress, SectionHeading, StatusPill
 
 
-_PAL = PALETTE
+# 当前配色（切换主题时由 refresh_colors 重新绑定）。**代码里一律用 _PAL，
+# 不要再从 theme 直接 import PALETTE** —— 那样拿到的是导入期的旧对象，
+# 换肤后新画出来的控件会继续用旧色（这是实测踩过的坑：切到深色后日志框
+# 还是浅色 #f7f9fc）。
+_PAL = theme.PALETTE
+_PAL_NAME = _PAL.name
 
 # 颜色与字体的短别名（历史原因：对话框里到处都在用），取值一律来自 theme，
 # 想换配色只改 xdao/theme.py，不要在界面文件里写死色值。
@@ -46,6 +51,90 @@ TEXT = _PAL.text
 MUTED = _PAL.muted
 BORDER = _PAL.border
 OK_GREEN = _PAL.ok
+
+
+def refresh_colors() -> None:
+    """按 ``theme.PALETTE`` 重算上面那批颜色别名。
+
+    模块级别名是导入期绑定的值，切换主题后不会自己变；重建界面之前
+    必须先调它，否则新画出来的控件还是旧配色（这是实测踩过的坑：
+    只调 ``apply_theme`` 时 ttk 控件变了、自绘卡片和文本域仍是浅色）。
+    """
+    global _PAL, _PAL_NAME
+    global ACCENT, ACCENT_HOVER, ACCENT_DISABLED, BG, CARD, TEXT, MUTED, BORDER, OK_GREEN
+    _PAL = theme.PALETTE
+    _PAL_NAME = _PAL.name
+    ACCENT = _PAL.accent
+    ACCENT_HOVER = _PAL.accent_hover
+    ACCENT_DISABLED = _PAL.accent_soft
+    BG = _PAL.bg
+    CARD = _PAL.surface
+    TEXT = _PAL.text
+    MUTED = _PAL.muted
+    BORDER = _PAL.border
+    OK_GREEN = _PAL.ok
+
+
+def _sync_dialog_colors(widget: tk.Misc, old: object = None, new: object = None) -> None:
+    """把 ``widget`` 这棵子树里的原生 tk 控件从旧配色迁移到当前配色。
+
+    主题切换时 :class:`App` 会重建自己的控件，但**已经打开的对话框**
+    （设置/监控/饼干列表）不在重建范围内，不迁移的话它们会顶着旧底色
+    留在新主题里。迁移只改"颜色恰好等于旧配色某个值"的选项，别的
+    选项（文字、命令、状态）一律不碰。
+
+    ``old``/``new`` 必须由调用方在 ``refresh_colors()`` **之前**取好：
+    那一步会把 ``_PAL`` 换成新配色，之后再取旧色就晚了（实测踩过：
+    迁移映射变成"新→新"，对话框一点没变）。
+    """
+    old = old if old is not None else theme.PALETTE
+    new = new if new is not None else theme.PALETTE
+    mapping = theme.color_map(old, new)
+    if not mapping:
+        return
+
+    def fix(widget: tk.Misc) -> None:
+        try:
+            keys = widget.keys()
+        except tk.TclError:  # pragma: no cover - 控件已销毁
+            return
+        for key in ("bg", "background", "fg", "foreground", "activebackground",
+                    "activeforeground", "selectbackground", "selectforeground",
+                    "highlightbackground", "highlightcolor", "insertbackground",
+                    "disabledbackground", "disabledforeground", "selectcolor",
+                    "readonlybackground", "troughcolor"):
+            if key not in keys:
+                continue
+            try:
+                value = str(widget.cget(key))
+            except tk.TclError:  # pragma: no cover - 控件已销毁
+                continue
+            replacement = mapping.get(value)
+            if replacement is not None:
+                try:
+                    widget.configure(**{key: replacement})
+                except tk.TclError:  # pragma: no cover - 个别控件不接受
+                    pass
+        try:
+            children = widget.winfo_children()
+        except tk.TclError:  # pragma: no cover - 控件已销毁
+            return
+        for child in children:
+            fix(child)
+
+    fix(widget)
+
+
+def refresh_open_dialogs(root: tk.Misc, old: object = None, new: object = None) -> None:
+    """把当前打开的所有 Toplevel（对话框）从 ``old`` 配色迁移到 ``new``。"""
+    try:
+        children = root.winfo_children()
+    except tk.TclError:  # pragma: no cover - 根窗口已销毁
+        return
+    for child in children:
+        if isinstance(child, tk.Toplevel):
+            _sync_dialog_colors(child, old, new)
+
 
 FONT_UI = theme.FONT_UI
 SECTION_FONT = font(theme.SIZE_SUBHEAD, bold=True)
@@ -81,11 +170,21 @@ def setup_style(root: tk.Tk) -> ttk.Style:
 def describe_export_failure(exc: BaseException) -> str:
     """把导出线程里的异常翻成一句能让用户动手的话。
 
-    ``PermissionError`` 现在是最常见的一种（用户反复报「导出目录不可写」），
-    只甩一句 ``[Errno 13] Permission denied`` 帮不上忙：得说清是哪个目录、
-    建议换到「文档」这种默认能写的地方，以及常见原因是什么。
+    两类错误占绝大多数：
+    - ``PermissionError``：用户反复报「导出目录不可写」，只甩一句
+      ``[Errno 13] Permission denied`` 帮不上忙，得说清是哪个目录、往哪换；
+    - 接口回「必须登入领取饼干后才可以访问」：这是**服务端**的拒绝，
+      本地日志却只有这一行，用户会以为是程序坏了，得告诉他去重新登录。
     """
     text = f"{type(exc).__name__}: {exc}"
+    if "必须登入" in str(exc) or "领取饼干" in str(exc):
+        return (
+            f"{text}\n    X 岛接口拒绝了这次访问：受限版块/带权限的串必须带上有效的"
+            "「饼干」（userhash）才给读。程序这边已经把登录状态发过去了，"
+            "服务端仍然拒绝，通常是饼干已失效或账号掉线。\n"
+            "    请点右上角「登录 / 设置饼干」重新登录一次（会自动重新应用饼干）；"
+            "还不行就用「手动粘贴 userhash」把浏览器里 userhash 的值贴进来。"
+        )
     if not isinstance(exc, PermissionError):
         return text
     target = getattr(exc, "filename", None) or ""
@@ -510,13 +609,13 @@ class CookiePicker(tk.Toplevel):
         list_frame.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
         canvas = tk.Canvas(
             list_frame,
-            bg=PALETTE.surface,
+            bg=_PAL.surface,
             highlightthickness=1,
             highlightbackground=BORDER,
             highlightcolor=ACCENT,
         )
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=PALETTE.surface)
+        inner = tk.Frame(canvas, bg=_PAL.surface)
         canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
@@ -534,11 +633,11 @@ class CookiePicker(tk.Toplevel):
                 inner,
                 text=label,
                 variable=var,
-                bg=PALETTE.surface,
-                activebackground=PALETTE.surface,
+                bg=_PAL.surface,
+                activebackground=_PAL.surface,
                 fg=TEXT,
                 activeforeground=TEXT,
-                selectcolor=PALETTE.surface,
+                selectcolor=_PAL.surface,
                 highlightthickness=0,
                 bd=0,
                 anchor="w",
@@ -771,9 +870,16 @@ class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         resolve_fonts(root)
-        self.style = setup_style(root)
-        root.configure(bg=BG)
         self.settings = AppSettings.load()
+        # 配色要在画任何控件之前定下来：ttk 样式归 apply_theme，
+        # 模块级的颜色别名归 refresh_colors（自绘卡片/文本域走的是后者）。
+        self._theme_name = theme.palette(self.settings.theme_name).name
+        self.style = apply_theme(root, theme.palette(self._theme_name))
+        refresh_colors()
+        # 字体别名同样要在第一笔画下去之前定下来：模块级 MONO_FONT 等是
+        # 导入期算的（那时还没窗口，探不到真实字族），要等有了 root 才准。
+        refresh_fonts(root)
+        root.configure(bg=BG)
         self.client = XdaoClient(
             timeout=self.settings.timeout,
             retries=self.settings.retries,
@@ -786,6 +892,8 @@ class App:
         self._export_queue: queue.Queue = queue.Queue()
         self._exporting = False
         self._last_failed: list[str] = []
+        # 本次导出真正用的目录（prepare_export_dir 的结果），收尾提示要用
+        self._output_dir = ""
         # 用户在「更改…」里亲手选过导出目录吗？选过就尊重他的选择（只报错、不换地方），
         # 没选过（用配置里的默认值）才允许导出时自动改到能写的位置。
         # 放在进入主循环之前赋值，start() 永远晚于它执行。
@@ -804,24 +912,122 @@ class App:
         # 桌面通知在主线程（_poll_watch）里发，这样通知失败也不会影响监控线程
         self._watch_notifier: Notifier | None = None
         self._watch_dialog: WatchDialog | None = None
+        # 切换主题时旧控件会被销毁，这里记住本次实例出来的控件，便于重建
+        self._widget_roots: list[tk.Misc] = []
 
         root.title("X岛串导出")
         root.geometry("1060x760")
         root.minsize(940, 680)
 
-        outer = ttk.Frame(root, padding=(theme.gap(4), theme.gap(3)))
+        self._build_ui()
+        self.refresh_watch_status()
+        self.refresh_cache_info()
+        self.log("就绪。填入串网址后点「开始导出」。")
+
+    # ---------- 主题 ----------
+
+    def _remember_theme_widget(self, widget: tk.Misc) -> None:
+        self._widget_roots.append(widget)
+
+    def _build_ui(self, log_text: str = "") -> None:
+        """按当前配色把整个界面画一遍（切换主题时也会再调一次）。
+
+        颜色别名在模块级别，控件在创建时就把颜色烘进去了，所以换肤不能
+        只改 ``theme.PALETTE``：必须销毁旧控件、按新配色重画。用户填过的
+        串网址、日志正文等状态存在 ``StringVar``/文本里，由调用方传进来。
+        """
+        outer = ttk.Frame(self.root, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, minsize=theme.SETTINGS_COLUMN_WIDTH)
         outer.columnconfigure(1, weight=1)
         outer.rowconfigure(1, weight=1)
+        self._remember_theme_widget(outer)
 
         self._build_header(outer)
         self._build_settings_column(outer)
         self._build_activity_card(outer)
+        if log_text:
+            # 日志框建出来就是 disabled（只读），直接 insert 什么也写不进去，
+            # 所以先开门、写完再关上 —— 切换主题时旧日志才不会丢。
+            self.log_text.config(state="normal")
+            self.log_text.insert("1.0", log_text)
+            self.log_text.config(state="disabled")
+        self.sync_theme_selector()
 
-        self.refresh_watch_status()
-        self.refresh_cache_info()
-        self.log("就绪。填入串网址后点「开始导出」。")
+    def switch_theme(self, name: str, *, persist: bool = True) -> bool:
+        """换配色并立刻重画界面。返回是否真的换了（同一个主题返回 False）。
+
+        导出/监控正在跑时**不要**调它：工作线程还在往旧控件投递消息，中途重建
+        界面容易丢一条进度或弹一半的对话框（``_poll_export`` 还在按旧控件刷进度）。
+        这条判断在 :meth:`_on_theme_selected` 里做（那里能提示用户）。
+        """
+        palette = theme.palette(name)
+        if palette.name == self._theme_name:
+            self.sync_theme_selector()
+            return False
+
+        self._theme_name = palette.name
+        self.settings.theme_name = palette.name
+        if persist:
+            self.persist_prefs()
+
+        keep_log = ""
+        keep_urls = ""
+        try:
+            keep_log = self.log_text.get("1.0", "end-1c")
+        except (AttributeError, tk.TclError):  # pragma: no cover - 没建起来过
+            pass
+        try:
+            # 重建会把输入框清空，用户手打的串网址得留下来
+            keep_urls = self.urls_text.get("1.0", "end-1c")
+        except (AttributeError, tk.TclError):  # pragma: no cover - 没建起来过
+            pass
+
+        theme.set_palette(palette)
+        self.style = apply_theme(self.root, palette)
+        # 旧配色对象要在 refresh_colors() 之前拿到：那一步会把 _PAL 换成新的，
+        # 之后再拿"旧色"就只能拿到新色，对话框迁移会整个失效。
+        previous = _PAL
+        refresh_colors()
+        self.root.configure(bg=BG)
+        # 已打开的对话框不在重建范围内，单独迁移它们的颜色
+        refresh_open_dialogs(self.root, previous, palette)
+
+        for widget in self._widget_roots:
+            try:
+                widget.destroy()
+            except tk.TclError:  # pragma: no cover - 已被销毁
+                pass
+        self._widget_roots.clear()
+
+        self._build_ui(keep_log)
+        if keep_urls:
+            self.urls_text.insert("1.0", keep_urls)
+        self.log(f"界面配色已切换为{'深色' if palette.name == 'dark' else '浅色'}。")
+        return True
+
+    def sync_theme_selector(self) -> None:
+        """把下拉框的显示值对齐当前主题（切换后要回写，否则显示不同步）。"""
+        var = getattr(self, "_theme_var", None)
+        if var is not None and var.get() != self._theme_name:
+            var.set(self._theme_name)
+
+    def _on_theme_selected(self, _event: object = None) -> None:
+        var = getattr(self, "_theme_var", None)
+        if var is None:
+            return
+        chosen = var.get()
+        if chosen == self._theme_name:
+            return
+        if self._exporting or self._watching:
+            messagebox.showinfo(
+                "正在忙",
+                "导出或监控正在跑，等它结束再换配色吧。\n"
+                "（中途换配色会重建界面，进度和日志容易错位。）",
+            )
+            self.sync_theme_selector()
+            return
+        self.switch_theme(chosen)
 
     # ---------- 界面搭建 ----------
 
@@ -851,6 +1057,21 @@ class App:
         ttk.Button(
             actions, text="监控串更新", style="Secondary.TButton", command=self.open_watch
         ).pack(side="left", padx=(theme.gap(0.5), 0))
+
+        # 配色开关：立即生效（重建界面），不忙的时候才允许切
+        ttk.Label(actions, text="配色", style="Faint.TLabel").pack(
+            side="left", padx=(theme.gap(1.5), theme.gap(0.5))
+        )
+        self._theme_var = tk.StringVar(value=self._theme_name)
+        theme_box = ttk.Combobox(
+            actions,
+            textvariable=self._theme_var,
+            values=[theme.palette(key).name for key in theme.PALETTES],
+            state="readonly",
+            width=5,
+        )
+        theme_box.pack(side="left")
+        theme_box.bind("<<ComboboxSelected>>", self._on_theme_selected)
 
         status_row = ttk.Frame(header)
         status_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(theme.gap(2.5), 0))
@@ -906,10 +1127,10 @@ class App:
             font=BODY_FONT,
             padx=theme.gap(2),
             pady=theme.gap(1.5),
-            bg=PALETTE.surface_sunken,
+            bg=_PAL.surface_sunken,
             fg=TEXT,
             insertbackground=TEXT,
-            selectbackground=PALETTE.accent_soft,
+            selectbackground=_PAL.accent_soft,
         )
         self.urls_text.pack(fill="x", pady=(theme.gap(1.25), 0))
         self._add_context_menu(self.urls_text)
@@ -1145,7 +1366,7 @@ class App:
             card.body,
             height=18,
             state="disabled",
-            background=PALETTE.surface_sunken,
+            background=_PAL.surface_sunken,
             fg=TEXT,
             relief="flat",
             borderwidth=0,
@@ -1155,7 +1376,7 @@ class App:
             font=MONO_FONT,
             padx=theme.gap(2),
             pady=theme.gap(1.5),
-            selectbackground=PALETTE.accent_soft,
+            selectbackground=_PAL.accent_soft,
         )
         self.log_text.pack(fill="both", expand=True)
         self._add_context_menu(self.log_text)
@@ -1323,6 +1544,21 @@ class App:
         self.log_text.see("end")
         self.log_text.config(state="disabled")
         self.root.update_idletasks()
+
+    def _resolved_output_dir(self) -> str:
+        """本次导出实际用的目录（收尾提示用）。
+
+        ``start()`` 定下目录后存在 ``self._output_dir``；这里兜底读界面上的
+        输入框，任何情况下都返回一个字符串 —— 收尾函数绝不能因为拿不到目录
+        而抛异常（用户看到的会是「界面出错」而不是导出结果）。
+        """
+        resolved = getattr(self, "_output_dir", "")
+        if resolved:
+            return str(resolved)
+        try:
+            return self.output_var.get().strip()
+        except (AttributeError, tk.TclError):  # pragma: no cover - 界面还没建好
+            return ""
 
     # ---------- 缓存 ----------
 
@@ -1504,6 +1740,11 @@ class App:
         resolved = self.prepare_export_dir()
         if resolved is None:
             return
+        # 导出目录存到实例上：_finish()（结束汇总/弹窗）跑在主线程，
+        # 拿不到 start() 里的局部变量。曾经这里只写局部变量，导致
+        # 一整趟导出结束后弹「NameError: name 'output_dir' is not defined」
+        # （2026-09-30 用户实测：抓取失败后 _finish 一跑就崩）。
+        self._output_dir = resolved
         output_dir = resolved
 
         self.persist_prefs()
@@ -1546,6 +1787,9 @@ class App:
 
             succeeded = 0
             failed: list[str] = []
+            # 抓下来但明确不完整的串（缺页/撞上页数上限）：产物已经写出去了，
+            # 所以要单独收集，在结束时的汇总里提醒用户"这几份别当全的用"。
+            incomplete: list[str] = []
             started = time.time()
             for index, url in enumerate(urls, start=1):
                 self._export_queue.put(
@@ -1566,6 +1810,16 @@ class App:
                             f"{len(thread.posts)} 楼 · {result.reason}",
                         )
                     )
+                    if getattr(result, "retry_note", ""):
+                        # 缺页/撞上页数上限这类"产物不完整"要在日志里留痕：
+                        # 旧版本是静默少抓一大截，用户拿到半份成品还以为抓完了。
+                        self._export_queue.put(
+                            (
+                                "log",
+                                f"[{index}/{len(urls)}] 注意：{result.retry_note}",
+                            )
+                        )
+                        incomplete.append(f"{thread.thread_id}：{result.retry_note}")
                     if getattr(result, "cache_warning", ""):
                         # 缓存出问题意味着这次抓取可能没留下断点续传的成果（换个目录继续、
                         # 或者干脆没写成），必须说清楚，否则用户会以为下次能续上。
@@ -1590,7 +1844,7 @@ class App:
                     )
 
             self._export_queue.put(
-                ("done", (succeeded, len(urls), failed, time.time() - started))
+                ("done", (succeeded, len(urls), failed, time.time() - started, incomplete))
             )
 
         def worker() -> None:
@@ -1603,7 +1857,7 @@ class App:
                     ("log", f"导出没能开始/继续：{type(exc).__name__}: {exc}")
                 )
                 self._export_queue.put(
-                    ("done", (0, len(urls), list(urls), 0.0))
+                    ("done", (0, len(urls), list(urls), 0.0, []))
                 )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1638,9 +1892,20 @@ class App:
         if self._exporting:
             self.root.after(50, self._poll_export)
 
-    def _finish(self, succeeded: int, total: int, failed: list[str], elapsed: float) -> None:
+    def _finish(
+        self,
+        succeeded: int,
+        total: int,
+        failed: list[str],
+        elapsed: float,
+        incomplete: list[str] | None = None,
+    ) -> None:
         self._exporting = False
         self._last_failed = list(failed)
+        # 汇总弹窗里要报"文件在哪"。这个值由 start() 落在实例上，这里再兜一层：
+        # 万一哪条路径漏了赋值，也只丢一句话，不能让整个收尾崩掉（曾经的 NameError
+        # 就是在这里弹出来的，用户看到的是「界面出错」而不是导出结果）。
+        output_dir = self._resolved_output_dir()
         self.progress_bar.stop()
         self.progress_bar.set_value(succeeded, total)
         self.start_button.config(state="normal")
@@ -1650,11 +1915,29 @@ class App:
         if failed:
             self.log("失败清单：" + "、".join(failed))
         self.refresh_cache_info()
+        notes = [line for line in (incomplete or []) if line]
+        if notes:
+            # 文件是写出去了，但内容是缺的 —— 只提示"失败"会漏掉这种情况，
+            # 用户在日志里翻到的那一条也容易划过去，这里再强调一次。
+            self.log(f"有 {len(notes)} 个串没能抓全：")
+            for line in notes:
+                self.log(f"    {line}")
         if failed:
             messagebox.showwarning(
                 "部分失败",
                 f"成功 {succeeded} / {total} 个串。\n\n失败 {len(failed)} 个，原因见日志区，"
                 f"可点「重试失败项」重跑。\n\n成功的文件在：\n{output_dir}",
+            )
+        elif notes:
+            messagebox.showwarning(
+                "有串没抓全",
+                f"成功导出 {succeeded} / {total} 个串，但其中 {len(notes)} 个只抓到了"
+                "一部分（多半是网络中断或接口限流），成品里缺页。\n\n"
+                + "\n".join(notes[:5])
+                + ("\n…" if len(notes) > 5 else "")
+                + "\n\n再导一次通常就能补齐：已经抓下来的页都存进缓存了，"
+                "重跑只会补缺的那几页。\n\n文件在：\n"
+                f"{output_dir}",
             )
         else:
             messagebox.showinfo(

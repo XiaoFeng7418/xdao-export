@@ -195,6 +195,76 @@ def test_apply_theme_can_take_another_palette(interp: tk.Tcl) -> None:
         theme.PALETTE = original
 
 
+# ------------------------------------------------------------- 切换主题
+
+
+def test_set_palette_swaps_the_current_palette() -> None:
+    original = theme.PALETTE
+    try:
+        assert theme.set_palette(theme.DARK) is theme.DARK
+        assert theme.PALETTE is theme.DARK
+        # 名字不认识时 palette() 保持当前配色，不抛异常
+        assert theme.palette("不存在的配色").name == "dark"
+    finally:
+        theme.set_palette(original)
+    assert theme.PALETTE is original
+
+
+def test_palette_fields_covers_every_dataclass_field() -> None:
+    """``PALETTE_FIELDS`` 少一个字段，换肤时那类控件就会留着旧底色。"""
+    # name 不是颜色，换肤时不需要迁移
+    fields = set(theme.Palette.__dataclass_fields__) - {"name"}
+    assert set(theme.PALETTE_FIELDS) == fields
+
+
+def test_color_map_pairs_every_colour_with_its_counterpart() -> None:
+    mapping = theme.color_map(theme.LIGHT, theme.DARK)
+
+    assert mapping[theme.LIGHT.bg] == theme.DARK.bg
+    assert mapping[theme.LIGHT.surface] == theme.DARK.surface
+    assert mapping[theme.LIGHT.text] == theme.DARK.text
+    assert mapping[theme.LIGHT.accent] == theme.DARK.accent
+    # 浅色里 surface 与 on_accent 同为 #ffffff：以 surface 为准（卡片底色），
+    # 否则暗色下卡片底会被映射成主色按钮上的文字色。
+    assert mapping["#ffffff"] == theme.DARK.surface
+    assert mapping["#ffffff"] != theme.DARK.on_accent
+
+
+def test_color_map_round_trips_back_to_light() -> None:
+    forward = theme.color_map(theme.LIGHT, theme.DARK)
+    backward = theme.color_map(theme.DARK, theme.LIGHT)
+
+    for value in forward.values():
+        assert value in backward, f"深色里的 {value} 回不到浅色"
+    assert backward[theme.DARK.bg] == theme.LIGHT.bg
+
+
+def test_combobox_popdown_gets_palette_colours(window: tk.Tk) -> None:
+    """下拉候选列表是原生 Listbox，只能靠选项库上色（暗色下不然是白框）。
+
+    直接查选项库查不到（``option_get`` 是空的），要看真正的那个
+    Listbox 控件 —— 选项库是在它创建时才生效的。
+    **已知边界**：选项库只对"之后创建"的控件生效，已经弹出来过的那个
+    Listbox 会留到它下次重建；所以这里换回浅色后不跟着变，只保证
+    "新窗口/新弹出的候选表用的是当前配色"。
+    """
+    original = theme.PALETTE
+    combo = ttk.Combobox(window, values=["light", "dark"])
+    try:
+        theme.apply_theme(window, theme.DARK)
+        combo.pack()
+        window.update_idletasks()
+        popdown = combo.tk.call("ttk::combobox::PopdownWindow", combo._w)  # noqa: SLF001
+        listbox = f"{popdown}.f.l"
+        assert combo.tk.call(listbox, "cget", "-background") == theme.DARK.surface
+        assert combo.tk.call(listbox, "cget", "-foreground") == theme.DARK.text
+        assert combo.tk.call(listbox, "cget", "-selectbackground") == theme.DARK.accent
+    finally:
+        theme.PALETTE = original
+        combo.destroy()
+
+
+
 # ---------------------------------------------------------------- 自绘圆角
 
 

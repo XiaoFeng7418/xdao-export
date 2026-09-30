@@ -109,6 +109,18 @@ def palette(name: str | None = None) -> Palette:
     return PALETTES.get(name, PALETTE)
 
 
+def set_palette(pal: Palette) -> Palette:
+    """把 ``PALETTE`` 换成新配色并返回它（不改 ttk 样式，样式归 apply_theme 管）。
+
+    界面切换主题的顺序必须是"先换 PALETTE，再重建控件"：控件颜色在
+    创建时就烘进去了（``tk.Frame(bg=...)`` 这类），只改 PALETTE 不会
+    让已有控件自己变色。``gui.App`` 会销毁旧控件、按新配色重画一遍。
+    """
+    global PALETTE
+    PALETTE = pal
+    return PALETTE
+
+
 # ---------------------------------------------------------------- 字体
 
 #: 界面字体候选：优先 Windows 自带且中文好看的，其次 macOS/Linux 常见字体。
@@ -288,11 +300,54 @@ STYLE_NAMES = (
 )
 
 
+#: ``Palette`` 的全部字段名，顺序固定。切换主题时用它把"旧配色 → 新配色"
+#: 做成一张映射表（见 ``gui.py`` 的 ``_migrate_colors``），再改写已经画好的
+#: 原生控件的颜色；少了任何一个字段，那一类控件换肤后就会留着旧底色。
+PALETTE_FIELDS = (
+    "bg",
+    "surface",
+    "surface_sunken",
+    "surface_hover",
+    "border",
+    "border_strong",
+    "text",
+    "muted",
+    "faint",
+    "accent",
+    "accent_hover",
+    "accent_active",
+    "accent_soft",
+    "on_accent",
+    "ok",
+    "warn",
+    "danger",
+    "track",
+    "shadow",
+)
+
+
+def color_map(old: Palette, new: Palette) -> dict[str, str]:
+    """``旧色值 → 新色值`` 的映射（切换主题时迁移原生控件的颜色）。
+
+    同一个色值可能同时属于两个字段（浅色主题里 ``#ffffff`` 既是 ``surface``
+    也是 ``on_accent``）。这时以先出现的字段为准：``PALETTE_FIELDS`` 把
+    ``surface`` 排在 ``on_accent`` 前面，卡片底色的迁移才不会被主色文字带偏
+    （主色按钮上的文字由 ttk 样式负责，不靠这张表）。
+    """
+    mapping: dict[str, str] = {}
+    for field_name in PALETTE_FIELDS:
+        mapping.setdefault(getattr(old, field_name), getattr(new, field_name))
+    return mapping
+
+
 def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
     """把配色装到 ttk 样式上并返回 ``Style`` 对象。
 
     幂等：同一个 root 反复调用只会重写同样的值。需要窗口已存在
     （ttk.Style 要绑定解释器），但不需要窗口显示出来。
+
+    换主题时直接再调一次即可：ttk 控件会立刻变，原生 tk 控件
+    （Frame/Label/Text/Checkbutton）的颜色得靠调用方自己重画或迁移。
     """
     global PALETTE
     pal = pal or PALETTE
@@ -303,6 +358,16 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
     try:
         style.theme_use("clam")  # clam 才允许自定义背景色
     except tk.TclError:  # pragma: no cover - 极少数精简版 Tk
+        pass
+
+    # ttk.Combobox 弹出的候选列表是原生 tk Listbox，不受样式表管，
+    # 只能通过 Tk 选项库上色；不上色的话暗色主题里会突然跳出一个白框。
+    try:
+        root.option_add("*TCombobox*Listbox.background", pal.surface)
+        root.option_add("*TCombobox*Listbox.foreground", pal.text)
+        root.option_add("*TCombobox*Listbox.selectBackground", pal.accent)
+        root.option_add("*TCombobox*Listbox.selectForeground", pal.on_accent)
+    except tk.TclError:  # pragma: no cover - 精简版 Tk 没有 option 库
         pass
 
     # 基础

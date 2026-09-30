@@ -71,6 +71,10 @@ class AppSettings:
     notify: bool = True
     notify_interval: float = DEFAULT_NOTIFY_INTERVAL
 
+    # ---------- 界面 ----------
+    # 配色：light / dark（见 xdao/theme.py 的 PALETTES）；不认识的取值回落到 light
+    theme_name: str = "light"
+
     extra: dict = field(default_factory=dict)
 
     _path: Path = field(default_factory=_default_config_path, repr=False, compare=False)
@@ -116,6 +120,12 @@ class AppSettings:
         self.notify_interval = _as_float(
             data.get("notify_interval"), DEFAULT_NOTIFY_INTERVAL
         )
+        # 配色的合法值由 theme.PALETTES 说了算；写了不认识的名字就当没写，
+        # 免得界面上出现一个空白选项。
+        from .theme import PALETTES
+
+        theme_name = str(data.get("theme") or "light")
+        self.theme_name = theme_name if theme_name in PALETTES else "light"
         self.extra = data.get("extra") or {}
 
     def save(self) -> None:
@@ -141,6 +151,7 @@ class AppSettings:
                 "watch_targets": list(self.watch_targets),
                 "notify": self.notify,
                 "notify_interval": self.notify_interval,
+                "theme": self.theme_name,
                 "extra": self.extra,
             }
             self._path.write_text(

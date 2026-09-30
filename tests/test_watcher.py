@@ -353,6 +353,29 @@ def test_settings_apply_rejects_bad_values():
     assert settings.watch_targets == []
 
 
+def test_settings_round_trips_the_theme():
+    settings = make_settings("theme")
+    settings.theme_name = "dark"
+    settings.save()
+
+    again = AppSettings(_path=settings.config_path)
+    again._apply(json.loads(settings.config_path.read_text(encoding="utf-8")))
+
+    assert again.theme_name == "dark"
+
+
+def test_settings_rejects_an_unknown_theme():
+    """写了不认识的名字就当没写：界面上不该出现一个空白选项。"""
+    settings = make_settings("theme-bad")
+    settings._apply({"theme": "彩虹色"})
+
+    assert settings.theme_name == "light"
+    # 缺字段时也要给默认值（老配置文件里没有 theme 这一项）
+    settings._apply({})
+    assert settings.theme_name == "light"
+
+
+
 def test_settings_save_is_quiet_on_failure():
     # 指向一个不可能的路径，save() 不应抛异常
     settings = AppSettings(_path=Path("Z:/不存在的盘/xdao/config.json"))
