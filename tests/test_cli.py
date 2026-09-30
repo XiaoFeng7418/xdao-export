@@ -786,3 +786,76 @@ def test_replace_without_import_is_refused_instead_of_opening_the_gui(watch_sett
     code = main(["--watch-import-replace"])
     assert code == 2
     assert "要配 --watch-import 用" in capsys.readouterr().err
+
+
+# ---------- 自检（--selftest 这条路） ----------
+
+
+def _stub_preflight(monkeypatch, *, fail=False):
+    """把自检换成固定的几项结果，用例只管参数与输出形态。"""
+    from xdao import preflight
+
+    def fake_local(**kwargs):
+        report = preflight.Report()
+        report.add(name="配置目录", status="fail" if fail else "ok", detail="能写")
+        return report
+
+    called: list[str] = []
+    monkeypatch.setattr(preflight, "run_local_checks", fake_local)
+    monkeypatch.setattr(
+        preflight,
+        "run_network_checks",
+        lambda: called.append("network")
+        or [preflight.Check(name="联网·接口连接", status="ok", detail="CDN = x")],
+    )
+    return preflight, called
+
+
+def test_selftest_offline_never_touches_the_network(monkeypatch, capsys):
+    preflight, called = _stub_preflight(monkeypatch)
+
+    code = main(["--selftest", "--offline"])
+
+    assert code == 0
+    assert called == [], "--offline 时不该跑联网那两条"
+    printed = capsys.readouterr().out
+    assert "程序版本：" in printed
+    assert "配置目录" in printed
+
+
+def test_selftest_runs_the_network_checks_by_default(monkeypatch, capsys):
+    preflight, called = _stub_preflight(monkeypatch)
+
+    code = main(["--selftest"])
+
+    assert code == 0
+    assert called == ["network"]
+    assert "联网·接口连接" in capsys.readouterr().out
+
+
+def test_selftest_returns_one_when_something_is_broken(monkeypatch, capsys):
+    _stub_preflight(monkeypatch, fail=True)
+
+    code = main(["--selftest", "--offline"])
+
+    assert code == 1
+    assert "[不行]" in capsys.readouterr().out
+
+
+def test_selftest_json_is_valid_json_without_the_header(monkeypatch, capsys):
+    _stub_preflight(monkeypatch)
+
+    code = main(["--selftest-json", "--offline"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "程序版本：" not in out, "JSON 模式不该打抬头"
+    payload = json.loads(out)
+    assert payload["检查结果"][0]["项目"] == "配置目录"
+
+
+def test_offline_alone_is_refused_instead_of_opening_the_gui(monkeypatch, capsys):
+    """单独给 --offline 绝不能落到「启动图形界面」那条路。"""
+    code = main(["--offline"])
+    assert code == 2
+    assert "要配 --selftest 用" in capsys.readouterr().err

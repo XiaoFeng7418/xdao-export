@@ -1602,6 +1602,148 @@ class WatchDialog(tk.Toplevel):
         self.after(1500, self._poll)
 
 
+class SelftestDialog(tk.Toplevel):
+    """环境自检：把「这台机器上哪里不对劲」摊开给用户看。
+
+    先跑本机那几项（不联网、不改任何东西），用户点了才去测接口 —— 断网时
+    本机结论照样有用，不该被联网那一步拖住。
+    """
+
+    def __init__(self, app: "App") -> None:
+        super().__init__(app.root)
+        self.configure(bg=BG)
+        self.app = app
+        self.title("环境自检")
+        # 卡片用 stretch=True 撑满窗口，文本区跟着长；这里给个初始大小即可，
+        # 用户拉大拉小都能用。620 高时报告一趟看得完。
+        self.geometry("660x620")
+        self.minsize(520, 400)
+        self.transient(app.root)
+
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(2)))
+        outer.pack(fill="both", expand=True)
+        # stretch=True：让卡片里的文本区长到窗口底部，而不是只占「请求高度」
+        card = Card(outer, stretch=True)
+        card.pack(fill="both", expand=True)
+
+        SectionHeading(card.body, "环境自检").pack(fill="x")
+        ttk.Label(
+            card.body,
+            text="查本机：配置与缓存目录、导出目录、浏览器、导出格式。"
+            "只读不动，不会改你的设置。",
+            style="CardMuted.TLabel",
+            justify="left",
+        ).pack(anchor="w", pady=(theme.gap(1), 0))
+
+        box = ttk.Frame(card.body, style="Card.TFrame")
+        box.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
+        scrollbar = ttk.Scrollbar(box, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        self.text = tk.Text(
+            box,
+            wrap="word",
+            height=16,
+            state="disabled",
+            background=_PAL.surface_sunken,
+            fg=TEXT,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+            font=MONO_FONT,
+            padx=theme.gap(2),
+            pady=theme.gap(1.5),
+            yscrollcommand=scrollbar.set,
+        )
+        self.text.pack(side="left", fill="both", expand=True)
+        scrollbar.configure(command=self.text.yview)
+        self._add_context_menu(self.text)
+
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(card.body, textvariable=self.status_var, style="CardMuted.TLabel").pack(
+            anchor="w", pady=(theme.gap(1.5), 0)
+        )
+
+        row = ttk.Frame(card.body, style="Card.TFrame")
+        row.pack(fill="x", pady=(theme.gap(2), 0))
+        ttk.Button(
+            row, text="重新自检", style="Secondary.TButton", command=self._run_local
+        ).pack(side="left")
+        # 联网检查单独一个按钮：它会真的去请求接口，慢的时候要等好几秒
+        self.net_button = ttk.Button(row, text="检查联网", command=self._run_network)
+        self.net_button.pack(side="left", padx=(theme.gap(1.5), 0))
+        ttk.Button(
+            row, text="复制结果", style="Ghost.TButton", command=self._copy
+        ).pack(side="right", padx=(theme.gap(1.5), 0))
+        ttk.Button(row, text="关闭", style="Secondary.TButton", command=self.destroy).pack(
+            side="right", padx=(0, theme.gap(1.5))
+        )
+
+        self._run_local()
+
+    # ---------- 动作 ----------
+
+    def _append(self, text: str) -> None:
+        self.text.configure(state="normal")
+        self.text.insert("end", text.rstrip("\n") + "\n")
+        self.text.see("end")
+        self.text.configure(state="disabled")
+
+    def _clear(self) -> None:
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.configure(state="disabled")
+
+    def _run_local(self) -> None:
+        from . import preflight
+
+        self._clear()
+        for line in preflight.environment_lines():
+            self._append(line)
+        self._append("")
+        report = preflight.run_local_checks()
+        self._append(report.render())
+        # 重填之后回到开头：不清的话会停在上一轮的滚动位置，
+        # 真机截图里就出现过「第一行被顶上去看不见」（2026-10-01）。
+        self.text.see("1.0")
+        self.app.log(f"环境自检：{report.summary()}")
+
+    def _run_network(self) -> None:
+        from . import preflight
+
+        self.status_var.set("正在检查联网…")
+        self.net_button.state(["disabled"])
+        self.update_idletasks()
+        try:
+            checks = preflight.run_network_checks()
+        except Exception as exc:  # noqa: BLE001 —— 自检自己出问题也要说人话
+            self._append(f"[不行] 联网检查本身出错了：{type(exc).__name__}: {exc}")
+        else:
+            self._append("")
+            for check in checks:
+                self._append(check.line())
+        finally:
+            self.status_var.set("")
+            self.net_button.state(["!disabled"])
+        self.app.log("环境自检：联网那两项已经测过。")
+
+    def _copy(self) -> None:
+        text = self.text.get("1.0", "end").strip()
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.status_var.set("已复制到剪贴板，可以直接贴给别人看。")
+
+    def _add_context_menu(self, widget: tk.Text) -> None:
+        menu = tk.Menu(widget, tearoff=0)
+        menu.add_command(label="复制", command=lambda: widget.event_generate("<<Copy>>"))
+        menu.add_separator()
+        menu.add_command(label="全选", command=lambda: widget.event_generate("<<SelectAll>>"))
+        widget.bind("<Button-3>", lambda event: menu.tk_popup(event.x_root, event.y_root))
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -1648,6 +1790,7 @@ class App:
         # 桌面通知在主线程（_poll_watch）里发，这样通知失败也不会影响监控线程
         self._watch_notifier: Notifier | None = None
         self._watch_dialog: WatchDialog | None = None
+        self._selftest_dialog: SelftestDialog | None = None
         # 切换主题时旧控件会被销毁，这里记住本次实例出来的控件，便于重建
         self._widget_roots: list[tk.Misc] = []
 
@@ -2097,6 +2240,9 @@ class App:
         ttk.Button(log_head, text="清空", style="Ghost.TButton", command=self.clear_log).pack(
             side="right", padx=(0, theme.gap(0.5))
         )
+        ttk.Button(log_head, text="自检", style="Ghost.TButton", command=self.open_selftest).pack(
+            side="right", padx=(0, theme.gap(0.5))
+        )
 
         self.log_text = tk.Text(
             card.body,
@@ -2227,6 +2373,13 @@ class App:
             self._watch_dialog.focus_set()
             return
         self._watch_dialog = WatchDialog(self)
+
+    def open_selftest(self) -> None:
+        if self._selftest_dialog is not None and self._selftest_dialog.winfo_exists():
+            self._selftest_dialog.lift()
+            self._selftest_dialog.focus_set()
+            return
+        self._selftest_dialog = SelftestDialog(self)
 
     def choose_folder(self) -> None:
         chosen = filedialog.askdirectory(
