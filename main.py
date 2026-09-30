@@ -289,7 +289,7 @@ def run_cli(args: argparse.Namespace) -> int:
     """命令行导出 / 监控。返回进程退出码。"""
     from xdao.cache import CachedThreadFetcher
     from xdao.client import XdaoClient, XdaoError
-    from xdao.exporters import EXPORTERS, ThreadData, create_exporter
+    from xdao.exporters import EXPORTERS, ThreadData, choose_writable_dir, create_exporter
     from xdao.settings import AppSettings
     from xdao.watcher import WatchTarget, check_once, notify_result, watch_forever
 
@@ -319,6 +319,21 @@ def run_cli(args: argparse.Namespace) -> int:
             "常见原因：这个位置不允许当前账户写入，或者路径里有一段不是文件夹。\n"
             "请换一个当前账户可写的目录（例如「文档」下的文件夹）后重试。"
         ) from None
+    # 目录建得出来不代表写得进去：Windows 的「受控文件夹访问」默认保护桌面/文档，
+    # 非白名单程序写进去报 [Errno 13]，抓取全成功后才发现就白跑一整趟。
+    # 命令行显式给了 -o 就尊重用户指定（只提示），否则自动换到能写的位置。
+    choice = choose_writable_dir(
+        output_dir, kind="导出", allow_fallback=args.output is None
+    )
+    output_dir = choice.path
+    for note in choice.notes:
+        print(f"注意：{note}")
+    if choice.fallback:
+        # 兜底位置可能是第一次用，先建出来（探测只确认"写得进去"，不负责留下目录）。
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # pragma: no cover - 探测刚说过能写，走到这里就是磁盘满了
+            raise XdaoError(f"备用导出目录无法创建：{output_dir}\n{exc}") from None
     format_key = args.format or settings.format_key or "html"
     scope = args.scope or settings.scope or "all"
     hashes = _collect_hashes(args.hashes) or settings.parse_hashes()

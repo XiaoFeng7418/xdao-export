@@ -228,6 +228,80 @@ def test_invalid_output_dir_gives_clean_error(capsys):
     assert "Traceback" not in err
 
 
+def test_output_dir_falls_back_when_the_configured_one_is_blocked(
+    out_dir, tmp_path, monkeypatch, capsys
+):
+    """配置里的导出目录写不进去时，命令行要自动换到能写的位置。
+
+    用户 2026-09-30 的场景：导出目录设在桌面下的新文件夹，抓取全部成功、写文件时
+    ``[Errno 13]``（受控文件夹访问只放行白名单程序），整趟白跑。
+    ``-o`` 是用户在命令行里写死的，所以不换地方；只有配置里的默认值才换。
+    """
+    import xdao.exporters as exporters_module
+    import xdao.exporters._shared as shared_module
+
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    local = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+
+    blocked = tmp_path / "桌面" / "被拦的新建文件夹"
+    blocked.mkdir(parents=True)
+    # choose_writable_dir 的默认探测函数取自 _shared，patch 必须落在那一层
+    monkeypatch.setattr(shared_module, "can_write_dir", lambda path: Path(path) != blocked)
+
+    written: list[Path] = []
+
+    class FakeExporter:
+        def save(self, thread, scope, output_dir, include_hashes=None):
+            path = Path(output_dir) / "结果.html"
+            path.write_text("ok", encoding="utf-8")
+            written.append(path)
+            return path
+
+    monkeypatch.setattr(exporters_module, "create_exporter", lambda *a, **k: FakeExporter())
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_fake_fetcher(5003, "测试串"))
+
+    class BlockedSettings(OfflineSettings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.output_dir = str(blocked)
+
+    import xdao.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "AppSettings", BlockedSettings)
+
+    code = main(["5003", "-f", "html"])  # 没给 -o
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "受控文件夹访问" in out
+    assert str(local / "xdao-export" / "导出") in out
+    assert written and written[0].exists()
+    assert written[0].parent == local / "xdao-export" / "导出"
+
+
+def test_explicit_output_dir_is_never_silently_moved(out_dir, tmp_path, monkeypatch, capsys):
+    """``-o`` 指定的目录只提示、不换地方：用户的显式选择不能被程序偷偷改掉。"""
+    import xdao.exporters as exporters_module
+    import xdao.exporters._shared as shared_module
+
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+    requested = tmp_path / "用户指定的目录"
+    monkeypatch.setattr(shared_module, "can_write_dir", lambda path: False)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_fake_fetcher(5004, "测试串"))
+
+    code = main(["5004", "-f", "txt", "-o", str(requested)])
+
+    out = capsys.readouterr().out
+    assert "注意：" in out and str(requested) in out
+    assert str(tmp_path / "LocalAppData") not in out
+    assert code in (0, 1)  # 目录本身能写（tmp_path），导出照常进行
+    assert (requested / "xdao-export.log").exists()
+
+
 def test_unexpected_error_in_cli_is_caught(monkeypatch, capsys):
     """命令行模式里没预料到的异常也要变成一句人话 + 退出码 1。"""
     import main as main_module

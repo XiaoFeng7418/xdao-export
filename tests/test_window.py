@@ -332,3 +332,78 @@ def test_epub_image_row_follows_the_format(app: gui.App) -> None:
     app._sync_image_mode()  # noqa: SLF001
     app.root.update_idletasks()
     assert not app.image_mode_frame.winfo_ismapped()
+
+
+# ------------------------------------------------- 导出目录写不进去时的自动换地方
+
+
+def _stub_export_thread(monkeypatch) -> None:
+    """别让 start() 真的开线程跑导出：这里只验目录挑选那一段。"""
+    monkeypatch.setattr(
+        gui.threading, "Thread", lambda *a, **k: type("T", (), {"start": lambda self: None})()
+    )
+    monkeypatch.setattr(gui.App, "_poll_export", lambda self: None)
+
+
+def test_start_moves_to_a_writable_directory(app: gui.App, monkeypatch, tmp_path: Path) -> None:
+    """导出目录写不进去时，界面要自动换到能写的位置并说清楚。
+
+    用户 2026-09-30 报的场景：目录设在桌面下的新文件夹（受控文件夹访问的保护范围），
+    抓取全部成功、写文件时 ``[Errno 13]``，整趟白跑。
+    """
+    from xdao.exporters._shared import DirChoice
+
+    fallback_dir = tmp_path / "兜底" / "导出"
+    blocked = tmp_path / "桌面" / "被拦的新文件夹"
+    blocked.mkdir(parents=True)
+    app.output_var.set(str(blocked))
+    app.settings.userhash = "TESTHASH"  # 跳过"请先登录"的检查
+    note = f"导出目录 {blocked} 写不进去，已自动改用 {fallback_dir}。"
+
+    def fake_choose(requested, *, kind="导出", allow_fallback=True, probe=None):
+        assert allow_fallback is True  # 用户没在「更改…」里选过，允许换地方
+        return DirChoice(fallback_dir, [note], True)
+
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui, "choose_writable_dir", fake_choose)
+    monkeypatch.setattr(gui, "ensure_writable", lambda *a, **k: blocked)
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda title, msg: shown.append((title, msg)))
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: shown.append((title, msg)))
+    _stub_export_thread(monkeypatch)
+
+    app.start(["https://www.nmbxd1.com/t/69540387"])
+
+    assert app.output_var.get() == str(fallback_dir)
+    assert fallback_dir.is_dir(), "兜底目录要当场建出来，否则第一次导出就写不进去"
+    assert shown and shown[0][0] == "导出目录已自动改到能写的位置"
+    assert str(fallback_dir) in shown[0][1]
+    assert str(fallback_dir) in app.log_text.get("1.0", "end")
+    app._exporting = False  # noqa: SLF001
+
+
+def test_start_keeps_a_user_chosen_directory(app: gui.App, monkeypatch, tmp_path: Path) -> None:
+    """用户在「更改…」里选过的目录不换：只报错，不动他的选择。"""
+    from xdao.exporters._shared import DirChoice
+
+    blocked = tmp_path / "用户选的目录"
+    app.output_var.set(str(blocked))
+    app.settings.userhash = "TESTHASH"
+    app._dir_pinned = True  # noqa: SLF001  —— 等价于用户点过「更改…」
+
+    captured: dict[str, bool] = {}
+
+    def fake_choose(requested, *, kind="导出", allow_fallback=True, probe=None):
+        captured["allow_fallback"] = allow_fallback
+        return DirChoice(blocked, [f"{kind}目录 {blocked} 写不进去。"], False)
+
+    monkeypatch.setattr(gui, "choose_writable_dir", fake_choose)
+    monkeypatch.setattr(gui, "ensure_writable", lambda *a, **k: blocked)
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda title, msg: None)
+    _stub_export_thread(monkeypatch)
+
+    app.start(["https://www.nmbxd1.com/t/69540387"])
+
+    assert captured["allow_fallback"] is False
+    assert app.output_var.get() == str(blocked), "用户选的目录不能被偷偷改掉"
+    assert str(blocked) in app.log_text.get("1.0", "end")
+    app._exporting = False  # noqa: SLF001

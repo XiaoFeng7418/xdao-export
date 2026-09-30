@@ -25,10 +25,11 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 299 个全部通过、1 个真机用例默认跳过（都离线，无需联网）；
-其中界面相关的 32 项（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会自动 skip。
+单元测试 311 个全部通过、1 个真机用例默认跳过（都离线，无需联网）；
+其中界面相关的 37 项（`test_theme.py` / `test_window.py`）在没有显示环境的机器上会自动 skip。
 
-打包版随 v0.5.2 重新构建，Release **只提供免安装包（zip）**。
+打包版随 v0.5.3 重新构建，Release **只提供免安装包（zip）**。写不进去的目录不再让整趟白跑：
+`choose_writable_dir()` 会自动换到 `%LOCALAPPDATA%\xdao-export\导出` 并说明换了地方。
 单文件版从 v0.5.1 起不再提供：它的启动器会把内容解压到系统临时目录，解压路径里带中文/
 非 ASCII 字符（例如 `D:\小玩意\…`）时会在 Python 代码运行前就弹出
 `Could not create temporary directory!`，而这取决于用户把文件放在哪儿 —— 详见
@@ -47,14 +48,14 @@ xdao-export/
 ├─ tests/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
 │  ├─ conftest.py          artifacts_dir 夹具（替代 tmp_path）
-│  ├─ test_cache.py        缓存/断点续传/增量更新（37）
-│  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（61）
+│  ├─ test_cache.py        缓存/断点续传/增量更新（38）
+│  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
 │  ├─ test_watcher.py      监控与配置（25）
 │  ├─ test_epub.py         EPUB（31）
 │  ├─ test_markdown.py     Markdown（41）
 │  ├─ test_notifications.py 桌面通知（28）
-│  ├─ test_theme.py        配色/字体/间距/ttk 样式（19，需真 Tk）
-│  └─ test_window.py       主窗口布局回归（13，需真 Tk）
+│  ├─ test_theme.py        配色/字体/间距/ttk 样式（20，需真 Tk）
+│  └─ test_window.py       主窗口布局回归（17，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号
    ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理

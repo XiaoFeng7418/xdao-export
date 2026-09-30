@@ -12,6 +12,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from ..client import Post, XdaoClient
 
@@ -402,3 +403,99 @@ def can_write_dir(directory: Path | str) -> bool:
         except OSError:
             pass
     return True
+
+
+@dataclass(frozen=True)
+class DirChoice:
+    """换目录的结果：最终目录、要告诉用户的说明、以及"是不是换了地方"。"""
+
+    path: Path
+    notes: list[str]
+    fallback: bool
+
+
+def fallback_dirs() -> list[Path]:
+    """给出"肯定能写"的兜底目录候选，按优先级排列。
+
+    ``%LOCALAPPDATA%`` 与 ``%TEMP%`` 是 Windows 明确留给用户程序写数据的地方，
+    安全软件的"受控文件夹访问"默认保护的是桌面/文档/图片/视频，不拦这两个 ——
+    用户的桌面目录被拦死时，这里是唯一还写得进去的位置。
+    """
+    bases: list[Path] = []
+    local = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
+    if local:
+        bases.append(Path(local) / "xdao-export" / "导出")
+    temp = os.environ.get("TEMP") or os.environ.get("TMP")
+    if temp:
+        bases.append(Path(temp) / "xdao-export")
+    if not bases:
+        bases.append(Path.home() / "xdao-export")
+    return bases
+
+
+def _unique_dir(path: Path) -> Path:
+    """尽量避免覆盖上一次的兜底产物：同名就加 -2、-3。"""
+    if not path.exists():
+        return path
+    for index in range(2, 100):
+        candidate = path.with_name(f"{path.name}-{index}")
+        if not candidate.exists():
+            return candidate
+    return path
+
+
+def choose_writable_dir(
+    requested: Path | str,
+    *,
+    kind: str = "导出",
+    allow_fallback: bool = True,
+    probe: Callable[[Path], bool] | None = None,
+) -> DirChoice:
+    """挑一个真正写得进去的目录，返回 :class:`DirChoice`。
+
+    这是 2026-09-30 用户报障之后的兜底：Windows 上「桌面」「文档」这类目录可能被
+    安全软件的**受控文件夹访问**（勒索软件防护）保护，只有白名单里的程序能写 ——
+    用户把导出目录设成桌面下的新文件夹，抓取全部成功、写文件时 ``[Errno 13]``，
+    整趟白跑。用户不该为了写一个 HTML 文件先去学怎么配白名单。
+
+    所以：请求的目录探不通时，自动改用 :func:`fallback_dirs` 里能写的位置，
+    并把"原目录为什么不能用、这次写到哪"写成说明交给调用方去告诉用户。
+    ``allow_fallback=False``（用户显式指定了目录时）只探测、不换地方。
+
+    ``probe`` 只为测试保留（默认 :func:`can_write_dir`），调用方不用传。
+    """
+    check = probe or can_write_dir
+    target = Path(requested)
+    if check(target):
+        return DirChoice(target, [], False)
+
+    if not allow_fallback:
+        return DirChoice(
+            target,
+            [f"{kind}目录 {target} 写不进去（当前账户没有写入权限，或被安全软件拦截）。"],
+            False,
+        )
+
+    for base in fallback_dirs():
+        candidate = _unique_dir(base)
+        if check(candidate):
+            return DirChoice(
+                candidate,
+                [
+                    f"{kind}目录 {target} 写不进去（当前账户没有写入权限，或被安全软件的"
+                    f"「受控文件夹访问」拦截），已自动改用 {candidate}。",
+                    f"这次的成品都在 {candidate} 里；想固定用别的位置，可以在「设置」里"
+                    "换一个目录，或把本程序加入安全软件的白名单。",
+                ],
+                True,
+            )
+
+    # 连兜底位置都写不进去：这种情况只能如实报错，让真实写盘失败带着真名报出来。
+    return DirChoice(
+        target,
+        [
+            f"{kind}目录 {target} 写不进去，连备用位置（{fallback_dirs()[0]}）也不行，"
+            "请检查磁盘是否已满、是否只读，或安全软件是否拦截了本程序。"
+        ],
+        False,
+    )
