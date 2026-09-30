@@ -309,6 +309,13 @@ class OutputDirNotWritable(Exception):
     """导出目录不可写。提前抛出，避免白抓一遍再失败。"""
 
 
+# 写权限探针的文件名：故意用**普通文件名**而不是隐藏文件。
+# 2026-09-30 的教训：原来的探针叫 ``.xdao-write-probe``，被安全软件/策略挡掉后
+# 程序就拒绝导出，而用户真正的导出文件明明写得进去（0.1.0 能做的事 0.5.0 反而
+# 做不了）。探针要和真实导出物同类，结论才有意义。
+PROBE_NAME = "xdao-write-test.tmp"
+
+
 def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
     """确认导出目录可写，返回规范化后的目录。
 
@@ -318,9 +325,13 @@ def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
     **探针失败不再等于目录不可写**：0.5.0 之前只要有一步写不进去就直接拦下
     导出，结果用户明明能正常写这个目录（用记事本、用旧版本都行），程序却弹出
     「导出目录不可写」拒绝开工 —— 那是探针文件（``.xdao-write-probe``）自己被
-    安全软件/策略/只读介质挡了，跟真正的导出结果文件不是一回事。现在探针只
-    用来做"缓存目录挪窝"这类旁路决策（``can_write_dir``），拦不拦由真实导出
-    时的错误说了算：写不进去会带着真实文件名和真实 errno 报出来。
+    安全软件/策略/只读介质挡了，跟真正的导出结果文件不是一回事。现在：
+
+    * 探针文件改成**和导出结果同类的普通文件**（``xdao-write-test.tmp``，不留
+      隐藏属性、不带前导点），写完立刻删掉 —— 它写不动往往意味着真的写不了；
+    * 即使这样探针还是失败，也**不拦下导出**：真实写盘失败会带着真实文件名和
+      真实 errno 报出来；
+    * 只有"目录连创建都做不到"才提前失败（那才是真的没法用）。
     """
     target = Path(output_dir)
     try:
@@ -331,7 +342,7 @@ def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
             "请换一个可写的目录，或检查该位置的权限。"
         ) from exc
 
-    probe = target / ".xdao-write-probe"
+    probe = target / PROBE_NAME
     try:
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
