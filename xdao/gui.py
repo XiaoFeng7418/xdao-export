@@ -54,9 +54,28 @@ SMALL_FONT = font(theme.SIZE_SMALL)
 MONO_FONT = mono(theme.SIZE_SMALL)
 
 
+def refresh_fonts(root: tk.Misc | None = None) -> None:
+    """重算模块级字体别名，跟 ``theme`` 探测出的真实字体保持一致。
+
+    导入期还没有根窗口，``theme`` 只能给出候选里的第一个；等界面起来后
+    ``theme.resolve_fonts`` 才探到真正装了的族名。不重算的话，"控件实际
+    用的字体"与 ``theme.FONT_MONO`` 就会分叉（CI 上表现为
+    ``assert 'Consolas' == 'Cascadia Mono'``）。``setup_style()`` 会调它。
+    """
+    global FONT_UI, SECTION_FONT, BODY_FONT, SMALL_FONT, MONO_FONT
+    theme.resolve_fonts(root)
+    FONT_UI = theme.FONT_UI
+    SECTION_FONT = font(theme.SIZE_SUBHEAD, bold=True)
+    BODY_FONT = font(theme.SIZE_BODY)
+    SMALL_FONT = font(theme.SIZE_SMALL)
+    MONO_FONT = mono(theme.SIZE_SMALL)
+
+
 def setup_style(root: tk.Tk) -> ttk.Style:
-    """装上现代扁平配色（实际工作都在 xdao.theme 里）。"""
-    return apply_theme(root)
+    """装上现代扁平配色 + 定下真实字体（实际工作都在 xdao.theme 里）。"""
+    style = apply_theme(root)
+    refresh_fonts(root)
+    return style
 
 
 class LoginDialog(tk.Toplevel):
