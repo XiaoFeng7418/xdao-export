@@ -6,8 +6,9 @@
 
 **导出**
 
-- 四种格式：
+- 五种格式：
   - **HTML**：图片以 base64 内嵌，单文件可离线打开、打印、另存为 PDF；
+  - **PDF**：调用本机 Chrome / Edge 的无头模式直接渲染成 PDF，图片与中文字体都内嵌，可直接打印或归档；
   - **TXT**：纯文本，图片保留链接；
   - **Markdown**：便于二次编辑、贴到博客；
   - **EPUB**：可直接导入阅读器的电子书，图片可选内嵌 / 仅链接 / 丢弃。
@@ -74,6 +75,10 @@ python main.py
 # 导出单个/多个串
 python main.py 67024789 -f markdown -o D:\备份
 python main.py https://www.nmbxd1.com/t/67024789 https://www.nmbxd1.com/t/68811943 -f epub
+
+# 导出 PDF（需要本机装有 Chrome 或 Edge）
+python main.py 67024789 -f pdf -o D:\备份
+python main.py 67024789 -f pdf --pdf-browser "C:\Program Files\Google\Chrome\Application\chrome.exe"
 
 # 只导出发串人的发言
 python main.py 67024789 --scope po
