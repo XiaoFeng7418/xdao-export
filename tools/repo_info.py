@@ -28,7 +28,7 @@ from xdao.exporters import EXPORTERS  # noqa: E402
 # 描述的固定部分（模板），``{formats}`` 由格式注册表填。
 DESCRIPTION_TEMPLATE = (
     "把 X 岛（nmbxd1.com）的串完整导出为 {formats} 的 Windows 小工具，"
-    "支持断点续传、图片缓存与串更新监控，也能当命令行工具用"
+    "带现代两栏界面，支持断点续传、图片缓存与串更新监控，也能当命令行工具用"
 )
 
 # 格式键 → 描述里用的名字（顺序即 EXPORTERS 的顺序）
@@ -50,7 +50,9 @@ FORMAT_TOPICS = {
 # 与格式无关、一直要有的话题
 BASE_TOPICS = [
     "backup",
+    "desktop-app",
     "exporter",
+    "gui",
     "nmbxd1",
     "python",
     "scraper",
