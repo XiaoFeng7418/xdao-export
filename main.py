@@ -57,6 +57,8 @@ _CONSOLE_HINT_FLAGS = {
     "--version",
     "--selftest",
     "--selftest-json",
+    "--check-browser",
+    "--check-browser-json",
     "--offline",
     "--check-update",
     "--check-update-json",
@@ -146,6 +148,38 @@ def selftest(json_output: bool = False, offline: bool = False) -> int:
     else:
         print(report.render())
     return 1 if report.failures else 0
+
+
+def check_browser(json_output: bool = False) -> int:
+    """试一试本机的浏览器能不能真的起来（会短暂启动浏览器进程）。
+
+    为什么单独一条命令：``--selftest`` 的浏览器那一项只查「找得到可执行文件」，
+    可用户碰到的是「找得到、但一起来就被拦下」——自检显示「可以」，点「用浏览器
+    登录」却永远失败。这里真的启一次、等调试端口写出来、马上关掉，把结论和
+    退出码直接摆出来。至少一个浏览器能起来就算通过（退出码 0）。
+    """
+    from xdao import browser_check
+    from xdao import __version__ as xdao_version
+    from xdao.settings import AppSettings
+
+    settings = AppSettings.load()
+    explicit = getattr(settings, "pdf_browser", "") or ""
+
+    def progress(message: str) -> None:
+        if not json_output:
+            print(message)
+
+    if not json_output:
+        print(f"程序版本：{xdao_version}")
+        if explicit:
+            print(f"按设置里指定的浏览器先试：{explicit}")
+        else:
+            print("设置里没指定浏览器，按「系统默认浏览器 → Edge → Chrome」的顺序试。")
+        print("（会真的启动浏览器进程，试完立刻关掉；最多试几个就停。）")
+        print("")
+    report = browser_check.check_browsers(explicit, progress=progress)
+    print(report.to_json() if json_output else report.render())
+    return 0 if report.ok else 1
 
 
 def check_update(json_output: bool = False) -> int:
@@ -396,6 +430,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--offline",
         action="store_true",
         help="配 --selftest 用：只查本机，不联网",
+    )
+    parser.add_argument(
+        "--check-browser",
+        action="store_true",
+        help="试一试本机浏览器能不能真的起来（会短暂启动它；排查「用浏览器登录」失败时用）",
+    )
+    parser.add_argument(
+        "--check-browser-json",
+        action="store_true",
+        help="配 --check-browser 用：结果按 JSON 输出（便于贴给别人看）",
     )
     parser.add_argument(
         "--check-update",
@@ -778,6 +822,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.selftest or args.selftest_json:
         return selftest(json_output=args.selftest_json, offline=args.offline)
+
+    if args.check_browser or args.check_browser_json:
+        return check_browser(json_output=args.check_browser_json)
 
     if args.check_update or args.check_update_json:
         return check_update(json_output=args.check_update_json)
