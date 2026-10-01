@@ -19,6 +19,10 @@ GitHub 决定**（它保留我们送上去的时区偏移，但接口读回来�
 用法：
     python tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
     python tools/push_via_api.py --repo ... --branch main --dry-run
+
+`--dry-run` 不会创建提交、也不会动分支引用，但为了核对「重建出来的树与本地一致」，
+它**仍会在远端留下未引用的 blob/tree 对象**（看不到、不影响任何分支，GitHub 会自行
+回收）—— 所以它不是"完全不写远端"，别把它当只读命令用。
 """
 
 from __future__ import annotations
@@ -433,11 +437,26 @@ def upload_blobs(
     return uploaded
 
 
+def unknown_excludes(commits: list[dict], exclude: set[str]) -> list[str]:
+    """挑出 `--exclude` 里在本地历史中一个都没出现的路径（多半是写错了）。
+
+    写错一个字母的代价是把本该留在本地的大文件传上去，所以调用方要在任何网络写入
+    之前就停下（先验再动）。这里对着**全部**本地提交找，而不是只对着这次要推的那些：
+    某个路径只出现在很早的提交里、这次推送里没有，是正常情况，不该报警。
+    """
+    seen = {entry["path"] for commit in commits for entry in commit["entries"]}
+    return sorted(path for path in exclude if path not in seen)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="用 GitHub API 推送本地提交")
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--branch", required=True, help="远端分支名")
-    parser.add_argument("--dry-run", action="store_true", help="只校验，不写远端")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只校验：不创建提交、不动分支引用（为核对树，仍会在远端留下未引用的 blob/tree 对象）",
+    )
     parser.add_argument("--expect-head", default="", help="远端当前分支 sha，不符则中止")
     parser.add_argument(
         "--exclude",
@@ -456,6 +475,13 @@ def main(argv: list[str]) -> int:
     token = gh_token()
     commits = local_commits()
     print(f"本地共 {len(commits)} 个提交，目标 {args.repo}@{args.branch}")
+
+    # 先验再动：--exclude 的路径写错时，以前什么都不说，大文件照样被传上去。
+    unknown = unknown_excludes(commits, exclude)
+    if unknown:
+        print("× --exclude 里的这些路径在本地历史里根本不存在：" + "、".join(unknown))
+        print("  写错一个字母，本该留在本地的大文件就会被传上去 —— 先核对路径再重来。")
+        return 1
 
     # 远端已有对象，避免重复上传
     known_blobs: set[str] = set()
@@ -565,7 +591,10 @@ def main(argv: list[str]) -> int:
         parent = created
 
     if args.dry_run:
-        print("演练结束，未改动远端。")
+        print(
+            "演练结束：没有创建提交，也没有动分支引用"
+            "（上面为核对树而建的 blob/tree 对象是未引用的，GitHub 会自行回收）。"
+        )
         return 0
 
     print("3) 更新分支引用")

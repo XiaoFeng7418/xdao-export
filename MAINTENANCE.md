@@ -87,6 +87,8 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 
 # 备用通道：代理不可用时才用 API 推送（sha 会与本地不同，内容仍一致）
 & $py -X utf8 tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
+#    `--exclude` 里的路径写错一个字母，现在会在发任何请求之前就停下（先验再动）；
+#    `--dry-run` 不创建提交、也不动分支引用，但为核对树仍会在远端留下未引用的对象。
 
 # 6) 发布
 & $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag vX.Y.Z `
@@ -153,6 +155,8 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
   **必须以 `!` 开头**（少了它 git 会去 PATH 里找一个叫 `credential-C:/...` 的程序，
   于是每次网络操作都刷一句 `is not a git command` 的警告，但不影响推送）。
 - `tools/push_via_api.py` 保留为**代理不可用时的备用通道**，也可用于本地对象逐字节校验。
+  它的 `--exclude` 现在会在发请求之前核对路径写没写错（写错就是大文件被传上去），
+  `--dry-run` 也不算「完全不写远端」：为核对树，它仍会在远端留下未引用的 blob/tree 对象。
 
 ### 体检里的「提交同步」别只看远端链
 
@@ -314,6 +318,11 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    传完之后拿最终那份 Release 再核一遍附件在不在，缺了就报「没落到 Release 上」并返回 1。
    另外用例单独核了上传请求本身：附件名必须走 `?name=` 查询串 —— 走别的写法接口只取第一个点号
    之前的部分，中文名还会被截断成一个字。
+   **备用推送通道也有用例兜着**（2026-10-02 补上）：`tests/test_push_via_api.py` 32 条，
+   拿**真 git** 与假 API 一起跑 `tools/push_via_api.py` —— 提交对象的字节要能逐字节重建
+   （特意手写一条「结尾没有换行」的提交当反证）、`git log --pretty=%B` 会擅自补一个换行
+   所以不能用来拼对象、`--exclude` 写错时要在任何请求之前就停下、`--dry-run` 也不许说自己
+   「未改动远端」。五处护栏都注入验过：退回旧写法，用例立刻红。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
