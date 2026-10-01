@@ -488,6 +488,11 @@ def main(argv: list[str]) -> int:
     pending = commits
     if remote_head:
         try:
+            # 先看最直白的一种：远端顶端就是本地 HEAD（本地历史一长，
+            # remote_chain 的 100 条窗口就装不下最早的提交，比对会误判成「一个都没推」）。
+            if commits and remote_head == commits[-1]["sha"]:
+                print("远端分支的顶端就是本地 HEAD，没有需要推送的新提交。")
+                return 0
             chain = remote_chain(args.repo, token, remote_head)
             pushed = find_pushed_prefix(commits, chain)
             if pushed:
