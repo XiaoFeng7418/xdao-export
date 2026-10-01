@@ -155,8 +155,16 @@ xdao-export/
   的窗口（刻意**不加** `--headless` / `--guest` / `--incognito`：要的就是用户能看见、且登录态留得住）。
   端口读 `<profile>\DevToolsActivePort` 第一行（第二行是浏览器级 ws 路径）；WebSocket 帧层是
   **纯标准库**手写的（socket + base64 + hashlib + struct），连上 CDP 后用 `Network.getCookies`
-  读 `userhash`（HttpOnly 的也读得到）。`read_cookies` 里没有时再调 `apply_leaf_cookie()`，
-  在页面里 `fetch` 一遍 `switchTo` / `export` 取最新那块叶子饼干。
+  读 `userhash`（HttpOnly 的也读得到），一次问**好几个地址**（站点根 / 饼干页 / 当前页：
+  CDP 的 `Network.getCookies` 只回「会发给这个地址」的饼干，只问一个会漏）。罐里没有时再调
+  `fetch_leaf_cookie()`：**导航**——跟着站点自己的「跳转提示」页跳到落点（userhash 是在落地
+  那一跳里种下的）→ 去「饼干」页 → 导航到最后一块的 `switchTo/id/{id}.html` → 重读饼干罐 →
+  还不行就导航一次 `export/id/{id}.html` 从页面正文里抠；最多 `MAX_COOKIE_JUMPS` 跳。
+  **不要再改回页面里的 `fetch`**：跳转提示页的第二跳是页面脚本做的，`fetch` 永远走不到，
+  饼干也就永远种不上（v0.13.15 真机上就是这样一路等到超时）。结果用
+  `LeafCookie(value, detail, navigated)` 带回来，`detail` 直接显示在窗口那行常驻诊断上。
+  界面层的护栏：`BROWSER_LEAF_NAV_LIMIT` 次导航上限（之后只重读饼干罐）、导航过一
+  次之后按 `BROWSER_LEAF_RETRY_SECONDS` 缓一缓、用户还停在登录页时绝不导航。
   界面侧是 `gui.py` 的 `BrowserLoginDialog`；线程只往 `queue.Queue` 投消息，主线程用 `after` 轮询，
   退出前必须停线程 + terminate 浏览器进程，不留孤儿进程（见下面「GUI 线程」一节的约定）。
 - 粘贴登录的宽容解析也在 `browser_login.py`：`parse_userhash_input(text)` 支持整段 cookie

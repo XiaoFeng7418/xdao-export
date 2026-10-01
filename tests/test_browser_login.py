@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import dataclasses
 import errno
 import hashlib
 import inspect
@@ -2017,86 +2018,394 @@ def test_looks_like_userhash_rejects_everything_else(value: str) -> None:
 # ---------------------------------------------------------------- 应用饼干
 
 
-def test_build_apply_cookie_script_has_the_needed_pieces() -> None:
-    script = bl.build_apply_cookie_script()
+COOKIE_LIST_URL = bl.COOKIE_SITE + bl.COOKIE_LIST_PATH
+
+
+def test_build_find_apply_script_reads_the_page_without_requesting_anything() -> None:
+    """「看看当前页有什么」这一步**一个请求都不许发**。
+
+    这是 v0.13.17 的核心教训：v0.13.15 在页面里用 fetch 复刻站点自己的
+    ``switchTo`` / ``export`` 两个接口，真机上（用户报告）拿回来的只是站点那张
+    「跳转提示」页 —— 那一跳不是 HTTP 重定向，页面里的 fetch 不会去执行它，
+    userhash 于是永远种不进浏览器，界面一路等到超时。现在改成「读页面 + 导航」，
+    读的这一半必须干干净净只读 DOM。
+    """
+    script = bl.build_find_apply_script()
     assert script.strip()
     for piece in (
+        "location.href",
+        "document.querySelectorAll('a[href]')",
+        "getElementById('href')",
+        "meta[http-equiv=\"refresh\" i]",
         "switchTo",
         "export",
-        "userhash",
-        bl.COOKIE_SITE,
-        "document.documentElement.outerHTML",
-        "await fetch",
-        "credentials: 'include'",
+        "new URL(raw, location.href).href",
     ):
         assert piece in script, piece
-    # id 的来源：实测有效的链接正则（列表行的 switchTo/export 链接最可靠）。
+    # 一个请求都不许发。
+    assert "fetch(" not in script
+    assert "XMLHttpRequest" not in script
+    assert "DOMParser" not in script
+    # id 的来源：实测有效的链接正则；后缀 .html 要先摘掉，否则拼出来是 xxx.html.html。
     assert r"Cookie\/(?:switchTo|export)\/id\/" in script
-    # 链接地址里带 .html：捕获到的 id 得先摘掉这个后缀，否则拼出来是 xxx.html.html。
     assert r"replace(/\.html$/i, '')" in script
-    assert "'switchTo/id/' + encodeURIComponent(id) + '.html'" in script
-    assert "'export/id/' + encodeURIComponent(id) + '.html'" in script
     # 最新申请的饼干排在列表最后（去重后），要取它而不是第一块。
-    assert "ids[ids.length - 1]" in script
-    # 取值要覆盖导出接口的三种返回形态。
-    assert 'data.cookie' in script
-    assert r'/"cookie"\s*:\s*"([^"]+)"/' in script
+    assert "state.ids[state.ids.length - 1]" in script
+    # 兼容只有表格、没有链接的写法：退回每行第二个单元格。
+    assert "querySelectorAll('tr')" in script
+    assert "cells[1].textContent" in script
 
 
-def test_build_apply_cookie_script_fetches_the_list_when_the_page_has_none() -> None:
-    """当前页不是饼干列表时要自己去要一份。
-
-    用户登录完停在站点自己的跳转页/论坛/用户首页都很正常，那些页面的 DOM 里
-    没有列表；少了这一步，兜底每 5 秒白跑一次，界面等到超时也没反应。
-    """
-    script = bl.build_apply_cookie_script()
-    # 当前页里找不到 id 时才发请求（用户恰好停在列表页上就别多此一举）。
-    assert "ids.length === 0" in script
-    assert "await grab(BASE + 'index.html')" in script
-    # 取回来的 HTML 要能解析：链接正则之外，还要能退回 <tr> 第二个单元格。
-    assert "new DOMParser()" in script
-    assert "parseFromString(source, 'text/html')" in script
-    # 请求自带超时：站点不回话时脚本自己认输，别拖到 CDP 的 15 秒超时。
-    assert "new AbortController()" in script
-    assert "control.abort()" in script
-    assert "signal: control.signal" in script
-
-
-def test_build_apply_cookie_script_points_at_the_cookie_interfaces() -> None:
-    script = bl.build_apply_cookie_script()
+def test_build_find_apply_script_points_at_the_cookie_interfaces() -> None:
+    script = bl.build_find_apply_script()
     assert '"https://www.nmbxd1.com/Member/User/Cookie/"' in script
+    assert "switchTo/id/" in script
 
 
-class _FakeSession:
-    """只实现 evaluate 的假会话：apply_leaf_cookie 的取舍不必真连浏览器。"""
+class _ScriptedSession:
+    """按「地址 → 页面状态」脚本化的假会话：只管导航与饼干罐。
 
-    def __init__(self, reply: str) -> None:
-        self.reply = reply
-        self.calls: list[tuple[str, bool]] = []
+    导航在真机上就是换一份文档，所以这里换的只是「当前地址」，随后 ``evaluate``
+    读到的就是那一页登记的状态；饼干罐由用例自己往里放 —— 「应用」成没成，在真机上
+    正体现在这里（主站 Set-Cookie 落到罐里）。
+    """
+
+    def __init__(
+        self,
+        pages: dict | None = None,
+        cookies: list[dict] | None = None,
+        *,
+        export_text: str = "",
+        url: str = "",
+    ) -> None:
+        # 两个位置参数都是「容器」，传错了 dict()/list() 会默默吃掉（踩过一次：
+        # 把饼干表当成 pages 传进来，dict() 把 {"name": …, "value": …} 变成了
+        # {"name": "value"}，用例照样跑、只是永远读不到饼干）。
+        assert pages is None or isinstance(pages, dict), "pages 要传「地址 → 页面状态」的字典"
+        assert cookies is None or isinstance(cookies, list), "cookies 要传饼干表（列表）"
+        self.pages: dict[str, dict] = dict(pages or {})
+        self.cookies: list[dict] = list(cookies or [])
+        self.export_text = export_text
+        self.url = url
+        self.navigations: list[str] = []
+        self.cookie_reads: list[list[str] | None] = []
+        self.evaluations: list[str] = []
+
+    # ---- CDPSession 的那几面 ----
+    def call(self, method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
+        assert method == "Page.navigate", method
+        self.url = str((params or {}).get("url") or "")
+        self.navigations.append(self.url)
+        return {}
+
+    def current_url(self) -> str:
+        return self.url
+
+    def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
+        self.cookie_reads.append(list(urls) if urls else None)
+        return list(self.cookies)
 
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
-        self.calls.append((expression, await_promise))
-        return self.reply
+        self.evaluations.append(expression)
+        if expression == bl.build_find_apply_script():
+            return json.dumps(self.pages.get(self.url, {"url": self.url, "kind": "other"}))
+        if expression == "document.readyState":
+            return "complete"
+        if expression == "location.href":
+            return self.url
+        if expression.startswith("document.body"):
+            return self.export_text
+        raise AssertionError(f"意料之外的脚本：{expression[:60]}")
 
 
-def test_apply_leaf_cookie_awaits_the_script_in_the_page() -> None:
-    session = _FakeSession("ABC12345")
-    assert bl.apply_leaf_cookie(session) == "ABC12345"  # type: ignore[arg-type]
-    assert session.calls == [(bl.build_apply_cookie_script(), True)]
+def _login_page_state() -> dict:
+    return {"url": bl.LOGIN_URL, "login": True, "jump": "", "kind": "login", "ids": []}
 
 
-def test_apply_leaf_cookie_rejects_anything_that_is_not_a_userhash() -> None:
-    assert bl.apply_leaf_cookie(_FakeSession("")) is None  # type: ignore[arg-type]
-    for junk in ("<html>跳转提示</html>", "   ", "请先登录"):
-        assert bl.apply_leaf_cookie(_FakeSession(junk)) is None  # type: ignore[arg-type]
+def _list_page_state(*ids: str) -> dict:
+    newest = ids[-1]
+    return {
+        "url": COOKIE_LIST_URL,
+        "login": False,
+        "jump": "",
+        "kind": "list",
+        "ids": list(ids),
+        "href": f"{bl.COOKIE_SITE}/Member/User/Cookie/switchTo/id/{newest}.html",
+    }
 
 
-def test_apply_leaf_cookie_returns_none_when_the_session_is_broken() -> None:
+def test_fetch_leaf_cookie_never_navigates_a_page_that_is_still_a_login_form() -> None:
+    """用户还在输验证码时**绝不能**把他从表单上拽走。
+
+    这是新流程的底线：这一步每几秒就要跑一次，要是它也带导航，用户正打字就会被弹走。
+    """
+    session = _ScriptedSession({bl.LOGIN_URL: _login_page_state()}, url=bl.LOGIN_URL)
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert result.navigated is False
+    assert session.navigations == []
+    assert "登录" in result.detail
+
+
+def test_fetch_leaf_cookie_applies_the_newest_cookie_and_reads_it_back() -> None:
+    """登录好了：导航到「应用」地址 → 饼干罐里出现 userhash。
+
+    站点自己的「应用」是跳转式的，只能让浏览器自己走；走完主站才会 Set-Cookie。
+    这里钉住两件事：走的是**最新那块**饼干的 switchTo 地址，值是从**饼干罐**里
+    读回来的（不是从页面正文里抠的）。
+    """
+    applied = f"{bl.COOKIE_SITE}/Member/User/Cookie/switchTo/id/bbb.html"
+    session = _ScriptedSession(
+        {bl.LOGIN_URL: _login_page_state(), COOKIE_LIST_URL: _list_page_state("aaa", "bbb")},
+        [{"name": "userhash", "value": "ABC12345", "domain": ".nmbxd1.com"}],
+        url=COOKIE_LIST_URL,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value == "ABC12345"
+    assert result.navigated is True
+    assert applied in session.navigations
+    assert result.detail == ""
+    # 值是从罐里读的：读饼干时问了好几个地址（只问一个会漏）。
+    assert session.cookie_reads and len(session.cookie_reads[-1] or []) >= 3
+
+
+def test_fetch_leaf_cookie_goes_to_the_cookie_list_when_the_user_is_elsewhere() -> None:
+    """用户登录完停在论坛/用户首页：那些页面的 DOM 里没有列表，得自己去「饼干」页。
+
+    v0.13.15 的教训：这一步以前靠页面里的 fetch 去要列表，而 fetch 走不完站点那一跳；
+    现在是自己导航过去 —— 走的正是浏览器自己的路。
+    """
+    index = f"{bl.COOKIE_SITE}/"
+    session = _ScriptedSession(
+        {index: {"url": index, "kind": "other", "ids": []}, COOKIE_LIST_URL: _list_page_state("ccc")},
+        [{"name": "userhash", "value": "ABC12345"}],
+        url=index,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value == "ABC12345"
+    assert session.navigations[0] == COOKIE_LIST_URL
+
+
+def test_fetch_leaf_cookie_follows_the_sites_own_jump_page() -> None:
+    """站点自己的「跳转提示」页：跟着它跳，而不是把它的 HTML 当结果。
+
+    真机实测：请求 ``Member/User/Cookie/index.html`` 会回一张 1569 字节的
+    ``<title>跳转提示</title>`` 页面，真正的落地页写在那张页面的 ``a#href`` 里，
+    由页面自己的脚本等 3 秒再 ``location.href = href`` —— **不是** HTTP 重定向、
+    也**不是** meta refresh，所以在页面里 ``fetch`` 永远走不到那一跳（v0.13.15 就卡在这）。
+    """
+    landed = f"{bl.COOKIE_SITE}/Member/User/Cookie/index.html?ok=1"
+    session = _ScriptedSession(
+        {
+            bl.LOGIN_URL: {"url": bl.LOGIN_URL, "kind": "jump", "jump": landed, "ids": []},
+            landed: _list_page_state("zzz"),
+        },
+        [{"name": "userhash", "value": "ABC12345"}],
+        url=bl.LOGIN_URL,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value == "ABC12345"
+    assert session.navigations[0] == landed
+
+
+def test_fetch_leaf_cookie_reports_the_jump_back_to_the_login_page() -> None:
+    """跟着跳转页落回登录页：既要报 navigated（界面层靠它缓一缓），也要说清是登录没成。
+
+    真机上匿名走这一步就是这条：开「饼干」页 → 站点把页面跳到 ``Member/User/Index/login.html``。
+    ``navigated`` 报错会让界面层以为「没动过用户的页面」，于是每 5 秒重来一次 —— 用户的标签页
+    会被反复拽走，而窗口上什么原因都没写。
+    """
+    session = _ScriptedSession(
+        {
+            COOKIE_LIST_URL: {
+                "url": COOKIE_LIST_URL,
+                "kind": "jump",
+                "jump": bl.LOGIN_URL,
+                "ids": [],
+            },
+            bl.LOGIN_URL: _login_page_state(),
+        },
+        url=COOKIE_LIST_URL,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert result.navigated is True
+    assert "登录页" in result.detail
+    assert session.navigations == [bl.LOGIN_URL]
+
+
+def test_fetch_leaf_cookie_says_so_when_the_account_has_no_cookie_yet() -> None:
+    """「饼干」页是空的（这个账号还没领过）：给一句能照做的话，别静默。"""
+    session = _ScriptedSession(
+        {COOKIE_LIST_URL: {"url": COOKIE_LIST_URL, "kind": "empty", "ids": [], "rows": 0}},
+        url=COOKIE_LIST_URL,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert result.navigated is True
+    assert "饼干" in result.detail
+
+
+def test_fetch_leaf_cookie_reports_a_list_shape_it_does_not_understand() -> None:
+    """列表的写法认不出来：把「认出了几行、几个链接」报出来，好去查站点的改动。"""
+    session = _ScriptedSession(
+        {
+            COOKIE_LIST_URL: {
+                "url": COOKIE_LIST_URL,
+                "kind": "list",
+                "ids": [],
+                "rows": 3,
+                "links": 0,
+            }
+        },
+        url=COOKIE_LIST_URL,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert "3 行" in result.detail
+
+
+def test_fetch_leaf_cookie_falls_back_to_the_page_text_of_the_export_view() -> None:
+    """跟着跳完了饼干罐里还是空的：再看一眼导出页的正文（三种返回形态都认）。"""
+    export_url = f"{bl.COOKIE_SITE}/Member/User/Cookie/export/id/aaa.html"
+    session = _ScriptedSession(
+        {COOKIE_LIST_URL: _list_page_state("aaa")},
+        [],
+        export_text='{"cookie": "ABC12345"}',
+        url=COOKIE_LIST_URL,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value == "ABC12345"
+    assert export_url in session.navigations
+
+
+def test_fetch_leaf_cookie_with_navigate_false_only_relooks_at_the_jar() -> None:
+    """界面层用完导航次数上限之后走这条路：只重读饼干罐，绝不动用户的页面。"""
+    empty = _ScriptedSession(url=bl.LOGIN_URL)
+    result = bl.fetch_leaf_cookie(empty, navigate=False)  # type: ignore[arg-type]
+    assert result.value is None
+    assert result.navigated is False
+    assert empty.navigations == []
+    assert empty.cookie_reads, "没读饼干罐"
+    assert "userhash" in result.detail
+
+    ready = _ScriptedSession(cookies=[{"name": "userhash", "value": "ABC12345"}], url=bl.LOGIN_URL)
+    assert bl.fetch_leaf_cookie(ready, navigate=False).value == "ABC12345"  # type: ignore[arg-type]
+
+
+def test_fetch_leaf_cookie_will_not_work_on_a_page_outside_the_site() -> None:
+    """用户自己把那个窗口导到别处去了：说清楚，别在别人的站点上做动作。"""
+    outside = "https://example.com/"
+    session = _ScriptedSession(
+        {outside: {"url": outside, "kind": "other", "ids": []}}, url=outside
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert result.navigated is False
+    assert session.navigations == []
+    assert "example.com" in result.detail
+
+
+def test_fetch_leaf_cookie_reports_a_broken_session_instead_of_raising() -> None:
+    """会话断了：给一句人话（界面把它挂到窗口上），不要往上抛。"""
+
     class Broken:
-        def evaluate(self, expression: str, await_promise: bool = False) -> str:
-            raise bl.BrowserLoginError("连接断了")
+        def current_url(self) -> str:
+            raise bl.CdpError("连接断了")
 
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            raise bl.CdpError("连接断了")
+
+        def call(self, method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
+            raise bl.CdpError("连接断了")
+
+        def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
+            raise bl.CdpError("连接断了")
+
+    result = bl.fetch_leaf_cookie(Broken())  # type: ignore[arg-type]
+    assert result.value is None
+    assert "连接断了" in result.detail
+    # 只要值的老签名照样只回 None。
     assert bl.apply_leaf_cookie(Broken()) is None  # type: ignore[arg-type]
+
+
+def test_cookie_urls_for_asks_several_addresses() -> None:
+    """读饼干要问好几个地址：``Network.getCookies`` 只回「会发给这个地址」的饼干。"""
+    elsewhere = f"{bl.COOKIE_SITE}/Member/User/Index/index.html"
+    session = _ScriptedSession(url=elsewhere)
+    urls = bl.cookie_urls_for(session)  # type: ignore[arg-type]
+    assert bl.COOKIE_SITE + "/" in urls
+    assert COOKIE_LIST_URL in urls
+    assert "https://nmbxd1.com/" in urls
+    # 当前页也问一遍（只对那一页可见的饼干就靠它）。
+    assert urls[-1] == elsewhere
+
+
+def test_cookie_urls_for_does_not_ask_the_same_address_twice() -> None:
+    """用户正好停在饼干页上时，别把这个地址又问一遍。"""
+    session = _ScriptedSession(url=COOKIE_LIST_URL)
+    urls = bl.cookie_urls_for(session)  # type: ignore[arg-type]
+    assert urls.count(COOKIE_LIST_URL) == 1
+
+
+def test_cookie_urls_for_survives_a_session_that_cannot_answer() -> None:
+    """读不到当前地址（会话刚断）不该让整件事失败：那三个固定地址照样问。"""
+
+    class Broken:
+        def current_url(self) -> str:
+            raise bl.CdpError("连接断了")
+
+    urls = bl.cookie_urls_for(Broken())  # type: ignore[arg-type]
+    assert len(urls) == 3
+
+
+@pytest.mark.parametrize(
+    "cookie",
+    [
+        {"name": "userhash", "value": "ABC12345"},
+        {"name": "userhash", "value": "ABC12345", "domain": ".nmbxd1.com"},
+        {"name": "userhash", "value": "ABC12345", "domain": "www.nmbxd1.com"},
+    ],
+)
+def test_userhash_from_cookies_accepts_the_sites_own_cookie(cookie: dict) -> None:
+    assert bl.userhash_from_cookies([cookie]) == "ABC12345"
+
+
+@pytest.mark.parametrize(
+    "cookie",
+    [
+        {"name": "userhash", "value": "abc"},  # 形状不对（太短）
+        {"name": "userhash", "value": ""},  # 空值
+        {"name": "userhash", "value": "ABC12345", "domain": ".example.com"},  # 别人家的域
+        {"name": "PHPSESSID", "value": "ABC12345"},  # 名字不对
+    ],
+)
+def test_userhash_from_cookies_rejects_everything_else(cookie: dict) -> None:
+    assert bl.userhash_from_cookies([cookie]) is None
+
+
+def test_userhash_from_cookies_ignores_junk_entries() -> None:
+    cookies = ["nonsense", None, 42, {"name": "userhash", "value": "ABC12345"}]
+    assert bl.userhash_from_cookies(cookies) == "ABC12345"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"cookie": "ABC12345"}',
+        '{"status": 1, "data": {"cookie": "ABC12345"}}',
+        "userhash=ABC12345; path=/; domain=.nmbxd1.com",
+        '<script>var x = {"cookie": "ABC12345"};</script>',
+    ],
+)
+def test_userhash_from_export_text_reads_the_three_shapes(text: str) -> None:
+    assert bl.userhash_from_export_text(text) == "ABC12345"
+
+
+@pytest.mark.parametrize("text", ["", "   ", "<html>跳转提示</html>", '{"cookie": "abc"}'])
+def test_userhash_from_export_text_rejects_junk(text: str) -> None:
+    """页面正文里抠出来的值也要过形状检查：宁可再等一轮，也不喂给客户端一个怪值。"""
+    assert bl.userhash_from_export_text(text) is None
 
 
 # ---------------------------------------------------------------- 契约守卫
@@ -2117,7 +2426,13 @@ def test_public_api_surface_matches_the_ui_contract() -> None:
         "browser_open",
         "looks_like_userhash",
         "parse_userhash_input",
-        "build_apply_cookie_script",
+        "build_find_apply_script",
+        "fetch_leaf_cookie",
+        "cookie_urls_for",
+        "userhash_from_cookies",
+        "userhash_from_export_text",
+        "read_userhash_cookie",
+        "LeafCookie",
         "apply_leaf_cookie",
         "ensure_login_page",
         "LoginBrowser",
@@ -2126,6 +2441,20 @@ def test_public_api_surface_matches_the_ui_contract() -> None:
         "BrowserLoginError",
     ):
         assert hasattr(bl, name), name
+    # 界面层按这个签名调（多一个少一个都要在 review 里说清楚）。
+    leaf = inspect.signature(bl.fetch_leaf_cookie)
+    assert list(leaf.parameters) == ["session", "urls", "navigate"]
+    assert leaf.parameters["navigate"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert leaf.parameters["navigate"].default is True
+    assert [field.name for field in dataclasses.fields(bl.LeafCookie)] == [
+        "value",
+        "detail",
+        "navigated",
+    ]
+    assert list(inspect.signature(bl.cookie_urls_for).parameters) == ["session"]
+    assert list(inspect.signature(bl.userhash_from_cookies).parameters) == ["cookies"]
+    assert inspect.signature(bl.read_userhash_cookie).parameters["urls"].default is None
+    assert list(inspect.signature(bl.apply_leaf_cookie).parameters) == ["session"]
     assert set(inspect.signature(bl.user_data_dir).parameters) == {"config_dir"}
     assert set(inspect.signature(bl.build_args).parameters) == {
         "info",
@@ -2216,7 +2545,8 @@ def test_real_browser_reports_a_devtools_port() -> None:
     用户目录用系统临时目录、跑完删掉：不留长期痕迹，也不会跟用户自己开着的
     浏览器抢 profile 锁。界面层用的是同一套办法。
     连的是 ``/json/list`` 的 HTTP 地址（界面层就是这么给的），顺带钉住两件事：
-    没登录时 ``apply_leaf_cookie`` 要优雅地返回 None，临时目录要能被删掉。
+    没登录时读饼干要优雅地返回 None（``navigate=False``：带导航那条要真联网，
+    留给真机核验），临时目录要能被删掉。
     """
     assert _REAL_BROWSER is not None
     profile = Path(tempfile.mkdtemp(prefix="xdao-browser-login-"))
@@ -2246,7 +2576,8 @@ def test_real_browser_reports_a_devtools_port() -> None:
                 href = session.current_url()
                 assert href.startswith(bl.COOKIE_SITE) or href == "about:blank", href
                 assert isinstance(session.read_cookies(), list)
-                assert bl.apply_leaf_cookie(session) is None
+                # 只重读饼干罐这条路不许导航（也就不会联网）：匿名时它必须优雅地回 None。
+                assert bl.fetch_leaf_cookie(session, navigate=False).value is None
     finally:
         _remove_tree(profile)
     assert not profile.exists(), "停止浏览器后临时用户目录应当能删掉"
