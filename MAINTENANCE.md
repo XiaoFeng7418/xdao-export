@@ -487,6 +487,21 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.18**（免安装包里的说明补上五个命令行开关，只动文字与测试）：
+  `packaging/使用说明.txt` 会随包发出去，却一次都没提过 `--cache-dir`、`--verify`、
+  `--image-mode`、`--pdf-timeout`、`--pdf-margin-mm`。补写的同时把「文档与解析器一致」
+  做成机器把关：新增 `tests/test_cli_docs.py`（两条规则写在「硬性约定」第 8 条里）。
+  真机验收：本机全量 **1252 passed / 7 skipped**（143.84 秒）；新用例反向验过 ——
+  往 `README.md` 的示例行塞一个 `--definitely-not-a-flag`，它红在 `README.md:477`
+  并指出是哪个开关（`git checkout` 还原；注意 `git checkout -- <文件>` 会把同一文件里
+  未提交的改动一起还原，所以那次是重跑脚本补回来的）；文本卫生正常
+  （`MAINTENANCE.md` CRLF 1132 / 裸 LF 0、`README.md` CRLF 476 / 裸 LF 0、
+  `使用说明.txt` BOM 1 / 裸 LF 505）；打包版 `--version` → `X岛串导出工具 0.13.18`，
+  `--selftest` 的输出与 v0.13.17 那份逐行相同（只差版本号与 exe 路径两行，都是退出码 1：
+  「配置目录」「导出目录」写不进去是开发者机器上沙箱限制，缓存已按设计回落到导出目录）；
+  免安装包里的 `使用说明.txt` 与仓库文件逐字节一致（40243 字节 / 505 行）；
+  `tools/repo_check.py` 13 项全绿。程序本体、界面、导出结果与 0.13.17 一致。
+
 - **v0.13.17**（用浏览器登录：领饼干从「页面里 fetch」改成「导航」）：真机上「登录好了、页面上也进了
   用户系统，程序却一路等到超时」的根因是**站点自己的「应用」是跳转式的**。真机取证（匿名请求
   `Member/User/Cookie/index.html`）：HTTP 200、正文 1569 字节，`<title>跳转提示</title>`，
