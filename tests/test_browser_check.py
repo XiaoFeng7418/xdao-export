@@ -6,16 +6,22 @@
 「失败」这一半根本造不出来。所以假浏览器自己写端口文件，按剧本决定要不要
 「答话」（起一个只认 ``/json/version`` 的本地 HTTP 服务）。
 
-假货是一个 ``.cmd`` 壳 + ``python -c``，不碰真浏览器、不碰网络（那个假调试服务只绑
-127.0.0.1 的临时端口）。
+假货就是一个「可执行脚本 + ``python -c``」：Windows 上写成 ``.cmd``，其它平台上写成
+**带 shebang 的 Python 脚本**（不写 ``.sh`` 是不想再引一层 shell 的引号规则 —— 一个
+可执行脚本正是 ``Popen`` 在 POSIX 上会直接执行的东西）。不碰真浏览器、不碰网络
+（那个假调试服务只绑 127.0.0.1 的临时端口）。**两个平台都要真跑**：conftest 的跳过守卫
+不允许白名单外的跳过，第一版拿 ``skipif`` 把 Linux 作业打发掉，CI 两个 ubuntu 作业
+直接红在「有测试被意外跳过」上。
 
-**壳必须用 ``write_bytes`` 写**：``Path.write_text`` 在 Windows 上会把 ``\\n`` 翻成
-``\\r\\n``，而 cmd 脚本的行尾必须自己写 ``\\r\\n``，否则文件里会出现 ``\\r\\r\\n``，
+Windows 那个 ``.cmd`` **必须用 ``write_bytes`` 写**：``Path.write_text`` 会把 ``\\n``
+翻成 ``\\r\\n``，而 cmd 脚本的行尾要自己写 ``\\r\\n``，否则文件里出现 ``\\r\\r\\n``，
 cmd 直接报错退出（第一次写这套用例就踩了：假浏览器「退出码 1」，查了一轮才发现）。
 """
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -25,11 +31,6 @@ import pytest
 
 from xdao import browser_check
 from xdao.browser_login import BrowserInfo, LoginBrowser
-
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="假浏览器靠 Windows 上的 cmd.exe 壳执行（CI 的 ubuntu 作业没这条）",
-)
 
 #: 假浏览器：把 DevToolsActivePort 写进 ``--user-data-dir`` 指的那个目录。
 #: 多出来的两个参数是给它的剧本：模式（dies / deaf / live）和要写进去的端口。
@@ -62,11 +63,38 @@ class _VersionHandler(BaseHTTPRequestHandler):
 
 
 def _fake_browser(work: Path, mode: str, port: str = "1") -> BrowserInfo:
-    """造一个能执行、会写端口文件的假浏览器。"""
-    wrapper = work / "fake_browser.cmd"
-    wrapper.write_bytes(
-        f'@echo off\r\n"{sys.executable}" -c "{_FAKE_CODE}" {mode} {port} %*\r\n'.encode("utf-8")
+    """造一个能执行、会写端口文件的假浏览器（两个平台各一种壳）。
+
+    POSIX 上把剧本参数放进**文件名**（``fake_browser-live-9222`` → 从 ``sys.argv[0]``
+    里拆出来），Windows 上靠 ``%*`` 追加到命令行末尾 —— 不管哪种，都不用管 shell 引号。
+    """
+    if os.name == "nt":
+        # 行尾自己写 \r\n：write_text 会把 \n 翻成 \r\n，cmd 只认前者。
+        wrapper = work / "fake_browser.cmd"
+        wrapper.write_bytes(
+            f'@echo off\r\n"{sys.executable}" -c "{_FAKE_CODE}" {mode} {port} %*\r\n'.encode(
+                "utf-8"
+            )
+        )
+        return BrowserInfo(name="假浏览器", path=str(wrapper))
+    # POSIX：带 shebang 的 Python 脚本 + 执行位（Popen 直接执行它）
+    # 直接写解释器路径而不是 /usr/bin/env：不挑到别的 Python 版本。
+    wrapper = work / f"fake_browser-{mode}-{port}"
+    wrapper.write_text(
+        f'#!{sys.executable}\n'
+        "import os, sys\n"
+        "tail = os.path.basename(sys.argv[0]).split('-', 1)[1]\n"
+        'sys.argv[1:1] = tail.split("-", 1)\n'
+        + _FAKE_CODE.replace("; ", "\n")
+        + "\n",
+        encoding="utf-8",
     )
+    # **写死 0o755**，别用 `st_mode | S_IXUSR`：Windows 上 `stat.S_IXUSR` 是 0，
+    # 那种写法在本机探测不出「执行位到底有没有给」（实测在 mock 成 posix 的本地探针里
+    # 权限仍是 0o666），到了 ubuntu 作业上就直接 `PermissionError`。
+    # 也别在这儿断言执行位：Windows 的 stat 恒返回 0o666，断言只会把本机弄红
+    # （执行位只有 ubuntu 的作业才验得了）。
+    wrapper.chmod(0o755)
     return BrowserInfo(name="假浏览器", path=str(wrapper))
 
 
