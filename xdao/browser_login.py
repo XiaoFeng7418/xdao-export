@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from .browser_flags import launch_flags
 
@@ -380,11 +380,18 @@ def fresh_profile_dir() -> Path:
     )
 
 
+#: 我们建在系统临时目录下的目录名前缀：登录用的临时资料目录，以及 ``--check-browser``
+#: 自检时那一份（``browser_check`` 用 ``mkdtemp(prefix="xdao-browser-check-")`` 建的）。
+#: 两样都是临时的、都该在收尾时删掉，所以清理时要一起认。
+TEMP_DIR_PREFIXES = (f"xdao-export-{USER_DATA_DIR_NAME}", "xdao-browser-check-")
+
+
 def _is_temp_profile_dir(path: Path) -> bool:
     """这个资料目录是不是「我们建在系统临时目录下」的那种（是就该由我们负责删）。
 
-    认位置 + 名字前缀：系统临时目录下的 ``xdao-export-browser-profile…``。备用候选里
-    也有一个是这么命名的（见 :func:`fallback_profile_dirs`），它同样是我们建出来的，
+    认位置 + 名字前缀：系统临时目录下的 ``xdao-export-browser-profile…`` 与
+    ``xdao-browser-check-…``。备用候选里也有一个是这么命名的
+    （见 :func:`fallback_profile_dirs`），它同样是我们建出来的，
     收尾得一起清。用户配置目录里的 ``browser-profile`` 不在此列 —— 那是他自己的资料，
     留着下次还能用，不能替他删。
     """
@@ -392,7 +399,82 @@ def _is_temp_profile_dir(path: Path) -> bool:
         root = Path(tempfile.gettempdir())
     except OSError:  # pragma: no cover —— 拿不到临时目录就算不是
         return False
-    return path.parent == root and path.name.startswith(f"xdao-export-{USER_DATA_DIR_NAME}")
+    return path.parent == root and path.name.startswith(TEMP_DIR_PREFIXES)
+
+
+#: 启动时扫旧临时资料目录的年龄门槛（秒）：比这新的不碰（多半是别的实例正开着登录窗口）。
+SWEEP_MIN_AGE = 3600.0
+
+#: 扫的时候问一次调试端口的等待上限（秒）。只问一次 —— 这里不是在等浏览器起来。
+SWEEP_PROBE_TIMEOUT = 0.5
+
+
+def _profile_in_use(profile: Path) -> bool:
+    """这一份临时资料目录是不是还有活着的浏览器在用？
+
+    看 ``DevToolsActivePort`` 里那个端口答不答话：浏览器还开着这个目录时它一定答话
+    （程序被强杀时浏览器自己会活下来），那一份就不能删。文件不在、端口是死的、
+    接口报错，都算没人用。
+    """
+    try:
+        text = (profile / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    try:
+        port = parse_devtools_port(text)
+    except CdpError:
+        return False
+    from .cdp import _http_json_once
+
+    try:
+        _http_json_once(f"http://127.0.0.1:{port}/json/version", timeout=SWEEP_PROBE_TIMEOUT)
+    except CdpError:
+        return False
+    return True
+
+
+def sweep_stale_temp_profiles(
+    *, min_age: float = SWEEP_MIN_AGE, keep: Iterable[Path] = ()
+) -> int:
+    """把以前留下的临时资料目录扫掉，返回删掉几个。
+
+    :meth:`LoginBrowser.cleanup_temp_profile` 只在**程序自己收尾**时删。程序被强杀
+    （任务管理器结束进程、停电、被安全软件拦下）就没人收尾，那些目录会一直躺在
+    ``%TEMP%`` 里 —— 真机上量到过 147 个，多数是空壳，也有一次登录十几 MB 的。
+
+    三条全中才删：在系统临时目录下且名字前缀是我们的（:data:`TEMP_DIR_PREFIXES`）；
+    目录的修改时间比 ``min_age`` 秒还老（刚建出来的多半是别的实例正在用）；
+    **调试端口没人答话**（见 :func:`_profile_in_use`）。``keep`` 里的路径一律不碰
+    （这次会话自己建的那几份）。删不掉的留着，下次启动再说 —— 这里不跟文件较劲。
+    """
+    try:
+        root = Path(tempfile.gettempdir())
+    except OSError:  # pragma: no cover —— 拿不到临时目录就没什么可扫的
+        return 0
+    keep_set = {Path(item) for item in keep}
+    try:
+        entries = list(root.iterdir())
+    except OSError:  # pragma: no cover —— 临时目录列不出来就算了
+        return 0
+    deleted = 0
+    for entry in entries:
+        if entry in keep_set or not _is_temp_profile_dir(entry):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            age = time.time() - entry.stat().st_mtime
+        except OSError:  # pragma: no cover —— 刚被别人删掉了、或读不到属性
+            continue
+        if age < min_age:
+            continue
+        if _profile_in_use(entry):
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            deleted += 1
+    return deleted
+
 
 
 def _profile_failure(exc: BaseException) -> bool:

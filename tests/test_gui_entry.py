@@ -1321,6 +1321,40 @@ def test_app_schedules_one_update_check_after_startup():
     assert source.count("check_update(silent=True)") == 1, "启动时只该问一次"
 
 
+def test_startup_sweeps_the_old_temp_profiles(monkeypatch):
+    """启动时要顺手把 %TEMP% 里的旧资料目录扫掉（被强杀留下的那些）。
+
+    正常收尾由 ``LoginBrowser.cleanup_temp_profile()`` 当场删；程序被强杀就没人收尾，
+    所以得在启动时补一刀。放后台线程里做，而且清不干净也不许影响启动。
+    """
+    import inspect
+    import re
+
+    from xdao import browser_login
+    from xdao.gui import App
+
+    source = inspect.getsource(App.__init__)
+    assert re.search(r"Thread\(target=self\._sweep_temp_profiles", source), (
+        "启动时没有安排那次临时资料目录清扫"
+    )
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        browser_login,
+        "sweep_stale_temp_profiles",
+        lambda **kwargs: (calls.append("sweep"), 0)[1],
+    )
+    app = App.__new__(App)
+    app._sweep_temp_profiles()
+    assert calls == ["sweep"]
+
+    def boom(**kwargs):
+        raise OSError("被安全软件拦下了")
+
+    monkeypatch.setattr(browser_login, "sweep_stale_temp_profiles", boom)
+    app._sweep_temp_profiles()  # 不该往外抛
+
+
 # ---------- 一键升级（界面这条路） ----------
 
 
