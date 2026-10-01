@@ -4,10 +4,12 @@
 
 1. 本地与远端的提交是否对应（本地有没有还没推的提交）；
 2. 本地 HEAD 的树与远端分支的树是否逐文件一致；
-3. 版本号是否处处一致（``xdao/__init__.py`` ↔ 最新 Release 标签 ↔ 附件名）；
-4. 最新 Release 是否具备预期的附件，说明里有没有提到免安装包；
-5. 有没有积压的 issue / PR；
-6. 仓库基础设置（描述、话题、许可、默认分支）是否齐全。
+3. 工作区有没有没提交的改动（这一项不看的话，上面两条说的是「HEAD 同步」，
+   而按着没提交的改动照样会以为一切都推上去了）；
+4. 版本号是否处处一致（``xdao/__init__.py`` ↔ 最新 Release 标签 ↔ 附件名）；
+5. 最新 Release 是否具备预期的附件，说明里有没有提到免安装包；
+6. 有没有积压的 issue / PR；
+7. 仓库基础设置（描述、话题、许可、默认分支）是否齐全。
 
 用法：
     python tools/repo_check.py --repo XiaoFeng7418/xdao-export
@@ -68,6 +70,25 @@ def local_tree(repo_dir: Path) -> dict[str, str]:
         head, _, path = line.partition("\t")
         result[path] = head.split()[2]
     return result
+
+
+def worktree_changes(repo_dir: Path) -> list[str]:
+    """工作区相对 HEAD 的改动（改过的、暂存的、未跟踪的都算），返回路径列表。"""
+    out = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True,
+        encoding="utf-8",
+    )
+    if out.returncode != 0:
+        raise ApiError(f"读工作区状态失败：{out.stderr.strip()}")
+    names: list[str] = []
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            continue
+        name = line[3:].strip()
+        if " -> " in name:
+            name = name.split(" -> ", 1)[1]
+        names.append(name)
+    return names
 
 
 def git_subjects(repo_dir: Path, *args: str) -> list[str] | None:
@@ -171,7 +192,10 @@ def main(argv: list[str]) -> int:
     only_local = sorted(set(mine) - set(theirs))
     only_remote = sorted(set(theirs) - set(mine))
     changed = sorted(k for k in set(mine) & set(theirs) if mine[k] != theirs[k])
-    if not (only_local or only_remote or changed):
+    if not mine:
+        # 空集合和「一致」是两回事：读不到本地树时必须说没查成，不能报「逐文件一致（0 个文件）」。
+        report.add(BAD, "文件", "本地树是空的（git ls-tree 没读到文件），这一项没查成")
+    elif not (only_local or only_remote or changed):
         report.add(OK, "文件", f"本地与远端逐文件一致（{len(mine)} 个文件）")
     else:
         if only_local:
@@ -181,7 +205,19 @@ def main(argv: list[str]) -> int:
         if changed:
             report.add(WARN, "文件", f"内容不同：{', '.join(changed[:5])}")
 
-    # ---------- 4. 版本号一致性 ----------
+    # ---------- 4. 工作区 ----------
+    dirty = worktree_changes(repo_dir)
+    if dirty:
+        more = "…" if len(dirty) > 5 else ""
+        report.add(
+            WARN, "工作区",
+            f"有 {len(dirty)} 个没提交的改动（改过/暂存/未跟踪）："
+            + "、".join(dirty[:5]) + more,
+        )
+    else:
+        report.add(OK, "工作区", "干净，没有没提交的改动")
+
+    # ---------- 5. 版本号一致性 ----------
     version = ""
     try:
         sys.path.insert(0, str(repo_dir))
@@ -192,12 +228,15 @@ def main(argv: list[str]) -> int:
     latest = releases[0] if releases else None
     if latest:
         tag = latest["tag_name"].lstrip("v")
-        if version and tag != version:
+        if not version:
+            # 上面已经报过「读不到」，这里别再补一句「一致」——那会变成自相矛盾的假绿灯。
+            pass
+        elif tag != version:
             report.add(WARN, "版本", f"代码里是 {version}，最新 Release 是 {latest['tag_name']}")
         else:
             report.add(OK, "版本", f"{version} 与最新 Release {latest['tag_name']} 一致")
 
-        # ---------- 5. 附件检查 ----------
+        # ---------- 6. 附件检查 ----------
         # v0.5.1 起只发免安装包：单文件版的启动器在中文路径下会直接打不开
         # （Could not create temporary directory!），且这取决于用户把文件放哪儿。
         names = [a["name"] for a in latest.get("assets", [])]
@@ -220,7 +259,7 @@ def main(argv: list[str]) -> int:
     else:
         report.add(WARN, "发布", "仓库还没有 Release")
 
-    # ---------- 6. 待办事项 ----------
+    # ---------- 7. 待办事项 ----------
     issues = request_json("GET", f"/repos/{args.repo}/issues?state=open", token)
     prs = [i for i in issues if "pull_request" in i]
     plain = [i for i in issues if "pull_request" not in i]
