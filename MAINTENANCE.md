@@ -335,6 +335,15 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    并返回 1（未跟踪文件不算），干净时才说「工作区里 N 个已跟踪文件也逐一对得上」。
    `--dry-run` 的文案也改了：它确实不动分支引用，但为核对 sha 会往本地 `.git` 写未引用的
    松散对象，不许再说「未改动远端」。五处都注入验过：退回旧写法，用例立刻红。
+    **取 CI 日志这一步也有用例兜着**（2026-10-02 补上）：`tests/test_ci_logs.py` 37 条，拿假 API 与
+    假 `urlopen` / `build_opener` 跑 `tools/ci_logs.py`，专盯「红的看成绿的」这一类 ——
+    ① job 前面那个记号以前只认 `failure`，`cancelled` / `timed_out` / `action_required` /
+    `startup_failure` / `stale` 全都印 ✓（一次被取消的运行看着跟全绿一样），现在这些都算没成功、
+    还在跑的印 …；② `--job` 拼错时以前只印一行「没有匹配的 job」并返回 0，现在会把这次运行里
+    真实的 job 名列出来、返回 1，并且**不写** `--save` 指定的文件；③ 以前只有失败或还在跑的 job
+    才拉日志，全绿的运行上 `--grep 超时` 一行都没搜还静默返回 0 —— 现在带 `--grep` 一定把日志
+    真的拉下来，匹配不到就明说一句「在 N 个 job、M 行日志里找过」并返回 1；④ `api()` 对 5xx 与
+    429 会重试（其它 4xx 立刻停，重试没用）。四处都注入验过：退回旧写法，用例立刻红。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
@@ -1207,6 +1216,9 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    日志真实地址在 `results-receiver.actions.githubusercontent.com`，
    带签名的临时 URL 在本机网络下经常被中途掐断（`unexpected EOF`）。
    该脚本自己跟随重定向、去掉 `Authorization` 头（否则云存储回 401）并分段重试。
+   2026-10-02 起它还会说话：`--job` 拼错（一个 job 都没匹配上）或 `--grep` 一行都没匹配到，
+   都会明确报出来并**返回 1** —— 「没搜到」不等于「CI 没问题」；job 记号的 ✗ 也不只代表
+   `failure`，`cancelled` / `timed_out` 同样算没成功（细节见第 8 条）。
 3. **本机 3.12 跑绿不代表 CI 绿**：三个矩阵里有一个是 `Ubuntu + Python 3.10`（声明的最低
    版本），3.10 缺的东西在本机根本不会露头。真实案例（2026-10-02，提交 1c1147c）：
    `tests/test_sync_from_api.py` 里拿 `datetime.fromisoformat()` 去解析 git `%aI` 给出的
