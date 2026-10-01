@@ -610,7 +610,12 @@ def test_pasting_a_cookie_while_the_browser_starts_leaves_no_orphan_process(
         "stop",
         lambda self: (stops.append(threading.get_ident()), real_stop(self))[1],
     )
-    monkeypatch.setattr(gui.simpledialog, "askstring", lambda *a, **k: PASTED_COOKIE)
+    # 2026-10-01 起粘贴走自家窗口（gui.ask_pasted_cookie），它交出来的已经是
+    # 摘好的 userhash（整段 cookie 的解析在 PasteCookieDialog 里，见 test_window.py）；
+    # 这条用例只关心「取消时别留孤儿进程」，这里照样用真解析器把整段 cookie 摘一遍。
+    monkeypatch.setattr(
+        gui, "ask_pasted_cookie", lambda master: browser_login.parse_userhash_input(PASTED_COOKIE)
+    )
     dialog = open_dialog()
 
     assert shim.popen_entered.wait(timeout=10.0), "后台线程没走到起进程那一步"

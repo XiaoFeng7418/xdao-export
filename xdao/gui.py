@@ -19,7 +19,7 @@ import time
 import tkinter as tk
 import traceback
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from .cache import CachedThreadFetcher, resolve_cache_dir
 from .client import XdaoClient, XdaoError
@@ -305,6 +305,155 @@ def fold_buttons_when_narrow(
     row.bind("<Configure>", on_configure)
 
 
+# ---------- 直接粘贴饼干登录 ----------
+
+# 「为什么不用你自己浏览器的数据」与「去哪儿复制」两段话。放模块级是为了能用例
+# 直接断言它讲清了没有 —— 这两句是这一版真正要交付的东西。
+PASTE_WHY = (
+    "程序不会去翻你自己浏览器的数据 —— 插件、保存的密码、登录状态都不碰。"
+    "所以这一步是「你替它抄一份」：抄的只是一个 X 岛的登录饼干，抄完就归程序自己管。"
+)
+PASTE_STEPS = (
+    "在你平时用的那个浏览器里（已经登录过 X 岛的）：\n"
+    "① 按 F12 打开开发者工具；\n"
+    "② 选「应用程序 / Application」→ 左边「Cookie」→ 点 https://www.nmbxd1.com ；\n"
+    "③ 找到 userhash 那一行，复制它的「值」（整行 userhash=… 也行）。\n"
+    "把复制到的内容粘到下面。整段 cookie 也可以，程序会自己把 userhash 摘出来。"
+)
+
+
+class PasteCookieDialog(tk.Toplevel):
+    """把浏览器里的 cookie（或 userhash 值）粘进来，交给登录流程。
+
+    为什么要自己写一个窗口：``simpledialog.askstring`` 的提示文字不换行，而这里
+    得说清三件事 —— 为什么不去读你自己浏览器的数据、去哪儿复制、粘什么算数。
+    一句挤在一行里，用户看一半就放弃了。
+    """
+
+    def __init__(self, master: tk.Misc) -> None:
+        super().__init__(master)
+        self.configure(bg=BG)
+        #: 摘出来的 userhash；取消或没粘东西时是 None。
+        self.userhash: str | None = None
+        self.title("直接粘贴饼干登录")
+        self.transient(master)
+        self.minsize(560, 430)
+
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
+        outer.pack(fill="both", expand=True)
+
+        card = Card(outer)
+        card.pack(fill="both", expand=True)
+        SectionHeading(card.body, "直接粘贴饼干登录").pack(fill="x")
+
+        # 两段说明都给保守的初始 wraplength：不给的话 Card 会按整句宽度把窗口
+        # 撑到屏幕外；给了再让 wrap_to_width 跟着窗口走（见 tests/test_window.py）。
+        why = tk.Label(
+            card.body,
+            text=PASTE_WHY,
+            bg=CARD,
+            fg=MUTED,
+            font=SMALL_FONT,
+            justify="left",
+            anchor="w",
+            wraplength=theme.gap(120),
+        )
+        why.pack(fill="x", pady=(theme.gap(2), 0))
+        wrap_to_width(why, minimum=240)
+
+        steps = tk.Label(
+            card.body,
+            text=PASTE_STEPS,
+            bg=CARD,
+            fg=TEXT,
+            font=SMALL_FONT,
+            justify="left",
+            anchor="w",
+            wraplength=theme.gap(120),
+        )
+        steps.pack(fill="x", pady=(theme.gap(2), 0))
+        wrap_to_width(steps, minimum=240)
+
+        self.text = tk.Text(
+            card.body,
+            height=6,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+            font=BODY_FONT,
+            padx=theme.gap(2),
+            pady=theme.gap(1.5),
+            bg=_PAL.surface_sunken,
+            fg=TEXT,
+            insertbackground=TEXT,
+            selectbackground=_PAL.accent_soft,
+        )
+        self.text.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
+        # 这一步就是「贴进来」，右键菜单里没有「粘贴」说不过去。
+        menu = tk.Menu(self.text, tearoff=0)
+        menu.add_command(label="粘贴", command=lambda: self.text.event_generate("<<Paste>>"))
+        menu.add_command(label="复制", command=lambda: self.text.event_generate("<<Copy>>"))
+        menu.add_separator()
+        menu.add_command(label="全选", command=lambda: self.text.event_generate("<<SelectAll>>"))
+
+        def show_menu(event: tk.Event) -> None:
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        self.text.bind("<Button-3>", show_menu)
+
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(theme.gap(3), 0))
+        ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
+            side="right", padx=(theme.gap(1), 0)
+        )
+        ttk.Button(buttons, text="确定", command=self._confirm).pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", lambda _event: self.destroy())
+        # 焦点有时要等窗口映射完才给的进去，两头都试一次。
+        self.text.focus_set()
+        self.after(50, self.text.focus_set)
+
+    def _confirm(self) -> None:
+        """把粘贴框里的文字摘成 userhash；摘不出来就原地提示，不关窗口。"""
+        # 延迟导入：这个模块只管「从粘贴的文字里摘 userhash」这一件事，
+        # 界面本身不依赖它，缺了也不该影响窗口启动。
+        try:
+            from .browser_login import looks_like_userhash, parse_userhash_input
+        except Exception:  # pragma: no cover - 只有裁掉了浏览器组件的版本才会走到
+            messagebox.showwarning(
+                "这个版本里没有「浏览器登录」组件",
+                "没法从粘贴的内容里摘 userhash，请改用其它登录方式。",
+                parent=self,
+            )
+            return
+
+        value = parse_userhash_input(self.text.get("1.0", "end"))
+        if not value or not looks_like_userhash(value):
+            messagebox.showwarning(
+                "没找到 userhash",
+                "粘贴的内容里没找到 userhash。\n"
+                "请确认复制的是浏览器里的整段 cookie（或至少包含 userhash=… 的那一部分），"
+                "或者照上面第 ③ 步只复制 userhash 那一行的「值」。",
+                parent=self,
+            )
+            return
+        self.userhash = value
+        self.destroy()
+
+
+def ask_pasted_cookie(master: tk.Misc) -> str | None:
+    """弹出「直接粘贴饼干登录」，返回摘出来的 userhash；取消或没粘东西返回 None。"""
+    dialog = PasteCookieDialog(master)
+    master.wait_window(dialog)
+    return dialog.userhash
+
+
 class LoginDialog(tk.Toplevel):
     def __init__(
         self,
@@ -489,27 +638,18 @@ class LoginDialog(tk.Toplevel):
 
     def _manual_userhash(self) -> None:
         """账号密码登录走不通时的兜底：把浏览器里的饼干整段粘进来即可。"""
-        # 延迟导入：这个模块只管「从粘贴的文字里摘 userhash」这一件事，
-        # 界面本身不依赖它，缺了也不该影响窗口启动。
-        from .browser_login import looks_like_userhash, parse_userhash_input
-
-        value = simpledialog.askstring(
-            "粘贴饼干登录",
-            "在浏览器里登录 X 岛用户系统，把 cookie 整段复制粘贴到下面就行"
-            "（userhash=... 也在这段里），程序会自己把值摘出来。\n"
-            "不需要打开开发者工具。",
-            parent=self,
-        )
-        if not value or not value.strip():
-            return
-        userhash = parse_userhash_input(value)
-        if not userhash or not looks_like_userhash(userhash):
-            messagebox.showwarning(
-                "没找到 userhash",
-                "粘贴的内容里没找到 userhash，"
-                "请确认复制的是浏览器里的整段 cookie（或至少包含 userhash=... 的那一部分）。",
-                parent=self,
-            )
+        # 本对话框自己 grab_set() 过，而子窗口也要用鼠标：先把 grab 放开，
+        # 等子窗口关掉再收回来（跟「用浏览器登录」同一条路子）。
+        self.grab_release()
+        try:
+            userhash = ask_pasted_cookie(self)
+        finally:
+            try:
+                if self.winfo_exists():
+                    self.grab_set()
+            except tk.TclError:  # pragma: no cover - 窗口已经不可用了
+                pass
+        if not userhash:
             return
         try:
             self.client.set_userhash(userhash)
@@ -678,14 +818,24 @@ class BrowserLoginDialog(tk.Toplevel):
         card = Card(outer)
         card.pack(fill="x")
         SectionHeading(card.body, "用浏览器登录").pack(fill="x")
-        tk.Label(
+        # 这一段是用户真问出来的（2026-10-01）：「为什么程序打开的 Edge 和我平时用的
+        # 不是同一个软件？我平时装的插件、保存的密码，这里全都没有。」——它是同一个
+        # Edge，只是换了份干净的临时资料目录；而且 Chrome/Edge 136 起不允许在默认
+        # 资料目录上开调试端口（官方为防「偷 Cookie」做的改动），想读饼干就必须换目录。
+        # 所以这里要把「为什么是空的」「你要做什么」直接写清楚，别让用户自己猜。
+        # 分成三段：每段一件事，短句子按句号断开，免得折行把「X 岛」这种词劈开。
+        # 分成几行写：Tk 的中文折行是按字符切的，长句容易把「X岛」这种词劈开，
+        # 也容易让下一行以逗号开头 —— 每行控制在一句以内就干净了。
+        self.intro = tk.Label(
             card.body,
             text=(
-                "点开之后会弹出一个独立的浏览器窗口。在里面像平时一样登录 X 岛用户系统，"
-                "该输密码就输密码、该点验证码就点验证码；登录成功后程序会自己把饼干取回来，"
-                "浏览器窗口也会自动关掉。\n"
-                "不需要按 F12，也不用复制任何东西；这个窗口用的是单独的浏览器配置，"
-                "不会动你自己浏览器里的登录状态。"
+                "点开后弹出一个独立的浏览器窗口 —— 干净的一次性窗口：\n"
+                "没有你平时装的插件，也没有保存的密码。\n"
+                "请在里面用 X岛账号登录一次（跟微软账号无关，别输微软密码）。\n"
+                "程序只取一个 X岛的登录饼干；关掉窗口后临时资料就删掉了，\n"
+                "你自己的浏览器一点也不受影响。\n"
+                "不想重输：关掉它，点「直接粘贴饼干登录」，\n"
+                "把你自己浏览器里的 userhash 抄过来就行。"
             ),
             bg=CARD,
             fg=MUTED,
@@ -693,7 +843,9 @@ class BrowserLoginDialog(tk.Toplevel):
             justify="left",
             anchor="w",
             wraplength=420,
-        ).pack(fill="x", pady=(theme.gap(2), 0))
+        )
+        self.intro.pack(fill="x", pady=(theme.gap(2), 0))
+        wrap_to_width(self.intro, minimum=260)
 
         # 「这次用哪个浏览器」：定下来之前这行是空的，定下来才填上（见 _set_browser_note）。
         # 常有人把系统默认浏览器改成 Chrome、实际打开的却还是 Edge（改设置没落地、
@@ -872,32 +1024,17 @@ class BrowserLoginDialog(tk.Toplevel):
 
     def _manual_userhash(self) -> None:
         """不想开浏览器的话，也可以自己把饼干整段粘进来。"""
+        # 本窗口 grab_set 过，子窗口要用鼠标：先放开，关掉再收回来。
+        self.grab_release()
         try:
-            backend = _load_browser_login()
-        except Exception:
-            backend = None
-        value = simpledialog.askstring(
-            "直接粘贴饼干登录",
-            "在浏览器里登录 X 岛用户系统，把 cookie 整段复制粘贴到下面就行"
-            "（userhash=... 也在这段里），程序会自己把值摘出来。",
-            parent=self,
-        )
-        if not value or not value.strip():
-            return
-        userhash = ""
-        if backend is not None:
+            userhash = ask_pasted_cookie(self)
+        finally:
             try:
-                userhash = backend.parse_userhash_input(value)
-                if userhash and not backend.looks_like_userhash(userhash):
-                    userhash = ""
-            except Exception:
-                userhash = ""
+                if self.winfo_exists():
+                    self.grab_set()
+            except tk.TclError:  # pragma: no cover - 窗口已经不可用了
+                pass
         if not userhash:
-            messagebox.showwarning(
-                "没找到 userhash",
-                "粘贴的内容里没找到 userhash，请确认复制的是浏览器里的整段 cookie。",
-                parent=self,
-            )
             return
         try:
             self.userhash = self.client.import_userhash(userhash)

@@ -191,12 +191,23 @@ class _FakePasteClient:
 
 
 class FakeLoginDialog:
-    """只提供 _manual_userhash 用得到的三样东西，免得真开一个 Tk 窗口。"""
+    """只提供 _manual_userhash 用得到的那几样东西，免得真开一个 Tk 窗口。"""
 
     def __init__(self) -> None:
         self.client = _FakePasteClient()
         self.userhash = ""
         self.destroyed = False
+        self.released = 0
+        self.grabs = 0
+
+    def grab_release(self) -> None:
+        self.released += 1
+
+    def grab_set(self) -> None:
+        self.grabs += 1
+
+    def winfo_exists(self) -> bool:
+        return True
 
     def destroy(self) -> None:
         self.destroyed = True
@@ -301,57 +312,49 @@ def test_browser_login_without_an_app_still_works(monkeypatch):
 
 
 def _paste(monkeypatch, text):
-    """把 _manual_userhash 跑一遍，收集它弹过什么框。"""
-    prompts: list[tuple] = []
+    """把 _manual_userhash 跑一遍，收集它弹过什么框。
+
+    2026-10-01 起粘贴走的是自家窗口（``gui.PasteCookieDialog``，提示文字会换行、
+    还会写清去哪儿抄 userhash），摘 userhash 的活在那个窗口里做完了 —— 所以这里
+    顶掉的是 ``ask_pasted_cookie``，不再是 ``simpledialog.askstring``。
+    """
+    asked: list[object] = []
     warnings: list[tuple] = []
     errors: list[tuple] = []
 
-    def fake_askstring(title, prompt, parent=None):
-        prompts.append((title, prompt))
+    def fake_ask(master):
+        asked.append(master)
         return text
 
-    monkeypatch.setattr(gui.simpledialog, "askstring", fake_askstring)
+    monkeypatch.setattr(gui, "ask_pasted_cookie", fake_ask)
     monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warnings.append(a))
     monkeypatch.setattr(gui.messagebox, "showerror", lambda *a, **k: errors.append(a))
 
     dialog = FakeLoginDialog()
     gui.LoginDialog._manual_userhash(dialog)
-    return dialog, prompts, warnings, errors
+    return dialog, asked, warnings, errors
 
 
-def test_manual_userhash_picks_the_value_out_of_a_whole_cookie_string(monkeypatch):
-    """用户从浏览器里复制到的是整段 cookie，不该逼他自己找 userhash= 在哪。"""
-    dialog, _, warnings, errors = _paste(
-        monkeypatch, "other=1; userhash=ABCD1234; sid=xyz; theme=dark"
-    )
+def test_manual_userhash_uses_the_paste_window(monkeypatch):
+    """粘贴这条路要开自家窗口，并且把窗口交出来的 userhash 设进去。"""
+    dialog, asked, warnings, errors = _paste(monkeypatch, "ABCD1234")
 
+    assert asked == [dialog], "必须把对话框自己当父窗口传给粘贴窗口"
     assert dialog.client.userhash == "ABCD1234"
     assert dialog.userhash == "ABCD1234"
     assert dialog.destroyed is True
     assert warnings == [] and errors == []
 
 
-def test_manual_userhash_accepts_a_quoted_value_with_whitespace(monkeypatch):
-    """从浏览器复制出来的值常带引号、换行和空格。"""
-    dialog, _, warnings, errors = _paste(monkeypatch, '  "userhash=EF567890; path=/"  \n')
+def test_manual_userhash_gives_the_grab_back(monkeypatch):
+    """本窗口 grab_set 过，子窗口要用鼠标：先放开，关掉再收回来。"""
+    dialog, _, _, _ = _paste(monkeypatch, "ABCD1234")
 
-    assert dialog.client.userhash == "EF567890"
-    assert dialog.destroyed is True
-    assert warnings == [] and errors == []
-
-
-def test_manual_userhash_explains_when_there_is_no_userhash(monkeypatch):
-    """粘错了不能抛异常，也不能把垃圾值当饼干设进去。"""
-    dialog, _, warnings, errors = _paste(monkeypatch, "我复制了一段别的东西")
-
-    assert dialog.client.userhash is None
-    assert dialog.destroyed is False
-    assert errors == []
-    assert warnings, "解析失败要弹一次提示"
-    assert "userhash" in warnings[0][1]
+    assert dialog.released == 1
+    assert dialog.grabs == 1, "子窗口关掉之后要把 grab 收回来，否则主窗口点不动"
 
 
-def test_manual_userhash_does_nothing_when_the_dialog_is_cancelled(monkeypatch):
+def test_manual_userhash_does_nothing_when_the_paste_window_is_cancelled(monkeypatch):
     dialog, _, warnings, errors = _paste(monkeypatch, None)
 
     assert dialog.client.userhash is None
@@ -359,15 +362,19 @@ def test_manual_userhash_does_nothing_when_the_dialog_is_cancelled(monkeypatch):
     assert warnings == [] and errors == []
 
 
-def test_manual_userhash_prompt_tells_users_not_to_open_devtools(monkeypatch):
-    """提示语本身就是这次改动的交付物：整段粘贴 + 不用开发者工具。"""
-    _, prompts, _, _ = _paste(monkeypatch, None)
+def test_paste_window_explains_why_and_where_to_copy(monkeypatch):
+    """提示语本身就是这次改动的交付物（用户 2026-10-01 问「为什么不是同一个 Edge」）。
 
-    assert prompts, "必须先问一次要粘贴的内容"
-    title, prompt = prompts[0]
-    assert "粘贴" in title
-    assert "整段" in prompt
-    assert "不需要打开开发者工具" in prompt
+    要讲清两件事：①程序不碰你自己浏览器的数据；②去哪儿抄 userhash（含 F12 那条路）。
+    """
+    why = gui.PASTE_WHY
+    steps = gui.PASTE_STEPS
+
+    assert "不会去翻你自己浏览器的数据" in why
+    assert "密码" in why and "插件" in why
+    for needle in ("F12", "应用程序 / Application", "Cookie", "userhash", "nmbxd1"):
+        assert needle in steps, needle
+    assert "复制" in steps
 
 
 # ---------------------------------------------------------------------------
