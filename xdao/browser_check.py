@@ -246,6 +246,49 @@ def check_one(
     return result
 
 
+def check_all(
+    explicit: str = "",
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+    limit: int = DEFAULT_LIMIT,
+    env: dict | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> BrowserReport:
+    """挨个试候选浏览器，**直到有一个能起来**（不是试到一个能用就停）。
+
+    和 :func:`check_browsers` 的差别只在「什么时候停」：那条路（``--check-browser``）
+    要回答的是「我现在点得动吗」，能起来就够了；这条路要回答的是「自己那个起不来是
+    普遍现象，还是只有它」—— 用户碰到的正是「默认浏览器（Edge）一起来就被拦下，
+    但 Chrome 能用」，只报告第一个失败会让人以为整条路都废了。
+    """
+    head = find_browser(explicit or None, env)
+    if head is None:
+        return BrowserReport(
+            [
+                BrowserCheck(
+                    name="浏览器",
+                    path=explicit,
+                    ok=False,
+                    found=False,
+                    detail="没找到 Edge、Chrome、Chromium 或 Brave。",
+                )
+            ]
+        )
+    candidates: list[BrowserInfo] = [head]
+    for info in browser_candidates(head):
+        if all(info.path != seen.path for seen in candidates):
+            candidates.append(info)
+    checks: list[BrowserCheck] = []
+    for info in candidates[: max(1, limit)]:
+        if progress is not None:
+            progress(f"正在试 {info.name}（{info.path}）…")
+        check = check_one(info, timeout)
+        checks.append(check)
+        if check.ok:
+            break  # 有一个能起来就够了，剩下的不必挨个启动一遍
+    return BrowserReport(checks)
+
+
 def check_browsers(
     explicit: str = "",
     *,
@@ -259,30 +302,6 @@ def check_browsers(
     第一个是**用户在设置里指定的那个 / 系统默认浏览器**（和「用浏览器登录」走的是
     同一个挑选逻辑），所以这份结论能直接回答「我为什么点不动」。
     """
-    head = find_browser(explicit or None, env)
-    checks: list[BrowserCheck] = []
-    if head is None:
-        checks.append(
-            BrowserCheck(
-                name="浏览器",
-                path=explicit,
-                ok=False,
-                found=False,
-                detail="没找到 Edge、Chrome、Chromium 或 Brave。",
-            )
-        )
-        return BrowserReport(checks)
-    candidates: list[BrowserInfo] = [head]
-    for info in browser_candidates(head):
-        if info.path == head.path:
-            continue
-        if all(info.path != seen.path for seen in candidates):
-            candidates.append(info)
-    for info in candidates[: max(1, limit)]:
-        if progress is not None:
-            progress(f"正在试 {info.name}（{info.path}）…")
-        check = check_one(info, timeout)
-        checks.append(check)
-        if check.ok:
-            break  # 有一个能用就够了，不必把机器上每个浏览器都启动一遍
-    return BrowserReport(checks)
+    return check_all(
+        explicit, timeout=timeout, limit=limit, env=env, progress=progress
+    )

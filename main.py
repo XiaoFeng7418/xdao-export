@@ -127,11 +127,15 @@ _attach_parent_console()
 _open_utf8_console()
 
 
-def selftest(json_output: bool = False, offline: bool = False) -> int:
+def selftest(json_output: bool = False, offline: bool = False, browser: bool = False) -> int:
     """自检：先看本机环境，再看接口能不能通。
 
     分两段是有意的 —— 本机那段（配置目录、缓存目录、导出目录、浏览器、导出格式）
     在断网时照样有意义，而它在原来自检里完全没有。
+
+    ``browser=True``（``--selftest --check-browser``）时额外**真的启一次浏览器**：
+    本机那段里的「浏览器」只查找不找得到可执行文件，碰上「找得到、一起来就被拦下」
+    照样显示「可以」。这一段会真的启动浏览器进程，所以默认不跑。
     """
     from xdao import preflight
 
@@ -141,6 +145,10 @@ def selftest(json_output: bool = False, offline: bool = False) -> int:
             print(line)
         print("")
     report.extend(preflight.run_local_checks().checks)
+    if browser:
+        if not json_output:
+            print("正在真的启动一次浏览器…（起不来的话会写明退出码）")
+        report.extend(preflight.browser_start_checks().checks)
     if not offline:
         report.extend(preflight.run_network_checks())
     if json_output:
@@ -434,7 +442,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check-browser",
         action="store_true",
-        help="试一试本机浏览器能不能真的起来（会短暂启动它；排查「用浏览器登录」失败时用）",
+        help="试一试本机浏览器能不能真的起来（会短暂启动它；排查「用浏览器登录」失败时用）"
+        "；配 --selftest 用：把它当成自检里的一条（默认只查找不找得到）",
     )
     parser.add_argument(
         "--check-browser-json",
@@ -821,7 +830,13 @@ def main(argv: list[str] | None = None) -> int:
         print("--offline 要配 --selftest 用。", file=sys.stderr)
         return 2
     if args.selftest or args.selftest_json:
-        return selftest(json_output=args.selftest_json, offline=args.offline)
+        # --check-browser 在这儿是**加一条**（真的启一次浏览器），不是那条单独的
+        # 命令：自检里的「浏览器」只查找不找得到可执行文件。
+        return selftest(
+            json_output=args.selftest_json,
+            offline=args.offline,
+            browser=bool(args.check_browser or args.check_browser_json),
+        )
 
     if args.check_browser or args.check_browser_json:
         return check_browser(json_output=args.check_browser_json)

@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from xdao import browser_check
+from xdao.browser_check import BrowserCheck
 from xdao.browser_login import BrowserInfo, LoginBrowser
 
 #: 假浏览器：把 DevToolsActivePort 写进 ``--user-data-dir`` 指的那个目录。
@@ -68,6 +69,7 @@ def _fake_browser(work: Path, mode: str, port: str = "1") -> BrowserInfo:
     POSIX 上把剧本参数放进**文件名**（``fake_browser-live-9222`` → 从 ``sys.argv[0]``
     里拆出来），Windows 上靠 ``%*`` 追加到命令行末尾 —— 不管哪种，都不用管 shell 引号。
     """
+    work.mkdir(parents=True, exist_ok=True)  # 调用方常给一个还没建的子目录
     if os.name == "nt":
         # 行尾自己写 \r\n：write_text 会把 \n 翻成 \r\n，cmd 只认前者。
         wrapper = work / "fake_browser.cmd"
@@ -168,3 +170,60 @@ def test_the_login_path_still_falls_back_when_the_probe_does_not(
         "",
     )
     assert plain.fallback_profiles is True
+
+
+# ------------------------------------------------- 「挨个试完」那条路（--selftest --check-browser）
+
+
+def test_check_all_keeps_going_past_the_first_failure(
+    artifacts_dir: Path, monkeypatch
+) -> None:
+    """第一个起不来**不能**就此收手：用户碰到的正是「默认那个不行、另一个能用」。
+
+    这条用**真的** ``check_one``（不替身）跑两个假浏览器：第一个是「写了端口没人答话」
+    的聋子，第二个接在假调试服务上，所以第二个必须被真的试到、并且真的通过。
+    """
+    server = HTTPServer(("127.0.0.1", 0), _VersionHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        dead = _fake_browser(artifacts_dir / "dead", "deaf", "1")
+        live = _fake_browser(artifacts_dir / "live", "live", str(port))
+        monkeypatch.setattr(browser_check, "find_browser", lambda explicit, env: dead)
+        monkeypatch.setattr(browser_check, "browser_candidates", lambda head: [live])
+        report = browser_check.check_all(timeout=6.0)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert [check.name for check in report.checks] == ["假浏览器", "假浏览器"]
+    assert report.checks[0].ok is False, "第一个（聋子）必须被判成起不来"
+    assert report.checks[1].port == port, "第二个必须真的被试到"
+    assert report.ok is True
+    assert report.first_ok() is not None
+    assert "FakeBrowser/1.0" in report.first_ok().detail
+
+
+def test_check_all_stops_as_soon_as_one_works(monkeypatch) -> None:
+    """能起来就不必把机器上每个浏览器都启动一遍（它们是真的会被拉起来的）。"""
+    first = BrowserInfo(name="第一个", path="C:/假/one.exe")
+    second = BrowserInfo(name="第二个", path="C:/假/two.exe")
+    seen: list[str] = []
+
+    def fake_check_one(info, timeout):
+        seen.append(info.name)
+        return BrowserCheck(name=info.name, path=str(info.path), ok=True, detail="Fake/1.0")
+
+    monkeypatch.setattr(browser_check, "find_browser", lambda explicit, env: first)
+    monkeypatch.setattr(browser_check, "browser_candidates", lambda head: [second])
+    monkeypatch.setattr(browser_check, "check_one", fake_check_one)
+    report = browser_check.check_all(timeout=1.0)
+    assert seen == ["第一个"]
+    assert report.ok is True
+
+
+def test_check_all_reports_when_there_is_no_browser_at_all(monkeypatch) -> None:
+    monkeypatch.setattr(browser_check, "find_browser", lambda explicit, env: None)
+    report = browser_check.check_all()
+    assert report.ok is False
+    assert report.checks[0].found is False
