@@ -734,12 +734,29 @@ def test_cdp_session_connect_resolves_an_http_address_first(
 
 # ------------------------------------------------- 调试接口：端口在、口还不通
 
-#: 真机上那条报错（用户截图）：端口文件已经出现，调试服务却还没开始收连接。
-_REFUSED = OSError(10061, "由于目标计算机积极拒绝，无法连接。")
+#: 真机上那条报错：端口文件已经出现，调试服务却还没开始收连接。
+#:
+#: 两个平台的真实形状不一样，这里按平台各造一份，让用例在哪儿跑都测同一件事：
+#: * Windows：``OSError(10061, …)`` 自己就是 ``WinError``，``winerror=10061``；
+#: * POSIX：``OSError(10061, …)`` 只是个 ``errno=10061`` 的怪码（``errno`` 里
+#:   没有 10061），真机上这份错是 ``winerror=10061`` / ``errno=ECONNREFUSED``。
+#: 之前只有前一种写法，于是 CI 的两条 ubuntu 矩阵把「该重试的失败」判成
+#: 「再等也没用」（2026-10-01 的 run 36822858995：3 failed）。
+if os.name == "nt":  # pragma: no cover - 平台分支，两边各在一边机器上跑
+    _REFUSED: OSError = OSError(10061, "由于目标计算机积极拒绝，无法连接。")
+else:  # pragma: no cover - 同上
+    # POSIX 上真机抛的是 ConnectionRefusedError：别让用例测一个真机上见不到的类型
+    _REFUSED = ConnectionRefusedError(
+        errno.ECONNREFUSED, "由于目标计算机积极拒绝，无法连接。"
+    )
+    _REFUSED.winerror = 10061  # type: ignore[attr-defined]
 
 
 def _refuse_then_succeed(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[float]:
     """让 ``_http_json_once`` 先连不上 ``failures`` 次，之后返回一份页面列表。
+
+    抛的是 ``_REFUSED`` 那个**真实的连接被拒**异常，外面按真代码的写法包成
+    ``CdpError``（``_http_json_once`` 就是这么抛的），让用例测到的错误链跟真机一致。
 
     返回调用时刻清单，供用例核对「确实重试了、而且很快就回来了」。
     """
@@ -817,6 +834,28 @@ def test_http_json_does_not_retry_a_failure_that_waiting_cannot_fix(
         bl._http_json("http://127.0.0.1:9222/json/list", budget=5.0)
     assert calls == ["http://127.0.0.1:9222/json/list"]
     assert time.monotonic() - started < 0.5
+
+
+def test_retryable_read_failure_looks_at_both_the_windows_code_and_errno(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一个「连不上」在 Windows 上是 winerror、在 POSIX 上是 errno，两边都得认。
+
+    这条钉的是 CI：``OSError(10061, …)`` 在 Linux 上只是个 errno=10061 的怪码
+    （``errno`` 里没有它），在 Windows 上才是 ``winerror=10061``。少认一边，
+    就会在某条矩阵上把「该重试的失败」判成「再等也没用」（2026-10-01 的
+    run 36822858995：ubuntu 两条矩阵 3 failed，就是栽在这里）。
+
+    下面先把 errno 表清空，好把「只靠 winerror 也认得出」这件事单独钉住 ——
+    否则在 Windows 上跑时它总是先被 ``winerror`` 命中，这行断言就形同虚设。
+    """
+    refused = _win_error(10061, "由于目标计算机积极拒绝，无法连接。")
+    assert cdp._retryable_read_failure(refused)
+    assert cdp._retryable_read_failure(ConnectionRefusedError(errno.ECONNREFUSED, "连接被拒"))
+    assert not cdp._retryable_read_failure(_win_error(2, "找不到文件"))
+
+    monkeypatch.setattr(cdp, "_RETRY_ERRNOS", frozenset())
+    assert cdp._retryable_read_failure(refused), "只认 errno 的话，Linux 上这条会漏"
 
 
 def test_session_passes_the_hint_through_to_the_reader(
