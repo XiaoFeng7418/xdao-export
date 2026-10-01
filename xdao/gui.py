@@ -767,10 +767,14 @@ class BrowserLoginDialog(tk.Toplevel):
             self._browser = browser
             browser.start()
             # 配置目录里的浏览器资料要是用不了，库会自己换一个临时目录再试；
-            # 这件事得让用户看见，不然他会以为登录态还落在老地方。
-            note = getattr(browser, "profile_note", "")
-            if note:
-                self._queue.put(("note", note))
+            # 默认那个浏览器起不来，库还会换一个浏览器再试。这两件事都得让用户看见，
+            # 不然他会以为登录态还落在老地方、或者纳闷「我明明用的是 Chrome」。
+            for note in (
+                getattr(browser, "profile_note", ""),
+                getattr(browser, "browser_note", ""),
+            ):
+                if note:
+                    self._queue.put(("note", note))
             if self._stop.is_set():  # 取消正好落在启动过程中
                 # 必须拿局部引用收尾：主线程那次 _release() 已经把 self._browser 清成 None，
                 # 里面那个进程当时还没起来、它停不掉，再读登记处就等于放任成一个孤儿进程。

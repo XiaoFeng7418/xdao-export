@@ -232,9 +232,17 @@ def clean_fake_sessions():
 
 @pytest.fixture
 def install_browser_shim(monkeypatch, artifacts_dir):
-    """装上替身，返回 shim；``exit_immediately=True`` 表示浏览器刚起就退出。"""
+    """装上替身，返回 shim；``exit_immediately=True`` 表示浏览器刚起就退出。
 
-    def install(*, exit_immediately: bool = False, popen_release=None) -> _FakeSubprocess:
+    ``other_browser=None`` 时只让「一个浏览器」参与重试（替身只造得出一个），
+    免得机器上真装有 Edge/Chrome 的用例多起几个假进程、行为随机器而变；
+    传一个可执行文件名（比如 ``"chrome.exe"``）就能多造一个候选，
+    用来钉住「当前那个起不来就换下一个」这条路。
+    """
+
+    def install(
+        *, exit_immediately: bool = False, popen_release=None, other_browser: str | None = None
+    ) -> _FakeSubprocess:
         shim = _FakeSubprocess(exit_immediately=exit_immediately, popen_release=popen_release)
         monkeypatch.setattr(browser_login, "subprocess", shim)
         monkeypatch.setattr(browser_login, "CDPSession", _FakeSession)
@@ -246,6 +254,18 @@ def install_browser_shim(monkeypatch, artifacts_dir):
             browser_login,
             "find_browser",
             lambda explicit=None, env=None: real_find(explicit=str(exe)),
+        )
+        fake = [browser_login.BrowserInfo(name="Edge", path=str(exe))]
+        if other_browser:
+            second = Path(artifacts_dir) / other_browser
+            second.write_bytes(b"")
+            fake.append(
+                browser_login.BrowserInfo(
+                    name=browser_login._guess_name(second), path=str(second)
+                )
+            )
+        monkeypatch.setattr(
+            browser_login, "browser_candidates", lambda info=None, env=None: fake
         )
         return shim
 
@@ -487,7 +507,10 @@ def test_browser_that_dies_at_once_reports_a_readable_error(
     dialog = open_dialog()
 
     assert _wait_for(root_window, lambda: "打开浏览器失败" in dialog.status_var.get())
-    assert "启动后立刻退出" in dialog.status_var.get()
+    status = dialog.status_var.get()
+    assert "刚起来就退出了" in status
+    # 每个候选都试过了：提示要说清「还能怎么登录」，别让用户对着死路反复点
+    assert "直接粘贴饼干登录" in status
     assert dialog.winfo_exists()
     assert str(dialog.retry_button.cget("state")) == "normal"
     dialog._on_cancel()

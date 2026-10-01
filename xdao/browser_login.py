@@ -72,17 +72,9 @@ _STOP_GRACE = 8.0
 _SITE_WAIT = 8.0
 # 判断「裸粘贴」的字符集：整段的粘贴不会只由这些字符组成，因此能挡掉 HTML/JSON 残渣。
 _BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
-# 站点根地址：用来认出「哪个页面标签才是我们自己的页面」。
-_SITE_ROOT = COOKIE_SITE.rstrip("/")
-# 浏览器自己的内部页面：它们没有我们要的页面内容，页面里的 fetch 也不是站内请求。
-_INTERNAL_URL_PREFIXES = (
-    "about:",
-    "edge:",
-    "chrome:",
-    "devtools:",
-    "chrome-extension:",
-    "edge-extension:",
-)
+# 「浏览器刚起来就退出了」这句错误文案里的固定部分：启动失败与读调试接口失败的
+# 两处提示都带着它，``_dead_on_startup`` 靠它认出这一类失败（换目录、换浏览器重试）。
+_DEAD_ON_STARTUP_MARKER = "刚起来就退出了"
 
 
 @dataclass(frozen=True)
@@ -152,6 +144,141 @@ def known_paths(env: Mapping[str, str] | None = None) -> list[BrowserInfo]:
     return found
 
 
+# ---------------------------------------------------------------- 浏览器选谁
+#
+# 真机上量到的期望差：用户会把 Windows 默认浏览器改成 Chrome，可这里一直从 Edge
+# 开始试 —— 于是他看到的是「我明明换成 Chrome 了，弹出来的还是 Edge」。所以先把
+# 「系统默认的那个」排到最前面，再按 Edge → Chrome → … 的顺序补全。
+#: Windows 注册表里记默认浏览器的位置（HKCU）。
+_DEFAULT_BROWSER_KEY = (
+    r"SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice"
+)
+#: 认默认浏览器**可执行文件**用的表：进程名（小写）→ 界面名。
+_EXE_NAMES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("msedge.exe", "msedge", "edge.exe"), "Edge"),
+    (("chrome.exe", "chrome"), "Chrome"),
+    (("brave.exe", "brave", "brave-browser.exe"), "Brave"),
+    (("chromium.exe", "chromium"), "Chromium"),
+)
+#: 打开注册表用的模块（真机上是 ``winreg``）。
+#:
+#: 写成模块级变量是为了**让测试能钉住「读默认浏览器」这条逻辑**：CI 的 Linux
+#: 机器上没有 ``winreg``，用例若直接跳过，这段代码在那边就没人看着了。
+#: 测试把它换成假的注册表实现，本地与 CI 跑的是同一份断言。
+_REGISTRY_OPENER: Callable[[], object] | None = None
+
+
+def _registry() -> object:
+    """打开注册表的模块；没有 ``winreg``（非 Windows）就抛 ``ImportError``。"""
+    if _REGISTRY_OPENER is not None:
+        return _REGISTRY_OPENER()
+    import winreg  # noqa: PLC0415 —— 只有 Windows 走这条路
+
+    return winreg
+
+
+def _name_of_executable(command: str) -> str:
+    """从一条命令行/路径里认出浏览器名字；认不出返回空串。
+
+    只按可执行文件名认（``--single-argument %1`` 这类尾巴要丢掉），这样
+    「默认浏览器是哪一行命令」这种问题不必去解析整条命令行。
+    """
+    if not command:
+        return ""
+    token = command.strip().strip('"').split('"', 1)[0].strip()
+    if not token:
+        token = command.strip().strip('"')
+    exe = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for names, label in _EXE_NAMES:
+        if exe in names:
+            return label
+    for names, label in _EXE_NAMES:
+        if any(name.rsplit(".", 1)[0] in exe for name in names):
+            return label
+    return ""
+
+
+def _windows_default_exe() -> str:
+    """读 Windows 的默认浏览器设置，返回它的可执行文件路径；读不到返回空串。
+
+    真机上量到过：用户在「设置 → 默认应用」里把 http/https 都改成了 Chrome，
+    而这里原本固定从 Edge 开始试，用户看到的就是「我换了默认浏览器，弹出来的
+    还是 Edge」。这一步只读注册表，不改任何东西；读不出来（没有这个键、注册表
+    被锁、非 Windows）就当没有，按原来的固定顺序来。
+    """
+    try:
+        winreg = _registry()
+        with winreg.OpenKey(  # type: ignore[attr-defined]
+            winreg.HKEY_CURRENT_USER,  # type: ignore[attr-defined]
+            _DEFAULT_BROWSER_KEY,
+        ) as key:
+            prog_id = str(winreg.QueryValueEx(key, "ProgId")[0] or "")  # type: ignore[attr-defined]
+        if not prog_id:
+            return ""
+        command = ""
+        command_key = rf"SOFTWARE\Classes\{prog_id}\shell\open\command"
+        # ProgId 的命令行可能只写在机器级（HKLM）里：用户只是「用某个浏览器打开过一次」，
+        # HKCU 下就只多一个 UserChoice，什么都没有。两边都看一眼，谁有就用谁。
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):  # type: ignore[attr-defined]
+            try:
+                with winreg.OpenKey(hive, command_key) as key:  # type: ignore[attr-defined]
+                    command = str(winreg.QueryValueEx(key, "")[0] or "")  # type: ignore[attr-defined]
+            except OSError:
+                continue
+            if command:
+                break
+        if not command:
+            return ""
+        start = command.find('"')
+        if start >= 0:
+            end = command.find('"', start + 1)
+            if end > start:
+                return command[start + 1 : end]
+        return command.split(" ", 1)[0].strip()
+    except Exception:  # noqa: BLE001 —— 读不到默认浏览器不该拦住登录
+        return ""
+
+
+def _default_browser_label() -> str:
+    """默认浏览器叫什么（"Edge" / "Chrome" / …）；认不出返回空串。"""
+    return _name_of_executable(_windows_default_exe())
+
+
+def ordered_browsers(env: Mapping[str, str] | None = None) -> list[BrowserInfo]:
+    """可用的浏览器，**系统默认那个排最前**，其余按固定顺序跟在后面。
+
+    认不出默认浏览器（或者它不在候选表里，比如 Firefox 和一堆国产壳浏览器）
+    就按 :func:`known_paths` 的原顺序返回 —— 宁可用 Edge，也不能不登录。
+    """
+    installed = known_paths(env)
+    if len(installed) < 2:
+        return installed
+    label = _default_browser_label()
+    if not label:
+        return installed
+    preferred = [info for info in installed if info.name == label]
+    if not preferred:
+        return installed
+    others = [info for info in installed if info.name != label]
+    return [*preferred, *others]
+
+
+def find_browser(
+    explicit: str | None = None, env: Mapping[str, str] | None = None
+) -> BrowserInfo | None:
+    """挑一个浏览器：**系统默认的优先**，其次 Edge → Chrome → …。
+
+    用户手动指定的路径最优先（他可能装在非默认位置）；指定的路径不存在时
+   不报错，而是退回去自动找 —— 用户随手填个错路径不该让整条路走不下去。
+    """
+    if explicit:
+        candidate = Path(explicit)
+        if candidate.is_file():
+            return BrowserInfo(name=_guess_name(candidate), path=str(candidate))
+    found = ordered_browsers(env)
+    return found[0] if found else None
+
+
 def _guess_name(path: Path) -> str:
     """按可执行文件名猜浏览器名，只用于界面文案。"""
     # 只用字节名，不依赖宿主平台的分隔符：Windows 上 ``Path("C:\\x\\msedge.exe").stem``
@@ -169,20 +296,26 @@ def _guess_name(path: Path) -> str:
     return (stem.rsplit(".", 1)[0] if "." in stem else stem) or "Chromium"
 
 
-def find_browser(
-    explicit: str | None = None, env: Mapping[str, str] | None = None
-) -> BrowserInfo | None:
-    """挑一个浏览器。
+def browser_candidates(
+    info: BrowserInfo | None = None, env: Mapping[str, str] | None = None
+) -> list[BrowserInfo]:
+    """按顺序列出「可以拿来试」的浏览器：``info`` 排最前，其余按默认优先级跟在后面。
 
-    用户手动指定的路径优先（他可能装在非默认位置）；指定的路径不存在时
-    不报错，而是退回去自动找 —— 用户随手填个错路径不该让整条路走不下去。
+    :meth:`LoginBrowser.start` 用它做「一个浏览器起不来就换下一个」的兜底。
+    单独列一个函数是为了让测试能钉住这条顺序 —— 真机上它决定了用户看到的是哪个窗口。
+
+    ``info`` 为 None（或者本机只装了它一个）时就是 :func:`known_paths` 的结果。
     """
-    if explicit:
-        candidate = Path(explicit)
-        if candidate.is_file():
-            return BrowserInfo(name=_guess_name(candidate), path=str(candidate))
-    found = known_paths(env)
-    return found[0] if found else None
+    installed = ordered_browsers(env)
+    if info is None:
+        return installed
+    if any(candidate.path == info.path for candidate in installed):
+        head = [info]
+        rest = [candidate for candidate in installed if candidate.path != info.path]
+    else:
+        head = [info]
+        rest = installed
+    return [*head, *rest]
 
 
 def user_data_dir(config_dir: Path) -> Path:
@@ -279,6 +412,28 @@ def _devtools_read_failure(exc: BaseException) -> bool:
     return False
 
 
+def _dead_on_startup(exc: BaseException) -> bool:
+    """这次失败是不是「浏览器刚起来就退出了」。
+
+    真机上量到过：Edge 起来就退，退出码 21（用户装了安全软件）。这类失败和
+    资料目录里的旧状态有关 —— 换一个空目录、或者换一个浏览器，常常就没事了，
+    所以 :meth:`LoginBrowser.start` 会为它多试几轮，而不是立刻报错。
+
+    认的是错误文案里那句固定的话（退出码在 ``__cause__`` 链上的每一层都放过）。
+    """
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if _DEAD_ON_STARTUP_MARKER in str(current):
+            return True
+        pending.extend((current.__cause__, current.__context__))
+    return False
+
+
 def build_args(
     info: BrowserInfo,
     profile: Path,
@@ -308,33 +463,6 @@ def build_args(
         args.append(f"--proxy-server={proxy}")
     args.append(start_url)
     return args
-
-
-def _pick_page(pages: list[dict]) -> dict:
-    """从页面标签里挑一个「真是我们站点」的。
-
-    为什么不直接拿第一个（这条是真机上量出来的）：浏览器会自己多开页面标签 ——
-    装好的 Edge 上来就有一个 ``edge://sync-confirmation-dialog/``，它会排在登录页前面。
-    连到那种页面上，页面里的 ``fetch`` 属于别的源，读饼干的脚本一律失败；
-    而且 ``about:blank`` 这种空标签也没有我们要的页面内容。
-    所以顺序是：站点页面 → 普通网页 → 退而求其次拿第一个。
-    """
-    site = _pick_site_page(pages)
-    if site is not None:
-        return site
-    for page in pages:
-        url = str(page.get("url", ""))
-        if url and not url.startswith(_INTERNAL_URL_PREFIXES):
-            return page
-    return pages[0]
-
-
-def _pick_site_page(pages: list[dict]) -> dict | None:
-    """只认站点自己的页面标签，没有就返回 None。"""
-    for page in pages:
-        if str(page.get("url", "")).startswith(_SITE_ROOT):
-            return page
-    return None
 
 
 def _site_host() -> str:
@@ -431,6 +559,8 @@ class LoginBrowser:
         self._profile = Path(profile)
         #: 换了目录时留给用户看的一句话（见 :attr:`profile_note`）。
         self._profile_note = ""
+        #: 换了一个浏览器时留给用户看的一句话（见 :attr:`browser_note`）。
+        self._browser_note = ""
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
@@ -444,6 +574,11 @@ class LoginBrowser:
         """启动时若换了 profile 目录，这里记着一句给用户看的话。"""
         return self._profile_note
 
+    @property
+    def browser_note(self) -> str:
+        """启动时若换了一个浏览器，这里记着一句给用户看的话。"""
+        return self._browser_note
+
     def start(self) -> "LoginBrowser":
         """启动浏览器并等它把调试端口写出来。
 
@@ -456,26 +591,52 @@ class LoginBrowser:
         另一种真机上见过的失败是「调试端口写了、口却连不上」——进程当场没了，
         或者安全软件把本地调试端口拦了。前一种换一个干净资料目录就能起来，
         所以``_devtools_read_failure`` 也归到「换目录重试」那一类。
+
+        还有一种是「浏览器刚起来就退出」（真机上量到过 Edge 退出码 21，
+        用户装的是安全软件）。这类失败跟资料目录的内容有关：现场那个
+        ``browser-profile`` 里存着上一次的会话状态，坏掉之后**每次**都是同一个
+        下场，换个空目录就没事了。所以这一种也换目录重试（备用目录都是新建的），
+        而且**当前浏览器试不出来就接着试下一个**（Edge → Chrome → …）：
+        单独一个浏览器被拦下，不该让用户彻底用不了浏览器登录。
         """
         if self.process is not None:
             return self
+        # 现场资料目录坏了 / 被拦下时，同一个浏览器换几个干净目录试；
+        # 都不行再换下一个浏览器（同样从干净目录开始）。
         candidates = [self.profile, *fallback_profile_dirs(self.profile)]
+        browsers = browser_candidates(self.info)
         first_error: BaseException | None = None
-        for index, chosen in enumerate(candidates):
-            try:
-                return self._launch(chosen)
-            except Exception as exc:  # noqa: BLE001 —— 下面按错误码决定要不要换目录重试
-                self._reset_process()
-                if not (_profile_failure(exc) or _devtools_read_failure(exc)):
-                    raise
-                if first_error is None:
-                    first_error = exc
-                if index == 0:
-                    # 头一次失败就换目录重试，用户只会在日志里看到一句说明。
-                    self._profile = chosen
-        # 备用目录也不行：如实把原始错误报上去，别拿最后一次的错盖掉真原因。
-        if first_error is None:  # pragma: no cover —— candidates 至少有一个，走不到这儿
+        dead_on_startup = False
+        for browser in browsers:
+            if browser != self.info:
+                # 上一个浏览器起不来：换一个（用户机器上通常 Edge 与 Chrome 都有）。
+                self.info = browser
+                self._browser_note = f"{browsers[0].name} 起不来，这次改用 {browser.name}。"
+            for index, chosen in enumerate(candidates):
+                try:
+                    return self._launch(chosen)
+                except Exception as exc:  # noqa: BLE001 —— 下面按错误码决定要不要继续试
+                    self._reset_process()
+                    if first_error is None:
+                        first_error = exc
+                    if _dead_on_startup(exc):
+                        # 这一种换目录 / 换浏览器都有可能救回来，别当场放弃。
+                        dead_on_startup = True
+                    elif not (_profile_failure(exc) or _devtools_read_failure(exc)):
+                        raise
+                    if index == 0:
+                        # 头一次失败就换目录重试，用户只会在界面上看到一句说明。
+                        self._profile = chosen
+        # 备用目录和其它浏览器都不行：如实把原始错误报上去，别拿最后一次的错盖掉真原因。
+        if first_error is None:  # pragma: no cover —— browsers 至少有一个，走不到这儿
             raise CdpError(f"启动 {self.info.name} 失败：找不到可用的浏览器资料目录。")
+        if dead_on_startup:
+            raise CdpError(
+                f"{first_error}\n\n"
+                "每个浏览器都是刚起来就退出（多半是资料目录里的旧状态坏了，"
+                "或者被安全软件拦下）。可以试着关掉安全软件的浏览器防护再点一次，"
+                "或者改用「直接粘贴饼干登录」。"
+            ) from first_error
         raise first_error
 
     def devtools_failure_hint(self) -> str:
@@ -539,9 +700,9 @@ class LoginBrowser:
                 code = self.process.returncode
                 self.stop()
                 raise CdpError(
-                    f"{self.info.name} 启动后立刻退出了（退出码 {code}）。"
-                    "如果是手动指定的路径，请确认它真的是浏览器；"
-                    "也可以换一个浏览器再试。"
+                    f"{self.info.name} 刚起来就退出了（退出码 {code}）。"
+                    "资料目录里的旧状态坏掉、或者被安全软件拦下时会这样；"
+                    "程序会换一个干净目录、必要时再换一个浏览器重试。"
                 )
             if port_file.exists():
                 try:
