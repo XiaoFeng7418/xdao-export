@@ -490,6 +490,15 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   **教训**：Card 里的说明标签不给初始 `wraplength` 的话，`Card._on_body_configure()` 会按整句
   宽度把卡片撑到 1188 px（`xdao/widgets.py:126-127` 记着这个历史坑），所以「给保守初始值 +
   跟着宽度改」两层都要有。
+  **真机验收（打包版）**：`xdao-export.exe --version` → 「X岛串导出工具 0.13.12」（exe 2772320 字节）；
+  `--selftest --offline --check-browser` → 仍是历次基线（2 处走不通、1 处要注意，退出码 1），
+  浏览器那条照样「起得来」；跑完 `%TEMP%` 里只剩升级暂存目录 `xdao-export`，产品自己的临时目录 0 个。
+  冻结核验 `_scratch/check_frozen_code_v1312.py` → 「包里的代码是对的」（两个新 docstring 与
+  `wrap_to_width`/`fold_buttons_when_narrow` 两个名字都在 PYZ 里）。
+  升级 E2E `_scratch/probe_upgrade_e2e_v1312.py`：现场 v0.13.11 → 新版自己下载/自检/替换/重启，
+  见证进程记「现场版本 0.13.12、换上去的 exe 与包里那份字节一致 True、现场 993 项、记号目录清干净、
+  普通暂存目录留着（年龄 4.9 秒 < 阈值 600）」。`tools/repo_check.py` 13/13。
+  CI：`1b8724a` 两个 run（36861844229 master / 36861848943 标签）都是 success。
 
 - **v0.13.11**：加一条**启动时清扫** —— 程序被强杀时没人收尾，那些临时资料目录会一直
   留在 `%TEMP%` 里（v0.13.9/v0.13.10 只盖住「程序自己收尾」的路径；真机上量到过 147 个）。
