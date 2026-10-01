@@ -231,6 +231,13 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    加 7 位那批（`7001234`、`7012345`）；本机目录名与用户名、token、真饼干值、非示例邮箱一律红。
    字节数后面跟「字节」两个字、日期写成 `2026-10-01` 这种带分隔符的样子就不会被误伤；报红时
    失败信息里带着文件与行号，照上面的改法换掉就行。
+   **命令行开关也有机器把关**（2026-10-02 补上）：`tests/test_cli_docs.py` 拿
+   `main.build_parser()` 当唯一的事实来源 —— ①`README.md` 与 `packaging/使用说明.txt`
+   里的**命令行示例行**（以 `python main.py` / `xdao-export.exe` / `main.py` 开头）写到的开关
+   必须真的存在；②解析器里每个不是 `argparse.SUPPRESS` 的选项，至少要在其中一份文档里
+   露过面。加开关忘了写文档、文档里留着早就删掉的开关，都红在这两条上。当时一次都没被
+   提到过的开关有五个：`--cache-dir`、`--verify`、`--image-mode`、`--pdf-timeout`、
+   `--pdf-margin-mm`，已经补进「功能速览」和 PDF 那一节。
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
    被测试替换过、`save` 没有，结果是把**真实的
