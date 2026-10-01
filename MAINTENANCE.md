@@ -345,6 +345,16 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
     真的拉下来，匹配不到就明说一句「在 N 个 job、M 行日志里找过」并返回 1；④ `api()` 对 5xx 与
     429 会重试（其它 4xx 立刻停，重试没用）。四处都注入验过：退回旧写法，用例立刻红。
 
+   **POSIX 分支的本地预演也有用例兜着**（2026-10-02 补上）：`tests/test_posix_check.py` 29 条，
+   真跑 `tools/posix_check.py`（用例顶掉 `_run` 与 `make_wrapper`，假浏览器照 `tests/test_pdf.py`
+   的契约写参数与 PDF），而且**一条都不跳过** —— Windows 上 PATH 里没有 `sh`，用例就退到
+   `find_git_sh()` 找 Git 自带的 sh.exe（MSYS 的 `test -x` 对带 shebang 的 .sh 说可执行、
+   对普通 .txt 说不可执行，结论与 POSIX 一致，所以这一项在 Windows 上也有真结论）。
+   以前的三处毛病：包装脚本的 shebang 从不看；执行位只 `print` 一行**不算进结论**；
+   参数只看 `flags.txt` 存不存在、内容对不对从不比对（docstring 却写着「参数原样透传」）。
+   现在六项逐条判定，任何一项不过就 `不通过 —— N 项没过` 并返回 1。
+   五处都注入验过：退回旧写法，用例立刻红。
+
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
    被测试替换过、`save` 没有，结果是把**真实的
@@ -1211,7 +1221,14 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    现在按平台生成 .cmd 或带执行位的 sh 脚本，并加了回归用例
    `test_fake_browser_is_actually_executable` 保证夹具本身真能被执行。
    **本机预演**：`python tools/posix_check.py`（借 Git 自带的 sh.exe 跑 POSIX 分支，
-   没有 Linux 也能提前发现这类问题）。
+   没有 Linux 也能提前发现这类问题）。2026-10-02 起它会逐条判定、不再只看「跑没跑完」：
+   ① 包装脚本有没有 shebang（Linux 就是靠它认解释器）；② sh 认不认为它可执行
+   —— **Windows 上 `os.access(browser, os.X_OK)` 对任何存在的文件都是 True，等于没查**，
+   所以改成 `sh -c 'test -x "$1"'` 去问 sh（真正的执行位仍由 CI 的 ubuntu job 覆盖）；
+   ③ 返回码；④ `flags.txt` 有没有写出来；⑤ **参数有没有原样透传**（以前只看文件在不在，
+   `$@` 被引号吃掉、路径被改写都发现不了）；⑥ 导出的 PDF 是不是 `%PDF` 开头。
+   任何一项不过就打印 `不通过 —— N 项没过` 并返回 1。由 `tests/test_posix_check.py` 29 条兜着
+   （五处都注入验过：退回旧写法，用例立刻红）。
 2. **取 Actions 日志用 `tools/ci_logs.py`**，不要用 `gh run view --log`：
    日志真实地址在 `results-receiver.actions.githubusercontent.com`，
    带签名的临时 URL 在本机网络下经常被中途掐断（`unexpected EOF`）。
