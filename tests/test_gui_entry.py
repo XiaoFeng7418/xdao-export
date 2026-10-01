@@ -202,6 +202,104 @@ class FakeLoginDialog:
         self.destroyed = True
 
 
+class FakeBrowserLoginDialog:
+    """顶掉真子窗口：_open_browser_login 只从它身上读 userhash / failure。"""
+
+    made: list["FakeBrowserLoginDialog"] = []
+
+    def __init__(self, master, client, settings) -> None:
+        self.master = master
+        self.client = client
+        self.settings = settings
+        self.userhash: str | None = None
+        self.failure = ""
+        FakeBrowserLoginDialog.made.append(self)
+
+
+def _run_open_browser_login(monkeypatch, *, failure: str, userhash: str | None = None):
+    """把「用浏览器登录」的收尾逻辑跑一遍，收集日志与关窗动作。"""
+    destroyed: list[bool] = []
+    holder = SimpleNamespace(
+        client=object(),
+        settings=object(),
+        userhash=None,
+        grab_release=lambda: None,
+        grab_set=lambda: None,
+        wait_window=lambda dialog: None,
+        winfo_exists=lambda: True,
+        destroy=lambda: destroyed.append(True),
+        logs=[],
+    )
+    # holder 就是「主窗口」：_open_browser_login 会通过 self.app.log 写运行日志，
+    # 这里把 app 指回自己，日志就落在 holder.logs 里。
+    holder.app = holder
+    holder.log = holder.logs.append
+    FakeBrowserLoginDialog.made.clear()
+
+    def fake_dialog(master, client, settings):
+        dialog = FakeBrowserLoginDialog(master, client, settings)
+        dialog.failure = failure
+        dialog.userhash = userhash
+        return dialog
+
+    monkeypatch.setattr(gui, "BrowserLoginDialog", fake_dialog)
+    gui.LoginDialog._open_browser_login(holder)
+    return holder, holder.logs, destroyed
+
+
+def test_browser_login_failure_lands_in_the_run_log(monkeypatch):
+    """失败原因不能只留在子窗口那行小字里。
+
+    2026-10-01 那位用户报「登不上」时贴出来的运行日志里一条登录记录都没有 ——
+    错误只写进了对话框的 status_var，点掉就没了。子窗口关掉之后补写一笔，
+    用户下次贴日志就能带上真正的原因。
+    """
+    holder, logs, _ = _run_open_browser_login(
+        monkeypatch, failure="Edge 刚起来就退出了（退出码 21）"
+    )
+
+    assert holder.userhash is None, "没成功就不该把饼干当成功"
+    assert len(logs) == 1
+    assert logs[0].endswith("Edge 刚起来就退出了（退出码 21）")
+    assert "浏览器登录没成" in logs[0]
+
+
+def test_browser_login_success_does_not_log_a_failure(monkeypatch):
+    """成功那条路只写登录成功，不许多写一句「没成」。"""
+    holder, logs, _ = _run_open_browser_login(monkeypatch, failure="", userhash="ABCD1234")
+
+    assert holder.userhash == "ABCD1234"
+    assert logs == []
+
+
+def test_browser_login_without_an_app_still_works(monkeypatch):
+    """老的调用方没有 app：拿不到日志对象也不许炸，登录本身照常。"""
+    logs: list[str] = []
+    holder = SimpleNamespace(
+        client=object(),
+        settings=object(),
+        userhash=None,
+        app=None,  # 旧调用方没传主窗口
+        grab_release=lambda: None,
+        grab_set=lambda: None,
+        wait_window=lambda dialog: None,
+        winfo_exists=lambda: True,
+        destroy=lambda: None,
+        log=lambda message: logs.append(message),
+    )
+
+    def fake_dialog(master, client, settings):
+        dialog = FakeBrowserLoginDialog(master, client, settings)
+        dialog.failure = "起不来"
+        return dialog
+
+    monkeypatch.setattr(gui, "BrowserLoginDialog", fake_dialog)
+    gui.LoginDialog._open_browser_login(holder)
+
+    assert holder.userhash is None
+    assert logs == [], "没有主窗口就写不了日志，但也不许抛异常"
+
+
 def _paste(monkeypatch, text):
     """把 _manual_userhash 跑一遍，收集它弹过什么框。"""
     prompts: list[tuple] = []

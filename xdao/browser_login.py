@@ -26,6 +26,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import socket
 import struct
 import subprocess
@@ -65,6 +66,15 @@ OPCODE_PONG = 0xA
 _POLL_INTERVAL = 0.2
 # 关浏览器时先 terminate 给足它写盘的时间，超时才 kill。
 _STOP_GRACE = 8.0
+# 删临时资料目录时最多等多久（浏览器刚退出时句柄还没松，删不掉就再试）。
+# 和 updater._remove_tree 一样：删掉就立刻返回，只有真删不掉才耗满。
+TEMP_PROFILE_WAIT = 3.0
+#: 删临时目录前要不要先把「命令行里带这个目录」的浏览器进程收掉（见
+#: :func:`_kill_processes_using_profile`）。用例会把它改成 False —— 那一手要真起
+#: 一个 powershell，不该在每个用例里跑一遍。
+_KILL_PROFILE_PROCESSES = _IS_WINDOWS
+#: :func:`fresh_profile_dir` 的进程内序号：同一个毫秒里连叫两次也要拿到不同的名字。
+_FRESH_PROFILE_SEQ = 0
 # 连调试端口时，等站点页面出现的最长时间。
 # 浏览器是先写端口文件、再加载命令行给的地址的：端口一出来就连，可能只看到一个空标签
 # （真机上还量到过 Edge 自带的 edge://sync-confirmation-dialog/）。连到那种页面上，
@@ -350,6 +360,26 @@ def fallback_profile_dirs(profile: Path) -> list[Path]:
     return [candidate for candidate in options if candidate != profile]
 
 
+def fresh_profile_dir() -> Path:
+    """一个新的、系统临时目录下的浏览器资料目录。
+
+    为什么登录这条路要**先**用它（v0.13.9 起，见 :meth:`LoginBrowser.start`）：
+    ``--check-browser`` 走的就是这个位置，真机上「登录点不动、可自检里浏览器又
+    起得来」的时候，差别往往只在资料目录 —— 配置目录里那个是从上一次登录留到
+    现在的，里面存着会话状态，坏掉之后浏览器一起来就退（用户报的是 Edge 退出码
+    21），而每次换一个空的就没事。登录窗口本来就是临时的，用完就删。
+
+    名字里除了毫秒还要带一个进程内的序号：同一个毫秒里连叫两次（用例就这么干）
+    光靠毫秒会撞成同一个目录。
+    """
+    global _FRESH_PROFILE_SEQ
+    _FRESH_PROFILE_SEQ += 1
+    return Path(tempfile.gettempdir()) / (
+        f"xdao-export-{USER_DATA_DIR_NAME}-{os.getpid()}-"
+        f"{int(time.time() * 1000)}-{_FRESH_PROFILE_SEQ}"
+    )
+
+
 def _profile_failure(exc: BaseException) -> bool:
     """这次失败是不是「这个 profile 用不了」造成的（权限 / 占用）。
 
@@ -537,6 +567,44 @@ def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
+def _kill_processes_using_profile(profile: Path) -> None:
+    """把命令行里带这个资料目录的浏览器进程收掉（只为让目录删得掉）。
+
+    为什么要单独有这一手：浏览器是多进程的，**父进程退出不等于子进程都走了** ——
+    真机上就是这么留下过一批还开着 ``--user-data-dir=<临时目录>`` 的 msedge 子进程，
+    把目录里的文件句柄按着，界面层随后怎么删都删不干净。``taskkill /T`` 只收得住
+    我们自己启动的那一棵树，收不住「父进程已经把活交出去、自己先退了」的那些。
+
+    用绝对路径匹配命令行，免得把用户自己开着的浏览器窗口误伤；查不到就什么都不做。
+
+    **这里的 ``subprocess`` 是当场 import 标准库拿的**，不走本模块顶部那个名字：
+    用例会把 ``browser_login.subprocess.Popen`` 换成替身来假装浏览器，收尾时要是
+    顺手用了那个替身，就会在测试里真去弹一个 powershell。收尾这一手没有别的意思，
+    就是想删目录，不该被替身带着走。
+    """
+    if not _KILL_PROFILE_PROCESSES:  # 用例把它关掉：里面要真起一个 powershell
+        return
+    import subprocess as _subprocess
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" |"
+        f" Where-Object {{ $_.CommandLine -like '*{profile}*' }} |"
+        " ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    try:
+        _subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            stdin=_subprocess.DEVNULL,
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+            timeout=20.0,
+            creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
+        pass
+
+
 class LoginBrowser:
     """一个等着用户去登录的浏览器窗口。
 
@@ -567,6 +635,11 @@ class LoginBrowser:
         #: 现场目录起不来时要不要换备用资料目录 / 换浏览器。登录那条路要（见 :meth:`start`），
         #: 但 ``--check-browser`` 那种「如实回答这一个浏览器行不行」的探测里必须关掉。
         self.fallback_profiles = True
+        #: 这次用的是不是新建的临时资料目录（见 :func:`fresh_profile_dir`）：
+        #: 关窗时要把它删掉，界面上也要说明「不影响你自己的浏览器」。
+        self._fresh_used = False
+        #: 这次启动时那个新的临时目录；没用到就是 None（收尾时按它清理）。
+        self.temp_profile: Path | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.port = 0
         self.ws_path = ""
@@ -585,11 +658,18 @@ class LoginBrowser:
     def start(self) -> "LoginBrowser":
         """启动浏览器并等它把调试端口写出来。
 
-        默认用配置目录里的 ``browser-profile``。**这个目录坏了不该让整个登录
-        功能不可用**：真机上出现过「[WinError 5] 拒绝访问」——用户点多少次
-        「用浏览器登录」都是一句「打开浏览器失败」。所以碰上「权限 / 占用」
-        这类目录问题就换一个 profile 再试（见 :func:`fallback_profile_dirs`），
-        实在不行才把原始错误抛上去。
+        **先试一个全新的临时资料目录**（v0.13.9 起，见 :func:`fresh_profile_dir`），
+        再试配置目录里那个 ``browser-profile``，最后才是别的备用目录。
+
+        为什么把顺序倒过来：真机上出现过「点『用浏览器登录』永远是『刚起来就退出
+        （退出码 21）』，可自检里那个『试浏览器』明明说 Edge 起得来」。两边的差别
+        就在资料目录 —— 自检每次都用新的临时目录，登录用的是配置目录里那个**从上
+        一次登录留到现在的**目录，里面存着会话状态，坏掉之后每次都同一个下场。
+        换个空目录就好，可那次要等到把 ``browser-profile`` 试完才轮到它，用户只看
+        得见一句「打开浏览器失败」。登录窗口本来就是临时的，没必要赌那个旧目录。
+
+        ``profile`` 仍然留在候选里：那是用户自己配置目录下的位置，能起来时用它
+        （里面可能有他上次登录过的痕迹），起不来才跳过。
 
         另一种真机上见过的失败是「调试端口写了、口却连不上」——进程当场没了，
         或者安全软件把本地调试端口拦了。前一种换一个干净资料目录就能起来，
@@ -604,14 +684,18 @@ class LoginBrowser:
         """
         if self.process is not None:
             return self
-        # 现场资料目录坏了 / 被拦下时，同一个浏览器换几个干净目录试；
-        # 都不行再换下一个浏览器（同样从干净目录开始）。
+        # 登录这条路（``fallback_profiles`` 为真）：新的临时目录排在最前，
+        # 然后是用户配置目录里那个，最后是别的备用目录。
         # ``fallback_profiles`` 关掉时只试现场目录（供 --check-browser 如实回答）。
         candidates = (
-            [self.profile, *fallback_profile_dirs(self.profile)]
+            [self._fresh_candidate(), self.profile, *fallback_profile_dirs(self.profile)]
             if self.fallback_profiles
             else [self.profile]
         )
+        # 第一个候选就是新建的临时目录：记下来，成功后好告诉用户 / 好清理。
+        self._fresh_used = self.fallback_profiles and bool(candidates) and candidates[0] != self.profile
+        if self._fresh_used:
+            self.temp_profile = Path(candidates[0])
         browsers = (
             browser_candidates(self.info) if self.fallback_profiles else [self.info]
         )
@@ -646,11 +730,18 @@ class LoginBrowser:
         if dead_on_startup:
             raise CdpError(
                 f"{first_error}\n\n"
-                "每个浏览器都是刚起来就退出（多半是资料目录里的旧状态坏了，"
+                "试过的每个资料目录都是刚起来就退出（多半是目录里的旧状态坏了，"
                 "或者被安全软件拦下）。可以试着关掉安全软件的浏览器防护再点一次，"
                 "或者改用「直接粘贴饼干登录」。"
             ) from first_error
         raise first_error
+
+    def _fresh_candidate(self) -> Path:
+        """这次要用的新临时资料目录；建不出来就退回现场目录（让 start() 照常跑）。"""
+        try:
+            return fresh_profile_dir()
+        except OSError:  # pragma: no cover —— 拿不到临时目录时不该把登录整条掐掉
+            return self.profile
 
     def devtools_failure_hint(self) -> str:
         """读调试接口重试期间的一句提示：浏览器已经没了就返回死因，否则返回空串。
@@ -710,13 +801,21 @@ class LoginBrowser:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
+                # 先把真退出码抠出来再 stop()：stop() 会 terminate / taskkill，
+                # 之后 returncode 就不是浏览器自己的死因了（真机上那句
+                # 「刚起来就退出了（退出码 21）」里的 21 就是这么来的）。
                 code = self.process.returncode
-                self.stop()
-                raise CdpError(
+                message = (
                     f"{self.info.name} 刚起来就退出了（退出码 {code}）。"
                     "资料目录里的旧状态坏掉、或者被安全软件拦下时会这样；"
                     "程序会换一个干净目录、必要时再换一个浏览器重试。"
                 )
+                if code == 21:
+                    # 真机上量到过的那个码：多半不是浏览器自己崩，而是它已经退出了
+                    # 又被要求收尾（Windows ERROR_NOT_READY）。别让这句误导用户去猜。
+                    message += "（这个码常常表示进程已经退出、收尾时才报出来，未必是崩溃原因。）"
+                self.stop()
+                raise CdpError(message)
             if port_file.exists():
                 try:
                     text = port_file.read_text(encoding="utf-8", errors="replace")
@@ -729,11 +828,20 @@ class LoginBrowser:
                     self.port, self.ws_path = 0, ""
                 if self.port:
                     self.browser_ws_url = f"ws://127.0.0.1:{self.port}{self.ws_path}"
-                    self._profile_note = (
-                        ""
-                        if chosen == self.profile
-                        else f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
-                    )
+                    if chosen == self.temp_profile:
+                        # 登录这条路现在先试新建的临时目录（见 start()）。要在界面上
+                        # 说一句，否则用户会以为「我上次登录的痕迹怎么没了」。
+                        self._fresh_used = True
+                        self._profile_note = (
+                            f"这次用的是临时资料目录（{chosen}），"
+                            "关掉登录窗口后会自动清掉，不影响你自己的浏览器。"
+                        )
+                    else:
+                        self._profile_note = (
+                            ""
+                            if chosen == self.profile
+                            else f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
+                        )
                     return self
             time.sleep(_POLL_INTERVAL)
 
@@ -752,9 +860,7 @@ class LoginBrowser:
     def stop(self) -> None:
         """关掉浏览器。已经关掉了、或者它不肯走，都不抛异常。"""
         process, self.process = self.process, None
-        if process is None:
-            return
-        if process.poll() is None:
+        if process is not None and process.poll() is None:
             try:
                 process.terminate()
             except OSError:
@@ -767,6 +873,50 @@ class LoginBrowser:
                     process.wait(timeout=5.0)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+        if self._fresh_used:
+            self.cleanup_temp_profile()
+
+    def cleanup_temp_profile(self) -> bool:
+        """删掉这次启动时新建的临时资料目录（见 :func:`fresh_profile_dir`）。
+
+        临时目录一次登录就是几十上百 MB，不能留着攒。正常关窗时浏览器已经退出，
+        直接删；删不掉（浏览器还没走干净、文件句柄没松）就每 0.25 秒再试，
+        总共给 :data:`TEMP_PROFILE_WAIT` 秒，**删掉就立刻返回**，不白等。
+
+        这里**不改名留记号**（``updater`` 那套是给升级用的）：临时目录本来就在
+        系统的临时目录里，坏掉也不会挡着下一次登录 —— 下一次用的是**新的**名字。
+
+        没用到临时目录时什么也不做，返回 False。
+        """
+        profile, self.temp_profile = self.temp_profile, None
+        if profile is None or not profile.exists():
+            # 目录本来就不在（没用上临时目录，或者已经删干净了）：什么都不用做。
+            return False
+        if _IS_WINDOWS:
+            # 浏览器可能还没走干净（或者上一次留下的实例还开着这个目录），
+            # 先把「命令行里带这个目录」的进程收掉，再删成功率才高。
+            #
+            # **这一步放后台线程**：它要起一个 powershell 去查进程表，真机上量到
+            # 几百毫秒，在安全软件拦着的时候还会更久 —— 界面层是在主线程里调
+            # stop() 的，让它等一个 powershell 会把窗口卡住。真正的删除在下面
+            # 主线程里做（每 0.25 秒一次），两边同时进行，通常第一轮就删掉了。
+            try:
+                threading.Thread(
+                    target=_kill_processes_using_profile,
+                    args=(profile,),
+                    name="xdao-kill-profile-processes",
+                    daemon=True,
+                ).start()
+            except RuntimeError:  # pragma: no cover —— 起不了线程就算了
+                pass
+        deadline = time.monotonic() + TEMP_PROFILE_WAIT
+        while True:
+            shutil.rmtree(profile, ignore_errors=True)
+            if not profile.exists():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.25)
 
     def __enter__(self) -> "LoginBrowser":
         return self.start()

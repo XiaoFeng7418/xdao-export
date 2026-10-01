@@ -434,6 +434,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.9**：「用浏览器登录」改用**新建的临时资料目录**（`fresh_profile_dir()`，系统临时目录 + 进程内序号），不再复用配置目录里那个留到现在的旧目录 —— 现场是「自检里浏览器起得来、登录却一起来就退（Edge 退出码 21）」，两条路只差资料目录。关窗时 `LoginBrowser.stop()` 会 `cleanup_temp_profile()`（先 `_kill_processes_using_profile()` 收掉命令行里带该目录的浏览器进程，再 0.25 秒一次 `rmtree`、给 `TEMP_PROFILE_WAIT = 3.0` 秒，删掉立刻返回），删不掉也不抛异常。`_launch` 早退分支里的退出码 21 会追一句「未必是崩溃原因」。`gui.py`：`LoginDialog` 收下 `app=`，`SettingsDialog._open_browser_login` 把 `BrowserLoginDialog.failure` 写进运行日志（「浏览器登录没成：…」），用户贴日志就能带上真正的原因。用例：`tests/test_browser_login.py` 里候选顺序改成「临时目录 → 配置目录 → 备用目录」，新增 4 个临时目录用例，另加 `tests/test_gui_entry.py` 三条日志用例。
+
 - **v0.13.8**：补丁版，把「浏览器到底起不起得来」并进默认自检。`--selftest --check-browser`
   时 `main.selftest(browser=True)` 会先打一行提示，再 `xdao/preflight.py` 新增的
   `browser_start_checks(explicit="", *, timeout=None, settings=None)` 真的启一遍候选浏览器
@@ -774,6 +776,24 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 注意两条容易误判的：探针会把现场 `xdao-export.exe` 换成「起来就退」的替身（所以备份里
 不是老版本 exe 是**对的**）；普通暂存目录 `xdao-export-update` 要放够
 `STAGING_STALE_SECONDS = 600` 秒才清（所以刚升完几分钟还在也是**对的**）。
+
+## 自检类用例要连报告对象一起钉（2026-10-01 发现）
+
+`--selftest` 会跑「本机环境」那几项（配置目录、导出目录、缓存目录能不能写），
+**结论随机器而变**。新加的 `tests/test_selftest_browser_flag.py` 一开始只钉了
+`preflight._loaded_settings`、`can_write_dir`、`_check_cache_dir` 这些小函数，
+结果开发机上全绿、两个 ubuntu 作业在 49df732 红了三条（`assert code == 0` →
+`assert 1 == 0`）。
+
+原因：`run_local_checks()` 在**自己的函数体里**再取一次 `_loaded_settings()` ——
+开发机上设置里的导出目录恰好能写，干净的 CI 机器上写不进去 → 多出一条 `fail` →
+退出码 1。**钉里面的小函数不够，要把 `run_local_checks` /
+`run_network_checks` 整个换成固定报告**（`tests/test_cli.py` 的
+`_stub_preflight` 早就是这么做的，新的自检类用例照抄它）。
+
+教训：**凡是「跑整个自检再看退出码」的用例，都得先假定自己会读到这台机器的真实
+设置**；本机全绿说明不了 CI 全绿，反过来也一样。写完这类用例，先问一句「换一台
+干净的机器，这几项会是什么结论」。
 
 ## CI 说明
 

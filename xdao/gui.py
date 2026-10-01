@@ -240,6 +240,7 @@ class LoginDialog(tk.Toplevel):
         master: tk.Tk,
         client: XdaoClient,
         settings: AppSettings | None = None,
+        app: "App | None" = None,
     ) -> None:
         super().__init__(master)
         self.configure(bg=BG)
@@ -247,6 +248,10 @@ class LoginDialog(tk.Toplevel):
         # 「用浏览器登录」要知道把浏览器 profile 放哪、要不要走代理，都取自这份设置。
         # 不传就自己读一次配置：老的调用方不必跟着改签名。
         self.settings = settings if settings is not None else AppSettings.load()
+        # 主窗口：只用来把「用浏览器登录」失败的原因写进运行日志 —— 那句错误原本只
+        # 出现在子窗口的一行小字里，用户点完关掉就再也找不到了（2026-10-01 一位用户
+        # 报「登不上」时贴出来的日志里只有自检，没有任何登录相关记录）。
+        self.app = app
         self.userhash: str | None = None
         self._result_queue: queue.Queue = queue.Queue()
         self._busy = False
@@ -458,6 +463,16 @@ class LoginDialog(tk.Toplevel):
                     self.grab_set()
             except tk.TclError:  # pragma: no cover - 窗口已经不可用了
                 pass
+        # 这条失败原因原本只写在子窗口的一行小字里（关掉窗口就没了）。用户要报告
+        # 问题时贴的是运行日志，所以这里补一笔：日志里那句「浏览器登录没成：…」
+        # 才是能拿去查的东西。
+        failure = getattr(dialog, "failure", "")
+        app = getattr(self, "app", None)
+        if failure and app is not None:
+            try:
+                app.log(f"浏览器登录没成：{failure}")
+            except Exception:  # pragma: no cover - 日志写不进去不该影响登录
+                pass
         if dialog.userhash:
             self.userhash = dialog.userhash
             self.destroy()
@@ -564,6 +579,10 @@ class BrowserLoginDialog(tk.Toplevel):
         self.settings = settings if settings is not None else AppSettings.load()
         # 成功后交给 LoginDialog；None 表示这次没成（用户取消或失败）。
         self.userhash: str | None = None
+        # 没成的话，这里是能拿去查原因的那句话（由 _poll 从后台线程的消息里抄下来）。
+        # 外面（SettingsDialog._open_browser_login）会把它写进运行日志 —— 只留在
+        # 这一行小字里的话，用户关掉窗口就再也找不到了。
+        self.failure: str = ""
 
         self._queue: queue.Queue = queue.Queue()
         self._stop = threading.Event()
@@ -713,11 +732,13 @@ class BrowserLoginDialog(tk.Toplevel):
                 self._set_status(f"{current}（{payload}）" if current else str(payload))
                 continue
             if kind == "browser_closed":
+                self.failure = "浏览器窗口已经关掉了，还没取到饼干。"
                 self._set_status(
                     "浏览器窗口已经关掉了，还没取到饼干。点「重新打开浏览器」重开一个，"
                     "或者点「直接粘贴饼干登录」。"
                 )
             else:  # 剩下的都是错误
+                self.failure = str(payload)
                 self._set_status(str(payload))
             self.retry_button.config(state="normal")
         if not self._closing:
@@ -2588,7 +2609,7 @@ class App:
 
     def open_login(self) -> None:
         try:
-            dialog = LoginDialog(self.root, self.client, self.settings)
+            dialog = LoginDialog(self.root, self.client, self.settings, app=self)
             self.root.wait_window(dialog)
             if dialog.userhash:
                 self.settings.userhash = dialog.userhash
