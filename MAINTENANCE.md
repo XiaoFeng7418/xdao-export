@@ -470,7 +470,17 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   「有人报过…」「这位用户 / 那位用户…」一律改成直接写现象与规则；规则本身（「## 注释与文档的写法」）
   不动。改写脚本 `_scratch/apply_neutral_wording.py`（25 条替换，先全部替换成功再统一写盘）。
   没改动的：`诊断写入.ps1` 的「用户名」等无关命中，以及泛指假设场景的句子。
-  用例：`check_text_hygiene.py` / `check_usage_txt.py` 都 exit 0；全量两轮。
+  用例：`check_text_hygiene.py` / `check_usage_txt.py` 都 exit 0；全量两轮（各 `1212 passed, 7 skipped`）。
+  历史 Release 正文也按新口径用 `gh release edit --notes-file` 重发过（v0.13.9 / v0.13.12 / v0.13.13）。
+  **真机验收（打包版）**：exe 2774733 字节；`--version` → 「X岛串导出工具 0.13.14」退出码 0；
+  `--selftest --offline --check-browser` 仍是基线（2 处走不通、1 处要注意，退出码 1，浏览器那条照样
+  「起得来」：Edg/154.0.4258.48、调试端口 61372 答得上话 0.4 秒），跑完 `%TEMP%` 里产品自己的临时
+  目录 0 个。冻结核验 `_scratch/check_frozen_code_v1314.py` → 「包里的代码是对的」（PYZ 211 个模块、
+  26 个 xdao 模块，新增钉子「典型现场是 Edge 退出码」全在）。升级 E2E
+  `_scratch/probe_upgrade_e2e_v1314.py`：现场 v0.13.13 → 新版自己下载/自检/替换/重启，见证进程记下
+  「现场版本 0.13.14、换上去的 exe 与包里的那份字节一致 True、现场 993 项、记号目录清干净、
+  普通暂存目录年龄 5.2 秒 < 阈值 600 秒」。`tools/repo_check.py` 13/13；CI run 36870960597（master）
+  与 36870969935（标签 v0.13.14）都是 success。
 - **v0.13.13**：**只改文案**：把「用浏览器登录」为什么是个干净窗口讲清楚，并给「直接粘贴
   饼干登录」写上复制步骤。现象是「用浏览器登录」打开的窗口与平时使用的浏览器不是同一份资料目录：
   没有已装插件，也没有保存的密码（看起来像另一个软件）。同一个 Edge，只是换了一份临时资料目录；
