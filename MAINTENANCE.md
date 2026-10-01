@@ -465,6 +465,32 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.12**：修「窗口拉小的时候说明文字被裁」这一类毛病（用户报的是自检窗口介绍，
+  普查下来一共四处）。`xdao/gui.py` 只加两个模块级辅助、不碰业务逻辑：
+  `wrap_to_width(label, *, minimum=200)`（`<Configure>` 里
+  `wraplength=max(minimum, event.width - theme.gap(1))`；调用处必须
+  `pack(fill="x")` 或 grid `sticky="ew"`，否则「改 wraplength → 请求宽度变 → 宽度又变」会抖）、
+  `fold_buttons_when_narrow(row, primary, secondary, *, gap_steps=1.5)`（建 `top`/`bottom`
+  两个子框架，`needed = gap*(n-1) + Σwinfo_reqwidth()`，`event.width < needed` 时把次要按钮
+  `pack(in_=bottom, side="right")` —— **主按钮永远留在 `top`**，第一版把两组一起丢进 `bottom`，
+  真机上量到第一行高度 0）。
+  用处：自检窗口的介绍与状态行、设置窗口 6 处说明（保留 `wraplength=theme.gap(80)` 作初始值，
+  免得 Card 被整句宽度撑开）、主窗口缓存行、运行日志卡片头的说明文字（改成自己占一行）；
+  自检窗口按钮排改用折行；`SelftestDialog.minsize(520, 400)` → `(520, 460)`；
+  主窗口缓存行改成「按钮先 `pack(side="right")`、标签再 `fill="x", expand=True`」
+  （原来标签先 pack，940/1060 宽时都把两个按钮挤到卡片外，看不见也点不到）。
+  用例：`tests/test_window.py` 新增 6 条（`wrap_to_width` 跟宽度走 / 极窄时保底 /
+  折行后主按钮仍在上排 / 主窗口按钮都在父容器里 / 自检介绍在 520x460 换成多行且按钮不出窗 /
+  `minsize == (520, 460)`）；另加了 `_widgets()`、`_settle()`、`_holder()` 三个辅助。
+  **真机核验**：`D:\小玩意\_scratch\probe_dialog_text_v1312.py`（`App()` → 主窗口
+  940x682 与 1060x760、自检 600x652/520x460/900x600、设置、监控逐个量：标签「需要宽度 > 实际
+  宽度」记被裁、按钮「实际宽度 < 需要宽度」记被挤、按钮矩形超出窗口记出窗、同一行子控件宽度和
+  超容器记行溢出）→ **全部 0**；截图 `_shots\main_940x682.png`（按钮回到卡片里）、
+  `_shots\selftest_520x460.png`（介绍换成三行全显示）目视确认。
+  **教训**：Card 里的说明标签不给初始 `wraplength` 的话，`Card._on_body_configure()` 会按整句
+  宽度把卡片撑到 1188 px（`xdao/widgets.py:126-127` 记着这个历史坑），所以「给保守初始值 +
+  跟着宽度改」两层都要有。
+
 - **v0.13.11**：加一条**启动时清扫** —— 程序被强杀时没人收尾，那些临时资料目录会一直
   留在 `%TEMP%` 里（v0.13.9/v0.13.10 只盖住「程序自己收尾」的路径；真机上量到过 147 个）。
   `xdao/browser_login.py` 新增 `TEMP_DIR_PREFIXES`（`xdao-export-browser-profile` 与

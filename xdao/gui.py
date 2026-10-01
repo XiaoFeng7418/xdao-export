@@ -234,6 +234,77 @@ def describe_export_failure(exc: BaseException) -> str:
     )
 
 
+def wrap_to_width(label: ttk.Label, *, minimum: int = 200) -> None:
+    """让一段说明文字跟着窗口宽度换行，而不是整句摊开等着被裁掉。
+
+    说明文字不设 ``wraplength`` 时，控件会按整句的自然宽度去申请空间：
+    窗口一窄，右边就直接被裁掉（真机截图里「环境自检」的介绍只显示到
+    「「试浏览器」」）。绑到控件自己的 ``<Configure>`` 上，每拿到新宽度
+    就重设一次换行宽度；``minimum`` 是窗口被拖到极窄时的兜底，免得
+    一行只剩一两个字。
+
+    注意：调用的地方要 ``pack(fill="x")``（或 grid ``sticky="ew"``），
+    让控件的实际宽度由容器决定；否则"改 wraplength → 请求宽度变 → 宽度又变"
+    会来回抖。
+    """
+    label.bind(
+        "<Configure>",
+        lambda event: event.widget.configure(
+            wraplength=max(minimum, event.width - theme.gap(1))
+        ),
+    )
+
+
+def fold_buttons_when_narrow(
+    row: ttk.Frame,
+    primary: list[ttk.Button],
+    secondary: list[ttk.Button],
+    *,
+    gap_steps: float = 1.5,
+) -> None:
+    """一行放不下时，把次要按钮折到第二行，别让窗口把两头切掉。
+
+    「环境自检」最小宽度 520，那排五个按钮加起来要 559 px：不折行的话
+    pack 会把先放的按钮撑满、后面的被挤到窗口外面（真机截图里「重新自检」
+    和「复制结果」都只露半截）。这里给容器加一行 ``bottom``，窗口够宽时
+    两组按钮在同一行（``secondary`` 靠右），不够宽时后者整组落到第二行。
+    """
+    gap = theme.gap(gap_steps)
+    top = ttk.Frame(row, style="Card.TFrame")
+    bottom = ttk.Frame(row, style="Card.TFrame")
+    top.pack(fill="x")
+    state: dict[str, bool | None] = {"narrow": None}
+
+    def place(narrow: bool) -> None:
+        if state["narrow"] == narrow:
+            return
+        state["narrow"] = narrow
+        for button in (*primary, *secondary):
+            button.pack_forget()
+        # 主按钮永远待在第一行（窄的时候第二行只放次要按钮，免得整排
+        # 一起挪到下面、第一行空着）。
+        for index, button in enumerate(primary):
+            button.pack(in_=top, side="left", padx=(gap if index else 0, 0))
+        target = bottom if narrow else top
+        for index, button in enumerate(secondary):
+            button.pack(
+                in_=target, side="right", padx=(gap, 0) if index == 0 else (0, gap)
+            )
+        if narrow:
+            bottom.pack(fill="x", pady=(gap, 0))
+        else:
+            bottom.pack_forget()
+
+    def on_configure(event: "tk.Event[tk.Misc]") -> None:
+        needed = gap * (len(primary) + len(secondary) - 1) + sum(
+            button.winfo_reqwidth() for button in (*primary, *secondary)
+        )
+        place(event.width < needed)
+
+    place(False)
+    row.bind("<Configure>", on_configure)
+
+
 class LoginDialog(tk.Toplevel):
     def __init__(
         self,
@@ -1087,13 +1158,20 @@ class SettingsDialog(tk.Toplevel):
         ttk.Entry(net, textvariable=self.proxy_var).grid(
             row=0, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1)
         )
-        ttk.Label(
+        # 说明文字用「初始 wraplength + 跟着格子宽度换行」两层：
+        # 初始值让卡片知道要多宽（不设的话会按整句宽度把窗口撑开），
+        # wrap_to_width 再按实际格子宽度收窄，免得 320 比格子还宽、右侧被切。
+        proxy_hint = ttk.Label(
             net,
             text="例如 http://127.0.0.1:7890；留空则读取系统环境变量，仍为空表示直连。",
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, theme.gap(1)))
+        )
+        proxy_hint.grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(0, theme.gap(1))
+        )
+        wrap_to_width(proxy_hint, minimum=220)
 
         # 三个数字项排成一行，省一层高度（小屏上更友好）
         self.timeout_var = tk.StringVar(value=f"{settings.timeout:g}")
@@ -1114,13 +1192,15 @@ class SettingsDialog(tk.Toplevel):
             ttk.Entry(group, textvariable=variable, width=10).pack(
                 anchor="w", pady=(theme.gap(0.5), 0)
             )
-        ttk.Label(
+        throttle_hint = ttk.Label(
             net,
             text="请求过密会被限流（429）；抓很长的串时把间隔调到 0.3～0.5 更稳。",
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
+        )
+        throttle_hint.grid(row=3, column=0, columnspan=2, sticky="ew")
+        wrap_to_width(throttle_hint, minimum=220)
 
         # ② 缓存
         cache_card = Card(outer)
@@ -1151,13 +1231,17 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(
             cache_row, text="…", style="Secondary.TButton", width=3, command=self._choose_cache
         ).pack(side="left", padx=(theme.gap(1), 0))
-        ttk.Label(
+        cache_hint = ttk.Label(
             cache,
             text="留空表示放在导出目录下的 .cache，随导出目录一起迁移。",
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(theme.gap(1), 0))
+        )
+        cache_hint.grid(
+            row=2, column=0, columnspan=2, sticky="ew", pady=(theme.gap(1), 0)
+        )
+        wrap_to_width(cache_hint, minimum=220)
 
         # ③ 导出
         export_card = Card(outer)
@@ -1175,7 +1259,7 @@ class SettingsDialog(tk.Toplevel):
         ttk.Entry(export, textvariable=self.template_var).grid(
             row=0, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1)
         )
-        ttk.Label(
+        template_hint = ttk.Label(
             export,
             text=(
                 "占位符：{title} 标题、{id} 串号、{date} 导出日期、{po} PO 饼干、{count} 楼层数。\n"
@@ -1184,7 +1268,11 @@ class SettingsDialog(tk.Toplevel):
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, theme.gap(1)))
+        )
+        template_hint.grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(0, theme.gap(1))
+        )
+        wrap_to_width(template_hint, minimum=220)
 
         ttk.Label(export, text="PDF 浏览器", style="Card.TLabel").grid(
             row=2, column=0, sticky="w", pady=theme.gap(1)
@@ -1198,14 +1286,16 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(
             browser_row, text="…", style="Secondary.TButton", width=3, command=self._choose_browser
         ).pack(side="left", padx=(theme.gap(1), 0))
-        ttk.Label(
+        browser_hint = ttk.Label(
             export,
             text="导出 PDF 和「用浏览器登录」时调用的浏览器（PDF 用无头模式渲染）。"
             "留空表示跟随系统默认浏览器，认不出来再找 Chrome 或 Edge。",
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
+        )
+        browser_hint.grid(row=3, column=0, columnspan=2, sticky="ew")
+        wrap_to_width(browser_hint, minimum=220)
 
         # ④ PDF 页面：默认「跟随网页样式」，导出效果与浏览器打印完全一致 ——
         # 老配置（没有这几个键）升级后行为不变，靠的就是这个默认值。
@@ -1293,7 +1383,7 @@ class SettingsDialog(tk.Toplevel):
             variable=self.pdf_background_var,
             style="Card.TCheckbutton",
         ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
-        ttk.Label(
+        pdf_hint = ttk.Label(
             export,
             text=(
                 "「跟随网页样式」＝与浏览器打印效果一致；自定义边距留空时用左边的预设，"
@@ -1302,7 +1392,11 @@ class SettingsDialog(tk.Toplevel):
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",
-        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(theme.gap(1), 0))
+        )
+        pdf_hint.grid(
+            row=7, column=0, columnspan=2, sticky="ew", pady=(theme.gap(1), 0)
+        )
+        wrap_to_width(pdf_hint, minimum=220)
 
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
@@ -1762,7 +1856,10 @@ class SelftestDialog(tk.Toplevel):
         # 卡片用 stretch=True 撑满窗口，文本区跟着长；这里给个初始大小即可，
         # 用户拉大拉小都能用。620 高时报告一趟看得完。
         self.geometry("660x620")
-        self.minsize(520, 400)
+        # 最小高度要装得下窄窗口时折成两行的按钮排（真机量过：520 宽时
+        # 报告区顶部到 349，两行按钮要 74，再加卡片下边距 —— 400 高会把
+        # 「复制结果」「关闭」切掉，460 刚好留出余量）。
+        self.minsize(520, 460)
         self.transient(app.root)
 
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(2)))
@@ -1772,7 +1869,9 @@ class SelftestDialog(tk.Toplevel):
         card.pack(fill="both", expand=True)
 
         SectionHeading(card.body, "环境自检").pack(fill="x")
-        ttk.Label(
+        # 先给一个保守的 wraplength：说明文字要是按整句宽度申请空间，
+        # 卡片会跟着变宽，窗口反而被顶到屏幕外（真机上就是右侧被裁掉）。
+        self.intro = ttk.Label(
             card.body,
             text="查本机：配置与缓存目录、导出目录、浏览器、导出格式。"
             "只读不动，不会改你的设置。"
@@ -1780,7 +1879,10 @@ class SelftestDialog(tk.Toplevel):
             "不碰你自己的登录状态），用来回答「用浏览器登录为什么点不动」。",
             style="CardMuted.TLabel",
             justify="left",
-        ).pack(anchor="w", pady=(theme.gap(1), 0))
+            wraplength=460,
+        )
+        self.intro.pack(anchor="w", fill="x", pady=(theme.gap(1), 0))
+        wrap_to_width(self.intro, minimum=260)
 
         box = ttk.Frame(card.body, style="Card.TFrame")
         box.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
@@ -1808,28 +1910,41 @@ class SelftestDialog(tk.Toplevel):
         self._add_context_menu(self.text)
 
         self.status_var = tk.StringVar(value="")
-        ttk.Label(card.body, textvariable=self.status_var, style="CardMuted.TLabel").pack(
-            anchor="w", pady=(theme.gap(1.5), 0)
+        # 状态那行也会写长句子（「已复制到剪贴板，可以直接贴给别人看。」、
+        # 试浏览器的进度），同样跟着窗口宽度换行。
+        self.status_label = ttk.Label(
+            card.body,
+            textvariable=self.status_var,
+            style="CardMuted.TLabel",
+            justify="left",
+            wraplength=460,
         )
+        self.status_label.pack(anchor="w", fill="x", pady=(theme.gap(1.5), 0))
+        wrap_to_width(self.status_label, minimum=260)
 
         row = ttk.Frame(card.body, style="Card.TFrame")
         row.pack(fill="x", pady=(theme.gap(2), 0))
-        ttk.Button(
+        # 五个按钮一行要 559 px，而这个窗口最小宽度是 520：交给
+        # fold_buttons_when_narrow 决定是排一行还是把后两个折到第二行。
+        restart_button = ttk.Button(
             row, text="重新自检", style="Secondary.TButton", command=self._run_local
-        ).pack(side="left")
+        )
         # 联网检查单独一个按钮：它会真的去请求接口，慢的时候要等好几秒
         self.net_button = ttk.Button(row, text="检查联网", command=self._run_network)
-        self.net_button.pack(side="left", padx=(theme.gap(1.5), 0))
         # 浏览器能不能起来是另一回事：真的把浏览器启一次，慢的时候十几秒
         self.browser_button = ttk.Button(
             row, text="试浏览器", command=self._run_browser_check
         )
-        self.browser_button.pack(side="left", padx=(theme.gap(1.5), 0))
-        ttk.Button(
+        copy_button = ttk.Button(
             row, text="复制结果", style="Ghost.TButton", command=self._copy
-        ).pack(side="right", padx=(theme.gap(1.5), 0))
-        ttk.Button(row, text="关闭", style="Secondary.TButton", command=self.destroy).pack(
-            side="right", padx=(0, theme.gap(1.5))
+        )
+        close_button = ttk.Button(
+            row, text="关闭", style="Secondary.TButton", command=self.destroy
+        )
+        fold_buttons_when_narrow(
+            row,
+            [restart_button, self.net_button, self.browser_button],
+            [copy_button, close_button],
         )
 
         self._run_local()
@@ -2414,18 +2529,31 @@ class App:
         cache_row = ttk.Frame(folder_card.body, style="Card.TFrame")
         cache_row.pack(fill="x", pady=(theme.gap(1), 0))
         self.cache_info_var = tk.StringVar(value="")
-        ttk.Label(
-            cache_row, textvariable=self.cache_info_var, style="CardFaint.TLabel"
-        ).pack(side="left", fill="x", expand=True)
+        # 按钮先 pack：右边那块位置先占住。这一行在窄窗口里放不下「整句缓存信息
+        # + 两个按钮」，要是先放标签，它会吃掉整行，把两个按钮挤到卡片外面
+        # （真机 940 宽时就是这样，「打开目录」「清空缓存」都看不见、点不到）。
+        cache_buttons = ttk.Frame(cache_row, style="Card.TFrame")
+        cache_buttons.pack(side="right")
         ttk.Button(
-            cache_row, text="打开目录", style="Secondary.TButton", command=self.open_folder
+            cache_buttons, text="打开目录", style="Secondary.TButton", command=self.open_folder
         ).pack(side="right")
         ttk.Button(
-            cache_row,
+            cache_buttons,
             text="清空缓存",
             style="Ghost.TButton",
             command=self.clear_cache,
         ).pack(side="right", padx=(0, theme.gap(1)))
+        # 剩下的宽度才是标签的：给它一个保守的初始换行宽度，再跟着实际宽度走，
+        # 缓存目录再长也能整个看到（换行，而不是被切掉）。
+        self.cache_label = ttk.Label(
+            cache_row,
+            textvariable=self.cache_info_var,
+            style="CardFaint.TLabel",
+            justify="left",
+            wraplength=theme.gap(50),
+        )
+        self.cache_label.pack(side="left", fill="x", expand=True)
+        wrap_to_width(self.cache_label, minimum=160)
 
         # 主操作按钮 + 进度（滚动区之外，永远看得见）
         footer = ttk.Frame(column)
@@ -2510,22 +2638,33 @@ class App:
         card.pack_propagate(False)
 
         ttk.Label(card.body, text="运行日志", style="CardHeading.TLabel").pack(anchor="w")
+        # 说明文字自己占一行、铺满卡片宽度：跟按钮挤在一行时，940 宽的
+        # 窗口里留给它的只有 85 px（量到过），再怎么写都会缺字。
+        log_hint = ttk.Label(
+            card.body,
+            text="抓取与导出的每一步都会记在这里",
+            style="CardFaint.TLabel",
+            justify="left",
+            wraplength=theme.gap(45),
+        )
+        log_hint.pack(anchor="w", fill="x", pady=(theme.gap(0.5), 0))
+        wrap_to_width(log_hint, minimum=160)
+        # 按钮单独一行、靠右：位置先占住，谁也不会被挤成半个。
         log_head = ttk.Frame(card.body, style="Card.TFrame")
         log_head.pack(fill="x", pady=(theme.gap(0.5), theme.gap(1.5)))
-        ttk.Label(
-            log_head, text="抓取与导出的每一步都会记在这里", style="CardFaint.TLabel"
-        ).pack(side="left")
-        ttk.Button(log_head, text="保存…", style="Ghost.TButton", command=self.save_log).pack(
-            side="right"
-        )
-        ttk.Button(log_head, text="清空", style="Ghost.TButton", command=self.clear_log).pack(
-            side="right", padx=(0, theme.gap(0.5))
-        )
-        ttk.Button(log_head, text="自检", style="Ghost.TButton", command=self.open_selftest).pack(
-            side="right", padx=(0, theme.gap(0.5))
-        )
+        log_buttons = ttk.Frame(log_head, style="Card.TFrame")
+        log_buttons.pack(side="right")
+        ttk.Button(
+            log_buttons, text="保存…", style="Ghost.TButton", command=self.save_log
+        ).pack(side="right")
+        ttk.Button(
+            log_buttons, text="清空", style="Ghost.TButton", command=self.clear_log
+        ).pack(side="right", padx=(0, theme.gap(0.5)))
+        ttk.Button(
+            log_buttons, text="自检", style="Ghost.TButton", command=self.open_selftest
+        ).pack(side="right", padx=(0, theme.gap(0.5)))
         self._update_button = ttk.Button(
-            log_head, text="检查更新", style="Ghost.TButton", command=self.check_update
+            log_buttons, text="检查更新", style="Ghost.TButton", command=self.check_update
         )
         self._update_button.pack(side="right", padx=(0, theme.gap(0.5)))
 

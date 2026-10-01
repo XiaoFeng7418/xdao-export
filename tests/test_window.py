@@ -13,6 +13,7 @@ import sys
 import time
 import tkinter as tk
 from pathlib import Path
+from tkinter import ttk
 
 import pytest
 
@@ -630,3 +631,156 @@ def test_open_dialogs_follow_the_theme(app: gui.App, monkeypatch) -> None:
     finally:
         dialog.destroy()
         app.switch_theme("light")
+
+
+# ---------- 说明文字与按钮排：窗口小的时候也不能缺字 ----------
+#
+# 用户报过「自检窗口的介绍在窗口比较小的情况下无法显示全」。查下去才发现
+# 同一类毛病有好几处：介绍标签没有 wraplength（整句 1188px 摊开等着被裁）、
+# 缓存那行的两个按钮被挤到卡片外面、日志卡片里最后一枚按钮只剩半个。
+# 下面这些用例盯的就是「控件拿到的位置装不装得下它要显示的字」。
+
+
+def _widgets(widget: tk.Misc):
+    """深度优先遍历整棵控件树。"""
+    yield widget
+    for child in widget.winfo_children():
+        yield from _widgets(child)
+
+
+def _settle(app: gui.App, rounds: int = 4) -> None:
+    """让 Configure 事件走完（换行宽度靠它算）。"""
+    for _ in range(rounds):
+        app.root.update_idletasks()
+        app.root.update()
+
+
+def _holder(app: gui.App, width: int, height: int = 200) -> tk.Frame:
+    """一个定宽容器，用来逼出窄布局。
+
+    ``pack_propagate(False)`` 是关键：否则容器会被子控件的自然宽度撑开，
+    永远测不到「装不下」的情形。
+    """
+    holder = tk.Frame(app.root, width=width, height=height)
+    holder.pack_propagate(False)
+    holder.pack()
+    _settle(app)
+    return holder
+
+
+def test_wrap_to_width_follows_the_label(app: gui.App) -> None:
+    """换行宽度跟着控件实际宽度走。"""
+    holder = _holder(app, 300)
+    try:
+        label = ttk.Label(holder, text="一" * 60)
+        label.pack(fill="x")
+        gui.wrap_to_width(label, minimum=60)
+        _settle(app)
+        assert int(str(label.cget("wraplength"))) == 300 - theme.gap(1)
+
+        holder.configure(width=560)
+        _settle(app)
+        assert int(str(label.cget("wraplength"))) == 560 - theme.gap(1)
+    finally:
+        holder.destroy()
+
+
+def test_wrap_to_width_keeps_a_floor_for_collapsed_windows(app: gui.App) -> None:
+    """窗口被拖到只剩几十像素时也要留个下限，别算成 0（那就又变回不换行了）。"""
+    holder = _holder(app, 30)
+    try:
+        label = ttk.Label(holder, text="一" * 60)
+        label.pack(fill="x")
+        gui.wrap_to_width(label, minimum=120)
+        _settle(app)
+        assert int(str(label.cget("wraplength"))) == 120
+    finally:
+        holder.destroy()
+
+
+def test_fold_buttons_when_narrow_keeps_the_primary_row_on_top(app: gui.App) -> None:
+    """窄了只把次要按钮挪到第二行，主按钮留在第一行（第一行不能空着）。"""
+    holder = _holder(app, 700)
+    row = ttk.Frame(holder)
+    row.pack(fill="x")
+    primary = [ttk.Button(row, text=text) for text in ("重新自检", "检查联网", "试浏览器")]
+    secondary = [ttk.Button(row, text=text) for text in ("复制结果", "关闭")]
+    try:
+        gui.fold_buttons_when_narrow(row, primary, secondary)
+        _settle(app)
+        assert len({button.winfo_y() for button in (*primary, *secondary)}) == 1
+
+        holder.configure(width=400)
+        _settle(app)
+        assert len({button.winfo_y() for button in primary}) == 1, "主按钮该在同一行"
+        assert len({button.winfo_y() for button in secondary}) == 1, "次要按钮该在同一行"
+        assert min(b.winfo_y() for b in secondary) > max(
+            b.winfo_y() for b in primary
+        ), "次要按钮该在主按钮下面"
+        for button in (*primary, *secondary):
+            assert button.winfo_width() + 1 >= button.winfo_reqwidth(), button.cget("text")
+    finally:
+        holder.destroy()
+
+
+def test_buttons_stay_inside_their_parent_in_the_main_window(app: gui.App) -> None:
+    """主窗口拉到最小尺寸时，按钮也不能被挤到父容器外面。
+
+    缓存那行原来就是「标签先 pack、按钮后 pack」，940 宽时两个按钮被推到
+    卡片外面 —— 看不见也点不到。
+    """
+    app.root.geometry("940x682")
+    _settle(app)
+
+    checked = 0
+    for widget in _widgets(app.root):
+        if widget.winfo_class() != "TButton" or not widget.winfo_ismapped():
+            continue
+        parent = widget.nametowidget(widget.winfo_parent())
+        assert widget.winfo_x() + widget.winfo_width() <= parent.winfo_width() + 1, (
+            f"{widget.cget('text')} 跑到 {parent} 外面（x={widget.winfo_x()}）"
+        )
+        assert widget.winfo_y() + widget.winfo_height() <= parent.winfo_height() + 1, (
+            f"{widget.cget('text')} 掉到 {parent} 下面（y={widget.winfo_y()}）"
+        )
+        checked += 1
+    assert checked > 5, "没量到几个按钮，用例本身可能坏了"
+
+
+def test_selftest_intro_wraps_at_the_minimum_size(app: gui.App) -> None:
+    """自检窗口缩到最小尺寸时，介绍文字整句都看得见（用户报的就是这个）。"""
+    app.open_selftest()
+    dialog = app._selftest_dialog  # noqa: SLF001
+    assert dialog is not None
+    try:
+        dialog.geometry("520x460")
+        _settle(app)
+
+        intro = dialog.intro  # noqa: SLF001
+        assert int(str(intro.cget("wraplength"))) <= intro.winfo_width() + 1
+        assert intro.winfo_height() > 30, "整句 1188px 塞进 456px，该换成好几行"
+        for widget in _widgets(dialog):
+            if widget.winfo_class() != "TButton" or not widget.winfo_ismapped():
+                continue
+            assert widget.winfo_width() + 1 >= widget.winfo_reqwidth(), widget.cget("text")
+            assert (
+                widget.winfo_rooty() + widget.winfo_height()
+                <= dialog.winfo_rooty() + dialog.winfo_height() + 1
+            ), f"{widget.cget('text')} 被窗口下沿切掉了"
+    finally:
+        dialog.destroy()
+
+
+def test_selftest_minimum_size_fits_the_folded_buttons(app: gui.App) -> None:
+    """520 宽时按钮排折成两行，最小高度（460）要装得下整块。"""
+    app.open_selftest()
+    dialog = app._selftest_dialog  # noqa: SLF001
+    assert dialog is not None
+    try:
+        assert dialog.minsize() == (520, 460)
+        dialog.geometry("520x300")  # 比最小高度还矮
+        _settle(app)
+        assert dialog.winfo_height() >= 460
+    finally:
+        dialog.destroy()
+
