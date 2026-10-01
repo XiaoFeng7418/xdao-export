@@ -32,6 +32,10 @@ OK = "✓"
 WARN = "!"
 BAD = "✗"
 
+# `push_via_api.remote_chain()` 一次只往回取这么多条远端提交（每条一个 API 请求）。
+# 本地历史比它长时，远端链的窗口装不下最早的提交，靠比对链就判断不了同步状态。
+REMOTE_CHAIN_LIMIT = 100
+
 
 class Report:
     def __init__(self) -> None:
@@ -64,6 +68,16 @@ def local_tree(repo_dir: Path) -> dict[str, str]:
         head, _, path = line.partition("\t")
         result[path] = head.split()[2]
     return result
+
+
+def git_subjects(repo_dir: Path, *args: str) -> list[str] | None:
+    """跑一条 git 命令，按行返回；失败时返回 None（例如本地没有那个对象）。"""
+    out = subprocess.run(
+        ["git", *args], cwd=repo_dir, capture_output=True, text=True, encoding="utf-8",
+    )
+    if out.returncode != 0:
+        return None
+    return [line for line in out.stdout.strip().splitlines() if line.strip()]
 
 
 def remote_tree(repo: str, token: str, ref: str) -> dict[str, str]:
@@ -109,21 +123,47 @@ def main(argv: list[str]) -> int:
     report.add(OK if license_id else WARN, "设置", f"许可：{license_id or '未识别'}")
 
     # ---------- 2. 提交同步状态 ----------
+    #
+    # 别只靠 API 走远端历史：remote_chain 一次只取最近 100 条，本地提交数一超过它，
+    # 「最早的本地提交在不在远端链里」就永远找不到 → find_pushed_prefix 返回 0，
+    # 于是整份历史被报成「都没推送」（2026-10-01 本地到第 102 个提交时真的发生了）。
+    # 先比 HEAD，再用本地的 git 判断祖先关系；只有本地没有远端那个对象时才回退到 API。
     ref = request_json("GET", f"/repos/{args.repo}/git/ref/heads/{branch}", token)
     remote_head = ref["object"]["sha"]
     commits = local_commits()
-    chain = remote_chain(args.repo, token, remote_head)
-    pushed = find_pushed_prefix(commits, chain)
-    pending = len(commits) - pushed
-    report.add(OK, "提交", f"远端 {branch} = {remote_head[:8]}，本地 {len(commits)} 个提交")
-    if pending:
-        report.add(
-            WARN, "提交",
-            f"本地有 {pending} 个提交未推送到远端："
-            + "、".join(c["message"].splitlines()[0][:30] for c in commits[pushed:]),
-        )
+    head = commits[-1]["sha"] if commits else ""
+    report.add(OK, "提交", f"远端 {branch} = {remote_head[:8]}，本地 HEAD = {head[:8]}（共 {len(commits)} 个提交）")
+    if head and remote_head == head:
+        report.add(OK, "提交", "本地 HEAD 就是远端分支的顶端，没有未推送的提交")
     else:
-        report.add(OK, "提交", "本地所有提交都已在远端")
+        subjects = git_subjects(repo_dir, "log", "--pretty=%s", "--reverse", f"{remote_head}..HEAD")
+        if subjects is not None:
+            if subjects:
+                report.add(
+                    WARN, "提交",
+                    f"本地有 {len(subjects)} 个提交未推送到远端："
+                    + "、".join(s[:30] for s in subjects[:20]),
+                )
+            else:
+                report.add(OK, "提交", "没有未推送的提交")
+        else:
+            chain = remote_chain(args.repo, token, remote_head)
+            pushed = find_pushed_prefix(commits, chain)
+            pending = len(commits) - pushed
+            if pending and pushed == 0 and len(chain) >= REMOTE_CHAIN_LIMIT:
+                report.add(
+                    WARN, "提交",
+                    f"远端历史只取到最近 {REMOTE_CHAIN_LIMIT} 条（本地 {len(commits)} 个提交），"
+                    "判断不了哪些已经推过；这一项没查成，多半是历史已经比窗口长",
+                )
+            elif pending:
+                report.add(
+                    WARN, "提交",
+                    f"本地有 {pending} 个提交未推送到远端："
+                    + "、".join(c["message"].splitlines()[0][:30] for c in commits[pushed:]),
+                )
+            else:
+                report.add(OK, "提交", "本地所有提交都已在远端")
 
     # ---------- 3. 文件内容一致性 ----------
     mine = local_tree(repo_dir)
