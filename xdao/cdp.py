@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import itertools
 import json
@@ -164,14 +165,11 @@ class _FrameReader:
 
 # ---------------------------------------------------------------- HTTP 与握手
 
-def _http_json(url: str, timeout: float = 5.0) -> object:
-    """读一个本地 HTTP 接口（CDP 的 ``/json/list``）。
+def _http_json_once(url: str, timeout: float = 5.0) -> object:
+    """读一次本地 HTTP 接口（CDP 的 ``/json/list``），失败就抛。
 
     显式关掉代理：调试端口在 127.0.0.1 上，而用户可能开着系统代理，
     走代理会连不上自己机器上的端口。
-
-    实现在这里、``http_json`` 只是它的别名：会话内部调用走的是本模块这个名字，
-    这样调用方（或测试）替换 ``_http_json`` 就能换掉「怎么读那个接口」。
     """
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
@@ -179,6 +177,89 @@ def _http_json(url: str, timeout: float = 5.0) -> object:
             return json.loads(response.read().decode("utf-8", "replace"))
     except (OSError, ValueError) as exc:
         raise CdpError(f"读取浏览器的调试接口失败：{exc}") from exc
+
+
+#: 调试接口的读取预算（秒）。真机依据：浏览器是先把端口写进
+#: ``DevToolsActivePort``、再让调试服务开始收连接的 —— 2026-10-01 六轮实测
+#: 端口文件出现后还要 328~563 ms 第一次连接才成功，这中间读一次就是
+#: ``[WinError 10061] 目标计算机积极拒绝``。以前只读一次，撞上就报「打开
+#: 浏览器失败」，而用户点一下「重新打开浏览器」往往又好了。
+_DEVTOOLS_READ_BUDGET = 8.0
+_DEVTOOLS_RETRY_WAIT = 0.1
+
+#: 「这一轮失败再等等看」的 errno：连接被拒 / 重置 / 超时 / 网络不可达。
+_RETRY_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in ("ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH")
+    )
+    if code is not None
+)
+
+
+def _retryable_read_failure(exc: BaseException) -> bool:
+    """这个读失败值不值得再试一次。
+
+    认 errno，也认 ``winerror``：Windows 上 ``WinError 10061``（目标计算机
+    积极拒绝）在有些异常链上只落在 ``errno``、有些只落在 ``winerror``，
+    两边都看才不会漏。超时也一并认（``urlopen`` 超时抛的异常在不同版本里
+    落点不一样，名字里带 timeout 就算）。
+    """
+    win_codes = {10060, 10061, 10065, 10054}
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if getattr(current, "winerror", None) in win_codes:
+            return True
+        if getattr(current, "errno", None) in _RETRY_ERRNOS:
+            return True
+        if isinstance(current, TimeoutError):
+            return True
+        text = str(current).lower()
+        if "timed out" in text:
+            return True
+        pending.extend((current.__cause__, current.__context__))
+    return False
+
+
+def _http_json(
+    url: str,
+    timeout: float = 5.0,
+    *,
+    hint: Callable[[], str] | None = None,
+    budget: float = _DEVTOOLS_READ_BUDGET,
+) -> object:
+    """在预算内反复读调试接口，直到读通、或者确定再等也没用。
+
+    以前这里是「读一次就定生死」。真机上那条 ``[WinError 10061]`` 就发生在
+    端口文件出现、调试服务还没开始收连接的那几百毫秒里 —— 用户看到的是
+    「打开浏览器失败」，再点一次「重新打开浏览器」却好了。现在这段时间自己
+    等过去，不再把浏览器正常启动的时差当成故障。
+
+    ``hint`` 每次重试前问一句「还有必要等吗」：浏览器进程已经死了就别耗满
+    预算，直接把死因报上去（见 ``LoginBrowser.devtools_failure_hint``）。
+    """
+    deadline = time.monotonic() + max(0.0, budget)
+    wait = _DEVTOOLS_RETRY_WAIT
+    while True:
+        try:
+            return _http_json_once(url, timeout)
+        except CdpError as exc:
+            if not _retryable_read_failure(exc):
+                raise
+            if hint is not None:
+                reason = hint()
+                if reason:
+                    raise CdpError(reason) from exc
+            if time.monotonic() + wait > deadline:
+                raise
+            time.sleep(wait)
+            wait = min(wait * 1.5, 0.5)
 
 
 # 公开名（``_http_json`` 是历史写法，两者是同一个函数对象）。
@@ -285,7 +366,8 @@ class CDPSession:
         ws_url: str,
         timeout: float = 15.0,
         site_urls: list[str] | None = None,
-        http_json: Callable[[str, float], object] | None = None,
+        http_json: Callable[..., object] | None = None,
+        failure_hint: Callable[[], str] | None = None,
     ) -> None:
         self._ws_url = ws_url
         self._timeout = timeout
@@ -295,6 +377,10 @@ class CDPSession:
         # 「怎么读 /json/list」可以由调用方换掉（登录流程就传自己模块里那个名字，
         # 这样替换它就能换掉会话的行为）；不传就用本模块的实现。
         self._http_json = http_json or _http_json
+        # 「还有必要等吗」：读调试接口会重试几秒，重试期间问一句这个函数，
+        # 有话说就当场按它报错（浏览器已经死了的场合，别让用户等满预算）。
+        # 传 None 的调用方（PDF 渲染）没有进程可查，就一直等满预算。
+        self._failure_hint = failure_hint
         self._sock: socket.socket | None = None
         self._frames: _FrameReader | None = None
         self._reader: threading.Thread | None = None
@@ -329,8 +415,20 @@ class CDPSession:
         return site if site is not None else pick_page(pages)
 
     def _page_targets(self) -> list[dict]:
-        """读一次 ``/json/list``，只留能挂上去的页面标签。"""
-        targets = self._http_json(self._list_url(), self._timeout)
+        """读一次 ``/json/list``，只留能挂上去的页面标签。
+
+        读法由 ``self._http_json`` 决定；登录流程传进来的那个实现自己会重试
+        「端口在、口还不通」的那几百毫秒，并把 ``self._failure_hint`` 带下去。
+        """
+        reader: Callable[..., object] = self._http_json
+        try:
+            if self._failure_hint is not None:
+                targets = reader(self._list_url(), self._timeout, hint=self._failure_hint)
+            else:
+                targets = reader(self._list_url(), self._timeout)
+        except TypeError:
+            # 替身（用例、或只吃两个位置的旧调用方）不认识 hint，就按老样子读。
+            targets = reader(self._list_url(), self._timeout)
         return [
             target
             for target in (targets if isinstance(targets, list) else [])

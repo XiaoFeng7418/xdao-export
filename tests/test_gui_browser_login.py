@@ -125,12 +125,15 @@ class _FakeSession:
         timeout: float = 15.0,
         site_urls=None,
         http_json=None,
+        failure_hint=None,
     ) -> None:
         self.ws_url = ws_url
         self.timeout = timeout
         # 界面层建会话时会带上「本站点」前缀与「怎么读 /json/list」，替身照单全收。
         self.site_urls = list(site_urls or [])
         self.http_json = http_json
+        # 「浏览器还在不在」也一起交下来：读调试接口要重试时用它当场报死因。
+        self.failure_hint = failure_hint
         self.connected = False
         self.closed = False
         self.cookies: list[dict] = []

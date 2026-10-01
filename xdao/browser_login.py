@@ -247,6 +247,38 @@ def _profile_failure(exc: BaseException) -> bool:
     return False
 
 
+def _devtools_read_failure(exc: BaseException) -> bool:
+    """这次失败是不是「调试端口写了、口却连不上」。
+
+    真机上的表现（用户截图）：
+    ``打开浏览器失败：读取浏览器的调试接口失败：<urlopen error [WinError 10061]
+    由于目标计算机积极拒绝，无法连接。>``
+
+    ``cdp._http_json`` 自己会在这个时差里重试几秒（端口文件出现到调试服务
+    开始收连接之间有三五百毫秒），所以走到这里还带着这个错，说明重试也没
+    连上 —— 进程当场死了、或者本地调试端口被拦了。前一种换一个干净资料目录
+    常常就能起来，因此 :meth:`LoginBrowser.start` 把它也归到「换目录再试」。
+
+    只看这一种：别的错（浏览器路径不对、目录写不进去）换目录也没用，
+    白白多起一次进程。
+    """
+    win_codes = (10060, 10061, 10065, 10054)
+    posix_codes = (errno.ECONNREFUSED, errno.ECONNRESET, errno.ETIMEDOUT)
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if getattr(current, "winerror", None) in win_codes:
+            return True
+        if getattr(current, "errno", None) in posix_codes:
+            return True
+        pending.extend((current.__cause__, current.__context__))
+    return False
+
+
 def build_args(
     info: BrowserInfo,
     profile: Path,
@@ -420,6 +452,10 @@ class LoginBrowser:
         「用浏览器登录」都是一句「打开浏览器失败」。所以碰上「权限 / 占用」
         这类目录问题就换一个 profile 再试（见 :func:`fallback_profile_dirs`），
         实在不行才把原始错误抛上去。
+
+        另一种真机上见过的失败是「调试端口写了、口却连不上」——进程当场没了，
+        或者安全软件把本地调试端口拦了。前一种换一个干净资料目录就能起来，
+        所以``_devtools_read_failure`` 也归到「换目录重试」那一类。
         """
         if self.process is not None:
             return self
@@ -430,7 +466,7 @@ class LoginBrowser:
                 return self._launch(chosen)
             except Exception as exc:  # noqa: BLE001 —— 下面按错误码决定要不要换目录重试
                 self._reset_process()
-                if not _profile_failure(exc):
+                if not (_profile_failure(exc) or _devtools_read_failure(exc)):
                     raise
                 if first_error is None:
                     first_error = exc
@@ -441,6 +477,26 @@ class LoginBrowser:
         if first_error is None:  # pragma: no cover —— candidates 至少有一个，走不到这儿
             raise CdpError(f"启动 {self.info.name} 失败：找不到可用的浏览器资料目录。")
         raise first_error
+
+    def devtools_failure_hint(self) -> str:
+        """读调试接口重试期间的一句提示：浏览器已经没了就返回死因，否则返回空串。
+
+        为什么需要它：读 ``/json/list`` 现在会在几秒预算内重试（端口文件出现
+        和调试服务开始收连接之间有几百毫秒时差）。要是进程在这期间就退出了，
+        等满预算是白等 —— 直接告诉用户浏览器没起来。返回空串表示「进程还在，
+        继续等」。
+        """
+        process = self.process
+        if process is None:
+            return ""
+        code = process.poll()
+        if code is None:
+            return ""
+        return (
+            f"{self.info.name} 刚起来就退出了（退出码 {code}），"
+            "所以读不到它的调试接口。装了什么拦截软件的话先关掉再试，"
+            "也可以改用「直接粘贴饼干登录」。"
+        )
 
     def _reset_process(self) -> None:
         """把上一次没起来的进程收干净，好让同一个对象再试一个目录。"""
@@ -592,7 +648,9 @@ BrowserLoginError = CdpError
 SITE_URLS = (COOKIE_SITE, LOGIN_URL)
 
 
-def _new_session(ws_url: str, timeout: float = 15.0) -> CDPSession:
+def _new_session(
+    ws_url: str, timeout: float = 15.0, failure_hint: Callable[[], str] | None = None
+) -> CDPSession:
     """建一条会话：带上「本站点」前缀，并让会话用本模块的 ``_http_json`` 读标签列表。
 
     两个名字都在**调用时**从本模块的名字表里取：
@@ -600,6 +658,10 @@ def _new_session(ws_url: str, timeout: float = 15.0) -> CDPSession:
       必须取替换后的那个，不能是导入时就绑死的类对象；
     * ``_http_json`` —— 老代码里读 ``/json/list`` 就发生在本模块，把「怎么读」
       显式交给会话，替换这个名字才仍然换得掉会话的行为。
+
+    ``failure_hint`` 一路交给会话：读调试接口会在预算内重试，重试期间用它问
+    「浏览器进程还在吗」——不在了就当场报死因，别让用户干等（见
+    :meth:`LoginBrowser.devtools_failure_hint`）。
     """
     names = globals()
     return names["CDPSession"](
@@ -607,6 +669,7 @@ def _new_session(ws_url: str, timeout: float = 15.0) -> CDPSession:
         timeout=timeout,
         site_urls=list(SITE_URLS),
         http_json=names["_http_json"],
+        failure_hint=failure_hint,
     )
 
 
