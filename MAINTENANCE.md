@@ -13,10 +13,10 @@
    & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
    ```
 
-   14 项检查，全部 ✓ 才算健康。它会检查：仓库设置、提交同步、文件逐一致、
+   每一项都要 ✓ 才算健康（工具在结尾自己报「共 N 项检查」）。它检查：仓库设置、提交同步、文件逐一致、
    版本号一致、Release 附件齐全、待办积压。
 
-2. **跑测试**（当前基线 962 项，必须全绿）
+2. **跑测试**（必须全绿；跳过的那几项都要显式开关，见 `HANDOFF.md` 的第二节）
 
    ```powershell
    & $py -X utf8 -m pytest -q
@@ -98,6 +98,14 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 & '<盘符>\xdao-export-v<上一版的版本号>\xdao-export-v<上一版的版本号>-win64\xdao-export.exe' --check-update-json
 #    应当看到刚发的版本、升级包地址指向刚上传的附件、字节数一致；源码版再跑一次
 #    `main.py --check-update`，应当回「已是最新版本」。
+
+# 9) 最后把发出去的附件下载回来跑一遍（用户拿到的就是这个文件，不是本机构建的那个）
+& $gh release download vX.Y.Z --repo XiaoFeng7418/xdao-export --pattern '*.zip' `
+    --dir <临时目录> --clobber
+Get-FileHash <临时目录>\xdao-export-vX.Y.Z-win64.zip -Algorithm SHA256   # 要与本机构建的完全相同
+Expand-Archive <临时目录>\xdao-export-vX.Y.Z-win64.zip -DestinationPath <临时目录>\解开
+& '<临时目录>\解开\xdao-export-vX.Y.Z-win64\xdao-export.exe' --version   # 应打出这个版本号
+& $py -X utf8 tools\gui_probe.py --exe '<临时目录>\解开\xdao-export-vX.Y.Z-win64\xdao-export.exe'
 ```
 
 上面第 8 步值得单独跑：它验的是**用户那台机器上已经装着的旧版**能不能看见新包，
@@ -105,6 +113,12 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 `--check-update-json` 得到「最新版本 v0.13.18」、升级包地址指向
 `xdao-export-v0.13.18-win64.zip`、附件大小 12040398 字节，与刚上传的完全一致；同一时刻源码版
 （0.13.18）回「已是最新版本（0.13.18）」。
+第 9 步也值得单独跑：前面几步验的都是「本机构建出来的那个 zip」，而用户下载到的是
+「GitHub 上那个文件」。2026-10-02 实测 v0.13.18：下载回来的 zip 与本机构建的完全一致
+（都是 12040398 字节，SHA256 都是 `3be6233f…`），解开后 956 个文件、`--version` 打出
+0.13.18、包内 `使用说明.txt` 与仓库那份逐字节相同（`e4315ead…`）、
+`tools\gui_probe.py --exe` 报「界面已正常启动」。（`$gh` / `$py` 指本机的 gh.exe 与
+Python，见本文开头的环境变量段。）
 
 只动测试与维护文档（`tests/**`、`MAINTENANCE.md`、`HANDOFF.md`）时**不必发版**：免安装包里
 没有这些文件，包内容与上一版逐字节一样，硬发一版只是噪音。**一旦改到会进包的东西**
@@ -205,7 +219,8 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
    想让 sha 一致只能用 `git push` 把本地对象原样送上去。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
-5. **改动必须带测试**：`tests/` 是 962 项离线用例，新增功能请补用例，
+5. **改动必须带测试**：`tests/` 是一千多项离线用例（要确切数字就跑
+   `& $py -X utf8 -m pytest --collect-only -q` 数一下），新增功能请补用例，
    不要依赖联网测试。
 6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
    一切远端操作走 `tools/` 下的 API 脚本。
@@ -261,6 +276,13 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    那句注释；`README.md` 的「最新版 **vX**」与附件表里的 zip 名；`packaging/使用说明.txt`
    的第 1 行与最上面那条「- 本版版本号：」；`docs/RELEASE_NOTES_vX.md` 得存在、标题是
    `# vX…`、并且写明附件叫什么。CI 里那个 job 只比 tag 与 `__version__`，文档侧以前没人管。
+   **文档里写死的用例数也有机器把关**（2026-10-02 补上）：`tests/test_docs_facts.py` 拿
+   `pytest --collect-only -q` 的真实收集数核两处 —— `HANDOFF.md` 那张测试表（每个
+   `tests/test_*.py` 都得在表里、表里写的项数得对得上）与表头那句「单元测试 N 项」，
+   还有 `README.md` 目录树里那句「N 个离线单元测试（M 通过，另 K 个真机用例默认跳过）」。
+   两处以前都在悄悄漂：查的时候表里有 5 个文件根本没进表、7 个文件的项数还是旧的（差 145 项），
+   README 那儿还写着 1119（实际已经 1267）。跨平台能核的只有总数与「M + K = N」这类算术关系，
+   本机通过多少只有 Windows 上成立，所以不写进断言。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
@@ -1112,7 +1134,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - 工作流在 `push`、`pull_request` 与手动触发时运行，**不需要任何凭据**
   （用例全部离线，用测试替身替代网络）。
 - 三个矩阵：Ubuntu + Python 3.10（声明的最低版本）、Ubuntu + 3.12、Windows + 3.12。
-- 检查项：语法编译、962 项单元测试、CLI 可用性、格式注册表完整性；
+- 检查项：语法编译、单元测试、CLI 可用性、格式注册表完整性；
   Windows 上额外跑一次 `--selftest`（联网失败不阻断）。
 - 界面相关的用例（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
   在没有显示环境的机器上会自动 skip，Linux CI 上属于预期行为，不算失败。

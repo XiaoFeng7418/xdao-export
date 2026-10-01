@@ -26,10 +26,12 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1119 项（1113 通过）、6 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关
-`XDAO_BROWSER_TEST=1` / `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`）；
-其中界面相关的 62 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
-在没有显示环境的机器上会自动 skip。
+单元测试 1267 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1260 通过、7 项跳过）、
+7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
+`XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
+其中界面相关的 85 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
+在没有显示环境的机器上会自动 skip。下面那张测试表的数字由 `tests/test_docs_facts.py`
+对着真实收集数把关：加删测试文件、用例数量变了，它就会红，照报红的位置改表即可。
 
 打包版随 v0.13.0 重新构建。v0.13.0 加了**一键升级**（`xdao/updater.py`：下载到 `%TEMP%\xdao-export-update` → 只解顶层 `xdao-export-v*` 目录 → 拿**候选版本**跑`--selftest --offline` → 主线程二次确认 → 用**升级包里的那个 exe** 当帮手（`main.py --apply-update <目录> <payload> <pid> <启动程序>`，不依赖系统 Python/PowerShell）等老进程退出后换目录、启动新版、清暂存；旧目录改名成 `<名>.old-<时间戳>` 留 24 小时，每次启动顺手清理；三条设计取舍＝先自检再替换、旧版本不删只改名、帮手用升级包里的 exe）。v0.12.0 加了**新版本检查**（`xdao/update_check.py`：命令行
 `--check-update` / `--check-update-json`，界面「运行日志」右上角「检查更新」按钮，启动后 1.2 秒
@@ -77,11 +79,17 @@ xdao-export/
 │  ├─ conftest.py          测试夹具 + 两侧硬守卫：用户配置只读、白名单外跳过即失败
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（48）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（14）
-│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（125）
+│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（202）
 │  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update（48）
-│  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（6）
-│  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级（53）
-│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（12，需真 Tk）
+│  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（8）
+│  ├─ test_public_material.py 公开材料：真串号 / 本机个人目录 / 凭据（5）
+│  ├─ test_version_consistency.py 版本号四处一致（5）
+│  ├─ test_cli_docs.py     文档里的命令行开关与解析器互相覆盖（3）
+│  ├─ test_docs_facts.py   HANDOFF/README 里写死的用例数与真实收集数一致（3）
+│  ├─ test_browser_check.py 「浏览器到底行不行」的探测（8）
+│  ├─ test_selftest_browser_flag.py 自检里那条 --check-browser 真跑一遍（4）
+│  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级（61）
+│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（22，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
 │  ├─ test_watcher.py      监控与配置（30）
 │  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（33）
@@ -91,14 +99,14 @@ xdao-export/
 │  ├─ test_pdf.py          PDF 渲染与路由（37）
 │  ├─ test_pdf_opts.py     PDF 纸张/边距/缩放/页码选项（325）
 │  ├─ test_browser_flags.py 打包运行时给浏览器补的开关（7）
-│  ├─ test_preflight.py    环境自检：各项检查的 ok/warn/fail 分支（35）
+│  ├─ test_preflight.py    环境自检：各项检查的 ok/warn/fail 分支（39）
 │  ├─ test_update_check.py 新版本检查：版本号比较、接口、缓存、代理（62）
 │  ├─ test_pdf_render.py   PDF 真机渲染 4 条（默认跳过，`XDAO_PDF_TEST=1`）
-│  ├─ test_updater.py      一键升级：下载、解压、候选版自检、计划、换目录、清理（30）
+│  ├─ test_updater.py      一键升级：下载、解压、候选版自检、计划、换目录、清理（38）
 │  ├─ test_settings.py     配置读写（25）
 │  ├─ test_live_notify.py  真机通知（1，默认跳过）
 │  ├─ test_theme.py        配色/字体/间距/ttk 样式、Card 拉伸（27，需真 Tk）
-│  └─ test_window.py       主窗口布局回归（25，需真 Tk）
+│  └─ test_window.py       主窗口布局回归（36，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号
    ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理、响应体解包
