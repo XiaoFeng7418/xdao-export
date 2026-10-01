@@ -23,6 +23,8 @@ import pytest
 
 from xdao.settings import AppSettings, app_config_dir
 
+from . import conftest
+
 
 def temp_settings(path: Path) -> type[AppSettings]:
     """派生一个 ``_path`` 指向临时目录的设置类（与 tests/test_settings.py 同一手法）。
@@ -93,3 +95,49 @@ def test_the_real_config_file_is_not_touched_by_this_module():
         AppSettings.load()
     after = path.read_bytes() if path.exists() else None
     assert before == after
+
+
+def _tk_or_skip():
+    """拿一个真 Tk 根窗口；这机器上起不来就跳过（CI 的 Linux 矩阵就是这样）。"""
+    tkinter = pytest.importorskip("tkinter", reason="没有可用的显示环境")
+    try:
+        root = tkinter.Tk()
+    except Exception as exc:  # pragma: no cover - 无头机器
+        pytest.skip(f"没有可用的显示环境：{exc}")
+    root.withdraw()
+    return tkinter, root
+
+
+def test_leftover_tk_widgets_are_destroyed_before_the_interpreter_goes_away():
+    """收尾清理要真的动手（2026-10-01 CI 红过的那条路径）。
+
+    界面用例真开过 Tk，退出时那些 ``Variable`` 才被 GC 到 —— 那时主线程已经
+    不在，``__del__`` 去调 Tcl 抛 ``RuntimeError``，异常文本再往 stderr 写就撞上
+    后台线程占着输出锁，报 ``Fatal Python error: _enter_buffered_busy``：**测试
+    全绿，CI 退出码却是 1**。所以要在解释器还完好的时候就把遗留部件销毁。
+    """
+    tkinter, root = _tk_or_skip()
+    variable = tkinter.StringVar(master=root, value="留着")
+    assert variable.get() == "留着"
+    tcl_name = str(variable)
+
+    destroyed = conftest._destroy_leftover_tk()
+
+    assert destroyed >= 1, "遗留的 Tk 部件一个都没收掉"
+    # 销毁过之后不能再问 winfo_exists（会抛 TclError: application has been
+    # destroyed），只能回收掉手里的引用，再看那个变量还在不在名单里。
+    del root, variable
+    assert not [
+        obj for obj in conftest._tk_objects() if str(obj) == tcl_name
+    ]
+
+
+def test_silence_tk_variables_replaces_the_destructor():
+    """兜底：即便还剩几个变量，也别让它们在收尾阶段去调 Tcl。"""
+    tkinter, root = _tk_or_skip()
+    variable = tkinter.StringVar(master=root, value="x")
+    assert variable is not None
+
+    conftest._silence_tk_variables()
+
+    assert tkinter.Variable.__del__(variable) is None, "兜底实现不该调 Tcl"
