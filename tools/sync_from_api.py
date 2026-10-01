@@ -8,6 +8,8 @@
 用法：
     python tools/sync_from_api.py --repo XiaoFeng7418/xdao-export --branch master
     python tools/sync_from_api.py --repo ... --branch master --dry-run
+
+默认在**这个脚本所在的仓库**里重建；`XDAO_REPO_DIR` 可以改指别处（只有测试会用到）。
 """
 
 from __future__ import annotations
@@ -73,6 +75,22 @@ def git(*args: str, data: bytes | None = None) -> bytes:
     if result.returncode != 0:
         raise ApiError(f"git {' '.join(args)} 失败：{result.stderr.decode('utf-8', 'replace')}")
     return result.stdout
+
+
+def worktree_changes() -> list[str]:
+    """列出工作区里与 HEAD 不一样的**已跟踪**文件（未跟踪的不管）。
+
+    盘点之后要核对「本地是不是真的跟远端一样」：引用指过去了、工作区却没对齐，
+    是两回事 —— 只报「完成」就等于把这件事蒙混过去。
+    """
+    out = git("status", "--porcelain", "--untracked-files=no").decode("utf-8", "replace")
+    return [line[3:].strip() for line in out.splitlines() if line.strip()]
+
+
+def tracked_files() -> list[str]:
+    """已跟踪文件的清单（用来把「核对过了」说清楚到底核对了多少）。"""
+    out = git("ls-files").decode("utf-8", "replace")
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def git_ident(api_date: str, name: str, email: str, offset: str) -> str:
@@ -159,6 +177,15 @@ def build_tree(token: str, repo: str, tree_sha: str, prefix: str = "") -> str:
             sha = build_tree(token, repo, entry["sha"], f"{prefix}{name}/")
         else:
             blob = api(token, f"/repos/{repo}/git/blobs/{entry['sha']}")
+            # 超过 1 MB 的 blob，JSON 接口只给一个空壳（encoding 不是 base64），
+            # 必须换 raw 媒体类型单独取 —— 拿不到内容就没法核对，直接停下，
+            # 不要让它变成一句莫名其妙的「blob 不一致」。
+            if blob.get("encoding") != "base64":
+                raise ApiError(
+                    f"取不到 blob 内容：{prefix}{name}（encoding="
+                    f"{blob.get('encoding')!r}）—— 超过 1 MB 的文件 JSON 接口不给内容，"
+                    "要改用 raw 媒体类型单独取"
+                )
             content = base64.b64decode(blob["content"])
             sha = write_blob(content)
             if sha != entry["sha"]:
@@ -180,15 +207,37 @@ def build_tree(token: str, repo: str, tree_sha: str, prefix: str = "") -> str:
 
 
 def commit_chain(token: str, repo: str, head: str) -> list[dict]:
-    chain = []
-    sha = head
-    while sha:
+    """读回从 head 起可达的全部提交，按「父先于子」排序（head 在最后）。
+
+    以前只跟着**第一个**父提交往回走：远端一旦有过合并提交，另一条支线上的提交
+    就不会被重建，引用照样指过去，本地仓库却缺对象 —— 而且 `git status` 看不出来。
+    现在每个父提交都跟着走，并按拓扑序返回，保证建某个提交时它的父提交都已建好。
+    """
+    commits: dict[str, dict] = {}
+    pending = [head]
+    while pending:
+        sha = pending.pop()
+        if sha in commits:
+            continue
         data = api(token, f"/repos/{repo}/git/commits/{sha}")
-        chain.append(data)
-        parents = data.get("parents") or []
-        sha = parents[0]["sha"] if parents else ""
-    chain.reverse()
-    return chain
+        commits[sha] = data
+        pending.extend(parent["sha"] for parent in (data.get("parents") or []))
+
+    order: list[str] = []
+    seen: set[str] = set()
+    stack = [(head, False)]
+    while stack:
+        sha, expanded = stack.pop()
+        if expanded:
+            order.append(sha)
+            continue
+        if sha in seen:
+            continue
+        seen.add(sha)
+        stack.append((sha, True))
+        for parent in commits[sha].get("parents") or []:
+            stack.append((parent["sha"], False))
+    return [commits[sha] for sha in order]
 
 
 def main(argv: list[str]) -> int:
@@ -198,8 +247,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    root = Path(__file__).resolve().parent.parent
-    import os
+    root = Path(
+        os.environ.get("XDAO_REPO_DIR") or Path(__file__).resolve().parent.parent
+    ).resolve()
 
     os.chdir(root)
 
@@ -219,12 +269,24 @@ def main(argv: list[str]) -> int:
               f"{remote['message'].splitlines()[0][:44]}")
 
     if args.dry_run:
-        print("演练结束，未改动本地引用。")
+        print(
+            "演练结束：本地分支引用一个都没动"
+            "（为核对 sha，上面这些 blob/tree/commit 松散对象已经写进本地 .git 了，"
+            "它们是未引用的，`git gc` 会自行回收）。"
+        )
         return 0
 
     print(f"把本地 {args.branch} 指向 {rebuilt[-1][:8]}")
     git("update-ref", f"refs/heads/{args.branch}", rebuilt[-1])
-    print("完成。可执行 git status 确认工作区内容一致。")
+
+    dirty = worktree_changes()
+    if dirty:
+        print("× 引用已经指过去了，但工作区里这些已跟踪文件与新的 HEAD 不一样：")
+        print("  " + "、".join(dirty[:5]) + ("…" if len(dirty) > 5 else ""))
+        print("  别当同步完成 —— 先看 `git status` 把这些改动处理掉。")
+        return 1
+    print(f"完成：本地 {args.branch} 与远端逐字节一致，工作区里 {len(tracked_files())} "
+          "个已跟踪文件也逐一对得上。")
     return 0
 
 
