@@ -258,6 +258,62 @@ def test_log_text_is_read_only_and_monospace(app: gui.App) -> None:
     assert app.log_text.winfo_width() > 400
 
 
+#: 子进程里 Tk 起不来时报的话。CI 的 windows 作业实测抖过一次：
+#: `_tkinter.TclError: Can't find a usable init.tcl in the following directories:
+#: C:/hostedtoolcache/windows/Python/3.12.10/x64/tcl/tcl8.6/init.tcl` —— 同 sha 的另一次
+#: 运行是全绿的，属于环境抖动，不该把整个作业判红。
+_TK_UNAVAILABLE_MARKERS = ("Can't find a usable", "no display name", "no $DISPLAY")
+
+
+def _tk_broke_in_child(stderr: str) -> bool:
+    """子进程失败是不是「Tk 起不来」（而不是我们真测出了回归）。"""
+    return any(marker in stderr for marker in _TK_UNAVAILABLE_MARKERS)
+
+
+def _run_in_fresh_process(script: str) -> subprocess.CompletedProcess[str]:
+    """在**全新解释器**里跑一段脚本，跑之前先确认这个解释器里 Tk 能用。
+
+    为什么要先确认：这段脚本的失败会以「子进程退出码非 0」的形式报出来，而
+    「Tk 起不来」和「我们真发现了回归」看起来一模一样。所以先探一次（跟
+    :func:`make_root` 一样重试几秒），探不成才认输 —— 那种情况下这条用例**没法得到
+    答案**，如实跳过胜过把环境抖动报成回归。真出现了回归（Tk 好、断言没过）时
+    子进程会正常退出，随后的断言照样会红。
+    """
+    probe = (
+        "import tkinter as tk;"
+        "root = tk.Tk();root.withdraw();root.destroy();print('tk ok')"
+    )
+    ready = False
+    last: subprocess.CompletedProcess[str] | None = None
+    for _ in range(3):
+        last = subprocess.run(
+            [sys.executable, "-X", "utf8", "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
+        if last.returncode == 0:
+            ready = True
+            break
+        if not _tk_broke_in_child(last.stderr):
+            break
+        time.sleep(0.5)
+    if not ready:
+        detail = (last.stderr if last else "").strip()[-300:]
+        if last is not None and _tk_broke_in_child(last.stderr):
+            pytest.skip(f"没有可用的显示环境（子进程里 Tk 起不来）：{detail}")
+        raise AssertionError(f"子进程里的 Tk 探测以非预期方式失败：{detail}")
+
+    return subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+
+
 def test_widget_fonts_match_the_theme_after_startup() -> None:
     """界面控件的字体族必须与 ``theme`` 报的一致 —— 在**全新进程**里验证。
 
@@ -278,13 +334,7 @@ def test_widget_fonts_match_the_theme_after_startup() -> None:
         "print('|'.join([import_at_import, theme.FONT_MONO, gui.MONO_FONT[0], log]));"
         "root.destroy()"
     )
-    proc = subprocess.run(
-        [sys.executable, "-X", "utf8", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        cwd=str(Path(__file__).resolve().parents[1]),
-    )
+    proc = _run_in_fresh_process(script)
     assert proc.returncode == 0, f"子进程启动失败：{proc.stderr[-800:]}"
     at_import, theme_mono, module_mono, log_font = proc.stdout.strip().split("|")
     assert module_mono == theme_mono, (
