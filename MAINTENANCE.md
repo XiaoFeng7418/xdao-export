@@ -434,6 +434,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.2**：补丁版。浏览器登录读调试接口改成**带预算的重试**（`cdp._http_json`，8 秒 / 0.1→0.5 秒退避）：真机实测端口文件出现后还要 328~563 ms 第一次连接才成功，这中间读一次就是 `[WinError 10061] 目标计算机积极拒绝`，以前只读一次就报「打开浏览器失败」。同时 `CDPSession` 新增 `failure_hint`，`gui.py` 把 `LoginBrowser.devtools_failure_hint` 传下去（进程已退出就当场报退出码，不再耗满预算）；`browser_login.start()` 把「调试口连不上」也归入「换备用资料目录重试」。
+
 - **v0.13.1**：补丁版。①升级换完文件后不再弹「升级中」模态框（它会一直等用户点确定，而帮手只等 60 秒，点慢一拍升级就白换）；②`browser_login._profile_failure` 除 Windows 的 5/32 之外也认 POSIX 的 `EACCES`/`EBUSY`（CI 从两条 ubuntu 矩阵变绿）。
 
 - **一键升级**（v0.13.0）：新增 `xdao/updater.py` 与 `main.py --apply-update`。点「有新版本」

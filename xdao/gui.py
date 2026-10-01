@@ -779,7 +779,12 @@ class BrowserLoginDialog(tk.Toplevel):
             # 浏览器端点交给 CDPSession，它自己会换成页面标签再握手。
             # 建会话时把「本站点」一起告诉它：connect() 靠这个挑对页面标签
             # （Edge 自己会开 sync-confirmation 之类的内部页，不能抓错）。
-            session = backend._new_session(browser.browser_ws_url)
+            # 「浏览器还在不在」也一并交下去：读调试接口会在几秒预算内重试
+            # （端口文件出现和调试服务开始收连接之间有时差），重试期间要是
+            # 进程已经死了，就当场报死因，不让用户干等。
+            session = backend._new_session(
+                browser.browser_ws_url, failure_hint=browser.devtools_failure_hint
+            )
             self._session = session
             session.connect()
             if self._stop.is_set():  # 取消正好落在握手过程中

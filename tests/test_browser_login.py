@@ -34,6 +34,7 @@ from typing import Callable, Iterator
 import pytest
 
 from xdao import browser_login as bl
+from xdao import cdp as cdp
 
 # 测试自己写一遍握手魔术串，不引用实现里的常量：两边一起写错就测不出来了。
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -731,6 +732,134 @@ def test_cdp_session_connect_resolves_an_http_address_first(
     assert calls == ["http://127.0.0.1:9222/json/list"]
 
 
+# ------------------------------------------------- 调试接口：端口在、口还不通
+
+#: 真机上那条报错（用户截图）：端口文件已经出现，调试服务却还没开始收连接。
+_REFUSED = OSError(10061, "由于目标计算机积极拒绝，无法连接。")
+
+
+def _refuse_then_succeed(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[float]:
+    """让 ``_http_json_once`` 先连不上 ``failures`` 次，之后返回一份页面列表。
+
+    返回调用时刻清单，供用例核对「确实重试了、而且很快就回来了」。
+    """
+    moments: list[float] = []
+
+    def fake_once(url: str, timeout: float = 5.0) -> object:
+        moments.append(time.monotonic())
+        if len(moments) <= failures:
+            raise bl.CdpError(f"读取浏览器的调试接口失败：{_REFUSED}") from _REFUSED
+        return [{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/x"}]
+
+    # ``bl._http_json`` 是 ``cdp._http_json`` 的同一个函数对象，它调的是本模块
+    # 名字表里的 ``_http_json_once``，所以要替换的是 ``cdp`` 这一边。
+    monkeypatch.setattr(cdp, "_http_json_once", fake_once)
+    return moments
+
+
+def test_http_json_retries_the_window_between_the_port_file_and_a_live_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """端口文件刚出现的那几百毫秒里读不通，要自己等过去，而不是当场报失败。"""
+    moments = _refuse_then_succeed(monkeypatch, failures=3)
+    started = time.monotonic()
+    targets = bl._http_json("http://127.0.0.1:9222/json/list", budget=3.0)
+    elapsed = time.monotonic() - started
+    assert isinstance(targets, list) and targets
+    assert len(moments) == 4, "没有重试"
+    assert elapsed < 1.0, f"该在毫秒级等到，实际花了 {elapsed:.2f}s"
+
+
+def test_http_json_gives_up_when_the_budget_runs_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一直连不上就别无限等：预算用完就把原始错误抛上去。"""
+    moments = _refuse_then_succeed(monkeypatch, failures=10_000)
+    started = time.monotonic()
+    with pytest.raises(bl.CdpError):
+        bl._http_json("http://127.0.0.1:9222/json/list", budget=0.4)
+    elapsed = time.monotonic() - started
+    # 预算是 0.4s：循环在「下一次等待会超预算」时就收手，所以实际用时略短于预算，
+    # 只钉住「确实等过、也没等到预算之外」。
+    assert 0.1 <= elapsed < 1.0, f"预算没起作用：{elapsed:.2f}s"
+    assert len(moments) >= 2
+
+
+def test_http_json_stops_early_when_the_hint_has_something_to_say(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """浏览器当场死了就别耗满预算：hint 一有话说就按它报错。"""
+    _refuse_then_succeed(monkeypatch, failures=10_000)
+    started = time.monotonic()
+    with pytest.raises(bl.CdpError) as caught:
+        bl._http_json(
+            "http://127.0.0.1:9222/json/list",
+            budget=5.0,
+            hint=lambda: "浏览器刚起来就退出了",
+        )
+    assert "刚起来就退出了" in str(caught.value)
+    assert time.monotonic() - started < 1.0
+
+
+def test_http_json_does_not_retry_a_failure_that_waiting_cannot_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """路径写错之类的错重试也没用：一次就抛，别白等几秒。"""
+    calls: list[str] = []
+
+    def fake_once(url: str, timeout: float = 5.0) -> object:
+        calls.append(url)
+        raise bl.CdpError("读取浏览器的调试接口失败：404 Not Found")
+
+    monkeypatch.setattr(cdp, "_http_json_once", fake_once)
+    started = time.monotonic()
+    with pytest.raises(bl.CdpError):
+        bl._http_json("http://127.0.0.1:9222/json/list", budget=5.0)
+    assert calls == ["http://127.0.0.1:9222/json/list"]
+    assert time.monotonic() - started < 0.5
+
+
+def test_session_passes_the_hint_through_to_the_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """界面层给的那句「浏览器还在不在」要一路交到读接口的实现里。
+
+    ``_new_session`` 在**调用时**从本模块名字表里取 ``_http_json``，所以替换
+    这个名字就能换掉会话的读法（界面层建会话走的就是这条路）。
+    """
+    seen: list[object] = []
+
+    def reader(url: str, timeout: float = 5.0, hint=None) -> object:
+        seen.append(hint)
+        return [{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/x"}]
+
+    monkeypatch.setattr(bl, "_http_json", reader)
+    session = bl._new_session(
+        "http://127.0.0.1:9222/json/list", failure_hint=lambda: "dead"
+    )
+    assert session.page_ws_url() == "ws://127.0.0.1:1/devtools/page/x"
+    assert len(seen) == 1 and callable(seen[0]), "hint 没传到读接口"
+    assert seen[0]() == "dead"
+
+
+def test_page_targets_still_works_with_a_reader_that_does_not_take_a_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """只吃 (url, timeout) 的替身/旧调用方照旧能用（不认识 hint 就退回老读法）。"""
+    calls: list[tuple[str, float]] = []
+
+    def two_arg_reader(url: str, timeout: float) -> object:
+        calls.append((url, timeout))
+        return [{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/x"}]
+
+    monkeypatch.setattr(bl, "_http_json", two_arg_reader)
+    session = bl._new_session(
+        "http://127.0.0.1:9222/json/list", timeout=2.0, failure_hint=lambda: "x"
+    )
+    assert session.page_ws_url() == "ws://127.0.0.1:1/devtools/page/x"
+    assert calls == [("http://127.0.0.1:9222/json/list", 2.0)]
+
+
 # ---------------------------------------------------------------- 会话收帧
 
 
@@ -893,6 +1022,62 @@ def test_profile_failure_sees_through_the_wrapped_error() -> None:
 
 def test_profile_failure_ignores_other_errors() -> None:
     assert not bl._profile_failure(_win_error(2, "找不到文件"))
+
+
+def test_devtools_read_failure_recognises_a_refused_local_port() -> None:
+    """用户截图那条：端口文件在、调试口却拒绝连接，换目录重试常能好。"""
+    assert bl._devtools_read_failure(_win_error(10061, "由于目标计算机积极拒绝，无法连接。"))
+    assert bl._devtools_read_failure(OSError(errno.ECONNREFUSED, "连接被拒"))
+    assert bl._devtools_read_failure(OSError(errno.ECONNRESET, "连接被重置"))
+
+
+def test_devtools_read_failure_sees_through_the_wrapped_error() -> None:
+    """包成 CdpError 抛的也得认（界面层收到的就是这一层）。"""
+    try:
+        try:
+            raise _win_error(10061, "由于目标计算机积极拒绝，无法连接。")
+        except OSError as exc:
+            raise bl.CdpError(f"读取浏览器的调试接口失败：{exc}") from exc
+    except bl.CdpError as wrapped:
+        assert bl._devtools_read_failure(wrapped)
+
+
+def test_devtools_read_failure_ignores_errors_that_waiting_cannot_fix() -> None:
+    """路径写错、端口文件是坏的重试也没用，别白白多起一次浏览器。"""
+    assert not bl._devtools_read_failure(_win_error(2, "找不到文件"))
+    assert not bl._devtools_read_failure(bl.CdpError("浏览器里没有可用的页面标签"))
+
+
+class _FakeProcess:
+    """最小的假进程：只管回答 poll()，够 ``devtools_failure_hint`` 用。"""
+
+    def __init__(self, exit_code: int | None = None) -> None:
+        self.pid = 4321
+        self.exit_code = exit_code
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+
+def test_devtools_failure_hint_stays_quiet_while_the_browser_is_alive() -> None:
+    """浏览器还活着就没什么可说：让读接口把预算等满（也许只是慢了半拍）。"""
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo(name="Fake", path="fake-browser.exe"), Path("profile")
+    )
+    assert browser.devtools_failure_hint() == ""
+    browser.process = _FakeProcess()
+    assert browser.devtools_failure_hint() == ""
+
+
+def test_devtools_failure_hint_reports_a_browser_that_already_died() -> None:
+    """进程已经退出就直接报死因，别让用户对着「正在打开浏览器」空等几秒。"""
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo(name="Fake", path="fake-browser.exe"), Path("profile")
+    )
+    browser.process = _FakeProcess(3)
+    hint = browser.devtools_failure_hint()
+    assert "Fake" in hint and "3" in hint
+    assert "直接粘贴饼干登录" in hint, "要顺手指一条走得通的路"
     assert not bl._profile_failure(OSError(errno.ENOENT, "找不到文件"))
     assert not bl._profile_failure(RuntimeError("跟目录无关"))
 
@@ -1180,8 +1365,15 @@ def test_public_api_surface_matches_the_ui_contract() -> None:
     }
     assert inspect.signature(bl.build_args).parameters["proxy"].default == ""
     assert inspect.signature(bl.build_args).parameters["start_url"].default == bl.LOGIN_URL
-    # 按名字建会话（``_new_session``）会把本站点前缀带进去，界面层走的就是这条路。
-    assert set(inspect.signature(bl._new_session).parameters) == {"ws_url", "timeout"}
+    # 按名字建会话（``_new_session``）会把本站点前缀带进去，界面层走的就是这条路；
+    # ``failure_hint`` 是「端口在、口还不通」那几秒里问「浏览器还在不在」的钩子。
+    assert set(inspect.signature(bl._new_session).parameters) == {
+        "ws_url",
+        "timeout",
+        "failure_hint",
+    }
+    assert inspect.signature(bl._new_session).parameters["failure_hint"].default is None
+    assert "failure_hint" in inspect.signature(bl.CDPSession.__init__).parameters
     assert inspect.signature(bl.CDPSession.__init__).parameters["timeout"].default == 15.0
     assert inspect.signature(bl.CDPSession.call).parameters["timeout"].default == 15.0
     assert inspect.signature(bl.CDPSession.evaluate).parameters["await_promise"].default is False
