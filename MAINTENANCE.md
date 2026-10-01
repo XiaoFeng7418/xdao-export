@@ -1194,7 +1194,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   改这一步时别退化成无效检查。
 - 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。
 
-### 两个已经踩过的 CI 坑
+### 三个已经踩过的 CI 坑
 
 1. **测试夹具不能写死 Windows 形态**。`tests/test_pdf.py` 里造「假浏览器」时，
    原先只生成 `fake_browser.cmd`，结果 ubuntu 两个 job 全部挂在单元测试：
@@ -1207,6 +1207,16 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    日志真实地址在 `results-receiver.actions.githubusercontent.com`，
    带签名的临时 URL 在本机网络下经常被中途掐断（`unexpected EOF`）。
    该脚本自己跟随重定向、去掉 `Authorization` 头（否则云存储回 401）并分段重试。
+3. **本机 3.12 跑绿不代表 CI 绿**：三个矩阵里有一个是 `Ubuntu + Python 3.10`（声明的最低
+   版本），3.10 缺的东西在本机根本不会露头。真实案例（2026-10-02，提交 1c1147c）：
+   `tests/test_sync_from_api.py` 里拿 `datetime.fromisoformat()` 去解析 git `%aI` 给出的
+   时间 —— git 对 `+0000` 的提交写的是 `2026-09-05T21:14:23Z`（**是 `Z`，不是 `+00:00`**），
+   而结尾这个 `Z` 只有 **Python 3.11 起**的 `fromisoformat` 认，3.10 直接
+   `ValueError: Invalid isoformat string: '2026-09-05T21:14:23Z'`。当时本机 3.12 全绿、
+   windows 与 ubuntu 的 py3.12 两个作业也绿，只有 py3.10 那条红 —— 一条红就是整轮红。
+   改法：先把 `Z` 换成 `+00:00` 再解析（产品代码 `sync_from_api.git_ident` 本来就是这么
+   写的，栽的是测试自己写的辅助函数）。**别只看本机**：碰日期时间、`tomllib`、`StrEnum`
+   这类东西之前，先想一下 3.10 有没有。
 
 ### 测试替身与真契约（v0.7.0 踩的坑）
 

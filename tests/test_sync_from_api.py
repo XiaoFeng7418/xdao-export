@@ -78,7 +78,14 @@ def make_repo(tmp_path: Path, *, offset: str = "+0800") -> Path:
 
 
 def _utc(value: str) -> str:
-    """GitHub 的提交接口给的是 UTC + Z 写法。"""
+    """GitHub 的提交接口给的是 UTC + Z 写法。
+
+    注意：结尾这个 `Z` 只有 Python 3.11 起的 `fromisoformat` 认得，3.10 会直接抛
+    ValueError —— CI 里就有 py3.10 的 job（本地 3.12 跑绿不代表 CI 绿），所以这里
+    先自己把 `Z` 换成 `+00:00`。
+    """
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
     return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
