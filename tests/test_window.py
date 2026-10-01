@@ -332,18 +332,23 @@ def test_widget_fonts_match_the_theme_after_startup() -> None:
         "app = gui.App(root);"
         "root.update_idletasks();root.update();"
         "log = str(app.log_text.cget('font'));"
-        "print('|'.join([import_at_import, theme.FONT_MONO, gui.MONO_FONT[0], log]));"
+        "log_family = str(root.tk.splitlist(log)[0]);"
+        "print('|'.join([import_at_import, theme.FONT_MONO, gui.MONO_FONT[0], log, log_family]));"
         "root.destroy()"
     )
     proc = _run_in_fresh_process(script)
     assert proc.returncode == 0, f"子进程启动失败：{proc.stderr[-800:]}"
-    at_import, theme_mono, module_mono, log_font = proc.stdout.strip().split("|")
+    at_import, theme_mono, module_mono, log_font, log_family = (
+        proc.stdout.strip().split("|")
+    )
     assert module_mono == theme_mono, (
         f"模块级 MONO_FONT={module_mono!r} 与 theme.FONT_MONO={theme_mono!r} 分叉"
     )
-    # 子进程里拿不到 Tcl 解释器，用 tk 的列表解析器读那段字体串
-    tk_family = tk.Tcl().splitlist(log_font)[0]
-    assert tk_family == theme_mono, (
+    # 字体串在**子进程**里解析（那边的 root 是真的 Tk）。别在父进程里用
+    # ``tk.Tcl()`` —— 那是纯 Tcl 解释器，CI 的 windows runner 上连 init.tcl 都找不到
+    # （run 36885850517 就是这样把整个作业判红的），而 ``widget.tk.splitlist(...)``
+    # 才是可靠读法（见 :func:`_widget_font`）。
+    assert log_family == theme_mono, (
         f"日志控件字体 {log_font!r} 与主题 {theme_mono!r} 不一致"
     )
     # 导入期没有窗口，给的是候选里的第一个 —— 允许与运行期不同，
