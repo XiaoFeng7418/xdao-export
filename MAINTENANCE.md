@@ -465,6 +465,23 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.13**：按用户建议「只改文案」：把「用浏览器登录」为什么是个干净窗口讲清楚，并给「直接粘贴
+  饼干登录」写上复制步骤。起因是用户问「程序打开的 Edge 和我平时使用的不是同一个软件？插件、保存
+  的密码全没有」——同一个 Edge，只是换了一份临时资料目录；Chrome/Edge 136 起不允许在默认资料目录
+  上开调试口（https://developer.chrome.com/blog/remote-debugging-port ），必须带非默认
+  `--user-data-dir` 才读得到登录饼干。
+  改动：①新增模块级常量 `PASTE_WHY` / `PASTE_STEPS` 与 `PasteCookieDialog`（入口 `ask_pasted_cookie()`；
+  `_confirm()` 用 `parse_userhash_input()` + `looks_like_userhash()` 校验，失败用 `messagebox.showwarning`
+  提示且**不关窗**），替掉 `simpledialog.askstring`（导入也一并删掉）；②`LoginDialog._manual_userhash`
+  与 `BrowserLoginDialog._manual_userhash` 都改成 `grab_release()` → `ask_pasted_cookie()` → `finally`
+  收回 grab；③`BrowserLoginDialog` 的介绍改成 7 行显式换行 —— Tk 的中文折行是按字符切的，长句会把
+  「X岛」劈成两行、还让下一行以逗号开头。
+  用例：`tests/test_gui_entry.py` 4 条（含 grab 收回、以及「讲清了没」的文案断言）、`tests/test_window.py`
+  5 条（真窗口：粘整段 cookie 摘出 userhash、粘垃圾时窗口不关、最小尺寸下不被裁、`ask_pasted_cookie()`
+  的两条返回路径）、`tests/test_gui_browser_login.py` 的粘贴用例改走 `gui.ask_pasted_cookie`。
+  真机：`_scratch/probe_paste_dialog_v1313.py` 两个窗口在最小尺寸下「被裁 0 个」，用浏览器登录窗口的
+  介绍 7 行干净无断词，真窗口里粘整段 cookie 摘出 `userhash`；截图
+  `_scratch/_shots/browser_login_intro.png.png`、`_scratch/_shots/paste_cookie_560x430.png.png`。
 - **v0.13.12**：修「窗口拉小的时候说明文字被裁」这一类毛病（用户报的是自检窗口介绍，
   普查下来一共四处）。`xdao/gui.py` 只加两个模块级辅助、不碰业务逻辑：
   `wrap_to_width(label, *, minimum=200)`（`<Configure>` 里

@@ -784,3 +784,104 @@ def test_selftest_minimum_size_fits_the_folded_buttons(app: gui.App) -> None:
     finally:
         dialog.destroy()
 
+
+# ---------------------------------------------------------------------------
+# 「直接粘贴饼干登录」窗口
+#
+# 用户 2026-10-01 问「为什么程序打开的 Edge 和我平时用的不是同一个软件」——
+# 原来的提示只有 simpledialog 的一行字，讲不清「为什么不读你的浏览器数据」
+# 和「去哪儿抄 userhash」。这一版换成自家窗口，下面几条守住它。
+# ---------------------------------------------------------------------------
+
+
+def test_paste_dialog_picks_the_value_out_of_a_whole_cookie_string(app: gui.App) -> None:
+    """用户复制到的是整段 cookie，不该逼他自己找 userhash= 在哪。"""
+    dialog = gui.PasteCookieDialog(app.root)
+    try:
+        dialog.text.insert("1.0", "other=1; userhash=ABCD1234; sid=xyz; theme=dark")
+        dialog._confirm()  # noqa: SLF001
+
+        assert dialog.userhash == "ABCD1234"
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+def test_paste_dialog_keeps_the_window_open_when_there_is_no_userhash(
+    app: gui.App, monkeypatch
+) -> None:
+    """粘错了不能抛异常、不能把垃圾值当饼干，也不能把窗口关掉让他重粘。"""
+    warnings: list[tuple] = []
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warnings.append(a))
+
+    dialog = gui.PasteCookieDialog(app.root)
+    try:
+        dialog.text.insert("1.0", "我复制了一段别的东西")
+        dialog._confirm()  # noqa: SLF001
+
+        assert dialog.userhash is None
+        assert warnings, "解析失败要弹一次提示"
+        assert "userhash" in warnings[0][1]
+        assert dialog.winfo_exists(), "窗口要留着，让人重新粘一次"
+    finally:
+        dialog.destroy()
+
+
+def test_paste_dialog_explains_itself_at_the_minimum_size(app: gui.App) -> None:
+    """最小尺寸下两段说明都要完整可读（这是这一版真正交付的东西）。"""
+    dialog = gui.PasteCookieDialog(app.root)
+    try:
+        dialog.geometry("560x430")
+        _settle(app)
+
+        labels = [
+            widget
+            for widget in _widgets(dialog)
+            if widget.winfo_class() == "Label" and str(widget.cget("text")).strip()
+        ]
+        texts = "\n".join(str(label.cget("text")) for label in labels)
+        assert "不会去翻你自己浏览器的数据" in texts
+        assert "F12" in texts and "应用程序 / Application" in texts
+        for label in labels:
+            assert int(str(label.cget("wraplength"))) <= label.winfo_width() + 1, str(
+                label.cget("text")
+            )[:24]
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+def test_ask_pasted_cookie_returns_what_the_window_collected(app: gui.App, monkeypatch) -> None:
+    """wait_window 那条路：窗口自己关掉之后，函数要把摘好的值交出来。"""
+    made: list[gui.PasteCookieDialog] = []
+
+    class Spy(gui.PasteCookieDialog):
+        def __init__(self, master) -> None:
+            super().__init__(master)
+            made.append(self)
+            self.after(50, self._finish)
+
+        def _finish(self) -> None:
+            self.userhash = "ABCD1234"
+            self.destroy()
+
+    monkeypatch.setattr(gui, "PasteCookieDialog", Spy)
+
+    assert gui.ask_pasted_cookie(app.root) == "ABCD1234"
+    assert len(made) == 1
+
+
+def test_ask_pasted_cookie_returns_none_when_the_window_is_closed(
+    app: gui.App, monkeypatch
+) -> None:
+    """用户直接关窗：不能抛异常，也不能把 None 当成饼干。"""
+
+    class Spy(gui.PasteCookieDialog):
+        def __init__(self, master) -> None:
+            super().__init__(master)
+            self.after(50, self.destroy)
+
+    monkeypatch.setattr(gui, "PasteCookieDialog", Spy)
+
+    assert gui.ask_pasted_cookie(app.root) is None
+
