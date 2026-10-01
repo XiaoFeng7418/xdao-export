@@ -487,6 +487,14 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `D:\小玩意\_scratch\probe_check_dir_cleanup.py`（把 `browser_check` 自己那次 `rmtree`
   换成空操作）→ 自检目录照样消失，证明是 `LoginBrowser.stop()` 兜住的。
   源码跑 `--selftest --offline --check-browser` 之后 `%TEMP%` 里 0 个 `xdao-browser-check-*`。
+  打包版（`D:\小玩意\xdao-export-v0.13.11-win64.zip`，12024842 字节 /
+  SHA256 `ea2372505f9bcc8b8748cede8ec877e6e56abdb6f54fbaa94c9f89973e1adc0c`）跑
+  `--version` → 「X岛串导出工具 0.13.11」、`--selftest --offline --check-browser` 仍是基线
+  「自检发现 2 处走不通、1 处要注意」；跑完 `%TEMP%` 里我们自己的目录 0 个。
+  真机升级 E2E（`D:\小玩意\_scratch\probe_upgrade_e2e_v1311.py`）：现场 v0.13.10 → 新版自己
+  下载、自检、替换、重启，见证进程量到「换上去的 exe 与包里的那份字节一致: True」、
+  现场版本 0.13.11、`.old-` 备份与暂存目录的处理都照旧。
+  `tools/repo_check.py` 13/13、两个 CI run（master 与标签）都 success。
 
 - **v0.13.10**：补上 v0.13.9 漏掉的一处收尾 —— **临时资料目录在建出来过的情况下一定收掉**。
   v0.13.9 只记「成功用上临时目录」这一种情形（`_fresh_used`），
