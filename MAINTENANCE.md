@@ -476,6 +476,20 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   真机核验：39 个 Release 正文逐条重扫（只剩上面那 6 个改过的，其余干净）；全仓 grep 复查
   （剩余命中只有规则本身、泛用的产品用语和开发测量记录，没有任何来源原话）；全量两轮；
   打包版 `--version` / 自检基线与升级 E2E 照旧。
+  **发行验收（v0.13.16）**：打包 `xdao-export-v0.13.16-win64.zip`（12031049 字节 / 956 条目 /
+  SHA256 `b3109c06a45f66bf5342f3f994d4e43e4ea49b1e3772754d8e2fb536a81a293f`），组包前自检
+  使用说明.txt 474 行 / BOM=True；冻结核验 `_scratch/check_frozen_code_v1316.py` → 「包里的代码是对的」
+  （PYZ 211 个模块、26 个 xdao 模块，v0.13.15 那批钉子全在）；打包版真机：exe 2775682 字节、
+  `--version` → 0.13.16、`--selftest --offline --check-browser` 基线 exit 1、跑完 `%TEMP%` 里没有
+  产品自己的临时资料目录；敏感串扫描 11 个文件 33 处命中全是既有的（MAINTENANCE/README/tests/gui.py
+  里的工具脚本引用），新发布说明与提交信息 0 命中；提交 `7c218b8` + 标签 v0.13.16 → Release 已发布
+  （附件 11.47 MB）；`tools/repo_check.py` 13/13（114 个提交 / 116 个文件）；升级 E2E
+  `_scratch/probe_upgrade_e2e_v1316.py`：现场 0.13.15 → 0.13.16 自己下载/自检/替换/重启，见证进程
+  记下现场版本 0.13.16、换上去的 exe 与包里的那份字节一致、现场 993 项、备份
+  `live.old-20261001-225208`、记号目录清干净、普通暂存目录年龄 5.3 秒 < 阈值 600 秒；收尾之后没有
+  xdao-export 进程、没有用程序资料目录的浏览器进程、`%TEMP%` 只剩升级暂存目录；CI 绿。
+  另外这一版把 `packaging/使用说明.txt` 开头丢掉的那个 UTF-8 BOM 恢复了（前几版发包时都带着它）。
+
 - **v0.13.15**（修「浏览器登录成功后程序一直没反应」）：`xdao/browser_login.py` 的
   `_APPLY_COOKIE_JS` 原来只在当前页面的 DOM 里找 `Cookie/switchTo/id/<id>` 链接 —— 登录后页面
   停在论坛/用户首页时找不到，兜底每 5 秒静默返回 None，5 分钟才超时；现在当前页找不到就自己
