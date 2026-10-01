@@ -465,9 +465,16 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
-- **v0.13.13**：按用户建议「只改文案」：把「用浏览器登录」为什么是个干净窗口讲清楚，并给「直接粘贴
-  饼干登录」写上复制步骤。起因是用户问「程序打开的 Edge 和我平时使用的不是同一个软件？插件、保存
-  的密码全没有」——同一个 Edge，只是换了一份临时资料目录；Chrome/Edge 136 起不允许在默认资料目录
+- **v0.13.14**（只改文字，不改功能）：全仓去掉「复述来源」的句式。README、`packaging/使用说明.txt`、
+  `docs/RELEASE_NOTES_*.md`、MAINTENANCE、源码注释与用例文档字符串里的「有用户问…」「有人反馈…」
+  「有人报过…」「这位用户 / 那位用户…」一律改成直接写现象与规则；规则本身（「## 注释与文档的写法」）
+  不动。改写脚本 `_scratch/apply_neutral_wording.py`（25 条替换，先全部替换成功再统一写盘）。
+  没改动的：`诊断写入.ps1` 的「用户名」等无关命中，以及泛指假设场景的句子。
+  用例：`check_text_hygiene.py` / `check_usage_txt.py` 都 exit 0；全量两轮。
+- **v0.13.13**：**只改文案**：把「用浏览器登录」为什么是个干净窗口讲清楚，并给「直接粘贴
+  饼干登录」写上复制步骤。现象是「用浏览器登录」打开的窗口与平时使用的浏览器不是同一份资料目录：
+  没有已装插件，也没有保存的密码（看起来像另一个软件）。同一个 Edge，只是换了一份临时资料目录；
+  Chrome/Edge 136 起不允许在默认资料目录
   上开调试口（https://developer.chrome.com/blog/remote-debugging-port ），必须带非默认
   `--user-data-dir` 才读得到登录饼干。
   改动：①新增模块级常量 `PASTE_WHY` / `PASTE_STEPS` 与 `PasteCookieDialog`（入口 `ask_pasted_cookie()`；
@@ -491,7 +498,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   True、现场 993 项、记号目录清干净、普通暂存目录年龄 4.9 秒 < 阈值 600 秒」。`tools/repo_check.py`
   13/13；CI run 36868219766（master）与 36868226373（标签 v0.13.13）都是 success。全量测试两轮各
   `1212 passed, 7 skipped`。
-- **v0.13.12**：修「窗口拉小的时候说明文字被裁」这一类毛病（用户报的是自检窗口介绍，
+- **v0.13.12**：修「窗口拉小的时候说明文字被裁」这一类毛病（起因是自检窗口的介绍，
   普查下来一共四处）。`xdao/gui.py` 只加两个模块级辅助、不碰业务逻辑：
   `wrap_to_width(label, *, minimum=200)`（`<Configure>` 里
   `wraplength=max(minimum, event.width - theme.gap(1))`；调用处必须

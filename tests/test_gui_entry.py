@@ -261,7 +261,7 @@ def _run_open_browser_login(monkeypatch, *, failure: str, userhash: str | None =
 def test_browser_login_failure_lands_in_the_run_log(monkeypatch):
     """失败原因不能只留在子窗口那行小字里。
 
-    2026-10-01 那位用户报「登不上」时贴出来的运行日志里一条登录记录都没有 ——
+    出问题时贴出来的运行日志里一条登录记录都没有 ——
     错误只写进了对话框的 status_var，点掉就没了。子窗口关掉之后补写一笔，
     用户下次贴日志就能带上真正的原因。
     """

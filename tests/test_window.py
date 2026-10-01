@@ -635,7 +635,7 @@ def test_open_dialogs_follow_the_theme(app: gui.App, monkeypatch) -> None:
 
 # ---------- 说明文字与按钮排：窗口小的时候也不能缺字 ----------
 #
-# 用户报过「自检窗口的介绍在窗口比较小的情况下无法显示全」。查下去才发现
+# 现象就是「自检窗口的介绍在窗口比较小的情况下无法显示全」。查下去才发现
 # 同一类毛病有好几处：介绍标签没有 wraplength（整句 1188px 摊开等着被裁）、
 # 缓存那行的两个按钮被挤到卡片外面、日志卡片里最后一枚按钮只剩半个。
 # 下面这些用例盯的就是「控件拿到的位置装不装得下它要显示的字」。
@@ -748,7 +748,7 @@ def test_buttons_stay_inside_their_parent_in_the_main_window(app: gui.App) -> No
 
 
 def test_selftest_intro_wraps_at_the_minimum_size(app: gui.App) -> None:
-    """自检窗口缩到最小尺寸时，介绍文字整句都看得见（用户报的就是这个）。"""
+    """自检窗口缩到最小尺寸时，介绍文字整句都看得见（这一类毛病的一处）。"""
     app.open_selftest()
     dialog = app._selftest_dialog  # noqa: SLF001
     assert dialog is not None
