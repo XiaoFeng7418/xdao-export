@@ -479,6 +479,17 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   写进客户端；收尾 `%TEMP%` 无残留、无遗留进程。
   用例：`tests/test_browser_login.py` 改 1 条新增 1 条、`tests/test_gui_browser_login.py` 新增 2 条；
   全量两轮。
+  发行验收：打包（PyInstaller onedir）→ `xdao-export-v0.13.15-win64.zip`，12032106 字节 /
+  956 条目 / SHA256 384c31882a07f63b8b98a9096565d75a138165665ace05c0b1362d08205a5e0b；
+  冻结核验 `_scratch/check_frozen_code_v1315.py` → 「包里的代码是对的」（PYZ 211 个模块、26 个
+  xdao 模块，新增 7 条钉子 + 原有 40 余条全在）；打包版真机核验：`xdao-export.exe`（2775682 字节）
+  `--version` → 「X岛串导出工具 0.13.15」退出码 0，`--selftest --offline --check-browser` 仍是基线
+  （2 处走不通、1 处要注意；浏览器那条「起得来，Edg/154.0.4258.48，调试端口 65429 答得上话 0.5 秒」），
+  跑完 `%TEMP%` 里没有产品自己的临时资料目录；升级 E2E（`_scratch/probe_upgrade_e2e_v1315.py`）：
+  现场 v0.13.14 → 新版自己下载/自检/替换/重启，见证进程记下现场版本 0.13.15、换上去的 exe 与包里
+  那份字节一致、备份 `live.old-20261001-222359`、现场 993 项、记号目录清干净、普通暂存目录年龄
+  5.0 秒 < 阈值 600 秒；提交 `92e74f4`、标签 `v0.13.15`、Release 已发布（附件 11.47 MB）、
+  体检 `tools/repo_check.py` 13/13、全量两轮各 1216 passed / 7 skipped。
 - **v0.13.14**（只改文字，不改功能）：全仓去掉「复述来源」的句式。README、`packaging/使用说明.txt`、
   `docs/RELEASE_NOTES_*.md`、MAINTENANCE、源码注释与用例文档字符串里的「有用户问…」「有人反馈…」
   「有人报过…」「这位用户 / 那位用户…」一律改成直接写现象与规则；规则本身（「## 注释与文档的写法」）
