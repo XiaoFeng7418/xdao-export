@@ -12,6 +12,7 @@ skip，测试用的配置一定指向产物目录，绝不碰用户真实的 ``c
 from __future__ import annotations
 
 import ast
+import queue
 import subprocess
 import threading
 import time
@@ -389,12 +390,30 @@ def test_start_opens_the_browser_and_returns_the_userhash(
     assert browser_shim.processes[-1].terminated
 
 
+def _note_failure(dialog: gui.BrowserLoginDialog) -> str:
+    """没看到「这次用哪个浏览器」时，把后台队里的话也捞出来当断言说明。"""
+    leftover: list[str] = []
+    while True:
+        try:
+            kind, payload = dialog._queue.get_nowait()
+        except queue.Empty:
+            break
+        leftover.append(f"{kind}={payload!r}")
+    return f"界面上没写出「这次用哪个浏览器」；窗口上的字={dialog.browser_note_var.get()!r}，队里剩下={leftover}"
+
+
 def test_browser_note_tells_the_user_which_browser_will_open(
     root_window, browser_shim, open_dialog
 ):
     """窗口上要当场写清「这次用哪个浏览器」—— 用户改了系统默认却仍打到 Edge，多半是这里没看见。"""
     dialog = open_dialog()
-    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    # 等窗口上真的出现那句话再断言。只等「浏览器起来了」是不够的：后台线程把
+    # 「这次用谁」投进队列之后，还要主线程那轮 after 轮询把它搬到窗口上。
+    assert _wait_for(
+        root_window,
+        lambda: "Edge" in dialog.browser_note_var.get()
+        and "msedge.exe" in dialog.browser_note_var.get(),
+    ), _note_failure(dialog)
     note = dialog.browser_note_var.get()
     assert "Edge" in note, note
     assert "msedge.exe" in note, note
@@ -408,9 +427,12 @@ def test_explicit_browser_in_the_settings_is_the_one_that_gets_used(
     chosen = open_dialog.set_explicit_browser()  # type: ignore[attr-defined]
 
     dialog = open_dialog()
-    # 认这次自己的会话（_FakeSession.instances 里还留着上一条用例的），
-    # 它一连上就说明「用哪个浏览器」已经定下来了。
-    assert _wait_for(root_window, lambda: dialog._session is not None), "浏览器没起来"
+    # 同上：等窗口上真的写出「这次用谁」，而不是只等会话连上。
+    assert _wait_for(
+        root_window,
+        lambda: "这次用" in dialog.browser_note_var.get()
+        and " 打开" in dialog.browser_note_var.get(),
+    ), _note_failure(dialog)
     assert dialog._browser is not None
     assert Path(dialog._browser.info.path) == chosen
     assert f"这次用 {dialog._browser.info.name} 打开" in dialog.browser_note_var.get()
