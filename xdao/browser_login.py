@@ -564,6 +564,9 @@ class LoginBrowser:
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
+        #: 现场目录起不来时要不要换备用资料目录 / 换浏览器。登录那条路要（见 :meth:`start`），
+        #: 但 ``--check-browser`` 那种「如实回答这一个浏览器行不行」的探测里必须关掉。
+        self.fallback_profiles = True
         self.process: subprocess.Popen[bytes] | None = None
         self.port = 0
         self.ws_path = ""
@@ -603,8 +606,15 @@ class LoginBrowser:
             return self
         # 现场资料目录坏了 / 被拦下时，同一个浏览器换几个干净目录试；
         # 都不行再换下一个浏览器（同样从干净目录开始）。
-        candidates = [self.profile, *fallback_profile_dirs(self.profile)]
-        browsers = browser_candidates(self.info)
+        # ``fallback_profiles`` 关掉时只试现场目录（供 --check-browser 如实回答）。
+        candidates = (
+            [self.profile, *fallback_profile_dirs(self.profile)]
+            if self.fallback_profiles
+            else [self.profile]
+        )
+        browsers = (
+            browser_candidates(self.info) if self.fallback_profiles else [self.info]
+        )
         first_error: BaseException | None = None
         dead_on_startup = False
         for browser in browsers:
@@ -627,6 +637,9 @@ class LoginBrowser:
                     if index == 0:
                         # 头一次失败就换目录重试，用户只会在界面上看到一句说明。
                         self._profile = chosen
+            if not self.fallback_profiles:
+                # 只问「这一个浏览器行不行」时，别顺手把别的浏览器也启起来。
+                break
         # 备用目录和其它浏览器都不行：如实把原始错误报上去，别拿最后一次的错盖掉真原因。
         if first_error is None:  # pragma: no cover —— browsers 至少有一个，走不到这儿
             raise CdpError(f"启动 {self.info.name} 失败：找不到可用的浏览器资料目录。")
