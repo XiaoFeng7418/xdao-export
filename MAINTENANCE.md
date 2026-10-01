@@ -465,6 +465,17 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.16**（纯文字：公开内容里不再复述来源）：把仓库里剩下的「拿来源当正文」的句子改成直接
+  写现象与规则 —— `docs/RELEASE_NOTES_v0.13.14.md`（现象段与改法第一条）、
+  `docs/RELEASE_NOTES_v0.10.2.md` 表格里的句式示例、`xdao/gui.py` 的两处注释、
+  `tests/test_window.py` 的两处注释、`tests/test_gui_entry.py` 的文档字符串、`README.md` 与
+  `packaging/使用说明.txt` 里举的那个例子。同时把 6 个已发布 Release 的正文按仓库文件重推
+  （v0.13.14 / v0.13.7 / v0.10.2 / v0.6.1 / v0.6.0 / v0.3.0）—— 其中 v0.13.7 / v0.6.1 /
+  v0.6.0 / v0.3.0 是 v0.13.14 那轮改了文件却没同步到 GitHub 的老正文。
+  规则本身（本文件「## 注释与文档的写法」）保留「有人报过…」这类句式名，那是在说规矩。
+  真机核验：39 个 Release 正文逐条重扫（只剩上面那 6 个改过的，其余干净）；全仓 grep 复查
+  （剩余命中只有规则本身、泛用的产品用语和开发测量记录，没有任何来源原话）；全量两轮；
+  打包版 `--version` / 自检基线与升级 E2E 照旧。
 - **v0.13.15**（修「浏览器登录成功后程序一直没反应」）：`xdao/browser_login.py` 的
   `_APPLY_COOKIE_JS` 原来只在当前页面的 DOM 里找 `Cookie/switchTo/id/<id>` 链接 —— 登录后页面
   停在论坛/用户首页时找不到，兜底每 5 秒静默返回 None，5 分钟才超时；现在当前页找不到就自己

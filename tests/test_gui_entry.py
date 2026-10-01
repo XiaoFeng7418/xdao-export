@@ -363,7 +363,7 @@ def test_manual_userhash_does_nothing_when_the_paste_window_is_cancelled(monkeyp
 
 
 def test_paste_window_explains_why_and_where_to_copy(monkeypatch):
-    """提示语本身就是这次改动的交付物（用户 2026-10-01 问「为什么不是同一个 Edge」）。
+    """提示语本身就是这次改动的交付物（讲清「为什么弹出来的浏览器是空的」）。
 
     要讲清两件事：①程序不碰你自己浏览器的数据；②去哪儿抄 userhash（含 F12 那条路）。
     """
