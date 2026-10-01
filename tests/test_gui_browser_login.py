@@ -681,6 +681,49 @@ def test_leaf_cookie_fallback_is_used_when_the_cookie_is_not_there_yet(
     assert _wait_for(root_window, lambda: not dialog.winfo_exists())
 
 
+def test_waiting_status_says_how_long_and_which_window_counts() -> None:
+    """「还在等」那句话：带秒数，并且点明是哪个浏览器窗口里的登录。"""
+    text = gui._waiting_status(42)
+    assert "42" in text
+    assert "这个窗口打开的那个浏览器" in text
+    assert "直接粘贴饼干登录" not in text  # 还没到超时，先别急着让人换法子
+
+
+def test_long_wait_keeps_telling_the_user_how_long_and_where_to_log_in(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """等登录的这段时间界面不能一动不动。
+
+    用户可能在自己平时用的浏览器里登录（程序看不到），也可能以为那句「浏览器
+    已经打开了」就是全部提示 —— 界面长时间没有一点变化，看起来就是卡死。
+    这里钉住：过了 BROWSER_PROGRESS_SECONDS 就换成带秒数的那句，而且是**替换**
+    而不是追加（``("note", …)`` 那条路会越堆越长）。
+    """
+    monkeypatch.setattr(gui, "BROWSER_PROGRESS_SECONDS", 0.05)
+    dialog = open_dialog()
+
+    assert _wait_for(root_window, lambda: "已经等了" in dialog.status_var.get())
+    status = dialog.status_var.get()
+    assert status.startswith("已经等了"), status
+    assert "这个窗口打开的那个浏览器" in status
+    dialog._on_cancel()
+
+
+def test_timeout_message_explains_which_browser_counts(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """等到超时：那句话要能照做 —— 说清是哪个窗口里的登录，并给出粘贴饼干这条路。"""
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 0.3)
+    dialog = open_dialog()
+
+    assert _wait_for(root_window, lambda: "还没看到登录成功" in dialog.status_var.get())
+    status = dialog.status_var.get()
+    assert "自己平时用的浏览器里登录" in status
+    assert "直接粘贴饼干登录" in status
+    assert str(dialog.retry_button.cget("state")) == "normal"
+    dialog._on_cancel()
+
+
 def test_no_browser_installed_gets_a_readable_message(
     root_window, browser_shim, open_dialog, monkeypatch
 ):

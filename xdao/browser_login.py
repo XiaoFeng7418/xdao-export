@@ -1233,24 +1233,48 @@ def parse_userhash_input(text: str) -> str | None:
 #      捕获到的 id 要把这个后缀摘掉，否则拼出来的地址会变成 ``xxx.html.html``；
 #   2. 同一个 id 会因为 switchTo 与 export 两个链接在正则结果里各出现一次，
 #      先去重；列表里最新申请的那块排在后面，取最后一个才是权限最全的叶子饼干；
-#   3. 先 ``switchTo`` 让这个浏览器会话正式用上它，再 ``export`` 取值。
+#   3. 先 ``switchTo`` 让这个浏览器会话正式用上它，再 ``export`` 取值；
+#   4. 用户登录完停在哪个页面都有可能（站点自己的跳转页、论坛、用户首页…），
+#      当前标签页的 DOM 里常常根本没有那张列表。所以当前页找不到 id 时，
+#      脚本自己去把 Cookie/index.html 要来一份再解析它 —— 页面里发的同源 fetch
+#      会带上登录后的会话饼干，登录了列表才有内容，没登录拿回来的是站点那张
+#      1496 字节的「跳转提示」页（真机抓过），不会误判。少这一步就只能指望用户
+#      恰好停在列表页上，真机上表现为「明明登录好了，程序等到超时也没反应」。
 # 取值的三种返回形态（JSON、userhash= 文本、"cookie":"…" 片段）照 client.py 的
 # _extract_userhash_from_export 写，少一种都会漏。
 _APPLY_COOKIE_JS = r"""
 (async () => {
   const BASE = __COOKIE_BASE__;
-  const html = (document.body && document.body.innerHTML) || '';
-  const ids = [];
-  const linkRe = /Cookie\/(?:switchTo|export)\/id\/([^\/\s"'<]+)/g;
-  let hit;
-  while ((hit = linkRe.exec(html)) !== null) {
-    const id = hit[1].replace(/\.html$/i, '');
-    if (id && ids.indexOf(id) < 0) {
-      ids.push(id);
+  // 每个请求都自带超时：站点要是卡住不回，脚本自己认输返回空串，
+  // 别把整个 Runtime.evaluate 拖到 CDP 的 15 秒超时上去。
+  const grab = async (url) => {
+    const control = new AbortController();
+    const timer = setTimeout(() => control.abort(), 8000);
+    try {
+      const response = await fetch(url, {credentials: 'include', signal: control.signal});
+      return await response.text();
+    } catch (err) {
+      return '';
+    } finally {
+      clearTimeout(timer);
     }
-  }
-  if (ids.length === 0) {
-    for (const row of document.querySelectorAll('tr')) {
+  };
+  const idsInLinks = (source) => {
+    const ids = [];
+    const linkRe = /Cookie\/(?:switchTo|export)\/id\/([^\/\s"'<]+)/g;
+    let hit;
+    while ((hit = linkRe.exec(source)) !== null) {
+      const id = hit[1].replace(/\.html$/i, '');
+      if (id && ids.indexOf(id) < 0) {
+        ids.push(id);
+      }
+    }
+    return ids;
+  };
+  const idsInCells = (source) => {
+    const ids = [];
+    const doc = new DOMParser().parseFromString(source, 'text/html');
+    for (const row of doc.querySelectorAll('tr')) {
       const cells = row.querySelectorAll('td');
       if (cells.length < 2) {
         continue;
@@ -1260,13 +1284,23 @@ _APPLY_COOKIE_JS = r"""
         ids.push(candidate);
       }
     }
+    return ids;
+  };
+  const collect = (source) => {
+    const ids = idsInLinks(source);
+    return ids.length ? ids : idsInCells(source);
+  };
+  // 当前标签页正好停在「饼干」列表上时，一条多余的请求都不用发。
+  let ids = collect(document.documentElement.outerHTML);
+  if (ids.length === 0) {
+    ids = collect(await grab(BASE + 'index.html'));
   }
   if (ids.length === 0) {
     return '';
   }
   const id = ids[ids.length - 1];
-  await fetch(BASE + 'switchTo/id/' + encodeURIComponent(id) + '.html', {credentials: 'include'});
-  const text = await fetch(BASE + 'export/id/' + encodeURIComponent(id) + '.html', {credentials: 'include'}).then((r) => r.text());
+  await grab(BASE + 'switchTo/id/' + encodeURIComponent(id) + '.html');
+  const text = await grab(BASE + 'export/id/' + encodeURIComponent(id) + '.html');
   let value = '';
   try {
     const data = JSON.parse(text);
@@ -1300,10 +1334,12 @@ def _cookie_action_base() -> str:
 
 
 def build_apply_cookie_script() -> str:
-    """返回在 Cookies 页里「应用最新一块饼干并取值」的 JS。
+    """返回「应用最新一块饼干并取值」的 JS。
 
-    在已登录的页面里执行它（``await_promise=True``），返回 userhash 字符串；
-    页面里取不到时返回空串，由调用方决定怎么提示。
+    在**已经登录的站点页面**里执行它就行，不要求那一页正好停在饼干列表上：
+    当前页里找不到列表时，脚本会自己去把 Cookie/index.html 要来一份再解析。
+    用法是 ``await_promise=True``；返回 userhash 字符串，取不到时返回空串，
+    由调用方决定怎么提示。
     """
     return _APPLY_COOKIE_JS.replace("__COOKIE_BASE__", json.dumps(_cookie_action_base()))
 
