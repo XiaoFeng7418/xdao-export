@@ -11,6 +11,7 @@ from __future__ import annotations
 import gc
 import os
 import shutil
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -240,26 +241,142 @@ def artifacts_dir() -> Path:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _tk_module():
+    """延迟导入 tkinter：无头机器上它可能根本起不来，不能拖累纯逻辑用例。"""
+    import tkinter
+
+    return tkinter
+
+
+def _tk_objects() -> list:
+    """把还活着的 Tk 部件/变量都捞出来（要自己先 gc 一次）。"""
+    tkinter = _tk_module()
+    found = []
+    for obj in gc.get_objects():
+        try:
+            if isinstance(obj, (tkinter.Misc, tkinter.Variable)):
+                found.append(obj)
+        except Exception:  # pragma: no cover - 取属性本身炸掉的怪对象
+            continue
+    return found
+
+
+def _destroy_leftover_tk(limit: int = 5) -> int:
+    """退出前把界面用例留下的 Tk 部件就地销毁，返回销毁了几个。
+
+    为什么非要在这里动手：部件是**在主线程还活着的时候就销毁**，``destroy()``
+    里的 Tcl 调用是正常的；等解释器收尾时才轮到它们的 ``__del__``，那时主线程
+    已经不在、Tcl 解释器也拆了，``__del__`` 必然抛异常。
+    """
+    tkinter = _tk_module()
+    destroyed = 0
+    for _ in range(limit):
+        gc.collect()
+        leftovers = _tk_objects()
+        if not leftovers:
+            break
+        for obj in leftovers:
+            try:
+                obj.destroy()
+                destroyed += 1
+            except Exception:  # pragma: no cover - 已经销毁过的再 destroy 会报错
+                pass
+    # 光销毁还不够：tkinter 把自己的默认根窗口记在模块全局里，那个引用会一直
+    # 攥着根窗口（连带一串 Variable）不放，谁也 GC 不走 —— 必须自己松手。
+    tkinter._default_root = None
+    tkinter._default_root_set = None
+    gc.collect()
+    return destroyed
+
+
+def _silence_tk_variables() -> None:
+    """给 ``tkinter.Variable.__del__`` 换一个不碰 Tcl 的实现。
+
+    ``destroy()`` 之后还会剩几个变量（销毁根窗口时它们被别的对象引用着，GC 收
+    不走），解释器收尾时它们的 ``__del__`` 仍会去调 ``info exists``；此时 Tcl
+    解释器已经拆了，调用抛 ``RuntimeError``，异常文本又要往 stderr 写 —— 正是
+    把 CI 弄红的那条路径。这个兜底只是让收尾阶段安静，不影响任何用例。
+    """
+
+    def _quiet_del(self) -> None:  # pragma: no cover - 只在退出时可能被调到
+        return None
+
+    try:
+        _tk_module().Variable.__del__ = _quiet_del
+    except Exception:  # pragma: no cover - 这机器上没有 tkinter
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _collect_garbage_on_the_main_thread():
+    """每个用例跑完，在主线程上收一次垃圾。
+
+    2026-10-01 本机实测（能稳定复现，值得写下来）：`tests/test_window.py` 会真开
+    一个根窗口造一大堆部件，模块跑完虽然 `root.destroy()` 了，那些部件的引用环还
+    躺在堆里。接着跑到 `tests/test_gui_entry.py::test_upgrade_worker_runs_the_whole_five_steps`
+    时，主线程阻塞在 `decision.get()` 上等回复，**是后台升级线程的那次分配触发了
+    自动 GC** —— 于是 Tk 部件在非主线程上被析构、去调 Tcl，进程当场被 Windows
+    打断：
+
+        Windows fatal exception: code 0x80000003
+        Current thread …: Garbage-collecting
+        File "…\\Lib\\pathlib.py", line 366 in __init__
+
+    崩点每次都不一样（`pathlib`/`ntpath`/`threading`/`queue` 都出现过），因为
+    「哪次分配触发 GC」是随机的；但「`test_window.py` + `test_gui_entry.py` 连跑
+    必崩、各自单跑都不崩」是可复现的。在**主线程**上把这些环收掉，后台线程就再也
+    碰不到它们了 —— 这也正是单文件跑不崩的原因：那里的 GC 都落在主线程上。
+    """
+    yield
+    gc.collect()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _make_tk_variables_safe_to_collect():
+    """整套测试一开始就把 ``Variable.__del__`` 换成不碰 Tcl 的实现。
+
+    这是给收尾兜底的：界面用例真开过 Tk 之后，总会有几个 ``StringVar``/
+    ``BooleanVar`` 到解释器收尾时才被 GC 到，那时 Tcl 解释器已经拆了，``__del__``
+    必抛 ``RuntimeError``，异常文本再往 stderr 写就撞上后台线程占着输出锁 ——
+    正是 CI run 36817861762 那条 `Fatal Python error: _enter_buffered_busy`。
+    换掉 ``__del__`` 之后这条路根本不存在了（变量不再向 Tcl 打招呼；根窗口本来
+    就随用例销毁），对任何用例的行为都没有影响。
+
+    注意它**只管收尾**：本机那个「后台线程里触发 GC 就硬崩」的问题是另一个
+    成因，由 `_collect_garbage_on_the_main_thread` 解决（实测单靠这个兜底仍会崩）。
+    """
+    _silence_tk_variables()
+    yield
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _settle_threads_before_interpreter_shutdown():
     """整套跑完先收拾干净再让解释器退出。
 
-    2026-10-01 实测：全套跑完最后一行 `100%` 之后就崩了，报
+    2026-10-01 实测两次（CI run 36817861762 与一次本机全量）：全套跑完、汇总行
+    都打出来了，退出码却是 1，报
 
         Exception ignored in: <function Variable.__del__ …>
+        File "…\\tkinter\\__init__.py", line 414, in __del__
         RuntimeError: main thread is not in main loop
         Fatal Python error: _enter_buffered_busy: could not acquire lock for
         <_io.BufferedWriter name='<stderr>'> at interpreter shutdown,
         possibly due to daemon threads
+        ##[error]Process completed with exit code 1
 
-    —— 界面用例里真开过 Tk，退出时那些 ``Variable`` 才被 GC 到，而这时主线程
-    已经不在了，于是 ``__del__`` 抛异常、又要往 stderr 写，正好撞上后台线程
-    占着输出锁：**没有汇总行，退出码还变成 1**，看着像测试失败，其实全绿。
+    —— 界面用例真开过 Tk（``App`` 会造一大把 ``StringVar``/``BooleanVar``），
+    退出时那些变量才被 GC 到，而这时主线程已经不在了，于是 ``__del__`` 抛异常、
+    异常又要往 stderr 写，正好撞上后台线程占着输出锁：**测试全绿，CI 却红**，
+    而且只在 windows 矩阵上偶发（ubuntu 上 Tk 用例整组跳过）。
 
-    所以在这里（解释器还完好、主线程还在）先把垃圾收掉、把后台线程等一等。
+    原来这里只是 ``gc.collect()`` + 有界 ``join``，**拦不住**（CI 又红了一次）。
+    现在改成三步：①主线程还在、解释器还完好的时候就把遗留 Tk 部件就地销毁；
+    ②等后台线程；③把两个流冲干净，再给 ``Variable.__del__`` 套一层不碰 Tcl 的
+    兜底 —— 这样解释器收尾时既没有 Tcl 调用，也没有 stderr 竞争。
     """
     yield
-    gc.collect()
+    destroyed = _destroy_leftover_tk()
+
     for _ in range(3):
         alive = [
             thread
@@ -271,3 +388,13 @@ def _settle_threads_before_interpreter_shutdown():
         for thread in alive:
             thread.join(timeout=1.0)
         gc.collect()
+    gc.collect()
+
+    _silence_tk_variables()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # pragma: no cover - 流已经关了就算了
+            pass
+    if destroyed:
+        print(f"[conftest] 退出前收掉 {destroyed} 个遗留 Tk 部件。", file=sys.stderr)
