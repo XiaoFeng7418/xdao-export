@@ -80,6 +80,12 @@ jobs:
         run: |
           python -c "from xdao.exporters import EXPORTERS; expected={'html','pdf','txt','markdown','epub'}; got=set(EXPORTERS); assert got==expected, f'格式注册表不一致: {got}'; print('格式:', ', '.join(EXPORTERS))"
 
+      # 这一步查的是**这台 runner 的环境**（有没有 Edge/Chrome、能不能写盘、
+      # 能不能连上 GitHub 与站点），不是我们的代码：CI 机器上随时会因为缺浏览器
+      # 或出网受限而红。所以只当参考，不阻断 —— 真正拦代码问题的是上面那步
+      # 「单元测试」，它一点没放水。
+      # 想让它确定性地跑，可以改成 `--selftest --offline --selftest-json`
+      # （只验 JSON 结构，不判断各项成败），那样就能去掉 continue-on-error。
       - name: 源码版自检（仅联网可用时跑，失败不阻断）
         if: matrix.os == 'windows-latest'
         continue-on-error: true
