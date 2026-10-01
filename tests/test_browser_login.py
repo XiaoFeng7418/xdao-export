@@ -295,6 +295,168 @@ def test_find_browser_returns_none_when_nothing_is_installed(
     assert bl.find_browser(env=_no_browsers_env(artifacts_dir)) is None
 
 
+# ------------------------------------------------- 默认浏览器优先（真实期望差）
+
+
+class _FakeRegistry:
+    """够用的假 ``winreg``：只要 ``OpenKey`` / ``QueryValueEx`` 与两个 hive 常量。
+
+    为什么要假的：Windows 上不能为了测试去改用户的默认浏览器；Linux 上压根没有
+    ``winreg``，那段逻辑就会在 CI 上没人看着。两个地方都用它，测的是同一件事。
+    """
+
+    HKEY_CURRENT_USER = "HKCU"
+    HKEY_LOCAL_MACHINE = "HKLM"
+
+    def __init__(self, keys: dict[tuple[str, str], dict[str, object]]) -> None:
+        self.keys = keys
+
+    def OpenKey(self, hive: str, path: str):  # noqa: N802 —— 照抄 winreg 的名字
+        if (hive, path) not in self.keys:
+            raise FileNotFoundError(2, "系统找不到指定的文件。", path)
+        return _FakeKey(self, hive, path)
+
+    def QueryValueEx(self, key, name: str) -> tuple[object, int]:  # noqa: N802
+        values = self.keys[(key.hive, key.path)]
+        if name not in values:
+            raise FileNotFoundError(2, "系统找不到指定的文件。", name)
+        return values[name], 1
+
+
+class _FakeKey:
+    def __init__(self, registry: _FakeRegistry, hive: str, path: str) -> None:
+        self.registry = registry
+        self.hive = hive
+        self.path = path
+
+    def __enter__(self) -> "_FakeKey":
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+
+def _fake_registry(monkeypatch: pytest.MonkeyPatch, keys: dict) -> None:
+    fake = _FakeRegistry(keys)
+    monkeypatch.setattr(bl, "_REGISTRY_OPENER", lambda: fake)
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        (
+            '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --single-argument %1',
+            "Edge",
+        ),
+        # 真机（本机）上 Chrome 的 ProgId 命令行就长这样
+        (
+            '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --single-argument %1',
+            "Chrome",
+        ),
+        (r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe", "Brave"),
+        # 认不出就别硬认：宁可回到固定顺序，也不要挑一个别的浏览器
+        ('"C:\\Program Files\\Mozilla Firefox\\firefox.exe" -osint -url "%1"', ""),
+        ("", ""),
+    ],
+)
+def test_name_of_executable_only_recognises_chromium_family(
+    command: str, expected: str
+) -> None:
+    assert bl._name_of_executable(command) == expected
+
+
+def test_windows_default_exe_reads_the_user_choice_and_the_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_registry(
+        monkeypatch,
+        {
+            (_FakeRegistry.HKEY_CURRENT_USER, bl._DEFAULT_BROWSER_KEY): {
+                "ProgId": "ChromeHTML"
+            },
+            (
+                _FakeRegistry.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Classes\ChromeHTML\shell\open\command",
+            ): {"": '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --single-argument %1'},
+        },
+    )
+    assert bl._windows_default_exe() == r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    assert bl._default_browser_label() == "Chrome"
+
+
+def test_windows_default_exe_ignores_a_broken_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """注册表里没有这个键（或读不动）时，当没有默认浏览器处理，不许抛出来。"""
+    _fake_registry(monkeypatch, {})
+    assert bl._windows_default_exe() == ""
+    assert bl._default_browser_label() == ""
+
+
+def test_windows_default_exe_gives_up_when_the_prog_id_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_registry(
+        monkeypatch,
+        {
+            (_FakeRegistry.HKEY_CURRENT_USER, bl._DEFAULT_BROWSER_KEY): {
+                "ProgId": "FirefoxURL-308046B0AF4A39CB"
+            }
+        },
+    )
+    assert bl._default_browser_label() == ""
+
+
+def test_find_browser_prefers_the_windows_default_browser(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用户把默认浏览器改成 Chrome，就不该先拿 Edge 去试（真机上量到的期望差）。"""
+    pf = artifacts_dir / "pf"
+    edge = _touch(pf, r"Microsoft\Edge\Application\msedge.exe")
+    chrome = _touch(pf, r"Google\Chrome\Application\chrome.exe")
+    env = _no_browsers_env(artifacts_dir)
+    env["PROGRAMFILES"] = str(pf)
+    _fake_registry(
+        monkeypatch,
+        {
+            (_FakeRegistry.HKEY_CURRENT_USER, bl._DEFAULT_BROWSER_KEY): {
+                "ProgId": "ChromeHTML"
+            },
+            (
+                _FakeRegistry.HKEY_CURRENT_USER,
+                r"SOFTWARE\Classes\ChromeHTML\shell\open\command",
+            ): {"": f'"{chrome}" --single-argument %1'},
+        },
+    )
+    assert [info.name for info in bl.ordered_browsers(env)] == ["Chrome", "Edge"]
+    chosen = bl.find_browser(env=env)
+    assert chosen is not None
+    assert (chosen.name, chosen.path) == ("Chrome", str(chrome))
+    # 认不出默认浏览器时，原来的固定顺序（Edge 先）要原样保留
+    _fake_registry(monkeypatch, {})
+    assert [info.name for info in bl.ordered_browsers(env)] == ["Edge", "Chrome"]
+    assert bl.find_browser(env=env).path == str(edge)  # type: ignore[union-attr]
+
+
+def test_browser_candidates_puts_the_current_one_first_and_dedupes(
+    artifacts_dir: Path,
+) -> None:
+    """重试时要先试「刚才那个」，再换别的；重复的不许试两遍。"""
+    pf = artifacts_dir / "pf"
+    edge = _touch(pf, r"Microsoft\Edge\Application\msedge.exe")
+    chrome = _touch(pf, r"Google\Chrome\Application\chrome.exe")
+    env = _no_browsers_env(artifacts_dir)
+    env["PROGRAMFILES"] = str(pf)
+    current = bl.BrowserInfo(name="Chrome", path=str(chrome))
+    got = bl.browser_candidates(current, env=env)
+    assert [info.path for info in got] == [str(chrome), str(edge)]
+    # 传一个不在候选表里的（用户手动指定的路径）也要排最前
+    custom = _touch(artifacts_dir, r"Custom\msedge.exe")
+    got = bl.browser_candidates(bl.BrowserInfo(name="Edge", path=str(custom)), env=env)
+    assert [info.path for info in got] == [str(custom), str(edge), str(chrome)]
+    assert bl.browser_candidates(None, env=env)[0].path == str(edge)
+
+
 # ---------------------------------------------------------------- 启动参数
 
 
@@ -1171,6 +1333,93 @@ def test_start_still_reports_a_real_failure(
     with pytest.raises(bl.BrowserLoginError):
         browser.start()
     assert attempts == [profile], "跟目录无关的错不该换目录重试"
+
+
+class _DeadBrowserPopen:
+    """一起来就退出的假浏览器：端口文件永远等不到。"""
+
+    def __init__(self, args: list[str], exit_code: int = 21, **kwargs: object) -> None:
+        self.args = list(args)
+        self.pid = 4321
+        self.returncode = exit_code
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def terminate(self) -> None:
+        pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+
+def _fake_browser_info(artifacts_dir: Path, name: str, exe: str) -> bl.BrowserInfo:
+    path = artifacts_dir / exe
+    path.write_bytes(b"")
+    return bl.BrowserInfo(name=name, path=str(path))
+
+
+def test_dead_on_startup_sees_through_the_wrapped_error() -> None:
+    """这条错在真机上会经过好几层包装，认的是文案，不是类型。"""
+    dead = bl.BrowserLoginError("Edge 刚起来就退出了（退出码 21）")
+    assert bl._dead_on_startup(dead)
+    assert bl._dead_on_startup(bl.BrowserLoginError("换目录也白搭", dead))
+    # 别的错不能混进来：那会让程序白白多起几次浏览器
+    assert not bl._dead_on_startup(_win_error(2, "系统找不到指定的文件。"))
+    assert not bl._dead_on_startup(
+        bl.BrowserLoginError("跟启动无关的错", _win_error(2, "系统找不到指定的文件。"))
+    )
+
+
+def test_start_switches_to_the_next_browser_when_the_first_one_dies_at_once(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真机上的样子：Edge 起来就退（退出码 21）。
+
+    用户装了安全软件、或者 Edge 那个资料目录的旧状态坏了时会这样。程序该做的
+    是换一个干净目录、再换一个浏览器试，而不是立刻把错摊给用户看。
+    """
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    chrome = _fake_browser_info(artifacts_dir, "Chrome", "chrome.exe")
+    profile = artifacts_dir / "browser-profile"
+    launched: list[str] = []
+
+    def fake_popen(args: list[str], **kwargs: object):
+        launched.append(args[0])
+        if args[0] == edge.path:
+            return _DeadBrowserPopen(args)
+        return _PortWritingPopen(args, **kwargs)
+
+    monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [edge, chrome])
+    with bl.LoginBrowser(edge, profile, timeout=5.0) as browser:
+        assert browser.port == 9333
+        assert browser.info.path == chrome.path, "第一个起不来就该换下一个"
+        assert "Chrome" in browser.browser_note
+        assert browser.process is not None
+    assert launched.count(edge.path) == 4, "Edge 该把每个候选目录都试一遍"
+    assert launched.count(chrome.path) == 1
+
+
+def test_start_reports_clearly_when_every_browser_dies_at_once(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全都起不来时才报错，而且要说清「还能怎么登录」。"""
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    chrome = _fake_browser_info(artifacts_dir, "Chrome", "chrome.exe")
+
+    def fake_popen(args: list[str], **kwargs: object) -> _DeadBrowserPopen:
+        return _DeadBrowserPopen(args)
+
+    monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [edge, chrome])
+    browser = bl.LoginBrowser(edge, artifacts_dir / "browser-profile", timeout=5.0)
+    with pytest.raises(bl.BrowserLoginError) as caught:
+        browser.start()
+    message = str(caught.value)
+    assert bl._DEAD_ON_STARTUP_MARKER in message
+    assert "直接粘贴饼干登录" in message
+    assert browser.process is None, "试完要收干净，别留一个已经死掉的进程"
 
 
 class _StubbornProcess:
