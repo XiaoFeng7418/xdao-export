@@ -434,6 +434,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.4**：补丁版。`gui.py` 新增模块级 `_find_login_browser(settings=None)`：`explicit = (settings or AppSettings.load()).pdf_browser`，交给 `backend.find_browser(explicit or None)`；`BrowserLoginDialog._worker()` 改用它（原来是 `backend.find_browser()`）—— 设置里手动指定的浏览器以前只对 PDF 导出生效，浏览器登录还在自己挑。对话框新增一行 `browser_note_var`（`_set_browser_note()`写、`_poll` 新增 `"browser"` 消息分支），启动后显示「这次用 <名字> 打开（<路径>）。」；「PDF 浏览器」那栏的说明改成「导出 PDF 和「用浏览器登录」时调用的浏览器…留空表示跟随系统默认浏览器，认不出来再找 Chrome 或 Edge」。用例：`tests/test_gui_browser_login.py` 新增`test_browser_note_tells_the_user_which_browser_will_open` 与`test_explicit_browser_in_the_settings_is_the_one_that_gets_used`（`open_dialog` 夹具新增 `set_explicit_browser()`）。
+
 - **v0.13.3**：补丁版。`browser_login.py` 新增「认系统默认浏览器」：`_windows_default_exe()` 读 `HKCU\...\UrlAssociations\https\UserChoice` 的 ProgId、再按 `SOFTWARE\Classes\<ProgId>\shell\open\command`（先 HKCU 后 HKLM）取命令行，`ordered_browsers()` 把默认那个排最前、`find_browser()` 改走它（手动指定路径仍优先）；注册表读取走 `_registry()`，测试可替换，Linux CI 也能用假注册表跑这段。`LoginBrowser.start()` 重写成「遍历浏览器 × 遍历备用资料目录」：`_dead_on_startup()` 认下 `_DEAD_ON_STARTUP_MARKER = "刚起来就退出了"` 后换目录、必要时换浏览器（`browser_note` 供界面提示），全试完才抛错并附「直接粘贴饼干登录」；顺手删掉 `find_browser`/`_pick_page`/`_pick_site_page` 三处「同名函数定义两次」的历史残留。
 
 - **v0.13.2**：补丁版。浏览器登录读调试接口改成**带预算的重试**（`cdp._http_json`，8 秒 / 0.1→0.5 秒退避）：真机实测端口文件出现后还要 328~563 ms 第一次连接才成功，这中间读一次就是 `[WinError 10061] 目标计算机积极拒绝`，以前只读一次就报「打开浏览器失败」。同时 `CDPSession` 新增 `failure_hint`，`gui.py` 把 `LoginBrowser.devtools_failure_hint` 传下去（进程已退出就当场报退出码，不再耗满预算）；`browser_login.start()` 把「调试口连不上」也归入「换备用资料目录重试」。
