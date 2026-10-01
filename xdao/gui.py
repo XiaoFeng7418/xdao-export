@@ -2688,7 +2688,11 @@ class App:
         self._update_button_text("升级完成")
         if action == "exit":
             # 帮手在等我们退出：它要拿到「现场目录已经没人占用」才动手换。
-            messagebox.showinfo("升级中", message)
+            #
+            # 这里**不能弹消息框**：模态框会一直等着用户点确定，而帮手
+            # 只在 WAIT_FOR_EXIT_SECONDS(60s) 内等老进程消失，点慢一拍这次
+            # 升级就白换了（用户还看见「升级完成」）。上面那行 log 已经报过
+            # 新版就位，直接让位即可。
             self._end_self_for_upgrade()
 
     def _end_self_for_upgrade(self) -> None:

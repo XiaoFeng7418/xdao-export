@@ -1427,7 +1427,29 @@ def test_end_self_for_upgrade_quits_the_loop_and_ends_the_process(
     assert any("让给新版本" in line for line in app.logged)
 
 
-def test_upgrade_finish_calls_the_end_self_step_on_success(dialog_root):
+@pytest.fixture
+def no_popups(monkeypatch):
+    """把消息框钉住，别让用例卡在真对话框上。
+
+    这两条用例要跑**真的** ``App._upgrade_finish``，而真实现成功时会
+    ``messagebox.showinfo`` 弹一个模态框 —— 平机上就是「窗口开着等点确定」，
+    表现为 pytest 永远不返回（CI 的 windows 矩阵就是这样卡了 45 分钟），
+    所以这里把会阻塞的几样统一钉住。
+    """
+    quiet = lambda *a, **k: None  # noqa: E731
+    for name in (
+        "showinfo",
+        "showwarning",
+        "showerror",
+        "askyesno",
+        "askokcancel",
+        "askretrycancel",
+    ):
+        monkeypatch.setattr(gui.messagebox, name, quiet)
+    return quiet
+
+
+def test_upgrade_finish_calls_the_end_self_step_on_success(dialog_root, no_popups):
     app = _UpdateApp(dialog_root)
     app.end_self_calls = []
 
@@ -1443,7 +1465,7 @@ def test_upgrade_finish_calls_the_end_self_step_on_success(dialog_root):
 
 
 def test_upgrade_finish_does_not_end_the_process_when_it_failed(
-    dialog_root, monkeypatch
+    dialog_root, monkeypatch, no_popups
 ):
     app = _UpdateApp(dialog_root)
     exited: list[int] = []

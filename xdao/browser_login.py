@@ -18,6 +18,7 @@ socket + base64 + hashlib + struct 就够；多一个第三方依赖，打包体
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import itertools
 import json
@@ -219,12 +220,18 @@ def fallback_profile_dirs(profile: Path) -> list[Path]:
 def _profile_failure(exc: BaseException) -> bool:
     """这次失败是不是「这个 profile 用不了」造成的（权限 / 占用）。
 
-    只看 Windows 的错误码：5 = 拒绝访问，32 = 文件被占用。别的错（比如浏览器
-    路径不对、启动就退出）换目录也没用，别白白重试一遍。
+    Windows 上看错误码：5 = 拒绝访问，32 = 文件被占用。别的错（比如浏览器路径
+    不对、启动就退出）换目录也没用，别白白重试一遍。
+
+    顺带认一下 ``errno``：同一个错误在 Linux / macOS 上只带 ``errno``（分别是
+    ``EACCES`` 和 ``EBUSY``），而且 Linux 上 ``OSError(..., winerror=5)`` 会把
+    ``winerror`` 抹成 ``None`` —— 真机行为靠 Windows 那两个码，跨平台只认这两个。
 
     要顺着 ``__cause__`` / ``__context__`` 一起看：启动失败是包成
     :class:`CdpError` 抛出来的，只盯着最外层会漏掉里面那个 ``PermissionError``。
     """
+    win_codes = (5, 32)  # ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION
+    posix_codes = (errno.EACCES, errno.EBUSY)
     seen: set[int] = set()
     pending: list[BaseException | None] = [exc]
     while pending:
@@ -232,7 +239,9 @@ def _profile_failure(exc: BaseException) -> bool:
         if current is None or id(current) in seen:
             continue
         seen.add(id(current))
-        if getattr(current, "winerror", None) in (5, 32):
+        if getattr(current, "winerror", None) in win_codes:
+            return True
+        if getattr(current, "errno", None) in posix_codes:
             return True
         pending.extend((current.__cause__, current.__context__))
     return False

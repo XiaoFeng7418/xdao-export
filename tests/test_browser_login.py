@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import errno
 import hashlib
 import inspect
 import json
@@ -789,6 +790,24 @@ def test_start_reports_a_browser_that_cannot_run(artifacts_dir: Path) -> None:
         browser.start()
 
 
+def _win_error(
+    winerror: int, message: str = "拒绝访问", path: str | None = None
+) -> OSError:
+    """造一个「带 Windows 错误码」的异常，在哪个平台跑都一样。
+
+    ``OSError(13, msg, path, 5)`` 这个第四位参数只在 Windows 上会被塞进
+    ``winerror``；Linux 上它被忽略，``winerror`` 是 ``None``，用例就会在 CI 上
+    红（2026-10-01 的 run 36812719489 就是这么红的）。所以这里显式赋值。
+
+    ``errno`` 跟着 ``winerror`` 走（2=ENOENT、5=EACCES、32=EBUSY），免得造出
+    「Windows 码说找不到文件、errno 却说自己没权限」这种自相矛盾的异常。
+    """
+    errno_for_win = {2: errno.ENOENT, 5: errno.EACCES, 32: errno.EBUSY}
+    exc = OSError(errno_for_win.get(winerror, errno.EACCES), message, path or "")
+    exc.winerror = winerror  # type: ignore[attr-defined]
+    return exc
+
+
 class _PortWritingPopen:
     """假 Popen：像真浏览器那样立刻写出 DevToolsActivePort。"""
 
@@ -851,12 +870,18 @@ def test_fallback_profile_dirs_are_fresh_and_not_the_original(artifacts_dir: Pat
 @pytest.mark.parametrize("winerror", [5, 32])
 def test_profile_failure_recognises_permission_and_lock(winerror: int) -> None:
     """只有「拒绝访问 / 被占用」才值得换目录重试。"""
-    assert bl._profile_failure(OSError(13, "拒绝访问", None, winerror))
+    assert bl._profile_failure(_win_error(winerror))
+
+
+def test_profile_failure_reads_posix_errno_too() -> None:
+    """同一个毛病在 Linux / macOS 上只有 errno：EACCES / EBUSY 也认。"""
+    assert bl._profile_failure(OSError(errno.EACCES, "拒绝访问"))
+    assert bl._profile_failure(OSError(errno.EBUSY, "设备或资源忙"))
 
 
 def test_profile_failure_sees_through_the_wrapped_error() -> None:
     """启动失败是包成 CdpError 抛的，藏在里面那个错也得认出来。"""
-    cause = OSError(13, "拒绝访问。", "profile", 5)
+    cause = _win_error(5, "拒绝访问。", "profile")
     try:
         try:
             raise cause
@@ -867,7 +892,8 @@ def test_profile_failure_sees_through_the_wrapped_error() -> None:
 
 
 def test_profile_failure_ignores_other_errors() -> None:
-    assert not bl._profile_failure(OSError(2, "找不到文件", None, 2))
+    assert not bl._profile_failure(_win_error(2, "找不到文件"))
+    assert not bl._profile_failure(OSError(errno.ENOENT, "找不到文件"))
     assert not bl._profile_failure(RuntimeError("跟目录无关"))
 
 
@@ -888,7 +914,7 @@ def test_start_switches_profile_when_the_config_one_is_not_writable(
         )
         created.append(chosen)
         if chosen == profile:
-            raise OSError(13, "拒绝访问。", str(refused), 5)
+            raise _win_error(5, "拒绝访问。", str(refused))
         return _PortWritingPopen(args, **kwargs)
 
     monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
@@ -913,7 +939,7 @@ def test_start_still_reports_a_real_failure(
             next(a.split("=", 1)[1] for a in args if a.startswith("--user-data-dir="))
         )
         attempts.append(chosen)
-        raise OSError(2, "系统找不到指定的文件。", args[0], 2)
+        raise _win_error(2, "系统找不到指定的文件。", args[0])
 
     monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
     info = bl.BrowserInfo("Edge", "msedge.exe")
@@ -1179,6 +1205,7 @@ def test_library_only_imports_the_standard_library() -> None:
     assert "xdao" not in imported
     assert imported <= {
         "base64",
+        "errno",
         "hashlib",
         "itertools",
         "json",
