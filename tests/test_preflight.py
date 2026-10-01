@@ -12,11 +12,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from xdao import preflight
 from xdao.browser_login import BrowserInfo
+
+
+@pytest.fixture(autouse=True)
+def _no_real_settings(monkeypatch) -> None:
+    """``browser_start_checks()`` 会读设置里的「PDF 浏览器」。
+
+    真去读就会碰到 ``tests/conftest.py`` 的守卫（禁止读用户真实配置），
+    而这个文件里多数用例根本不关心设置，所以这里统一换成一个空设置。
+    """
+    monkeypatch.setattr(
+        preflight,
+        "_loaded_settings",
+        lambda: SimpleNamespace(pdf_browser="", output_dir="", cache_dir=""),
+    )
 
 
 def _ok_browser() -> BrowserInfo:
@@ -345,3 +360,90 @@ def test_run_network_checks_reports_a_fetch_that_raises(monkeypatch) -> None:
     checks = preflight.run_network_checks()
     assert checks[1].status == "fail"
     assert "网络断了" in checks[1].detail
+
+
+# ------------------------------------ 浏览器到底起不起得来（--selftest --check-browser）
+
+
+def _browser_check(name: str, *, ok: bool, **kwargs):
+    """造一条 :class:`xdao.browser_check.BrowserCheck` 结论。"""
+    from xdao.browser_check import BrowserCheck
+
+    kwargs.setdefault("path", f"C:/假/{name}.exe")
+    kwargs.setdefault("detail", "")
+    return BrowserCheck(name=name, ok=ok, **kwargs)
+
+
+def test_browser_start_checks_tell_the_exit_code_and_what_still_works(monkeypatch) -> None:
+    """起不来时要说清是哪个、退出码多少、还能怎么办。"""
+    from xdao import browser_check
+
+    monkeypatch.setattr(
+        browser_check,
+        "check_all",
+        lambda explicit="", **kwargs: browser_check.BrowserReport(
+            [
+                _browser_check(
+                    "Edge",
+                    ok=False,
+                    detail="刚起来就退出了（退出码 21），端口写出来了进程却没留住。",
+                    exit_code=21,
+                )
+            ]
+        ),
+    )
+    report = preflight.browser_start_checks()
+    assert [check.status for check in report.checks] == ["fail", "fail"]
+    assert "Edge" in report.checks[0].name
+    assert "退出码 21" in report.checks[0].detail
+    assert "浏览器登录" in report.checks[0].advice
+    assert "饼干" in report.checks[0].advice, "得告诉用户还有「粘贴饼干」这条退路"
+
+
+def test_browser_start_checks_say_which_one_to_use_instead(monkeypatch) -> None:
+    """一个起不来、另一个能用 —— 结论要落在「用能起来的那个」上。"""
+    from xdao import browser_check
+
+    monkeypatch.setattr(
+        browser_check,
+        "check_all",
+        lambda explicit="", **kwargs: browser_check.BrowserReport(
+            [
+                _browser_check("Edge", ok=False, detail="刚起来就退出了（退出码 21）。"),
+                _browser_check("Chrome", ok=True, detail="Chrome/141.0", port=9222, seconds=0.7),
+            ]
+        ),
+    )
+    report = preflight.browser_start_checks()
+    assert [check.status for check in report.checks] == ["fail", "ok", "ok"]
+    assert "起得来" in report.checks[2].detail
+    assert "Chrome" in report.checks[2].detail
+    assert report.failures and "Edge" in report.failures[0].name
+
+
+def test_browser_start_checks_survive_having_no_browser(monkeypatch) -> None:
+    from xdao import browser_check
+
+    monkeypatch.setattr(
+        browser_check,
+        "check_all",
+        lambda explicit="", **kwargs: browser_check.BrowserReport(
+            [
+                browser_check.BrowserCheck(
+                    name="浏览器", path="", ok=False, found=False, detail="没找到 Edge、Chrome。"
+                )
+            ]
+        ),
+    )
+    report = preflight.browser_start_checks()
+    assert [check.status for check in report.checks] == ["fail", "fail"]
+    assert "装一个 Edge" in report.checks[0].advice
+
+
+def test_the_default_browser_check_only_looks_for_the_file(monkeypatch) -> None:
+    """默认自检不许启动浏览器进程 —— 那一条是「只读」的。"""
+    monkeypatch.setattr(preflight, "find_browser", lambda explicit, env: _ok_browser())
+    check = preflight._check_browser("")
+    assert check.status == "ok"
+    assert "起不来" not in check.detail
+    assert "退出码" not in check.detail

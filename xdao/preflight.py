@@ -286,6 +286,83 @@ def _check_exporters() -> Check:
     return Check(name="导出格式", status="ok", detail=f"可用：{names}")
 
 
+def _loaded_settings():
+    """读一次用户配置；测试里可以把它换掉，免得自检去碰真实配置。"""
+    return settings_mod.AppSettings.load()
+
+
+def browser_start_checks(
+    explicit: str = "", *, timeout: float | None = None, settings=None
+) -> Report:
+    """真的启一次浏览器，看它起不起得来（``--selftest --check-browser`` 加的那一条）。
+
+    为什么要有：默认自检里的「浏览器」那一项只查**找得到可执行文件**，于是「装了安全
+    软件、浏览器一起来就被拦下」在自检里显示「可以」，而「用浏览器登录」永远失败
+    （真机上量到 Edge 退出码 21，排查花了好几轮）。这条会短暂启动浏览器进程，所以
+    **默认不跑**，得显式点名。
+
+    这里挨个试候选（而不是试到一个能用就停）：用户碰到的正是「默认那个起不来、
+    另一个能用」，只报一个失败会让人以为整条路都废了。
+
+    ``explicit`` 留空时按设置里指定的浏览器试（和「用浏览器登录」同一条挑选逻辑），
+    所以结论回答的就是「我点那个按钮时用的是谁、它行不行」。
+    """
+    from . import browser_check
+
+    if settings is None:
+        settings = _loaded_settings()
+    if not explicit:
+        explicit = getattr(settings, "pdf_browser", "") or ""
+    if timeout is None:
+        timeout = browser_check.DEFAULT_TIMEOUT
+    report = browser_check.check_all(explicit, timeout=timeout)
+    good = report.first_ok()
+    checks: list[Check] = []
+    for item in report.checks:
+        if item.ok:
+            checks.append(
+                Check(
+                    name=f"浏览器启动·{item.name}",
+                    status="ok",
+                    detail=item.line().removeprefix("[可以] "),
+                )
+            )
+            continue
+        if item.found:
+            detail = item.line().removeprefix("[不行] ")
+            advice = (
+                "「用浏览器登录」这条路多半就卡在这儿：安全软件（火绒、360 之类）"
+                "会拦下浏览器进程或本地调试端口。可以先关掉拦截再试，"
+                "也可以在设置面板的「PDF 浏览器」里换一个能用的，"
+                "或改用「直接粘贴饼干登录」。"
+            )
+        else:
+            detail = item.detail
+            advice = (
+                "装一个 Edge、Chrome、Chromium 或 Brave；"
+                "或者在设置面板的「PDF 浏览器」里手动填可执行文件的完整路径。"
+            )
+        checks.append(Check(name=f"浏览器启动·{item.name}", status="fail", detail=detail, advice=advice))
+    if good is not None:
+        checks.append(
+            Check(
+                name="浏览器启动",
+                status="ok",
+                detail=f"{good.name} 起得来，所以「用浏览器登录」这条路是通的。",
+            )
+        )
+    elif report.checks:
+        checks.append(
+            Check(
+                name="浏览器启动",
+                status="fail",
+                detail="本机这些浏览器都起不来，「用浏览器登录」暂时用不了。",
+                advice="见上面每一条的「怎么办」；实在不行就用「直接粘贴饼干登录」。",
+            )
+        )
+    return Report(checks)
+
+
 def run_local_checks(
     *,
     config_path: Path | None = None,
@@ -299,7 +376,7 @@ def run_local_checks(
     config_path = Path(config_path)
 
     if output_dir is None or cache_dir is None or browser_path is None:
-        loaded = settings_mod.AppSettings.load()
+        loaded = _loaded_settings()
         if output_dir is None:
             output_dir = loaded.output_dir or ""
         if cache_dir is None:

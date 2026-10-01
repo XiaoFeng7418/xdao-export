@@ -434,6 +434,24 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.8**：补丁版，把「浏览器到底起不起得来」并进默认自检。`--selftest --check-browser`
+  时 `main.selftest(browser=True)` 会先打一行提示，再 `xdao/preflight.py` 新增的
+  `browser_start_checks(explicit="", *, timeout=None, settings=None)` 真的启一遍候选浏览器
+  （`xdao/browser_check.py` 新增 `check_all()`：和 `check_browsers()` 的差别只在「什么时候停」——
+  挨个真试直到有一个起来，因为现场就是「默认那个起不来、另一个能用」；`check_browsers` 现在
+  只是它的薄壳）。每个浏览器一条 `浏览器启动·<名字>`，最后补一条总结（全部起不来 →
+  `fail`，并给「安全软件拦下 / 换设置里的浏览器 / 改用粘贴饼干」三条建议）。
+  `preflight._loaded_settings()` 是为测试抽出来的（真读用户配置会被 `tests/conftest.py` 拦下）。
+  **真机验收**：打包版在干净配置里跑 `--selftest --check-browser` 退出码 0，多出
+  `[可以] 浏览器启动·Edge：Edge：能起来，Edg/… 调试端口 答得上话（0.5 秒）` 与
+  `[可以] 浏览器启动：Edge 起得来…` 两行；单独 `--check-browser` 照旧。
+  **踩坑**：①测试里钉 `preflight.find_browser` 对探测没用 —— `browser_check` 是
+  `from .browser_login import find_browser`，得钉 `browser_check.find_browser`，否则会真的去启本机
+  Edge；②`tests/test_preflight.py` 里直接调 `browser_start_checks()` 的用例在**整个套件**里过、
+  单独跑会红（全套件里有 autouse fixture 把 `AppSettings.load` 换掉，单独跑没有）→ 该文件加了
+  自己的 autouse fixture `_no_real_settings`。
+  顺带修掉 `packaging/使用说明.txt` 里被 apply 脚本复制出来的正文（v0.13.6 段多了一份），
+  以及 `_scratch/check_usage_txt.py` 的假绿灯（原来只数「本版版本号」，复制的那份不带标签）。
 - **v0.13.7**：补丁版，修「登录窗口里登进去了、程序却没登录上」。旧逻辑 `BrowserLoginDialog._worker` 里 `if value: put(("ok", value))`：只要在浏览器里读到 `userhash` 就宣布成功 —— 而浏览器资料目录（`%APPDATA%\xdao-export\browser-profile`）是留着的，上一次登录的旧饼干还在，会话早失效，于是「界面说成功、导出全未登录」。`client.import_userhash()` 本身不做任何服务端校验（`xdao/client.py:426`）。真机探针定的判据：拿这块饼干请一次`https://www.nmbxd1.com/Member/User/Cookie/index.html`，匿名/假饼干（`userhash=deadbeefdeadbeef`）时 `_request_following_jumps` 的 `final_url` 都会落在`Member/User/Index/login.html`（`"login" in final_url`，饼干行数 0、页面 3282 字节）；试过用取串接口验，**验不了** —— `fetch_thread_page` 对匿名与假饼干都返回 200 且带 `Hide/Replies/ReplyCount` 字段（跳转页被当正常页解析的老坑）。落地：`xdao/gui.py` 新增模块级 `verify_userhash_live(client, userhash) -> str | None`（`None` = 能用；否则返回给用户看的一句话）与两个常量 `BROWSER_STALE_COOKIE_MESSAGE`／`BROWSER_VERIFY_FAILED_MESSAGE`；`_worker` 里 `verified` 缓存（验过的饼干不再反复问）＋`said_dead` 只提示一次；**函数自己 `client.import_userhash(userhash)`**（原先由调用方装，漏了就等于拿别人的身份问、结论会反过来）。用例 3 条（`tests/test_gui_browser_login.py`）：旧饼干不当成功（界面出现「X 岛不认」、窗口不关、`dialog.userhash is None`）、`test_verify_userhash_live_asks_the_cookie_page_with_that_cookie`（假客户端真跑：问了哪个地址、弹回登录页 == 不认、抛异常 == 「没法确认」而不是「不认」）、`test_the_dialog_asks_the_server_before_calling_it_a_success`（AST 钉接线：产品代码里有且只有一处调用、参数就是 `self.client, value`）。**踩过的坑**：①autouse fixture `assume_live_cookies` 在用例正文**之前**就把 `gui.verify_userhash_live` 换成替身了，所以「在用例里读模块属性、想拿到真实现」拿到的其实是替身 —— 真函数要 `from xdao.gui import verify_userhash_live as real_verify_userhash_live` 在模块顶层拿；②别指望「换掉类属性再包一层」绕 monkeypatch（`gui.BrowserLoginDialog.__dict__[...]` 里的东西本身可能已经是替身）；③`tests/test_config_isolation.py` 用 `import xdao.gui`，会另造一份 `xdao.gui` 模块对象（`gui is sys.modules['xdao.gui']` 为 False），跨模块打补丁时容易打空。
 
 - **v0.13.6**：补丁版，把 v0.13.5 的探测能力搬到界面。`SelftestDialog` 新增 `browser_button`（文字「试浏览器」）与 `_run_browser_check()` / `_poll_browser_check()` / `_schedule_browser_poll()`：后台线程调 `browser_check.check_browsers(explicit or "", progress=...)`（`explicit` 取 `getattr(self.app, "settings", None)` 的 `pdf_browser`，取不到就留空自动挑），结果经 `self._browser_queue` 回到主线程轮询（`BROWSER_UI_POLL_MS = 150`）；跑的时候按钮禁用 + 右下角显示「正在试谁」，结论 `report.render()` 追加进自检文本（可一键复制），失败与「探测自己出错」都写进运行日志。`_schedule_browser_poll()` 把 `after()` 包在 `except tk.TclError` 里：探测途中关掉窗口不该把异常抛到主循环。对话框说明文字也补了一句「会真的启动一次浏览器」。用例（`tests/test_gui_entry.py`）2 条：`test_selftest_dialog_has_a_way_to_find_out_if_the_browser_even_starts`（真跑整条链路：假浏览器 + 假调试服务；用 `threading.Event` 当闸门卡住到「真结果已在队列里」，这样「跑着时按钮禁用」不是抢时间断言；替身**必须先存下真实现**再 monkeypatch，否则替身调 `browser_check.check_browsers` 会自己调自己 —— 第一次就写成那样，界面上显示 `RecursionError`）、`test_selftest_browser_check_says_so_when_the_probe_itself_blows_up`（探测抛异常也要说人话、按钮要放开）。注意：用例里**不能在 `_close(dialog)` 之后读 `button.instate()`**（`invalid command name`）。
