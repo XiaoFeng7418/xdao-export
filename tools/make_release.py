@@ -49,6 +49,27 @@ def gh_token() -> str:
     return out.stdout.strip()
 
 
+def read_notes(path: Path) -> str:
+    """读发布说明，顺手扔掉文件开头的 BOM，空文件直接报错。
+
+    说明文件常是记事本另存出来的（带 BOM）。BOM 混进 Release 正文里在页面上看不见，
+    却会跟着一起发出去；空的说明更糟 —— 发版规矩要求正文里说清下的是哪个附件。
+    """
+    text = path.read_text(encoding="utf-8-sig")
+    if not text.strip():
+        raise ApiError(f"发布说明是空的：{path}")
+    return text
+
+
+def missing_assets(assets: list[Path]) -> list[Path]:
+    """挑出根本不存在的附件。
+
+    「文件不存在就跳过」在发版这件事上不算宽容：Release 会照样建出来，
+    只是没有附件，而工具退出码还是 0 —— 等发现时版本已经发出去了。
+    """
+    return [path for path in assets if not path.is_file()]
+
+
 def request_json(method: str, path: str, token: str, payload: dict | None = None,
                  retries: int = 4) -> dict:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -138,7 +159,14 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     token = gh_token()
-    notes = Path(args.notes_file).read_text(encoding="utf-8")
+    notes = read_notes(Path(args.notes_file))
+
+    assets = [Path(raw) for raw in args.asset]
+    gone = missing_assets(assets)
+    if gone:
+        print("× 附件文件不存在：" + "、".join(str(path) for path in gone))
+        print("  先打包再发布 —— 发出一个只有说明的 Release，比不发还难收拾。")
+        return 1
 
     existing = None
     try:
@@ -175,11 +203,7 @@ def main(argv: list[str]) -> int:
             print(f"Release {args.tag} 的说明已是最新")
 
     uploaded = {a["name"] for a in release.get("assets", [])}
-    for raw in args.asset:
-        path = Path(raw)
-        if not path.exists():
-            print(f"跳过（文件不存在）：{path}")
-            continue
+    for path in assets:
         if path.name in uploaded:
             print(f"跳过（附件已存在）：{path.name}")
             continue
@@ -188,9 +212,15 @@ def main(argv: list[str]) -> int:
         print(f"  完成：{asset['browser_download_url']}")
 
     final = request_json("GET", f"/repos/{args.repo}/releases/tags/{args.tag}", token)
+    landed = {item["name"] for item in final.get("assets", [])}
     print(f"\nRelease {final['tag_name']} 附件：")
     for item in final.get("assets", []):
         print(f"  {item['name']}  {item['size'] / 1024 / 1024:.2f} MB  {item['browser_download_url']}")
+
+    absent = [path.name for path in assets if path.name not in landed]
+    if absent:
+        print("× 这些附件没落到 Release 上：" + "、".join(absent))
+        return 1
     return 0
 
 
