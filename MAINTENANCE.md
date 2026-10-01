@@ -93,6 +93,19 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
 ```
 
+## 发布说明结尾要写「附件」段
+
+`repo_check.py` 会看最新 Release 的说明里有没有讲清楚该下哪个附件。发布说明结尾照这样写：
+
+```markdown
+## 附件
+
+- `xdao-export-vX.Y.Z-win64.zip`：免安装包，解压后双击 `xdao-export.exe`。
+```
+
+v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没有说明该下哪个附件」；补上后用
+`gh release edit vX.Y.Z --notes-file docs/RELEASE_NOTES_vX.Y.Z.md` 更新已发布的正文。
+
 ## 推送通道（2026-09-30 起）
 
 - **日常推送直接用 `git push`**。本机代理 `http://127.0.0.1:7890` 已配进全局
@@ -804,6 +817,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 注意两条容易误判的：探针会把现场 `xdao-export.exe` 换成「起来就退」的替身（所以备份里
 不是老版本 exe 是**对的**）；普通暂存目录 `xdao-export-update` 要放够
 `STAGING_STALE_SECONDS = 600` 秒才清（所以刚升完几分钟还在也是**对的**）。
+
+2026-10-01 v0.13.10 那轮又补了见证脚本自身的两处：①模板里只 import 了 `hashlib` / `sys` / `time` / `pathlib`，**漏了 `subprocess`**，于是它跑 `--version` 三项全报 `NameError`，只有「换上去的字节与包一致」那一条还有效；②模板里「盯 TEMP 等暂存目录消失」只等 80 秒，跟上面 `STAGING_STALE_SECONDS = 600` 自相矛盾，末行必打「!! 80 秒都没等到清空」。正确的等法是等 `.leftover-<帮手号>-<时间>` 记号目录（启动时立刻清），普通暂存目录按年龄判断。
 
 ## 自检类用例要连报告对象一起钉（2026-10-01 发现）
 
