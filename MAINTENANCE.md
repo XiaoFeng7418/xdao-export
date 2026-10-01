@@ -92,6 +92,8 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 & $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag vX.Y.Z `
     --name "vX.Y.Z：..." --notes-file docs/RELEASE_NOTES_vX.Y.Z.md `
     --asset '<盘符>\xdao-export-vX.Y.Z-win64.zip'   # 只有这一个附件
+#    附件不在就直接不建 Release（先验再动）；发完会再核一遍附件在不在，缺了或者
+#    发布说明是空的，都以退出码 1 结束 —— 别把「跳过」当成发好了。
 
 # 7) 收尾：确认体检全绿
 & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
@@ -304,6 +306,14 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    `xdao.__version__` 时不许再补一句「与最新 Release 一致」（旧写法同一件事既报错又说没问题）；
    `git ls-tree` 读空时不许说「逐文件一致（0 个文件）」，只能说「这一项没查成」；工作区有没提交的
    改动时要在结论里露出来（只警告，退出码仍是 0）。三处都注入验过：退回旧写法，用例立刻红。
+   **发布这一步也有用例兜着**（2026-10-02 补上）：`tests/test_make_release.py` 拿假 API 跑
+   `tools/make_release.py` 的 `main()`（`gh_token` / `request_json` / `upload_asset` 全换成测试自己的），
+   盯住「看着成功了、附件却没上去」这一类 —— 附件路径写错时以前只印一行「跳过（文件不存在）」，
+   Release 照样建出来、退出码还是 0；现在**先验再动**：附件不在就一个请求都不发（连 Release 都不建）。
+   发布说明按 `utf-8-sig` 读（记事本另存出来的 BOM 以前会跟着写进正文），空说明直接拦下；
+   传完之后拿最终那份 Release 再核一遍附件在不在，缺了就报「没落到 Release 上」并返回 1。
+   另外用例单独核了上传请求本身：附件名必须走 `?name=` 查询串 —— 走别的写法接口只取第一个点号
+   之前的部分，中文名还会被截断成一个字。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
