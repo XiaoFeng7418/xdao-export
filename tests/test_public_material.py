@@ -110,6 +110,8 @@ def test_examples_use_the_official_test_thread_or_an_obviously_fake_id() -> None
                     continue  # 日期，例如 备份目录名里的 20261001
                 if re.match(r"[`\s]{0,3}字节", line[match.end() : match.end() + 4]):
                     continue  # 字节数，例如 （12031049 字节 / 956 条目）
+                if re.search(r"字节数\s*$", line[: match.start()]):
+                    continue  # 另一种写法：字节数 12040398 与刚上传的附件一致
                 bad.append((relative, number, line.strip()))
     assert not bad, (
         "公开材料里出现了没登记的 8 位数字：\n"
