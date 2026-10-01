@@ -434,7 +434,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
-- **v0.13.7**：补丁版，修用户报的「登录窗口里登进去了、程序却没登录上」（m18238 第①点）。旧逻辑 `BrowserLoginDialog._worker` 里 `if value: put(("ok", value))`：只要在浏览器里读到 `userhash` 就宣布成功 —— 而浏览器资料目录（`%APPDATA%\xdao-export\browser-profile`）是留着的，上一次登录的旧饼干还在，会话早失效，于是「界面说成功、导出全未登录」。`client.import_userhash()` 本身不做任何服务端校验（`xdao/client.py:426`）。真机探针定的判据：拿这块饼干请一次`https://www.nmbxd1.com/Member/User/Cookie/index.html`，匿名/假饼干（`userhash=deadbeefdeadbeef`）时 `_request_following_jumps` 的 `final_url` 都会落在`Member/User/Index/login.html`（`"login" in final_url`，饼干行数 0、页面 3282 字节）；试过用取串接口验，**验不了** —— `fetch_thread_page` 对匿名与假饼干都返回 200 且带 `Hide/Replies/ReplyCount` 字段（跳转页被当正常页解析的老坑）。落地：`xdao/gui.py` 新增模块级 `verify_userhash_live(client, userhash) -> str | None`（`None` = 能用；否则返回给用户看的一句话）与两个常量 `BROWSER_STALE_COOKIE_MESSAGE`／`BROWSER_VERIFY_FAILED_MESSAGE`；`_worker` 里 `verified` 缓存（验过的饼干不再反复问）＋`said_dead` 只提示一次；**函数自己 `client.import_userhash(userhash)`**（原先由调用方装，漏了就等于拿别人的身份问、结论会反过来）。用例 3 条（`tests/test_gui_browser_login.py`）：旧饼干不当成功（界面出现「X 岛不认」、窗口不关、`dialog.userhash is None`）、`test_verify_userhash_live_asks_the_cookie_page_with_that_cookie`（假客户端真跑：问了哪个地址、弹回登录页 == 不认、抛异常 == 「没法确认」而不是「不认」）、`test_the_dialog_asks_the_server_before_calling_it_a_success`（AST 钉接线：产品代码里有且只有一处调用、参数就是 `self.client, value`）。**踩过的坑**：①autouse fixture `assume_live_cookies` 在用例正文**之前**就把 `gui.verify_userhash_live` 换成替身了，所以「在用例里读模块属性、想拿到真实现」拿到的其实是替身 —— 真函数要 `from xdao.gui import verify_userhash_live as real_verify_userhash_live` 在模块顶层拿；②别指望「换掉类属性再包一层」绕 monkeypatch（`gui.BrowserLoginDialog.__dict__[...]` 里的东西本身可能已经是替身）；③`tests/test_config_isolation.py` 用 `import xdao.gui`，会另造一份 `xdao.gui` 模块对象（`gui is sys.modules['xdao.gui']` 为 False），跨模块打补丁时容易打空。
+- **v0.13.7**：补丁版，修「登录窗口里登进去了、程序却没登录上」。旧逻辑 `BrowserLoginDialog._worker` 里 `if value: put(("ok", value))`：只要在浏览器里读到 `userhash` 就宣布成功 —— 而浏览器资料目录（`%APPDATA%\xdao-export\browser-profile`）是留着的，上一次登录的旧饼干还在，会话早失效，于是「界面说成功、导出全未登录」。`client.import_userhash()` 本身不做任何服务端校验（`xdao/client.py:426`）。真机探针定的判据：拿这块饼干请一次`https://www.nmbxd1.com/Member/User/Cookie/index.html`，匿名/假饼干（`userhash=deadbeefdeadbeef`）时 `_request_following_jumps` 的 `final_url` 都会落在`Member/User/Index/login.html`（`"login" in final_url`，饼干行数 0、页面 3282 字节）；试过用取串接口验，**验不了** —— `fetch_thread_page` 对匿名与假饼干都返回 200 且带 `Hide/Replies/ReplyCount` 字段（跳转页被当正常页解析的老坑）。落地：`xdao/gui.py` 新增模块级 `verify_userhash_live(client, userhash) -> str | None`（`None` = 能用；否则返回给用户看的一句话）与两个常量 `BROWSER_STALE_COOKIE_MESSAGE`／`BROWSER_VERIFY_FAILED_MESSAGE`；`_worker` 里 `verified` 缓存（验过的饼干不再反复问）＋`said_dead` 只提示一次；**函数自己 `client.import_userhash(userhash)`**（原先由调用方装，漏了就等于拿别人的身份问、结论会反过来）。用例 3 条（`tests/test_gui_browser_login.py`）：旧饼干不当成功（界面出现「X 岛不认」、窗口不关、`dialog.userhash is None`）、`test_verify_userhash_live_asks_the_cookie_page_with_that_cookie`（假客户端真跑：问了哪个地址、弹回登录页 == 不认、抛异常 == 「没法确认」而不是「不认」）、`test_the_dialog_asks_the_server_before_calling_it_a_success`（AST 钉接线：产品代码里有且只有一处调用、参数就是 `self.client, value`）。**踩过的坑**：①autouse fixture `assume_live_cookies` 在用例正文**之前**就把 `gui.verify_userhash_live` 换成替身了，所以「在用例里读模块属性、想拿到真实现」拿到的其实是替身 —— 真函数要 `from xdao.gui import verify_userhash_live as real_verify_userhash_live` 在模块顶层拿；②别指望「换掉类属性再包一层」绕 monkeypatch（`gui.BrowserLoginDialog.__dict__[...]` 里的东西本身可能已经是替身）；③`tests/test_config_isolation.py` 用 `import xdao.gui`，会另造一份 `xdao.gui` 模块对象（`gui is sys.modules['xdao.gui']` 为 False），跨模块打补丁时容易打空。
 
 - **v0.13.6**：补丁版，把 v0.13.5 的探测能力搬到界面。`SelftestDialog` 新增 `browser_button`（文字「试浏览器」）与 `_run_browser_check()` / `_poll_browser_check()` / `_schedule_browser_poll()`：后台线程调 `browser_check.check_browsers(explicit or "", progress=...)`（`explicit` 取 `getattr(self.app, "settings", None)` 的 `pdf_browser`，取不到就留空自动挑），结果经 `self._browser_queue` 回到主线程轮询（`BROWSER_UI_POLL_MS = 150`）；跑的时候按钮禁用 + 右下角显示「正在试谁」，结论 `report.render()` 追加进自检文本（可一键复制），失败与「探测自己出错」都写进运行日志。`_schedule_browser_poll()` 把 `after()` 包在 `except tk.TclError` 里：探测途中关掉窗口不该把异常抛到主循环。对话框说明文字也补了一句「会真的启动一次浏览器」。用例（`tests/test_gui_entry.py`）2 条：`test_selftest_dialog_has_a_way_to_find_out_if_the_browser_even_starts`（真跑整条链路：假浏览器 + 假调试服务；用 `threading.Event` 当闸门卡住到「真结果已在队列里」，这样「跑着时按钮禁用」不是抢时间断言；替身**必须先存下真实现**再 monkeypatch，否则替身调 `browser_check.check_browsers` 会自己调自己 —— 第一次就写成那样，界面上显示 `RecursionError`）、`test_selftest_browser_check_says_so_when_the_probe_itself_blows_up`（探测抛异常也要说人话、按钮要放开）。注意：用例里**不能在 `_close(dialog)` 之后读 `button.instate()`**（`invalid command name`）。
 
@@ -730,6 +730,32 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    按**局部实例引用**收尾（`xdao/gui.py:671-686`），两个"起来之后才发现已取消"的守卫都用它。
    相应教训：`all(p.returncode is not None for p in processes)` 在 `processes` 为空时**恒真**，
    旧用例因此会空过 —— 断言孤儿必须先把"进程确实被拉起来"钉死。
+
+## 敏感串扫描：提交信息扫了，文档容易漏（2026-10-01 发现）
+
+发版前有一道「扫敏感串」的手工步骤（本机用户名、开发机路径、聊天里的说法、
+内部编号…），v0.13.7 才发现**它只管提交信息，不管文档**：`MAINTENANCE.md`
+那一条里留着内部编号，一路推上去了。提交信息里同一个词被扫出来改了写法，
+文档里却没人看。
+
+规矩：跑扫描时把**这一轮要提交的所有文本文件**一起扫（`git diff --name-only` 那份清单里
+的 `.md` / `.txt` 都算），别只扫 `_commit_msg_*.txt`。内部编号、聊天里的说法、本机路径
+都不该出现在公开仓库里；已经推上去的只能下个提交改回来（历史改不了，除非强推）。
+
+## 一键升级的探针：见证进程活不到写结论（2026-10-01 发现）
+
+`_scratch/probe_upgrade_e2e_v1xx.py` 靠「见证进程」记换完之后的账（换上去的字节、备份、
+暂存目录清没清）。它自己 `os._exit(0)` 让位给帮手 —— **Windows 会把父进程的整个作业树
+一起收掉**，见证进程常常来不及写 `verify.log`（v0.13.7 那轮只写到「现场目录里 exe 在:True」）。
+下次要用见证进程，得让它**脱离作业对象**（`creationflags` 加 `DETACHED_PROCESS` 或
+`CREATE_BREAKAWAY_FROM_JOB`），或者干脆别靠它：直接看文件也能核账。
+
+补验脚本 `_scratch/check_upgrade_result_v137.py` 就是「不靠见证进程」的版本：
+比现场 exe 与包里那份的 sha256、跑一次现场 exe `--version`、看备份目录、
+再把暂存目录的 mtime 拨回一天调 `updater.cleanup_staging_leftovers()`。
+注意两条容易误判的：探针会把现场 `xdao-export.exe` 换成「起来就退」的替身（所以备份里
+不是老版本 exe 是**对的**）；普通暂存目录 `xdao-export-update` 要放够
+`STAGING_STALE_SECONDS = 600` 秒才清（所以刚升完几分钟还在也是**对的**）。
 
 ## CI 说明
 
