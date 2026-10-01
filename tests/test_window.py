@@ -419,7 +419,7 @@ def test_start_wires_the_resolved_directory_into_the_progress(
     monkeypatch.setattr(gui, "choose_writable_dir", lambda path, **k: _keep(path))
     _stub_export_thread(monkeypatch)
 
-    app.start(["https://www.nmbxd1.com/t/69540387"])
+    app.start(["https://www.nmbxd1.com/t/12345678"])
 
     assert app._exporting is True  # noqa: SLF001
     content = app.log_text.get("1.0", "end")
@@ -535,13 +535,13 @@ def test_finish_reports_the_directory_without_a_local_output_dir(
     )
     app._output_dir = r"<盘符>\X岛备份"  # noqa: SLF001
 
-    app._finish(0, 1, ["https://www.nmbxd1.com/t/68204233"], 18.4, [])  # noqa: SLF001
+    app._finish(0, 1, ["https://www.nmbxd1.com/t/12345678"], 18.4, [])  # noqa: SLF001
 
     assert dialogs, "部分失败时必须弹提示"
     assert dialogs[0][0] == "部分失败"
     assert r"<盘符>\X岛备份" in dialogs[0][1]
     assert app._exporting is False  # noqa: SLF001
-    assert app._last_failed == ["https://www.nmbxd1.com/t/68204233"]  # noqa: SLF001
+    assert app._last_failed == ["https://www.nmbxd1.com/t/12345678"]  # noqa: SLF001
 
 
 def test_finish_falls_back_to_the_output_box_when_the_instance_value_is_missing(
