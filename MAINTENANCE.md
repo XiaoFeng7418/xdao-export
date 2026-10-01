@@ -434,7 +434,19 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
-- **新版本检查**（v0.12.0）：新增 `xdao/update_check.py`（`parse_version` / `is_newer` /
+- **一键升级**（v0.13.0）：新增 `xdao/updater.py` 与 `main.py --apply-update`。点「有新版本」
+  按钮后：下载到 `%TEMP%\xdao-export-update`（`download_asset`，有大小上限、
+  失败清半个文件）→ `extract_payload` 只认顶层 `xdao-export-v*` 目录并挡越界路径 →
+  `run_selftest` 拿**候选版本**跑 `--selftest --offline`（不过就什么都不换）→ 主线程二次确认 →
+  `spawn_helper` 用**升级包里的那个 exe** 当帮手（不依赖系统 Python/PowerShell），帮手
+  `--apply-update <目录> <payload> <pid> <启动程序>` 等老进程退出 → `swap_in`
+  （旧目录改名为 `<名>.old-<时间戳>`，新版搬进来，搬不动就改回去）→ 启动新版 → 清暂存。
+  三条设计取舍：①**先自检再替换**，宁可这次不升也不换上一个打不开的；②**旧版本不删**，
+  只改名，留 24 小时（`cleanup_backups`，每次启动顺手清）；③**帮手用升级包里的 exe**，
+  系统里没 Python、没 PowerShell 也能升级。顺带把「答应用户中途取消」的路径也做了：
+  取消或失败一律 `discard_staging`，不在 `%TEMP%` 里留几十 MB。
+
+- **新版本检查**（v0.12.0）：新增 `xdao/update_check.py`（`parse_version` / `is_newer` /新增 `xdao/update_check.py`（`parse_version` / `is_newer` /
   `fetch_latest` / `check_for_update`）。问的是 `releases/latest` 接口，**只取 tag_name 与
   html_url**，不发任何本机信息；代理按「环境变量（HTTPS_PROXY 等）→ Windows 系统代理设置
   （注册表 ProxyEnable/ProxyServer）→ 直连」的顺序探。结果缓存在 `配置目录/update-check.json`，

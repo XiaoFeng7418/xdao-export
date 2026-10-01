@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -765,6 +766,11 @@ class BrowserLoginDialog(tk.Toplevel):
             )
             self._browser = browser
             browser.start()
+            # 配置目录里的浏览器资料要是用不了，库会自己换一个临时目录再试；
+            # 这件事得让用户看见，不然他会以为登录态还落在老地方。
+            note = getattr(browser, "profile_note", "")
+            if note:
+                self._queue.put(("note", note))
             if self._stop.is_set():  # 取消正好落在启动过程中
                 # 必须拿局部引用收尾：主线程那次 _release() 已经把 self._browser 清成 None，
                 # 里面那个进程当时还没起来、它停不掉，再读登记处就等于放任成一个孤儿进程。
@@ -1796,6 +1802,10 @@ class App:
         self._update_button: ttk.Button | None = None
         self._checking_update = False
         self._update_queue: queue.Queue = queue.Queue()
+        # 一键升级期间的状态（升级包下载、自检、换文件都走同一条队列回报）
+        self._upgrading = False
+        self._upgrade_spawned = False
+        self._upgrade_queue: queue.Queue = queue.Queue()
         # 切换主题时旧控件会被销毁，这里记住本次实例出来的控件，便于重建
         self._widget_roots: list[tk.Misc] = []
 
@@ -1809,6 +1819,30 @@ class App:
         self.log("就绪。填入串网址后点「开始导出」。")
         # 启动后悄悄问一次「有没有新版本」：查到了只写一行日志，不弹窗打扰。
         self.root.after(1200, lambda: self.check_update(silent=True))
+        # 上次升级换下来的旧目录（<名字>.old-<时间戳>）留一天就够了，顺手清掉。
+        # 放在后台线程里：列目录、删目录都不该拖慢启动。
+        threading.Thread(target=self._cleanup_old_backups, daemon=True).start()
+        # 刚升级完的那一次，帮手自己住在暂存目录里、删不掉自己，于是留了个记号；
+        # 等老进程（连同帮手）彻底走人之后再收，所以晚几秒、也在后台线程里做。
+        self.root.after(3000, lambda: threading.Thread(
+            target=self._cleanup_staging_leftovers, daemon=True).start())
+
+    def _cleanup_old_backups(self) -> None:
+        try:
+            from . import updater
+
+            updater.cleanup_backups()
+        except Exception:  # noqa: BLE001 —— 清不干净也不该影响启动
+            pass
+
+    def _cleanup_staging_leftovers(self) -> None:
+        try:
+            from . import updater
+
+            # 帮手这会儿可能还没走（它要等老进程、还要启动我们），所以隔几秒再试几次。
+            updater.cleanup_staging_leftovers_at_startup()
+        except Exception:  # noqa: BLE001 —— 同上，删不掉就算了
+            pass
 
     # ---------- 主题 ----------
 
@@ -2401,7 +2435,7 @@ class App:
         点按钮那次如果早就知道有新版本，会直接问「要不要打开下载页」；
         启动时那次（``silent=True``）只写日志，不弹窗打扰。
         """
-        if self._checking_update:
+        if self._checking_update or self._upgrading:
             return
         result = self._update_result
         if result is not None and not silent and getattr(result, "newer", False):
@@ -2447,7 +2481,8 @@ class App:
             self._update_result = result
         if self._update_button is not None and self._update_button.winfo_exists():
             newer = bool(result is not None and getattr(result, "newer", False))
-            self._update_button.config(text="有新版本" if newer else "检查更新")
+            if not self._upgrading:
+                self._update_button.config(text="有新版本" if newer else "检查更新")
         if result is None:
             return
         line = result.line() if hasattr(result, "line") else ""
@@ -2460,18 +2495,218 @@ class App:
             self.log(line)
 
     def _offer_download(self, result: object) -> None:
+        """发现有新版本之后：能原地升级就问一句，否则退回「打开下载页」。
+
+        能不能原地升级取决于环境（打包版、目录可写……），这些都由
+        :func:`xdao.updater.plan_upgrade` 判断，判断结果会直接说给用户听。
+        """
+        from . import updater
+
         url = getattr(result, "url", "")
         text = getattr(result, "line", lambda: "")()
+        plan = updater.plan_upgrade()
+        if plan.possible and getattr(result, "asset_url", ""):
+            size = getattr(result, "asset_size", 0)
+            size_text = f"，{size / 1024 / 1024:.1f} MB" if size else ""
+            if messagebox.askyesno(
+                "有新版本",
+                f"{text}\n\n现在下载并安装吗？{size_text}\n"
+                "会先把新版跑一遍自检，通过了才替换；旧版本仍留在原地，"
+                "万一新版起不来可以改回来。",
+            ):
+                self._start_upgrade(result)
+                return
+        elif plan.reason:
+            self.log(plan.reason)
         if not url:
             self.log(text)
             return
         if messagebox.askyesno("有新版本", f"{text}\n\n现在打开下载页吗？"):
-            try:
-                import webbrowser
+            self._open_download_page(url)
 
-                webbrowser.open(url)
-            except Exception:  # noqa: BLE001 —— 打不开浏览器就把网址写进日志
-                self.log(f"下载页：{url}")
+    def _open_download_page(self, url: str) -> None:
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 —— 打不开浏览器就把网址写进日志
+            self.log(f"下载页：{url}")
+
+    # ---------- 一键升级 ----------
+
+    def _start_upgrade(self, result: object) -> None:
+        """下载新版 → 自检 → 换文件 → 重启，四步都在后台线程里做。
+
+        每步结果用 ``_upgrade_queue`` 交回主线程：Tk 只能在主线程碰，
+        这条规矩和导出、监控、查版本那边一模一样。
+        """
+        if self._upgrading:
+            return
+        self._upgrading = True
+        if self._update_button is not None:
+            self._update_button.config(text="升级中…")
+        self.log("开始下载新版本…（下载和自检期间界面照常能用）")
+        self._upgrade_queue = queue.Queue()
+        threading.Thread(
+            target=self._upgrade_worker, args=(result, self._upgrade_queue), daemon=True
+        ).start()
+        self.root.after(120, self._poll_upgrade)
+
+    def _upgrade_worker(self, result: object, job: queue.Queue) -> None:
+        from . import updater
+
+        def progress(written: int, total: int) -> None:
+            # 有总长度就报百分比，没有就只报已下多少（服务器没给 Content-Length）
+            job.put(("progress", (written, total) if total else (written,)))
+
+        staging = updater.default_staging_root()
+        target = ""
+        try:
+            plan = updater.plan_upgrade()
+            if not plan.possible:
+                job.put(("finish", (False, plan.reason or "这个环境不能原地升级。", "")))
+                return
+            asset_url = getattr(result, "asset_url", "")
+            if not asset_url:
+                job.put(("finish", (False, "这个版本的发布里没有免安装包，只好手工下载。", "")))
+                return
+            archive = staging / "update.zip"
+            updater.download_asset(
+                asset_url, archive, proxy=updater.detect_proxy(), progress=progress
+            )
+            job.put(("note", "下载完成，正在解压…"))
+            payload = updater.extract_payload(archive, staging / "payload")
+            # zip 已经解开了，先把这十几 MB 删掉，别在用户 %TEMP% 里占着
+            updater.remove_quietly(archive)
+            job.put(("note", "正在给新版本做自检（先跑一遍再换，免得换上去打不开）…"))
+            passed, detail = updater.run_selftest(updater.payload_launcher(payload))
+            job.put(("note", detail))
+            if not passed:
+                job.put(("finish", (False, f"{detail}，这次不换，现场保持原样。", "")))
+                return
+            if result.latest is not None:
+                target = result.latest.display_version
+            decision: queue.Queue = queue.Queue()
+            job.put(("confirm", (target, decision)))
+            if not decision.get():
+                job.put(("finish", (False, "已取消升级，现场保持原样。", "")))
+                return
+            job.put(("note", "正在替换文件…"))
+            updater.spawn_helper(plan, payload)
+            self._upgrade_spawned = True
+        except Exception as exc:  # noqa: BLE001 —— 升级失败绝不能把界面带走
+            job.put(("finish", (False, f"{type(exc).__name__}: {exc}", "")))
+            return
+        finally:
+            if not self._upgrade_spawned:
+                # 没交给帮手就把暂存丢掉，别在用户 %TEMP% 里留个几十 MB 的空壳；
+                # 交给帮手的那一次不能删 —— 帮手正要用里面的新版本。
+                updater.discard_staging(staging)
+        job.put(
+            (
+                "finish",
+                (
+                    True,
+                    f"新版本 {target} 已就位，程序马上自己重启。\n"
+                    "旧版本留在原目录（名字里带 .old-），下次启动会自动清掉。",
+                    "exit",
+                ),
+            )
+        )
+
+    def _poll_upgrade(self) -> None:
+        box = getattr(self, "_upgrade_queue", None)
+        if box is None:
+            return
+        while True:
+            try:
+                kind, payload = box.get_nowait()
+            except queue.Empty:
+                self.root.after(120, self._poll_upgrade)
+                return
+            if not self._upgrade_progress(kind, payload):
+                return
+
+    def _upgrade_progress(self, kind: str, payload: object) -> bool:
+        """处理一条升级进度；返回 False 表示不再继续轮询。"""
+        if kind == "note":
+            self.log(str(payload))
+            return True
+        if kind == "progress":
+            self._upgrade_progress_text(payload)
+            return True
+        if kind == "confirm":
+            target, decision = payload  # type: ignore[misc]
+            agree = messagebox.askyesno(
+                "立刻升级",
+                f"新版本自检通过，现在就用它替换当前程序吗？\n\n"
+                f"即将换成：{target}\n"
+                "换好之后程序会自己重启。",
+            )
+            if not agree:
+                self.log("已取消升级。")
+            decision.put(bool(agree))
+            return True
+        if kind == "finish":
+            ok, message, action = payload  # type: ignore[misc]
+            self._upgrade_finish(bool(ok), str(message), str(action))
+            return False
+        return True
+
+    def _upgrade_progress_text(self, payload: object) -> None:
+        """按钮上的进度：知道总长度就写百分比，不知道就写已经下了多少 KB。"""
+        try:
+            numbers = [int(item) for item in payload]  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            return
+        if not numbers:
+            return
+        if len(numbers) >= 2 and numbers[1]:
+            written, total = numbers[0], numbers[1]
+            percent = min(100, int(written * 100 / total))
+            self._update_button_text(f"升级中 {percent}%")
+        else:
+            self._update_button_text(f"升级中 {numbers[0] // 1024} KB")
+
+    def _update_button_text(self, text: str) -> None:
+        if self._update_button is None:
+            return
+        try:
+            if not self._update_button.winfo_exists():
+                return
+            self._update_button.config(text=text)
+        except tk.TclError:
+            pass
+
+    def _upgrade_finish(self, ok: bool, message: str, action: str) -> None:
+        self._upgrading = False
+        self.log(message)
+        if not ok:
+            self._update_button_text("有新版本")
+            messagebox.showerror("升级没成功", message)
+            return
+        self._update_button_text("升级完成")
+        if action == "exit":
+            # 帮手在等我们退出：它要拿到「现场目录已经没人占用」才动手换。
+            messagebox.showinfo("升级中", message)
+            self._end_self_for_upgrade()
+
+    def _end_self_for_upgrade(self) -> None:
+        """升级交出去了，把自己彻底结束掉，好让帮手能换目录。
+
+        **不能只 `root.quit()`**：实测（`_scratch\\probe_quit_exits.py`）在
+        真机上 `quit()` 之后进程还在，哪怕当时只剩一个主线程 —— 帮手
+        `wait_for_exit` 等满 60 秒就放弃，用户看到「升级完成」但目录其实没换。
+        Tk 的退出本来就只打算结束事件循环，所以这里直接结束进程。
+
+        此刻该落的盘都已经落了（下载、解压、自检、帮手都做完了），
+        剩下要做的只有「让开位置」，没有需要慢慢收尾的东西。
+        """
+        self.log("退出程序，把位置让给新版本…")
+        try:
+            self.root.quit()
+        finally:
+            os._exit(0)
 
     def choose_folder(self) -> None:
         chosen = filedialog.askdirectory(
@@ -2489,8 +2724,6 @@ class App:
             return
         Path(folder).mkdir(parents=True, exist_ok=True)
         try:
-            import os
-
             os.startfile(folder)  # type: ignore[attr-defined]
         except Exception:
             messagebox.showinfo("目录", folder)

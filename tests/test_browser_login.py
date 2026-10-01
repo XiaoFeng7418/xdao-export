@@ -834,6 +834,93 @@ def test_start_reads_the_port_file_and_hides_the_console_window(
         assert created[0].kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
         assert created[0].kwargs["stdin"] == subprocess.DEVNULL
         assert created[0].kwargs["stdout"] == subprocess.DEVNULL
+        assert browser.profile_note == "", "第一次就起来了，不该说换了目录"
+
+
+def test_fallback_profile_dirs_are_fresh_and_not_the_original(artifacts_dir: Path) -> None:
+    """备用目录不能就是原来那个，也不能互相重复。"""
+    profile = artifacts_dir / "browser-profile"
+    options = bl.fallback_profile_dirs(profile)
+
+    assert options, "至少要给一个备用目录"
+    assert profile not in options
+    assert len(set(options)) == len(options)
+    assert all(Path(option) != profile for option in options)
+
+
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_profile_failure_recognises_permission_and_lock(winerror: int) -> None:
+    """只有「拒绝访问 / 被占用」才值得换目录重试。"""
+    assert bl._profile_failure(OSError(13, "拒绝访问", None, winerror))
+
+
+def test_profile_failure_sees_through_the_wrapped_error() -> None:
+    """启动失败是包成 CdpError 抛的，藏在里面那个错也得认出来。"""
+    cause = OSError(13, "拒绝访问。", "profile", 5)
+    try:
+        try:
+            raise cause
+        except OSError as exc:
+            raise bl.BrowserLoginError(f"启动 Edge 失败：{exc}") from exc
+    except bl.BrowserLoginError as wrapped:
+        assert bl._profile_failure(wrapped), "外面这层是壳，里面才是真原因"
+
+
+def test_profile_failure_ignores_other_errors() -> None:
+    assert not bl._profile_failure(OSError(2, "找不到文件", None, 2))
+    assert not bl._profile_failure(RuntimeError("跟目录无关"))
+
+
+def test_start_switches_profile_when_the_config_one_is_not_writable(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真机上的样子：配置目录里的 profile 一碰就是 WinError 5。
+
+    这时必须换一个目录再试，而不是让用户对着「打开浏览器失败」反复点。
+    """
+    profile = artifacts_dir / "browser-profile"
+    refused = profile / "DevToolsActivePort"
+    created: list[Path] = []
+
+    def fake_popen(args: list[str], **kwargs: object) -> _PortWritingPopen:
+        chosen = Path(
+            next(a.split("=", 1)[1] for a in args if a.startswith("--user-data-dir="))
+        )
+        created.append(chosen)
+        if chosen == profile:
+            raise OSError(13, "拒绝访问。", str(refused), 5)
+        return _PortWritingPopen(args, **kwargs)
+
+    monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    info = bl.BrowserInfo("Edge", "msedge.exe")
+    with bl.LoginBrowser(info, profile, timeout=5.0) as browser:
+        assert browser.port == 9333
+        assert created[0] == profile, "该先试配置目录里那个"
+        assert created[1] != profile, "被拒之后要换一个目录"
+        assert browser.profile_note, "换了目录得留下话，好让界面说清楚"
+        assert str(created[1]) in browser.profile_note
+
+
+def test_start_still_reports_a_real_failure(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """浏览器本身起不来（不是目录问题）时，别重试，直接把错报上去。"""
+    profile = artifacts_dir / "browser-profile"
+    attempts: list[Path] = []
+
+    def fake_popen(args: list[str], **kwargs: object) -> _PortWritingPopen:
+        chosen = Path(
+            next(a.split("=", 1)[1] for a in args if a.startswith("--user-data-dir="))
+        )
+        attempts.append(chosen)
+        raise OSError(2, "系统找不到指定的文件。", args[0], 2)
+
+    monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    info = bl.BrowserInfo("Edge", "msedge.exe")
+    browser = bl.LoginBrowser(info, profile, timeout=5.0)
+    with pytest.raises(bl.BrowserLoginError):
+        browser.start()
+    assert attempts == [profile], "跟目录无关的错不该换目录重试"
 
 
 class _StubbornProcess:
@@ -1102,6 +1189,7 @@ def test_library_only_imports_the_standard_library() -> None:
         "socket",
         "struct",
         "subprocess",
+        "tempfile",
         "threading",
         "time",
         "urllib",

@@ -60,6 +60,7 @@ _CONSOLE_HINT_FLAGS = {
     "--offline",
     "--check-update",
     "--check-update-json",
+    "--apply-update",
     "--no-cache",
     "--no-notify",
     "--cache-dir",
@@ -161,6 +162,31 @@ def check_update(json_output: bool = False) -> int:
     else:
         print(result.line())
     return 0
+
+
+def apply_update(argv: list[str]) -> int:
+    """升级帮手模式：等老进程退出 → 换上新版本 → 启动它。
+
+    这不是给用户用的命令，是界面点「立即升级」后，程序叫醒「另一个自己」
+    时带的内部开关（见 :func:`xdao.updater.spawn_helper`）。
+    """
+    from xdao import updater
+
+    if len(argv) != 4:
+        print("--apply-update 需要四个参数：目标目录 新版本目录 老进程号 启动程序路径", file=sys.stderr)
+        return 2
+    target, payload, pid_text, launcher = argv
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        print("--apply-update 的进程号不是数字。", file=sys.stderr)
+        return 2
+    return updater.apply_update(
+        Path(target).resolve(),
+        Path(payload).resolve(),
+        pid,
+        Path(launcher).resolve(),
+    )
 
 
 def _pdf_value_help(table_name: str) -> str:
@@ -380,6 +406,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-update-json",
         action="store_true",
         help="配 --check-update 用：结果按 JSON 输出",
+    )
+    parser.add_argument(
+        "--apply-update",
+        nargs=4,
+        metavar=("目标目录", "新版本目录", "老进程号", "启动程序"),
+        help=argparse.SUPPRESS,  # 内部开关：界面点「立即升级」后由另一个自己执行
     )
     parser.add_argument(
         "--pdfdiag",
@@ -730,6 +762,10 @@ def _watch_list_command(args) -> int | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.apply_update:
+        # 内部开关，排在最前面：这是「另一个自己」被叫醒来换文件，别的都不用管。
+        return apply_update(list(args.apply_update))
 
     if args.offline and (args.check_update or args.check_update_json):
         # 「只查本机」和「问一次 GitHub」是矛盾的，别让用户以为没联网。

@@ -50,10 +50,17 @@ class UpdateCheckError(RuntimeError):
 
 @dataclass
 class ReleaseInfo:
-    """一个已发布的版本。"""
+    """一个已发布的版本。
+
+    ``asset_url`` 是免安装包（zip）的直链，有它才能做「一键升级」；
+    老接口、老缓存里没有这个字段时是空串，此时只能去下载页手工下。
+    """
 
     tag: str
     url: str = ""
+    asset_url: str = ""
+    asset_name: str = ""
+    asset_size: int = 0
 
     @property
     def version(self) -> tuple[int, int, int]:
@@ -87,6 +94,19 @@ class UpdateResult:
     def url(self) -> str:
         return self.latest.url if self.latest else f"https://github.com/{REPO}/releases/latest"
 
+    @property
+    def asset_url(self) -> str:
+        """免安装包直链（没有就是空串，只能手工下）。"""
+        return self.latest.asset_url if self.latest else ""
+
+    @property
+    def asset_name(self) -> str:
+        return self.latest.asset_name if self.latest else ""
+
+    @property
+    def asset_size(self) -> int:
+        return self.latest.asset_size if self.latest else 0
+
     def line(self) -> str:
         """一行中文结论（界面日志与命令行共用）。"""
         if not self.ok:
@@ -107,6 +127,9 @@ class UpdateResult:
                 "有没有新的": self.newer,
                 "最新版本": self.latest_version,
                 "下载页": self.url,
+                "升级包": self.asset_url,
+                "升级包名字": self.asset_name,
+                "升级包字节数": self.asset_size,
                 "说明": self.reason,
                 "来自缓存": self.from_cache,
             },
@@ -238,10 +261,17 @@ def read_cache(path: Path | None = None) -> dict[str, Any] | None:
     return payload
 
 
-def write_cache(tag: str, url: str, path: Path | None = None) -> None:
+def write_cache(
+    tag: str, url: str, path: Path | None = None, *, asset_url: str = ""
+) -> None:
     """记一笔。写不进去就算了 —— 不该因为记不住而报错。"""
     target = path or cache_path()
-    payload = {"tag": str(tag), "url": str(url), "checked_at": time.time()}
+    payload = {
+        "tag": str(tag),
+        "url": str(url),
+        "asset_url": str(asset_url),
+        "checked_at": time.time(),
+    }
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -252,6 +282,43 @@ def write_cache(tag: str, url: str, path: Path | None = None) -> None:
 
 
 # ---------------------------------------------------------------- 问接口
+
+
+def _pick_asset(payload: Any, tag: str) -> tuple[str, str, int]:
+    """从 Release 的 assets 里挑出免安装包，返回 ``(直链, 名字, 字节数)``。
+
+    挑法有两步：先按标签算出「应该叫什么」（``v0.12.0`` → ``xdao-export-v0.12.0-win64.zip``），
+    精确命中就用它；算不出来或者名字对不上，就退而求其次拿第一个 zip。
+    挑不到就返回三个空值 —— 上层会退化成「打开下载页」。
+    """
+    if not isinstance(payload, list):
+        return ("", "", 0)
+    candidates: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        link = str(item.get("browser_download_url") or "")
+        if not name or not link:
+            continue
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        candidates.append({"name": name, "url": link, "size": size})
+    if not candidates:
+        return ("", "", 0)
+    cleaned = (tag or "").strip()
+    if cleaned[:1] in ("v", "V"):
+        cleaned = cleaned[1:]
+    wanted = f"xdao-export-v{cleaned}-win64.zip" if cleaned else ""
+    for item in candidates:
+        if wanted and item["name"] == wanted:
+            return (item["url"], item["name"], item["size"])
+    for item in candidates:
+        if item["name"].lower().endswith(".zip"):
+            return (item["url"], item["name"], item["size"])
+    return ("", "", 0)
 
 
 def fetch_latest(proxy: str = "", timeout: float = TIMEOUT_SECONDS) -> ReleaseInfo:
@@ -293,7 +360,14 @@ def fetch_latest(proxy: str = "", timeout: float = TIMEOUT_SECONDS) -> ReleaseIn
     url = str(payload.get("html_url") or "").strip()
     if not url:
         url = f"https://github.com/{REPO}/releases/tag/{tag}"
-    return ReleaseInfo(tag=tag, url=url)
+    asset_url, asset_name, asset_size = _pick_asset(payload.get("assets"), tag)
+    return ReleaseInfo(
+        tag=tag,
+        url=url,
+        asset_url=asset_url,
+        asset_name=asset_name,
+        asset_size=asset_size,
+    )
 
 
 # ---------------------------------------------------------------- 对外入口
@@ -318,6 +392,7 @@ def check_for_update(
                 str(cached.get("url") or ""),
                 current,
                 reason="（24 小时内问过）",
+                asset_url=str(cached.get("asset_url") or ""),
             )
             result.from_cache = True
             return result
@@ -335,16 +410,36 @@ def check_for_update(
         return UpdateResult(ok=False, current=current, reason=f"{type(exc).__name__}: {exc}")
     if not isinstance(info, ReleaseInfo) or not info.tag:
         return UpdateResult(ok=False, current=current, reason="接口没给出可用的版本号")
-    write_cache(info.tag, info.url, target)
-    return _result_from_tag(info.tag, info.url, current)
+    write_cache(info.tag, info.url, target, asset_url=info.asset_url)
+    return _result_from_tag(
+        info.tag,
+        info.url,
+        current,
+        asset_url=info.asset_url,
+        asset_name=info.asset_name,
+        asset_size=info.asset_size,
+    )
 
 
 def _result_from_tag(
-    tag: str, url: str, current: str, *, reason: str = ""
+    tag: str,
+    url: str,
+    current: str,
+    *,
+    reason: str = "",
+    asset_url: str = "",
+    asset_name: str = "",
+    asset_size: int = 0,
 ) -> UpdateResult:
     if not tag:
         return UpdateResult(ok=False, current=current, reason=reason or "没有版本号")
-    info = ReleaseInfo(tag=tag, url=url)
+    info = ReleaseInfo(
+        tag=tag,
+        url=url,
+        asset_url=asset_url,
+        asset_name=asset_name,
+        asset_size=asset_size,
+    )
     return UpdateResult(
         ok=True,
         newer=is_newer(tag, current),
