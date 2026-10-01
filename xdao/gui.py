@@ -475,6 +475,17 @@ BROWSER_LOGIN_TIMEOUT = 300.0
 BROWSER_START_TIMEOUT = 30.0
 # 主线程消费消息队列的间隔（毫秒），跟本文件其它对话框保持一致。
 BROWSER_UI_POLL_MS = 150
+# 饼干读到了、可 X 岛说这个登录不认时往界面上写的话。
+# 为什么要单独写一句：那种饼干多半是**上一次登录留在浏览器资料目录里的**，
+# 用户看着登录窗口里自己明明登进去了，程序却报「登录成功」并关窗 ——
+# 到时候导出全是失败，比当场说清楚难查得多。
+BROWSER_STALE_COOKIE_MESSAGE = (
+    "浏览器里那块 userhash 饼干 X 岛不认（多半是上一次留下的旧饼干，"
+    "也可能这个账号还没在「饼干」页领过）。请在浏览器窗口里重新登录一次；"
+    "要是还不行，就去 X 岛用户系统 →「饼干」→ 领取并应用一块饼干。"
+)
+# 验饼干这步撞上网络问题（不是「不认」）时说的话：请求本身没成，值得再试一次。
+BROWSER_VERIFY_FAILED_MESSAGE = "没法确认这个登录还算不算数（{detail}）。稍等一下，程序会接着试。"
 
 
 def _load_browser_login():
@@ -497,6 +508,36 @@ def _find_login_browser(settings: AppSettings | None = None) -> object:
     backend = _load_browser_login()
     explicit = (settings or AppSettings.load()).pdf_browser
     return backend.find_browser(explicit or None)
+
+
+def verify_userhash_live(client, userhash: str) -> str | None:
+    """问一句 X 岛：这块饼干现在还算数吗？
+
+    返回 ``None`` 表示能用；返回一句话表示不能用（那句话直接写给用户看）。
+
+    为什么非得问：浏览器里的 userhash 可能来自上一次登录（浏览器资料目录是留着的），
+    也可能这个账号压根没在「饼干」页领过。这两种情况拿它去取串都取不到，
+    可只看 cookie 是看不出来的 —— 必须让服务端表态。
+
+    做法是拿这块饼干去请一次用户系统里的「饼干」页：没登录或饼干不认时，
+    X 岛会把请求弹回登录页（真机实测：``_request_following_jumps`` 返回的
+    ``final_url`` 落在 ``Member/User/Index/login.html``），认的时候才会停在饼干
+    列表页。只读一次页面，不发任何写操作。
+    """
+    index_url = f"{client.SITE}/Member/User/Cookie/index.html"
+    # 自己把饼干放进客户端再问：不留「调用方得先 import 一次」这种暗规矩 ——
+    # 漏了那一步的话，问出去的是**另一个身份**，结论就反了（假饼干反而说能用）。
+    client.import_userhash(userhash)
+    try:
+        raw, final_url = client._request_following_jumps(index_url, timeout=15.0)
+    except Exception as exc:  # noqa: BLE001 —— 网络这类问题算「没验成」，下一轮再试
+        return BROWSER_VERIFY_FAILED_MESSAGE.format(detail=str(exc)[:120])
+    if "login" in final_url:
+        return BROWSER_STALE_COOKIE_MESSAGE
+    text = raw.decode("utf-8", "replace")
+    if "login" in client.jump_page_url(text):
+        return BROWSER_STALE_COOKIE_MESSAGE
+    return None
 
 
 class BrowserLoginDialog(tk.Toplevel):
@@ -855,6 +896,8 @@ class BrowserLoginDialog(tk.Toplevel):
 
         deadline = time.monotonic() + BROWSER_LOGIN_TIMEOUT
         next_leaf = time.monotonic() + BROWSER_LEAF_SECONDS
+        verified: str | None = None  # 已经验过、当场就认的饼干：别每一轮都去问一遍
+        said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -865,9 +908,24 @@ class BrowserLoginDialog(tk.Toplevel):
                 if not value and time.monotonic() >= next_leaf:
                     next_leaf = time.monotonic() + BROWSER_LEAF_SECONDS
                     value = self._try_leaf_cookie(backend, session)
-                if value:
-                    self._queue.put(("ok", value))
-                    return
+                if value and value != verified:
+                    # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
+                    # 上一回登录的旧饼干还躺在里面，会话早就过期了。不验一下就会
+                    # 「界面说登录成功、导出却全是未登录」—— 用户报的就是这个。
+                    # verify_userhash_live 自己会把这块饼干装进客户端再问服务端。
+                    note = verify_userhash_live(self.client, value)
+                    if note is None:
+                        verified = value
+                        if value != self.client.import_userhash(value):
+                            # 理论上到不了；真到了说明客户端把值改了，宁可再等一轮，
+                            # 也不能把一个来路不明的值当成功。
+                            verified = None
+                            continue
+                        self._queue.put(("ok", value))
+                        return
+                    if note and not said_dead:
+                        said_dead = True
+                        self._queue.put(("note", note))
             except Exception as exc:
                 self._queue.put(("error", f"读取浏览器饼干失败：{exc}"))
                 return
@@ -885,7 +943,11 @@ class BrowserLoginDialog(tk.Toplevel):
 
     @staticmethod
     def _read_userhash(backend, session) -> str | None:
-        """从 CDP 读到的饼干里挑出 userhash；没有就返回 None。"""
+        """从 CDP 读到的饼干里挑出 userhash；没有就返回 None。
+
+        只负责「挑出来」，**不代表这个登录还能用** —— 这块饼干来自浏览器的
+        资料目录，可能是上一次留下的。能不能用由 :func:`verify_userhash_live` 问服务端。
+        """
         for cookie in session.read_cookies():
             if not isinstance(cookie, dict) or cookie.get("name") != "userhash":
                 continue
