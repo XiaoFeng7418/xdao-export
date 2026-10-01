@@ -14,7 +14,7 @@
    ```
 
    每一项都要 ✓ 才算健康（工具在结尾自己报「共 N 项检查」）。它检查：仓库设置、提交同步、文件逐一致、
-   版本号一致、Release 附件齐全、待办积压。
+   工作区干净（有没提交的改动时只警告，退出码仍是 0）、版本号一致、Release 附件齐全、待办积压。
 
 2. **跑测试**（必须全绿；跳过的那几项都要显式开关，见 `HANDOFF.md` 的第二节）
 
@@ -27,6 +27,8 @@
    | 告警 | 处理方式 |
    |---|---|
    | 本地有提交未推送 | `git push origin main:refs/heads/master`（优先；代理不可用时才用 `tools/push_via_api.py`） |
+   | 工作区有没提交的改动 | 先提交（或先 stash）；「本地 HEAD = 远端」说的只是提交，不含工作区 |
+   | ✗ 读不到 `xdao.__version__` / 本地树是空的 | 这不是「没问题」而是**没查成**：照报错里的原始信息查，别当成体检通过 |
    | 描述与代码里的导出格式不一致 | `& $py -X utf8 tools/repo_info.py --repo XiaoFeng7418/xdao-export --apply` |
    | 话题缺少 xxx | 同上（一条命令同时修描述与话题） |
    | 版本号与 Release 不一致 | 升 `xdao/__init__.py` 的版本号 → 打包 → 发新 Release |
@@ -296,6 +298,12 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    `EF BB BF EF BB BF`，一路进了 zip）；②同一个文件里 CRLF 与裸 LF 不许混用；
    ③`packaging/使用说明.txt`、`诊断写入.ps1`、`诊断写入-双击运行.cmd` 必须**保留**开头那一个
    BOM（记事本认 BOM 中文才不乱码；PowerShell 5.1 读不带 BOM 的脚本会当 ANSI 解）。
+   **体检工具自己也有用例兜着**（2026-10-02 补上）：`tests/test_repo_check.py` 给
+   `tools/repo_check.py` 喂一份假 API（`gh_token` / `request_json` / `local_commits` / `local_tree` /
+   `worktree_changes` 全换成测试自己的），专盯「读不到东西时照样印没问题」这一类 —— 读不到
+   `xdao.__version__` 时不许再补一句「与最新 Release 一致」（旧写法同一件事既报错又说没问题）；
+   `git ls-tree` 读空时不许说「逐文件一致（0 个文件）」，只能说「这一项没查成」；工作区有没提交的
+   改动时要在结论里露出来（只警告，退出码仍是 0）。三处都注入验过：退回旧写法，用例立刻红。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
