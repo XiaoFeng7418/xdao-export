@@ -57,7 +57,10 @@
 Set-Location '<仓库目录>'
 $py = '<本机 Python>\python.exe'
 
-# 1) 改版本号（xdao/__init__.py），跑测试
+# 1) 改版本号：四处一起改 —— xdao/__init__.py 的注释与 __version__、README.md 的
+#    「最新版」那句与附件名、packaging/使用说明.txt 第 1 行与「本版版本号」、
+#    docs/RELEASE_NOTES_vX.Y.Z.md（新写一份）。然后跑测试：
+#    tests/test_version_consistency.py 会把这四处逐一对一遍，漏改一处就红。
 & $py -X utf8 -m pytest -q
 
 # 2) 打包（只打 onedir 免安装包；单文件版自 v0.5.1 起不再提供 —— 它的启动器在
@@ -86,12 +89,16 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 # 6) 发布
 & $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag vX.Y.Z `
     --name "vX.Y.Z：..." --notes-file docs/RELEASE_NOTES_vX.Y.Z.md `
-    --asset '<盘符>\xdao-export-vX.Y.Z-win64.zip' `
-    --asset 'dist\xdao-export-vX.Y.Z.exe'
+    --asset '<盘符>\xdao-export-vX.Y.Z-win64.zip'   # 只有这一个附件
 
 # 7) 收尾：确认体检全绿
 & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
 ```
+
+只动测试与维护文档（`tests/**`、`MAINTENANCE.md`、`HANDOFF.md`）时**不必发版**：免安装包里
+没有这些文件，包内容与上一版逐字节一样，硬发一版只是噪音。**一旦改到会进包的东西**
+（`main.py`、`xdao/**`、`packaging/使用说明.txt` 以及其它随包文件），版本号与 Release 都要
+跟上；反过来说，也不能只改版本号不发版 —— CI 在 tag 上比 `__version__` 与最新 Release。
 
 ## 发布说明结尾要写「附件」段
 
@@ -238,6 +245,12 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    露过面。加开关忘了写文档、文档里留着早就删掉的开关，都红在这两条上。当时一次都没被
    提到过的开关有五个：`--cache-dir`、`--verify`、`--image-mode`、`--pdf-timeout`、
    `--pdf-margin-mm`，已经补进「功能速览」和 PDF 那一节。
+   **版本号也有机器把关**（2026-10-02 补上）：`tests/test_version_consistency.py` 拿
+   `xdao.__version__` 当唯一事实来源，把四处**纯文本**逐一对一遍 —— `xdao/__init__.py`
+   那句注释；`README.md` 的「最新版 **vX**」与附件表里的 zip 名；`packaging/使用说明.txt`
+   的第 1 行与最上面那条「- 本版版本号：」；`docs/RELEASE_NOTES_vX.md` 得存在、标题是
+   `# vX…`、并且写明附件叫什么。CI 里那个 job 只比 tag 与 `__version__`，文档侧以前没人管。
+
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
    被测试替换过、`save` 没有，结果是把**真实的
