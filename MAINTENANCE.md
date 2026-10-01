@@ -434,6 +434,8 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.1**：补丁版。①升级换完文件后不再弹「升级中」模态框（它会一直等用户点确定，而帮手只等 60 秒，点慢一拍升级就白换）；②`browser_login._profile_failure` 除 Windows 的 5/32 之外也认 POSIX 的 `EACCES`/`EBUSY`（CI 从两条 ubuntu 矩阵变绿）。
+
 - **一键升级**（v0.13.0）：新增 `xdao/updater.py` 与 `main.py --apply-update`。点「有新版本」
   按钮后：下载到 `%TEMP%\xdao-export-update`（`download_asset`，有大小上限、
   失败清半个文件）→ `extract_payload` 只认顶层 `xdao-export-v*` 目录并挡越界路径 →
