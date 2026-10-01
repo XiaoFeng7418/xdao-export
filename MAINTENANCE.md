@@ -93,7 +93,18 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 
 # 7) 收尾：确认体检全绿
 & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
+
+# 8) 再验一次「旧版能不能看见这个新包」：拿上一版的打包 exe 跑更新检查
+& '<盘符>\xdao-export-v<上一版的版本号>\xdao-export-v<上一版的版本号>-win64\xdao-export.exe' --check-update-json
+#    应当看到刚发的版本、升级包地址指向刚上传的附件、字节数一致；源码版再跑一次
+#    `main.py --check-update`，应当回「已是最新版本」。
 ```
+
+上面第 8 步值得单独跑：它验的是**用户那台机器上已经装着的旧版**能不能看见新包，
+`repo_check` 只验远端仓库与附件、验不到这条路。2026-10-02 实测：v0.13.17 的打包 exe 跑
+`--check-update-json` 得到「最新版本 v0.13.18」、升级包地址指向
+`xdao-export-v0.13.18-win64.zip`、字节数 12040398 与刚上传的附件完全一致；同一时刻源码版
+（0.13.18）回「已是最新版本（0.13.18）」。
 
 只动测试与维护文档（`tests/**`、`MAINTENANCE.md`、`HANDOFF.md`）时**不必发版**：免安装包里
 没有这些文件，包内容与上一版逐字节一样，硬发一版只是噪音。**一旦改到会进包的东西**
