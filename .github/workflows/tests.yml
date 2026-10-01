@@ -2,9 +2,12 @@ name: tests
 
 # 每次推送与 PR 都跑一遍离线单元测试。
 # 用例本身不联网（全部用测试替身），因此 runner 不需要任何凭据。
+# 标签也要匹配：`version-consistency` 那个 job 只在 `refs/tags/v*` 上跑，
+# 只写 branches 的话它永远等不到触发条件（v0.13.0 那次就是手动补跑的）。
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
