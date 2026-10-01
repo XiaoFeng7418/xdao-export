@@ -488,6 +488,17 @@ def _load_browser_login():
     return browser_login
 
 
+def _find_login_browser(settings: AppSettings | None = None) -> object:
+    """按界面上那个「PDF 浏览器」决定用哪个浏览器登录，找不到返回 ``None``。
+
+    留空时 :func:`find_browser` 自己会先认系统默认浏览器（v0.13.3 起），
+    再按 Edge → Chrome 的顺序找；填了路径就用填的那个。
+    """
+    backend = _load_browser_login()
+    explicit = (settings or AppSettings.load()).pdf_browser
+    return backend.find_browser(explicit or None)
+
+
 class BrowserLoginDialog(tk.Toplevel):
     """「用浏览器登录」：开一个独立浏览器窗口，程序在旁边等着取饼干。
 
@@ -518,6 +529,8 @@ class BrowserLoginDialog(tk.Toplevel):
         self._thread: threading.Thread | None = None
         self._browser = None  # backend.LoginBrowser，启动后才有
         self._session = None
+        # 「这次用哪个浏览器」的那行人话（定下来之后才显示），见 _set_browser_note。
+        self._browser_note = ""
         self._ui_job: str | None = None
         self._closing = False
 
@@ -550,6 +563,21 @@ class BrowserLoginDialog(tk.Toplevel):
             anchor="w",
             wraplength=420,
         ).pack(fill="x", pady=(theme.gap(2), 0))
+
+        # 「这次用哪个浏览器」：定下来之前这行是空的，定下来才填上（见 _set_browser_note）。
+        # 常有人把系统默认浏览器改成 Chrome、实际打开的却还是 Edge（改设置没落地、
+        # 或者程序在用备用的那个），当场把名字写出来能省掉一轮来回。
+        self.browser_note_var = tk.StringVar(value="")
+        tk.Label(
+            card.body,
+            textvariable=self.browser_note_var,
+            bg=CARD,
+            fg=MUTED,
+            font=SMALL_FONT,
+            justify="left",
+            anchor="w",
+            wraplength=420,
+        ).pack(fill="x", pady=(theme.gap(1), 0))
 
         self.status_var = tk.StringVar(value="正在准备…")
         ttk.Label(
@@ -585,6 +613,14 @@ class BrowserLoginDialog(tk.Toplevel):
 
     def _set_status(self, text: str) -> None:
         self.status_var.set(text)
+
+    def _set_browser_note(self, text: str) -> None:
+        """把「这次用哪个浏览器」写上界面（主线程调；后台线程只投队列）。"""
+        self._browser_note = text
+        try:
+            self.browser_note_var.set(text)
+        except tk.TclError:  # pragma: no cover - 窗口已经销毁
+            pass
 
     def start(self) -> None:
         """打开浏览器并开始等饼干；已经在跑时重复调用没有副作用。"""
@@ -627,6 +663,9 @@ class BrowserLoginDialog(tk.Toplevel):
                 return
             if kind == "ready":
                 self._set_status(str(payload))
+                continue
+            if kind == "browser":  # 这次用哪个浏览器（定下来之后才来）
+                self._set_browser_note(str(payload))
                 continue
             if kind == "note":  # 只是提醒一句（比如没能自动把窗口切到登录页），别当失败
                 current = self.status_var.get()
@@ -747,7 +786,9 @@ class BrowserLoginDialog(tk.Toplevel):
             )
             return
         try:
-            info = backend.find_browser()
+            # 「这次用哪个浏览器」由设置里那个路径决定（留空时才自动挑），
+            # 和 PDF 导出用的是同一个设置 —— 两边不一致最让人糊涂。
+            info = _find_login_browser(self.settings)
         except Exception as exc:
             self._queue.put(("error", f"没能找到浏览器：{exc}"))
             return
@@ -756,6 +797,7 @@ class BrowserLoginDialog(tk.Toplevel):
                 ("error", "没找到 Edge 或 Chrome。请先装一个，或者改用「直接粘贴饼干登录」。")
             )
             return
+        self._queue.put(("browser", f"这次用 {info.name} 打开（{info.path}）。"))
         if self._stop.is_set():  # 找浏览器的功夫里用户已经取消了，别再多开一个进程
             return
         try:
@@ -1075,7 +1117,8 @@ class SettingsDialog(tk.Toplevel):
         ).pack(side="left", padx=(theme.gap(1), 0))
         ttk.Label(
             export,
-            text="导出 PDF 时调用的浏览器（无头模式渲染）。留空表示自动查找 Chrome 或 Edge。",
+            text="导出 PDF 和「用浏览器登录」时调用的浏览器（PDF 用无头模式渲染）。"
+            "留空表示跟随系统默认浏览器，认不出来再找 Chrome 或 Edge。",
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",

@@ -247,13 +247,14 @@ def install_browser_shim(monkeypatch, artifacts_dir):
         monkeypatch.setattr(browser_login, "subprocess", shim)
         monkeypatch.setattr(browser_login, "CDPSession", _FakeSession)
         # find_browser 走真实现，只是把候选换成一个真实存在的假可执行文件。
+        # explicit 原样传下去：界面层现在会把设置里那个「PDF 浏览器」交给它。
         exe = Path(artifacts_dir) / "msedge.exe"
         exe.write_bytes(b"")
         real_find = browser_login.find_browser
         monkeypatch.setattr(
             browser_login,
             "find_browser",
-            lambda explicit=None, env=None: real_find(explicit=str(exe)),
+            lambda explicit=None, env=None: real_find(explicit=explicit or str(exe)),
         )
         fake = [browser_login.BrowserInfo(name="Edge", path=str(exe))]
         if other_browser:
@@ -264,8 +265,13 @@ def install_browser_shim(monkeypatch, artifacts_dir):
                     name=browser_login._guess_name(second), path=str(second)
                 )
             )
+        # 和真实现一样把传进来的那个排最前：界面可能给一个不在候选表里的路径
+        # （设置里手动指定的浏览器），此时「当前这个」必须是它，否则用例会
+        # 误以为库自己换了浏览器。
         monkeypatch.setattr(
-            browser_login, "browser_candidates", lambda info=None, env=None: fake
+            browser_login,
+            "browser_candidates",
+            lambda info=None, env=None: ([info] if info is not None else []) + fake,
         )
         return shim
 
@@ -292,6 +298,14 @@ def open_dialog(root_window, artifacts_dir):
 
     factory.client = client  # type: ignore[attr-defined]
     factory.settings = settings  # type: ignore[attr-defined]
+    # 先在产物目录里放一个假浏览器、写进设置，再开对话框：界面层会拿它当「手动指定」。
+    def set_explicit_browser(name: str = "chrome.exe") -> Path:
+        exe = Path(artifacts_dir) / name
+        exe.write_bytes(b"")
+        settings.pdf_browser = str(exe)
+        return exe
+
+    factory.set_explicit_browser = set_explicit_browser  # type: ignore[attr-defined]
     yield factory
     for dialog in created:
         try:
@@ -373,6 +387,34 @@ def test_start_opens_the_browser_and_returns_the_userhash(
     assert browser_shim.processes, "浏览器进程没有被启动过"
     assert all(process.returncode is not None for process in browser_shim.processes)
     assert browser_shim.processes[-1].terminated
+
+
+def test_browser_note_tells_the_user_which_browser_will_open(
+    root_window, browser_shim, open_dialog
+):
+    """窗口上要当场写清「这次用哪个浏览器」—— 用户改了系统默认却仍打到 Edge，多半是这里没看见。"""
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    note = dialog.browser_note_var.get()
+    assert "Edge" in note, note
+    assert "msedge.exe" in note, note
+
+
+def test_explicit_browser_in_the_settings_is_the_one_that_gets_used(
+    root_window, install_browser_shim, open_dialog
+):
+    """设置里手动指定了浏览器就用它 —— 这条以前只对 PDF 导出生效，浏览器登录还在自己挑。"""
+    shim = install_browser_shim()
+    chosen = open_dialog.set_explicit_browser()  # type: ignore[attr-defined]
+
+    dialog = open_dialog()
+    # 认这次自己的会话（_FakeSession.instances 里还留着上一条用例的），
+    # 它一连上就说明「用哪个浏览器」已经定下来了。
+    assert _wait_for(root_window, lambda: dialog._session is not None), "浏览器没起来"
+    assert dialog._browser is not None
+    assert Path(dialog._browser.info.path) == chosen
+    assert f"这次用 {dialog._browser.info.name} 打开" in dialog.browser_note_var.get()
+    assert shim.processes, "浏览器进程没有被启动过"
 
 
 def test_closing_the_window_stops_the_thread_the_session_and_the_browser(
