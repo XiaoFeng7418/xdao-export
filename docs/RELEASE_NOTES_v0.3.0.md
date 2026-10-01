@@ -9,9 +9,9 @@
 - 页眉页脚已关闭，直接沿用网页版的打印样式，适合归档和打印。
 
 ```powershell
-python main.py 67024789 -f pdf -o D:\备份
+python main.py 50000001 -f pdf -o D:\备份
 # 自动找浏览器；也可以显式指定
-python main.py 67024789 -f pdf --pdf-browser "C:\Program Files\Google\Chrome\Application\chrome.exe"
+python main.py 50000001 -f pdf --pdf-browser "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
 实测：33 页 / 626 楼 / 269 张图的长串导出为 **408 页 / 157.9 MB** 的 PDF，字体与图片均已内嵌。

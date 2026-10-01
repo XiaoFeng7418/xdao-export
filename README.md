@@ -364,30 +364,31 @@ python main.py
 
 ```powershell
 # 导出单个/多个串
-python main.py 67024789 -f markdown -o D:\备份
-python main.py https://www.nmbxd1.com/t/67024789 https://www.nmbxd1.com/t/68811943 -f epub
+# （例子里的 50000001 是 X岛官方的测试串；12345678 是编出来的占位编号，不是真实串）
+python main.py 50000001 -f markdown -o D:\备份
+python main.py https://www.nmbxd1.com/t/50000001 https://www.nmbxd1.com/t/12345678 -f epub
 
 # 导出 PDF（需要本机装有 Chrome 或 Edge）
-python main.py 67024789 -f pdf -o D:\备份
-python main.py 67024789 -f pdf --pdf-browser "C:\Program Files\Google\Chrome\Application\chrome.exe"
+python main.py 50000001 -f pdf -o D:\备份
+python main.py 50000001 -f pdf --pdf-browser "C:\Program Files\Google\Chrome\Application\chrome.exe"
 
 # 只导出发串人的发言
-python main.py 67024789 --scope po
+python main.py 50000001 --scope po
 
 # 只看指定饼干（多个用逗号或空格分隔）
-python main.py 67024789 --hashes abc123,def456
+python main.py 50000001 --hashes abc123,def456
 
 # 文件名模板
-python main.py 67024789 --template "[{id}] {title}"
+python main.py 50000001 --template "[{id}] {title}"
 
 # 忽略缓存，完整重抓
-python main.py 67024789 --no-cache
+python main.py 50000001 --no-cache
 
 # 监控：每 10 分钟检查一次，有新回复就导出（默认弹桌面通知）
-python main.py 67024789 68811943 --watch --interval 600 -f html
+python main.py 50000001 12345678 --watch --interval 600 -f html
 
 # 监控但不要桌面通知
-python main.py 67024789 --watch --no-notify
+python main.py 50000001 --watch --no-notify
 
 # 自检：先查本机环境（配置/缓存/导出目录、浏览器、导出格式），再测接口
 python main.py --selftest

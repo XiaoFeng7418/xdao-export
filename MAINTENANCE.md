@@ -132,7 +132,7 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
 
 ### 盘点本仓改动用 `git status --porcelain`
 
-`_scratch` 在 `D:\小玩意\_scratch\...` 下（不在仓库里），所以拿改动清单去扫文本、
+`_scratch` 在 `<工作目录>\_scratch\...` 下（不在仓库里），所以拿改动清单去扫文本、
 查行尾、查 BOM 时，要把 `git status --porcelain` 给出的仓库内相对路径拼上仓库前缀；
 漏了这一步会得到「找不到路径」，或者干脆漏扫整个 `_scratch`。
 
@@ -216,6 +216,16 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    所以打完标签之后又清洗过历史文件的话，要把标签挪到清洗后的提交上
    （`git tag -f -a <标签> -m "<标签>" <提交>`，再 `git push origin refs/tags/<标签> --force`）。
    2026-09-30 就这么处理过 `v0.5.2` / `v0.5.3`：附件内容不变，只让标签指向清洗后的树。
+   **2026-10-01 再收紧一层：连真实串号也不写。** 例子一律用 X岛官方的测试串
+   `50000001`（`tests/test_live_notify.py` 里就是这么标的），或者 7 位那批明显编的
+   （`7001234`、`7012345`）；不要拿某个真实长串当例子。这次全量自检翻出来的地方：
+   `README.md` 的命令行示例（10 处）、`HANDOFF.md`、`docs/RELEASE_NOTES_v0.3.0.md` /
+   `v0.3.1.md` / `v0.4.0.md`、`tests/test_gui_entry.py` 与 `tests/test_window.py` 里的串网址；
+   顺手把本机个人目录（形如 `D:\<某人的工作目录>`）与本机解释器自己的目录名换成了
+   `<工作目录>` / `<本机 Python>`。**已发布的 Release 正文要单独同步**
+   （`gh release edit <tag> --notes-file …`）—— 正文是上传那一刻的快照，改仓库文件不会
+   带着它一起变；提交信息与标签信息也要单扫一遍
+   （`git log --all --format='%H%n%B'`、`git tag -l -n99`）。
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
    被测试替换过、`save` 没有，结果是把**真实的
@@ -604,7 +614,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   用例：`tests/test_window.py` 新增 6 条（`wrap_to_width` 跟宽度走 / 极窄时保底 /
   折行后主按钮仍在上排 / 主窗口按钮都在父容器里 / 自检介绍在 520x460 换成多行且按钮不出窗 /
   `minsize == (520, 460)`）；另加了 `_widgets()`、`_settle()`、`_holder()` 三个辅助。
-  **真机核验**：`D:\小玩意\_scratch\probe_dialog_text_v1312.py`（`App()` → 主窗口
+  **真机核验**：`<工作目录>\_scratch\probe_dialog_text_v1312.py`（`App()` → 主窗口
   940x682 与 1060x760、自检 600x652/520x460/900x600、设置、监控逐个量：标签「需要宽度 > 实际
   宽度」记被裁、按钮「实际宽度 < 需要宽度」记被挤、按钮矩形超出窗口记出窗、同一行子控件宽度和
   超容器记行溢出）→ **全部 0**；截图 `_shots\main_940x682.png`（按钮回到卡片里）、
@@ -638,17 +648,17 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `keep`、拿不到临时目录返回 0、删不掉不计数、符号链接不动、`_profile_in_use` 四种形态、
   `_is_temp_profile_dir` 两种前缀、自检目录由 `stop()` 收掉），`tests/test_gui_entry.py` 加
   启动线程那条。
-  **真机核验**：`D:\小玩意\_scratch\probe_sweep_v1311.py`（造旧的/新的/别人的目录各一，
+  **真机核验**：`<工作目录>\_scratch\probe_sweep_v1311.py`（造旧的/新的/别人的目录各一，
   再真起一个浏览器）→ 删 2 留 3、活浏览器那份 `_profile_in_use() == True`、门槛 0 的清扫也不动它、
   `stop()` 后目录消失、收尾 0 残留；第一跑顺带清掉了真机上积的 5 个自检遗留目录。
-  `D:\小玩意\_scratch\probe_check_dir_cleanup.py`（把 `browser_check` 自己那次 `rmtree`
+  `<工作目录>\_scratch\probe_check_dir_cleanup.py`（把 `browser_check` 自己那次 `rmtree`
   换成空操作）→ 自检目录照样消失，证明是 `LoginBrowser.stop()` 兜住的。
   源码跑 `--selftest --offline --check-browser` 之后 `%TEMP%` 里 0 个 `xdao-browser-check-*`。
-  打包版（`D:\小玩意\xdao-export-v0.13.11-win64.zip`，12024842 字节 /
+  打包版（`<工作目录>\xdao-export-v0.13.11-win64.zip`，12024842 字节 /
   SHA256 `ea2372505f9bcc8b8748cede8ec877e6e56abdb6f54fbaa94c9f89973e1adc0c`）跑
   `--version` → 「X岛串导出工具 0.13.11」、`--selftest --offline --check-browser` 仍是基线
   「自检发现 2 处走不通、1 处要注意」；跑完 `%TEMP%` 里我们自己的目录 0 个。
-  真机升级 E2E（`D:\小玩意\_scratch\probe_upgrade_e2e_v1311.py`）：现场 v0.13.10 → 新版自己
+  真机升级 E2E（`<工作目录>\_scratch\probe_upgrade_e2e_v1311.py`）：现场 v0.13.10 → 新版自己
   下载、自检、替换、重启，见证进程量到「换上去的 exe 与包里的那份字节一致: True」、
   现场版本 0.13.11、`.old-` 备份与暂存目录的处理都照旧。
   `tools/repo_check.py` 13/13、两个 CI run（master 与标签）都 success。

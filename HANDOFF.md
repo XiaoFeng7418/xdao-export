@@ -21,7 +21,7 @@ Windows 桌面小工具：登录 X 岛（nmbxd1.com）后，把任意一个串�
 
 ## 二、当前状态
 
-功能全部实现并已实测：五种格式在真实长串（No.67024789，33 页 / 626 楼）上导出成功，
+功能全部实现并已实测：五种格式在真实长串（33 页 / 626 楼）上导出成功，
 EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、626 个楼层 XHTML 全部可解析）；
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
@@ -218,7 +218,7 @@ xdao-export/
   - `TCL_LIBRARY=<本机 Python>\tcl\tcl8.6`
   - `TK_LIBRARY=<本机 Python>\tcl\tk8.6`
 - 命令：`python -m PyInstaller --onefile --windowed --clean --name "X岛串导出工具" main.py`
-- 注意：`python3129\Lib\site-packages\PyInstaller\utils\hooks\tcl_tk.py` 已被手动打过补丁
+- 注意：`<本机 Python>\Lib\site-packages\PyInstaller\utils\hooks\tcl_tk.py` 已被手动打过补丁
   （利用 TCL_LIBRARY/TK_LIBRARY 绕过本机 Tcl 检测问题）。
 - **打包版尚未更新到包含新功能的版本。**
 
@@ -237,7 +237,7 @@ xdao-export/
    $env:PYTHONIOENCODING='utf-8'
    & '<本机 Python>\python.exe' -X utf8 -m pytest -q
    ```
-   不要给这个解释器设 `TCL_LIBRARY`/`TK_LIBRARY`（那是 python3129 的路径，版本冲突会导致
+   不要给这个解释器设 `TCL_LIBRARY`/`TK_LIBRARY`（那是本机那个 Python 3.12 的路径，版本冲突会导致
    tkinter 起不来）。
 3. **控制台中文会显示成乱码**（GBK 代码页），加 `$env:PYTHONIOENCODING='utf-8'` 和
    `-X utf8` 即可；纯属显示问题。
@@ -294,6 +294,7 @@ git push origin main:refs/heads/master
 ## 七、隐私注意
 
 - 不要在任何文件里写入用户的 X岛账号、密码或 QQ 邮箱。
+- 同理也别写真实串号与本机个人目录：例子一律用官方测试串 `50000001`，或 7 位那批明显编的编号（`7001234`、`7012345`）。
 - 登录状态（userhash）保存在 `%APPDATA%\xdao-export\config.json`，属本机敏感信息，
   不进 git 和工作包。
 - `.cache/` 里是抓取到的串内容，同样不进版本库（已在 .gitignore 里）。

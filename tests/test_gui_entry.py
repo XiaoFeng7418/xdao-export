@@ -661,7 +661,7 @@ def test_gui_export_passes_pdf_options_to_the_exporter(artifacts_dir, monkeypatc
 
         def fetch(self, url):
             return SimpleNamespace(
-                meta=SimpleNamespace(thread_id="69540387", title="测试串", po_hash="PO"),
+                meta=SimpleNamespace(thread_id="12345678", title="测试串", po_hash="PO"),
                 posts=[],
                 reason="测试用抓取结果",
                 retry_note="",
@@ -673,7 +673,7 @@ def test_gui_export_passes_pdf_options_to_the_exporter(artifacts_dir, monkeypatc
     monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
 
     app = _FakeApp(settings, artifacts_dir / "out")
-    gui.App.start(app, ["https://www.nmbxd1.com/t/69540387"])
+    gui.App.start(app, ["https://www.nmbxd1.com/t/12345678"])
 
     assert recorded, "start() 必须真的走到导出器那一步"
     assert recorded[0]["pdf_options"] == pdf_opts.from_settings(settings)
@@ -710,7 +710,7 @@ def test_gui_export_does_not_mention_pdf_options_when_they_are_default(
     monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
 
     app = _FakeApp(settings, artifacts_dir / "out")
-    gui.App.start(app, ["https://www.nmbxd1.com/t/69540387"])
+    gui.App.start(app, ["https://www.nmbxd1.com/t/12345678"])
 
     assert not any("PDF 设置" in line for line in app.logs)
     assert any(line.startswith("导出目录：") for line in app.logs)
