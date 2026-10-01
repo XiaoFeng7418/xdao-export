@@ -465,6 +465,35 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.17**（用浏览器登录：领饼干从「页面里 fetch」改成「导航」）：真机上「登录好了、页面上也进了
+  用户系统，程序却一路等到超时」的根因是**站点自己的「应用」是跳转式的**。真机取证（匿名请求
+  `Member/User/Cookie/index.html`）：HTTP 200、正文 1569 字节，`<title>跳转提示</title>`，
+  正文是一句「并没有权限访问_(:з」∠)_，请等待自动跳转」，落点在 `<a id="href"
+  href="/Member/User/Index/login.html">`，页面自己的脚本 `setInterval` 每 1000 毫秒把 `#wait`
+  减一、3 秒后 `location.href = href`（**不是** HTTP 重定向、也不是 meta refresh）。v0.13.15 的
+  `_APPLY_COOKIE_JS` 在页面里用 `fetch` 复刻 `switchTo` / `export`：`fetch` 拿回来的只是这张提示页
+  的 HTML，它既不执行页面里的跳转、也不会发出第二跳，于是主站从来没把 userhash 种进浏览器。
+  改法：`xdao/browser_login.py` 删掉 `_APPLY_COOKIE_JS` / `build_apply_cookie_script`，换成
+  `_FIND_APPLY_JS` / `build_find_apply_script`（只读 DOM、不发请求）+ `fetch_leaf_cookie()`
+  （用 `Page.navigate` 走浏览器自己的路：当前页 → 跟着「跳转提示」页 → 「饼干」页
+  `COOKIE_LIST_PATH` → 最后一块的 `switchTo/id/<id>.html` → 重读饼干罐 → 再导航一次
+  `export/id/<id>.html` 从页面正文里抠，最多 `MAX_COOKIE_JUMPS` 跳、单次导航等
+  `readyState == 'complete'`）+ `LeafCookie(value, detail, navigated)` + `cookie_urls_for()`
+  （站点根 / 饼干页 / 当前页，`Network.getCookies` 只回「会发给这个地址」的饼干）+ 导出页三种形态的
+  `userhash_from_export_text()`（`apply_leaf_cookie()` 留作只要值的老签名）。界面侧 `xdao/gui.py`：
+  `BROWSER_LEAF_NAV_LIMIT = 2` 次上限（之后只重读饼干罐）、导航过就按
+  `BROWSER_LEAF_RETRY_SECONDS = 20.0` 缓一缓、用户还停在登录页时**绝不导航**；新增**常驻诊断行**
+  `_set_hint()`（状态行每 15 秒被整句替换，失败原因一闪就没了），超时提示拼上最后试到的一步（进运行
+  日志）。用例：`tests/test_browser_login.py` 的 `_ScriptedSession` 按「地址 → 页面状态」脚本化
+  （20 条新用例 + 签名契约守卫），`tests/test_gui_browser_login.py` 的 `_FakeSession` 能演导航与
+  页面状态（含「不许把用户从登录表单上拽走」「超过上限不再导航」两条护栏）。
+  真机核验（`_scratch/probe_leaf_real_v1317.py`，真 Edge + 真站点 + 匿名）：起始页被认成登录页、
+  `fetch_leaf_cookie` 零导航、回「这个窗口里还没登录（页面停在登录页）…」；开「饼干」页时认出站点
+  的「跳转提示」页（`kind='jump'`、落点 `Member/User/Index/login.html`）并**导航跟着它跳**过去，
+  最后落在登录页、回「跟着站点的跳转回到了登录页…」、`navigated=True`；读饼干一次问 4 个地址；
+  临时用户目录删干净。**运维事实**：站点同一地址有时直接 302 到登录页、有时回「跳转提示」页
+  （探针要先清饼干才稳定碰到后者），两条路代码都走通 —— 这也解释了为什么真机上偶尔「一下就好了」、
+  偶尔一直等到超时。
 - **v0.13.16**（纯文字：公开内容里不再复述来源）：把仓库里剩下的「拿来源当正文」的句子改成直接
   写现象与规则 —— `docs/RELEASE_NOTES_v0.13.14.md`（现象段与改法第一条）、
   `docs/RELEASE_NOTES_v0.10.2.md` 表格里的句式示例、`xdao/gui.py` 的两处注释、

@@ -695,6 +695,15 @@ class LoginDialog(tk.Toplevel):
 BROWSER_POLL_SECONDS = 1.5
 # 没读到 userhash 时，隔这么久去饼干页领一次（用户登录成功那一刻正好用上）。
 BROWSER_LEAF_SECONDS = 5.0
+# 「领饼干」最多**导航**几次用户眼前那个标签页（v0.13.17 起这一步要走站点自己的跳转，
+# 只能靠导航）。
+#
+# 为什么要设上限：站点那边「应用」要是反复不成（账号还没领过饼干、写法又变了），
+# 每 5 秒把用户的标签页弹到饼干页一次，比多等一会儿糟得多。用完这几次之后只重读
+# 饼干罐，剩下的时间留给用户自己登。
+BROWSER_LEAF_NAV_LIMIT = 2
+# 导航过之后缓这么久再去下一次：站点「应用」是跳转式的，几秒一轮会把标签页弹成风箱。
+BROWSER_LEAF_RETRY_SECONDS = 20.0
 # 隔这么久把状态换成「已经等了 N 秒」。
 #
 # 为什么要有这一句：用户可能在**自己平时的浏览器**里登录，程序看不到，界面又一直
@@ -821,6 +830,8 @@ class BrowserLoginDialog(tk.Toplevel):
         self._session = None
         # 「这次用哪个浏览器」的那行人话（定下来之后才显示），见 _set_browser_note。
         self._browser_note = ""
+        # 最近一条「程序刚才试到哪一步」的结论（也进 self.failure，见 _poll）。
+        self._hint = ""
         self._ui_job: str | None = None
         self._closing = False
 
@@ -890,6 +901,25 @@ class BrowserLoginDialog(tk.Toplevel):
             anchor="w",
         ).pack(fill="x", pady=(theme.gap(2), 0))
 
+        # 常驻的一行「程序刚才试到哪一步」（见 _set_hint）。
+        #
+        # 为什么要它：状态行每 15 秒被「已经等了 N 秒…」整句**替换**掉（刻意的，
+        # 否则会越堆越长），于是「饼干没领到」这类结论一闪就没了 —— 用户截个图过来，
+        # 上面只有秒数。这一行只在结论变化时被替换，不会被时间刷掉；没话说时它是空的，
+        # 也不占地方（第一次有话说才 pack 上去）。
+        self.hint_var = tk.StringVar(value="")
+        self.hint_label = tk.Label(
+            card.body,
+            textvariable=self.hint_var,
+            bg=CARD,
+            fg=MUTED,
+            font=SMALL_FONT,
+            justify="left",
+            anchor="w",
+            wraplength=420,
+        )
+        wrap_to_width(self.hint_label, minimum=260)
+
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
         ttk.Button(
@@ -920,6 +950,25 @@ class BrowserLoginDialog(tk.Toplevel):
         self._browser_note = text
         try:
             self.browser_note_var.set(text)
+        except tk.TclError:  # pragma: no cover - 窗口已经销毁
+            pass
+
+    def _set_hint(self, text: str) -> None:
+        """把「程序刚才试到哪一步」写到常驻那一行（主线程调）。
+
+        跟状态行分开是有原因的：状态行每 15 秒被「已经等了 N 秒…」整句替换掉，
+        失败原因一闪就没了。用户截图过来只看到秒数，谁也判断不出卡在哪一步
+        （v0.13.17 就是为这件事加的）。这一行只被**新的结论**替换，不会被时间刷掉。
+        """
+        self._hint = text
+        try:
+            self.hint_var.set(text)
+        except tk.TclError:  # pragma: no cover - 窗口已经销毁
+            return
+        # 没话说时不占地方：第一次有结论了才把它摆上来（窗口高度跟着长一行）。
+        try:
+            if text and not self.hint_label.winfo_manager():
+                self.hint_label.pack(fill="x", pady=(theme.gap(1), 0))
         except tk.TclError:  # pragma: no cover - 窗口已经销毁
             pass
 
@@ -974,6 +1023,9 @@ class BrowserLoginDialog(tk.Toplevel):
                 continue
             if kind == "status":  # 换一句状态（「已经等了 N 秒…」）：是替换，不是追加
                 self._set_status(str(payload))
+                continue
+            if kind == "hint":  # 「程序刚才试到哪一步」：常驻那一行，见 _set_hint
+                self._set_hint(str(payload))
                 continue
             if kind == "browser_closed":
                 self.failure = "浏览器窗口已经关掉了，还没取到饼干。"
@@ -1150,6 +1202,8 @@ class BrowserLoginDialog(tk.Toplevel):
         next_progress = started + BROWSER_PROGRESS_SECONDS
         verified: str | None = None  # 已经验过、当场就认的饼干：别每一轮都去问一遍
         said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
+        leaf_attempts = 0  # 已经导航去领过几次饼干（见 BROWSER_LEAF_NAV_LIMIT）
+        leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行，也拼进超时那句话
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1157,9 +1211,25 @@ class BrowserLoginDialog(tk.Toplevel):
                 return
             try:
                 value = self._read_userhash(backend, session)
-                if not value and time.monotonic() >= next_leaf:
-                    next_leaf = time.monotonic() + BROWSER_LEAF_SECONDS
-                    value = self._try_leaf_cookie(backend, session)
+                leaf_now = time.monotonic()
+                if not value and leaf_now >= next_leaf:
+                    # 领饼干这一步会**导航**用户眼前那个标签页（v0.13.17 起：站点自己的
+                    # 「应用」是跳转式的，页面里的 fetch 根本走不完那一跳），所以给自己
+                    # 设个上限：头几次真去领，用完就只重读饼干罐，不再动他的页面。
+                    navigate = leaf_attempts < BROWSER_LEAF_NAV_LIMIT
+                    if navigate:
+                        leaf_attempts += 1
+                    value, detail, navigated = self._try_leaf_cookie(
+                        backend, session, navigate=navigate
+                    )
+                    # 导航过就缓一缓：站点那边「应用」是跳转式的，几秒一轮会把用户的
+                    # 标签页弹成风箱；只读饼干罐的那几次不打扰他，照旧 5 秒一轮。
+                    next_leaf = leaf_now + (
+                        BROWSER_LEAF_RETRY_SECONDS if navigated else BROWSER_LEAF_SECONDS
+                    )
+                    if detail and detail != leaf_hint:
+                        leaf_hint = detail
+                        self._queue.put(("hint", detail))
                 if value and value != verified:
                     # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
                     # 上一回登录的旧饼干还躺在里面，会话早就过期了。不验一下就会
@@ -1189,12 +1259,16 @@ class BrowserLoginDialog(tk.Toplevel):
                 break
             self._stop.wait(BROWSER_POLL_SECONDS)
         if not self._stop.is_set():
+            # 把最后一次领饼干的结论拼进这句话：它会进运行日志（窗口一关就找不到了），
+            # 是「到底卡在哪一步」唯一的书面记录。
+            tail = f"（程序最后试到的一步：{leaf_hint}）" if leaf_hint else ""
             self._queue.put(
                 (
                     "error",
                     f"等了 {BROWSER_LOGIN_TIMEOUT / 60:.0f} 分钟还没看到登录成功。"
                     "要在这个窗口打开的浏览器里登录，程序才看得到 —— "
-                    "在自己平时用的浏览器里登录不行；也可以点「直接粘贴饼干登录」。",
+                    "在自己平时用的浏览器里登录不行；也可以点「直接粘贴饼干登录」。"
+                    f"{tail}",
                 )
             )
 
@@ -1204,30 +1278,34 @@ class BrowserLoginDialog(tk.Toplevel):
 
         只负责「挑出来」，**不代表这个登录还能用** —— 这块饼干来自浏览器的
         资料目录，可能是上一次留下的。能不能用由 :func:`verify_userhash_live` 问服务端。
+
+        问的是**好几个地址**（站点根、饼干页、当前页）：CDP 的 ``Network.getCookies``
+        只回「会发给这个地址」的饼干，只问一个地址会漏，而漏掉的代价是界面一直等到
+        超时（v0.13.17）。
         """
-        for cookie in session.read_cookies():
-            if not isinstance(cookie, dict) or cookie.get("name") != "userhash":
-                continue
-            value = str(cookie.get("value") or "").strip()
-            if value and backend.looks_like_userhash(value):
-                return value
-        return None
+        urls = backend.cookie_urls_for(session)
+        return backend.userhash_from_cookies(session.read_cookies(urls))
 
     @staticmethod
-    def _try_leaf_cookie(backend, session) -> str | None:
+    def _try_leaf_cookie(backend, session, *, navigate: bool = True) -> tuple[str | None, str, bool]:
         """兜底：登录了却没看到 userhash，就去饼干页领一块新的。
 
-        这一步失败是常态（人还没登录完、页面正在跳转），所以异常一律当「还没好」，
-        不往界面上报错 —— 它本来就是兜底路径，主路径是上面的 read_cookies。
+        返回 ``(值, 一句人话, 是否导航过)``。这一步失败是常态（人还没登录完、页面
+        正在跳转），所以异常一律当「还没好」，不往界面上报错 —— 它本来就是兜底路径。
+
+        为什么要那句人话：这条路以前是**静默**的（异常吞掉、返回 None），真机上表现
+        为「明明登录好了，程序一路等到超时」，用户截图上没有任何线索（v0.13.17）。
         """
         try:
-            value = backend.apply_leaf_cookie(session)
-        except Exception:
-            return None
-        value = str(value or "").strip()
+            result = backend.fetch_leaf_cookie(session, navigate=navigate)
+        except Exception as exc:  # noqa: BLE001 —— 兜底路径，失败不算流程错误
+            return None, f"去「饼干」页领饼干时出错：{exc}", False
+        value = str(getattr(result, "value", "") or "").strip()
+        detail = str(getattr(result, "detail", "") or "")
+        navigated = bool(getattr(result, "navigated", False))
         if value and backend.looks_like_userhash(value):
-            return value
-        return None
+            return value, detail, navigated
+        return None, detail, navigated
 
 
 _PDF_SCALE_FALLBACK = f"{pdf_opts.SCALE_DEFAULT:g}"

@@ -1224,107 +1224,85 @@ def parse_userhash_input(text: str) -> str | None:
     return None
 
 
-# 「应用一块饼干」的页面脚本。
+# 「应用一块饼干」这一段全部走**导航**，不在页面里复刻接口。
 #
-# 依据的是仓库里已经跑通的客户端实现（xdao/client.py 的 apply_cookie 与
-# _extract_userhash_from_export）与 tests/test_client.py 里那份真实的列表页片段：
-#   1. 列表行的 ``id`` 从 ``Cookie/(switchTo|export)/id/<id>`` 链接里取最可靠，
-#      取不到时退回「``<tr>`` 行第二个单元格」；链接里带 ``.html``，
-#      捕获到的 id 要把这个后缀摘掉，否则拼出来的地址会变成 ``xxx.html.html``；
-#   2. 同一个 id 会因为 switchTo 与 export 两个链接在正则结果里各出现一次，
-#      先去重；列表里最新申请的那块排在后面，取最后一个才是权限最全的叶子饼干；
-#   3. 先 ``switchTo`` 让这个浏览器会话正式用上它，再 ``export`` 取值；
-#   4. 用户登录完停在哪个页面都有可能（站点自己的跳转页、论坛、用户首页…），
-#      当前标签页的 DOM 里常常根本没有那张列表。所以当前页找不到 id 时，
-#      脚本自己去把 Cookie/index.html 要来一份再解析它 —— 页面里发的同源 fetch
-#      会带上登录后的会话饼干，登录了列表才有内容，没登录拿回来的是站点那张
-#      1496 字节的「跳转提示」页（真机抓过），不会误判。少这一步就只能指望用户
-#      恰好停在列表页上，真机上表现为「明明登录好了，程序等到超时也没反应」。
-# 取值的三种返回形态（JSON、userhash= 文本、"cookie":"…" 片段）照 client.py 的
-# _extract_userhash_from_export 写，少一种都会漏。
-_APPLY_COOKIE_JS = r"""
-(async () => {
-  const BASE = __COOKIE_BASE__;
-  // 每个请求都自带超时：站点要是卡住不回，脚本自己认输返回空串，
-  // 别把整个 Runtime.evaluate 拖到 CDP 的 15 秒超时上去。
-  const grab = async (url) => {
-    const control = new AbortController();
-    const timer = setTimeout(() => control.abort(), 8000);
-    try {
-      const response = await fetch(url, {credentials: 'include', signal: control.signal});
-      return await response.text();
-    } catch (err) {
-      return '';
-    } finally {
-      clearTimeout(timer);
-    }
+# 为什么不能用 fetch 复刻（v0.13.15 的做法，真机失败）：站点自己的「应用」是
+# 跳转式的 —— 点下去先落到站点自己的「跳转提示」页（1496 字节、<title>跳转提示</title>、
+# <a id="href" href="…">），再由那一页跳到真正的落地页，userhash 是在落地那一跳里
+# 由主站种下的。页面里 fetch 拿回来的只是那张提示页的 HTML：它既不执行提示页里的
+# meta refresh、也不会发出第二跳，饼干罐里始终没有 userhash —— 用户明明登录好了，
+# 界面却一路等到超时（用户 m25142 的那张截图）。
+# 导航走的是浏览器自己的路：跳转页自己会跳，饼干也就种上了。
+_FIND_APPLY_JS = r"""
+(() => {
+  const COOKIE_BASE = __COOKIE_BASE__;
+  const state = {
+    url: location.href,
+    login: /\/Member\/User\/Index\/login\.html/i.test(location.pathname),
+    jump: '',
+    kind: 'other',
+    href: '',
+    ids: [],
+    rows: 0,
+    links: 0,
   };
-  const idsInLinks = (source) => {
-    const ids = [];
-    const linkRe = /Cookie\/(?:switchTo|export)\/id\/([^\/\s"'<]+)/g;
-    let hit;
-    while ((hit = linkRe.exec(source)) !== null) {
-      const id = hit[1].replace(/\.html$/i, '');
-      if (id && ids.indexOf(id) < 0) {
-        ids.push(id);
-      }
-    }
-    return ids;
+  // 站点自己的 success() 页：<a id="href" href="...">；也有写成 meta refresh 的。
+  const anchor = document.querySelector('a#href') || document.getElementById('href');
+  let jump = anchor ? (anchor.getAttribute('href') || '') : '';
+  if (!jump) {
+    const meta = document.querySelector('meta[http-equiv="refresh" i]');
+    const content = meta ? (meta.getAttribute('content') || '') : '';
+    const hit = content.match(/url\s*=\s*['"]?([^'";]+)/i);
+    if (hit) jump = hit[1];
+  }
+  const absolute = (raw) => {
+    try { return new URL(raw, location.href).href; } catch (err) { return raw; }
   };
-  const idsInCells = (source) => {
-    const ids = [];
-    const doc = new DOMParser().parseFromString(source, 'text/html');
-    for (const row of doc.querySelectorAll('tr')) {
+  if (jump) state.jump = absolute(jump);
+  // 列表行的「应用」链接：同一个 id 会有 switchTo 与 export 两个链接，
+  // 只记 switchTo（应用）那个；最新申领的饼干排在列表最后，所以取最后一个 id。
+  const actions = {};
+  for (const link of document.querySelectorAll('a[href]')) {
+    const raw = link.getAttribute('href') || '';
+    const hit = raw.match(/Cookie\/(?:switchTo|export)\/id\/([^\/\s"'<]+)/i);
+    if (!hit) continue;
+    const id = hit[1].replace(/\.html$/i, '');
+    if (!id) continue;
+    state.links += 1;
+    if (state.ids.indexOf(id) < 0) state.ids.push(id);
+    if (/switchTo/i.test(raw) && !actions[id]) actions[id] = absolute(raw);
+  }
+  if (state.ids.length === 0) {
+    // 兼容只有表格、没有链接的写法：每行第二个单元格是 id。
+    for (const row of document.querySelectorAll('tr')) {
       const cells = row.querySelectorAll('td');
-      if (cells.length < 2) {
-        continue;
-      }
-      const candidate = (cells[1].textContent || '').trim();
-      if (candidate && ids.indexOf(candidate) < 0) {
-        ids.push(candidate);
-      }
-    }
-    return ids;
-  };
-  const collect = (source) => {
-    const ids = idsInLinks(source);
-    return ids.length ? ids : idsInCells(source);
-  };
-  // 当前标签页正好停在「饼干」列表上时，一条多余的请求都不用发。
-  let ids = collect(document.documentElement.outerHTML);
-  if (ids.length === 0) {
-    ids = collect(await grab(BASE + 'index.html'));
-  }
-  if (ids.length === 0) {
-    return '';
-  }
-  const id = ids[ids.length - 1];
-  await grab(BASE + 'switchTo/id/' + encodeURIComponent(id) + '.html');
-  const text = await grab(BASE + 'export/id/' + encodeURIComponent(id) + '.html');
-  let value = '';
-  try {
-    const data = JSON.parse(text);
-    if (data && data.cookie) {
-      value = String(data.cookie);
-    }
-  } catch (err) {
-    value = '';
-  }
-  if (!value) {
-    const byText = text.match(/userhash=([^;"'\s]+)/);
-    if (byText) {
-      value = byText[1];
+      if (cells.length < 2) continue;
+      state.rows += 1;
+      const text = (cells[1].textContent || '').trim();
+      if (text && state.ids.indexOf(text) < 0) state.ids.push(text);
     }
   }
-  if (!value) {
-    const byJson = text.match(/"cookie"\s*:\s*"([^"]+)"/);
-    if (byJson) {
-      value = byJson[1];
-    }
+  const last = state.ids.length ? state.ids[state.ids.length - 1] : '';
+  if (last) {
+    state.href = actions[last] ||
+      (COOKIE_BASE + 'switchTo/id/' + encodeURIComponent(last) + '.html');
   }
-  return value.trim();
+  if (state.login) state.kind = 'login';
+  else if (state.jump) state.kind = 'jump';
+  else if (last) state.kind = 'list';
+  else if (state.rows) state.kind = 'empty';
+  return state;
 })()
 """
+
+# 跟着站点自己的「跳转提示」页最多跳几次：列表 → switchTo → 落地页，两次就够，
+# 上限只是防站点把跳转写成一圈。
+MAX_COOKIE_JUMPS = 3
+# 一次导航最多等多久。等的是 ``document.readyState == 'complete'``：跳转提示页
+# 要在文档加载完之后才跳，早一瞬去读，读到的还是那张提示页。
+NAVIGATE_TIMEOUT = 10.0
+# 导航期间轮询页面状态的间隔。
+NAVIGATE_POLL = 0.25
 
 
 def _cookie_action_base() -> str:
@@ -1333,27 +1311,221 @@ def _cookie_action_base() -> str:
     return f"{COOKIE_SITE}{prefix}/"
 
 
-def build_apply_cookie_script() -> str:
-    """返回「应用最新一块饼干并取值」的 JS。
+def build_find_apply_script() -> str:
+    """返回「看看当前页有什么」的脚本（只读 DOM，不发请求）。
 
-    在**已经登录的站点页面**里执行它就行，不要求那一页正好停在饼干列表上：
-    当前页里找不到列表时，脚本会自己去把 Cookie/index.html 要来一份再解析。
-    用法是 ``await_promise=True``；返回 userhash 字符串，取不到时返回空串，
-    由调用方决定怎么提示。
+    返回值里有：当前地址、是不是登录页、跳转提示页的目标、列表里「应用」链接
+    指向哪、认出来的 id 有哪些、表格行数与链接数（后两个是给诊断用的）。
     """
-    return _APPLY_COOKIE_JS.replace("__COOKIE_BASE__", json.dumps(_cookie_action_base()))
+    return _FIND_APPLY_JS.replace("__COOKIE_BASE__", json.dumps(_cookie_action_base()))
 
 
-def apply_leaf_cookie(session: CDPSession) -> str | None:
-    """在已登录的浏览器会话里应用一块饼干，返回 userhash 或 None。
+@dataclass(frozen=True)
+class LeafCookie:
+    """领饼干的结果：成功给值，失败给一句能直接写进窗口的话。
 
-    失败一律返回 None 而不是抛异常：拿不到就走 cookie 兜底这条路，
-    界面层只需要判断「有没有」。拿到的值还要再粗筛一遍 ——
-    页面万一返回了别的东西（跳转页 HTML 之类），别把它当 userhash 存下去。
+    为什么要带 ``detail``：这条路以前是**静默**的（异常一律吞掉、返回 None），
+    真机上表现为「登录好了，程序一直等到超时」，用户截的图里没有任何线索。
+    ``navigated`` 表示这一次去动过用户的页面（导航过，或者读页面状态时就出错了）：
+    界面层拿它决定下一次重试要不要缓一缓 —— 连着几秒把标签页弹来弹去，比多等一会儿糟。
+    """
+
+    value: str | None = None
+    detail: str = ""
+    navigated: bool = False
+
+
+def cookie_urls_for(session: "CDPSession") -> list[str]:
+    """读饼干时该问哪些地址。
+
+    ``Network.getCookies`` 只回「会发给这些地址」的饼干，所以不能只问一个：
+    站点可能在 ``www`` 之外的域上种 userhash，也可能带路径限定；当前页面地址也
+    一起问上，免得漏掉只对那一页可见的那块。
+    """
+    urls = [f"{COOKIE_SITE}/", f"{COOKIE_SITE}{COOKIE_LIST_PATH}", "https://nmbxd1.com/"]
+    try:
+        current = (session.current_url() or "").strip()
+    except Exception:  # noqa: BLE001 —— 读不到地址不该让整件事失败
+        current = ""
+    if current.startswith("http") and current not in urls:
+        urls.append(current)
+    return urls
+
+
+def userhash_from_cookies(cookies: Iterable[dict]) -> str | None:
+    """从饼干列表里挑 userhash：认值的形状，域只要沾 ``nmbxd1`` 就算。"""
+    for cookie in cookies or []:
+        if not isinstance(cookie, dict) or cookie.get("name") != "userhash":
+            continue
+        domain = str(cookie.get("domain") or "").strip().lower()
+        if domain and "nmbxd1" not in domain:
+            continue
+        value = str(cookie.get("value") or "").strip()
+        if value and looks_like_userhash(value):
+            return value
+    return None
+
+
+def read_userhash_cookie(
+    session: "CDPSession", urls: list[str] | None = None
+) -> str | None:
+    """读一次饼干罐（不问服务端）。读不到或读失败都只是 ``None``。"""
+    try:
+        cookies = session.read_cookies(list(urls) if urls else cookie_urls_for(session))
+    except Exception:  # noqa: BLE001 —— 这里只回答「罐里有没有」
+        return None
+    return userhash_from_cookies(cookies)
+
+
+def _page_state(session: "CDPSession") -> dict:
+    """读当前页面的状态；读不到就给空字典（调用方按「认不出来」处理）。"""
+    raw = session.evaluate(build_find_apply_script())
+    try:
+        state = json.loads(raw) if raw else {}
+    except Exception:  # noqa: BLE001 —— 浏览器回了意料之外的东西
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _navigate(session: "CDPSession", url: str) -> str:
+    """导航到 ``url`` 并等页面加载完，返回落地后的地址。
+
+    导航期间 ``Runtime.evaluate`` 会因为「换了文档」而失败，这是正常的，接着
+    轮询就是 —— 真正要等的是 ``readyState == 'complete'``。
+    """
+    session.call("Page.navigate", {"url": url}, timeout=NAVIGATE_TIMEOUT)
+    deadline = time.monotonic() + NAVIGATE_TIMEOUT
+    href = ""
+    while time.monotonic() < deadline:
+        time.sleep(NAVIGATE_POLL)
+        try:
+            ready = (session.evaluate("document.readyState") or "").strip()
+            href = session.evaluate("location.href") or href
+        except CdpError:
+            continue
+        if ready == "complete":
+            return href
+    return href
+
+
+def _follow_jumps(session: "CDPSession", state: dict, hops: int) -> tuple[dict, int]:
+    """把站点自己的「跳转提示」页跟到底（最多 :data:`MAX_COOKIE_JUMPS` 跳）。"""
+    while state.get("jump") and hops < MAX_COOKIE_JUMPS:
+        hops += 1
+        _navigate(session, str(state["jump"]))
+        state = _page_state(session)
+    return state, hops
+
+
+def _page_text(session: "CDPSession") -> str:
+    """页面上的可见文字（导出页可能把值直接印在页面上）。"""
+    try:
+        return session.evaluate("document.body ? document.body.innerText : ''") or ""
+    except CdpError:
+        return ""
+
+
+def userhash_from_export_text(text: str) -> str | None:
+    """导出接口的三种返回形态（照 ``client._extract_userhash_from_export`` 写）。"""
+    body = (text or "").strip()
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001 —— 不是 JSON 就往下走文本匹配
+        data = None
+    if isinstance(data, dict):
+        candidate = str(data.get("cookie") or "").strip()
+        if candidate and looks_like_userhash(candidate):
+            return candidate
+    for pattern in (r"userhash=([^;\"'\s]+)", r"\"cookie\"\s*:\s*\"([^\"]+)\""):
+        hit = re.search(pattern, body)
+        if hit:
+            candidate = hit.group(1).strip()
+            if candidate and looks_like_userhash(candidate):
+                return candidate
+    return None
+
+
+def fetch_leaf_cookie(
+    session: "CDPSession", urls: list[str] | None = None, *, navigate: bool = True
+) -> LeafCookie:
+    """登录之后去站点的「饼干」页领一块饼干，返回 :class:`LeafCookie`。
+
+    每一步都可能没成，没成时带着一句人话回来（界面层把它挂在窗口上）：
+
+      1. 还在登录页 → 只说「还没登录」，**绝不导航**：用户可能正在输验证码，
+         把他从表单上拽走比多等一会儿糟得多；
+      2. 当前页是站点自己的「跳转提示」页 → 跟着跳；
+      3. 当前页不是「饼干」列表 → 导航到列表页（再跟着跳）；
+      4. 列表里取最后一块（最新申领的权限最全）→ 导航到它的 ``switchTo`` 地址，
+         这一步会让主站把 userhash 种进浏览器；
+      5. 重读饼干罐；还是没有，就再导航一次导出页，从页面文字里找一遍。
+
+    ``navigate=False`` 时只重读一次饼干罐。这是给界面层的重试上限用的：
+    用户迟迟没登录成时，不能每几秒就把他的标签页拖到「饼干」页去一次。
     """
     try:
-        value = session.evaluate(build_apply_cookie_script(), await_promise=True)
-    except CdpError:
-        return None
-    value = (value or "").strip()
-    return value if looks_like_userhash(value) else None
+        if not navigate:
+            value = read_userhash_cookie(session, urls)
+            if value:
+                return LeafCookie(value, "")
+            return LeafCookie(None, "自动取饼干这条路试过了：浏览器里还是没有 userhash。")
+        state = _page_state(session)
+        if state.get("kind") == "login" or state.get("login"):
+            return LeafCookie(None, "这个窗口里还没登录（页面停在登录页）：先在里面登录 X 岛。")
+        page_url = str(state.get("url") or "")
+        host = urllib.parse.urlsplit(page_url).hostname or ""
+        if host and "nmbxd1" not in host:
+            return LeafCookie(None, f"浏览器窗口里现在打开的不是 X 岛（{host}），先在里面对 X 岛登录。")
+        state, hops = _follow_jumps(session, state, 0)
+        if state.get("login"):
+            # 真机上走到的就是这一支（匿名开「饼干」页 → 站点把页面跳到登录页）：
+            # `navigated` 必须按真跳没跳报，界面层拿它决定下次重试要不要缓一缓。
+            return LeafCookie(
+                None, "跟着站点的跳转回到了登录页 —— 这个窗口里的登录没成。", hops > 0
+            )
+        if not state.get("ids") and COOKIE_LIST_PATH not in str(state.get("url") or ""):
+            # 用户停在论坛/用户首页都很正常：那些页面的 DOM 里没有列表，
+            # 自己去「饼干」页要一份（导航，不是 fetch）。
+            _navigate(session, f"{COOKIE_SITE}{COOKIE_LIST_PATH}")
+            state, hops = _follow_jumps(session, _page_state(session), hops)
+            if state.get("login"):
+                return LeafCookie(
+                    None, "打开「饼干」页被弹回了登录页 —— 这个窗口里的登录没成。", True
+                )
+        ids = [str(item) for item in (state.get("ids") or []) if str(item).strip()]
+        if not ids:
+            rows = int(state.get("rows") or 0)
+            links = int(state.get("links") or 0)
+            if state.get("kind") == "empty" or (rows == 0 and links == 0):
+                return LeafCookie(
+                    None, "「饼干」页里没有可以应用的饼干（这个账号可能还没领过一块）。", True
+                )
+            return LeafCookie(
+                None, f"「饼干」页的写法没认出来（{rows} 行 / {links} 个链接）。", True
+            )
+        last = ids[-1]
+        href = str(state.get("href") or "") or (
+            f"{_cookie_action_base()}switchTo/id/{urllib.parse.quote(last)}.html"
+        )
+        _navigate(session, href)
+        state, hops = _follow_jumps(session, _page_state(session), hops)
+        value = read_userhash_cookie(session, urls)
+        if value:
+            return LeafCookie(value, "", True)
+        _navigate(
+            session, f"{_cookie_action_base()}export/id/{urllib.parse.quote(last)}.html"
+        )
+        state, hops = _follow_jumps(session, _page_state(session), hops)
+        value = userhash_from_export_text(_page_text(session))
+        if value:
+            return LeafCookie(value, "", True)
+        return LeafCookie(None, "应用了饼干，但浏览器里始终没出现 userhash。", True)
+    except CdpError as exc:
+        return LeafCookie(None, f"跟浏览器打交道时出错：{exc}", True)
+
+
+def apply_leaf_cookie(session: "CDPSession") -> str | None:
+    """只要值的老签名；要诊断就调 :func:`fetch_leaf_cookie`（界面层走那条）。"""
+    return fetch_leaf_cookie(session).value

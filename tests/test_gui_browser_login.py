@@ -12,6 +12,7 @@ skip，测试用的配置一定指向产物目录，绝不碰用户真实的 ``c
 from __future__ import annotations
 
 import ast
+import json
 import queue
 import subprocess
 import threading
@@ -144,6 +145,12 @@ class _FakeSession:
         self.calls: list[tuple[str, dict]] = []
         self.current_url_value = ""
         self.read_error: Exception | None = None
+        # v0.13.17：领饼干那条路从「页面里的 fetch」改成了「导航 + 读页面状态」，
+        # 替身得能演这两种动作 —— 不然用例只能钉住「取到了值」，钉不住「怎么取的」。
+        self.pages: dict[str, dict] = {}
+        self.navigations: list[str] = []
+        self.cookie_reads: list[list[str] | None] = []
+        self.export_text = ""
         _FakeSession.instances.append(self)
 
     def __enter__(self) -> "_FakeSession":
@@ -162,18 +169,36 @@ class _FakeSession:
 
     def call(self, method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
         self.calls.append((method, params or {}))
+        if method == "Page.navigate":
+            # 真导航就是换一份文档：地址变了，随后 evaluate 读到的是那一页的状态。
+            self.current_url_value = str((params or {}).get("url") or "")
+            self.navigations.append(self.current_url_value)
         return {}
 
     def current_url(self) -> str:
         return self.current_url_value
 
     def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
+        self.cookie_reads.append(list(urls) if urls else None)
         if self.read_error is not None:
             raise self.read_error
         return list(self.cookies)
 
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
         self.evaluate_calls.append(expression)
+        # 读页面状态那条脚本按「当前地址」取登记好的状态；其余脚本给默认值，
+        # 只有刻意用 evaluate_value 的用例才会走到最后一行。
+        if expression == browser_login.build_find_apply_script():
+            page = self.pages.get(
+                self.current_url_value, {"url": self.current_url_value, "kind": "other"}
+            )
+            return json.dumps(page)
+        if expression == "document.readyState":
+            return "complete"
+        if expression == "location.href":
+            return self.current_url_value
+        if expression.startswith("document.body"):
+            return self.export_text
         return self.evaluate_value
 
 
@@ -222,6 +247,8 @@ def fast_browser_polling(monkeypatch):
     """把对话框的轮询间隔调快，免得用例真的等几秒。"""
     monkeypatch.setattr(gui, "BROWSER_POLL_SECONDS", 0.05)
     monkeypatch.setattr(gui, "BROWSER_LEAF_SECONDS", 0.15)
+    # 「导航过一次就缓一缓」的间隔也调快：不然后面那句「不再导航」的用例要真空等 20 秒。
+    monkeypatch.setattr(gui, "BROWSER_LEAF_RETRY_SECONDS", 0.2)
     monkeypatch.setattr(gui, "BROWSER_UI_POLL_MS", 20)
 
 
@@ -665,20 +692,118 @@ def test_user_closing_the_browser_window_offers_a_reopen(
 def test_leaf_cookie_fallback_is_used_when_the_cookie_is_not_there_yet(
     root_window, browser_shim, open_dialog
 ):
-    """登录了但读不到 userhash 时，走「领一块叶子饼干」那条兜底。"""
+    """登录了但读不到 userhash 时，走「领一块叶子饼干」那条兜底（导航版）。
+
+    v0.13.17 之前这条路是「在页面里 fetch 站点的两个接口」：fetch 走不完站点自己
+    那一跳（跳转提示页不执行、第二跳不发），饼干罐里始终没有 userhash，真机上就是
+    「用户明明登录好了，程序一路等到超时」。这里钉住新走法：程序自己导航到「饼干」
+    页 → 跟着站点跳到「应用」地址 → 再重读饼干罐。
+    """
     dialog = open_dialog()
+    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
+    apply_url = f"{browser_login.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html"
 
     def ready() -> bool:
         for session in _dialog_sessions():
-            session.cookies = []  # 浏览器里还没有 userhash
-            session.evaluate_value = FAKE_USERHASH  # 去饼干页领就有了
+            session.pages = {
+                list_url: {
+                    "url": list_url,
+                    "login": False,
+                    "jump": "",
+                    "kind": "list",
+                    "ids": ["aaa"],
+                    "href": apply_url,
+                }
+            }
+            # 主站的「应用」走完才 Set-Cookie —— 真机上正是落地那一跳把饼干种进罐里。
+            session.cookies = (
+                [{"name": "userhash", "value": FAKE_USERHASH}]
+                if apply_url in session.navigations
+                else []
+            )
         return dialog.userhash is not None
 
     assert _wait_for(root_window, ready), "兜底路径没能取到 userhash"
     session = _dialog_sessions()[0]
-    assert session.evaluate_calls, "没走 apply_leaf_cookie 那条路"
+    assert list_url in session.navigations, "没自己去「饼干」页（还想靠 fetch？）"
+    assert apply_url in session.navigations, "没跟着站点跳到「应用」地址"
     assert dialog.userhash == FAKE_USERHASH
     assert _wait_for(root_window, lambda: not dialog.winfo_exists())
+
+
+def test_leaf_cookie_does_not_steal_the_page_while_the_login_form_is_open(
+    root_window, browser_shim, open_dialog
+):
+    """用户停在登录页（可能正在输验证码）时，绝不能把他从表单上拽走。
+
+    这条路每几秒就要跑一次；要是它也带导航，用户正打字就会被弹走 —— 比多等一会儿糟。
+    """
+    dialog = open_dialog()
+    login_url = browser_login.LOGIN_URL
+    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
+
+    def on_the_form() -> bool:
+        for session in _dialog_sessions():
+            session.pages = {
+                login_url: {
+                    "url": login_url,
+                    "login": True,
+                    "jump": "",
+                    "kind": "login",
+                    "ids": [],
+                }
+            }
+            session.cookies = []
+        return bool(_dialog_sessions()) and bool(dialog.hint_var.get())
+
+    assert _wait_for(root_window, on_the_form), "诊断行没有写出来"
+    session = _dialog_sessions()[0]
+    assert login_url in session.navigations, "没把标签页带到登录页"
+    assert list_url not in session.navigations, "用户还在登录页，程序却把页面拖走了"
+    assert "登录" in dialog.hint_var.get()
+    dialog._on_cancel()
+
+
+def test_leaf_cookie_stops_navigating_the_users_tab_after_the_limit(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """迟迟登录不成时，不能每几秒就把用户的标签页拖到「饼干」页去一次。
+
+    上限用完之后只许重读饼干罐（``navigate=False``）；诊断行要一直有话说，
+    这样真机上截个图就能看出卡在哪一步。
+    """
+    monkeypatch.setattr(gui, "BROWSER_LEAF_NAV_LIMIT", 1)
+    dialog = open_dialog()
+    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
+
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.pages = {
+        list_url: {
+            "url": list_url,
+            "login": False,
+            "jump": "",
+            "kind": "empty",
+            "ids": [],
+            "rows": 0,
+        }
+    }
+    session.cookies = []
+
+    assert _wait_for(
+        root_window, lambda: list_url in session.navigations
+    ), "第一次导航都没发生"
+    assert _wait_for(root_window, lambda: bool(dialog.hint_var.get())), "诊断行没有写出来"
+    navigations = len([url for url in session.navigations if url == list_url])
+    assert navigations == 1
+
+    # 再放它跑几轮：只许重读饼干罐，不许再导航。
+    reads = len(session.cookie_reads)
+    assert _wait_for(
+        root_window, lambda: len(session.cookie_reads) > reads + 5, timeout=10.0
+    ), "后面几轮连饼干罐都不读了"
+    assert len([url for url in session.navigations if url == list_url]) == navigations
+    dialog._on_cancel()
 
 
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:
@@ -853,8 +978,9 @@ def _session_methods_used_by_library() -> set[str]:
 def test_fake_session_covers_every_method_the_library_calls_on_a_session():
     """替身要覆盖库在会话上真正调用过的方法，外加上下文管理协议。"""
     used = _session_methods_used_by_library()
-    # 库自己要用的是这三个；read_cookies 由对话框（gui.py）直接调，所以不在库的调用集里。
-    assert {"call", "current_url", "evaluate"} <= used, used
+    # v0.13.17 起库自己也读饼干罐了（read_userhash_cookie 要重读好几遍），
+    # 所以这四个都在库的调用集里；替身少一个，用例就会静默地测不到东西。
+    assert {"call", "current_url", "evaluate", "read_cookies"} <= used, used
     missing = sorted(name for name in used if not callable(getattr(_FakeSession, name, None)))
     assert not missing, f"替身缺了库会调用的方法：{missing}"
     assert hasattr(_FakeSession, "__enter__") and hasattr(_FakeSession, "__exit__")
