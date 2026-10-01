@@ -1167,7 +1167,12 @@ class _PortWritingPopen:
 def test_start_reads_the_port_file_and_hides_the_console_window(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GUI 里启动浏览器不能弹黑框，端口要等文件真写出来才认。"""
+    """GUI 里启动浏览器不能弹黑框，端口要等文件真写出来才认。
+
+    v0.13.9 起第一个候选是**新建的临时资料目录**（真机上「自检里浏览器起得来、
+    登录却一起来就退」的差别就在资料目录），所以这里也顺带钉住这件事：
+    先试临时目录、界面上要说清「这次用的是临时目录」、关窗后目录要清掉。
+    """
     created: list[_PortWritingPopen] = []
 
     def fake_popen(args: list[str], **kwargs: object) -> _PortWritingPopen:
@@ -1176,14 +1181,37 @@ def test_start_reads_the_port_file_and_hides_the_console_window(
         return process
 
     monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
     info = bl.BrowserInfo("Edge", "msedge.exe")
-    with bl.LoginBrowser(info, artifacts_dir / "profile", timeout=5.0) as browser:
+    profile = artifacts_dir / "profile"
+    with bl.LoginBrowser(info, profile, timeout=5.0) as browser:
         assert browser.port == 9333
         assert browser.browser_ws_url == "ws://127.0.0.1:9333/devtools/browser/abc"
         assert created[0].kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
         assert created[0].kwargs["stdin"] == subprocess.DEVNULL
         assert created[0].kwargs["stdout"] == subprocess.DEVNULL
-        assert browser.profile_note == "", "第一次就起来了，不该说换了目录"
+        chosen = Path(
+            next(
+                a.split("=", 1)[1]
+                for a in created[0].args
+                if a.startswith("--user-data-dir=")
+            )
+        )
+        assert chosen != profile, "第一个候选该是新建的临时目录，不是配置目录里那个"
+        assert browser.temp_profile == chosen
+        assert "临时资料目录" in browser.profile_note, "得跟用户说清登录态没落在老地方"
+        assert str(chosen) in browser.profile_note
+    assert not chosen.exists(), "关掉登录窗口后临时目录该清掉，别在系统临时目录里攒垃圾"
+
+
+def test_fresh_profile_dir_is_under_the_system_temp_dir() -> None:
+    """临时资料目录要落在系统临时目录下，而且每次都不一样。"""
+    first = bl.fresh_profile_dir()
+    second = bl.fresh_profile_dir()
+
+    assert first.parent == Path(tempfile.gettempdir())
+    assert bl.USER_DATA_DIR_NAME in first.name
+    assert first != second, "同一个名字会撞上前一次留下的目录"
 
 
 def test_fallback_profile_dirs_are_fresh_and_not_the_original(artifacts_dir: Path) -> None:
@@ -1286,9 +1314,10 @@ def test_devtools_failure_hint_reports_a_browser_that_already_died() -> None:
 def test_start_switches_profile_when_the_config_one_is_not_writable(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """真机上的样子：配置目录里的 profile 一碰就是 WinError 5。
+    """配置目录里那个 profile 起不来（真机上是 WinError 5）时要接着往下试。
 
-    这时必须换一个目录再试，而不是让用户对着「打开浏览器失败」反复点。
+    v0.13.9 起第一个候选是新临时目录，配置目录那个排第二：所以这里让**两个都**
+    起不来，看它会不会换到第三个候选、并且把「这次用的是哪个目录」写在界面上。
     """
     profile = artifacts_dir / "browser-profile"
     refused = profile / "DevToolsActivePort"
@@ -1301,22 +1330,30 @@ def test_start_switches_profile_when_the_config_one_is_not_writable(
         created.append(chosen)
         if chosen == profile:
             raise _win_error(5, "拒绝访问。", str(refused))
+        if len(created) == 1:
+            # 临时目录那一次：真机上「一起来就退」正是这个样子。
+            return _DeadBrowserPopen(args)
         return _PortWritingPopen(args, **kwargs)
 
     monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
     info = bl.BrowserInfo("Edge", "msedge.exe")
     with bl.LoginBrowser(info, profile, timeout=5.0) as browser:
         assert browser.port == 9333
-        assert created[0] == profile, "该先试配置目录里那个"
-        assert created[1] != profile, "被拒之后要换一个目录"
+        assert created[0] != profile, "第一个该是新临时目录"
+        assert created[1] == profile, "临时目录不行就该试配置目录那个"
+        assert created[2] not in (profile, created[0]), "被拒之后要换一个目录"
         assert browser.profile_note, "换了目录得留下话，好让界面说清楚"
-        assert str(created[1]) in browser.profile_note
+        assert str(created[2]) in browser.profile_note
 
 
 def test_start_still_reports_a_real_failure(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """浏览器本身起不来（不是目录问题）时，别重试，直接把错报上去。"""
+    """浏览器本身起不来（跟目录无关）时，别重试，直接把错报上去。
+
+    只在头一个候选上就抛这种错 —— 换目录 / 换浏览器都救不了它。
+    """
     profile = artifacts_dir / "browser-profile"
     attempts: list[Path] = []
 
@@ -1328,11 +1365,13 @@ def test_start_still_reports_a_real_failure(
         raise _win_error(2, "系统找不到指定的文件。", args[0])
 
     monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
     info = bl.BrowserInfo("Edge", "msedge.exe")
     browser = bl.LoginBrowser(info, profile, timeout=5.0)
     with pytest.raises(bl.BrowserLoginError):
         browser.start()
-    assert attempts == [profile], "跟目录无关的错不该换目录重试"
+    assert len(attempts) == 1, "跟目录无关的错不该换目录重试"
+    assert attempts[0] != profile, "第一个候选是新临时目录"
 
 
 class _DeadBrowserPopen:
@@ -1391,13 +1430,16 @@ def test_start_switches_to_the_next_browser_when_the_first_one_dies_at_once(
         return _PortWritingPopen(args, **kwargs)
 
     monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
     monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [edge, chrome])
     with bl.LoginBrowser(edge, profile, timeout=5.0) as browser:
         assert browser.port == 9333
         assert browser.info.path == chrome.path, "第一个起不来就该换下一个"
         assert "Chrome" in browser.browser_note
         assert browser.process is not None
-    assert launched.count(edge.path) == 4, "Edge 该把每个候选目录都试一遍"
+    # Edge 试的目录数 = 候选数（新临时目录 + 配置目录 + 备用目录），一个不少。
+    expected_dirs = 1 + 1 + len(bl.fallback_profile_dirs(profile))
+    assert launched.count(edge.path) == expected_dirs, "Edge 该把每个候选目录都试一遍"
     assert launched.count(chrome.path) == 1
 
 
@@ -1412,6 +1454,7 @@ def test_start_reports_clearly_when_every_browser_dies_at_once(
         return _DeadBrowserPopen(args)
 
     monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
     monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [edge, chrome])
     browser = bl.LoginBrowser(edge, artifacts_dir / "browser-profile", timeout=5.0)
     with pytest.raises(bl.BrowserLoginError) as caught:
@@ -1419,7 +1462,11 @@ def test_start_reports_clearly_when_every_browser_dies_at_once(
     message = str(caught.value)
     assert bl._DEAD_ON_STARTUP_MARKER in message
     assert "直接粘贴饼干登录" in message
+    assert "资料目录" in message, "要说清是目录的事，别让用户以为是浏览器坏了"
     assert browser.process is None, "试完要收干净，别留一个已经死掉的进程"
+    assert browser.temp_profile is None or not browser.temp_profile.exists(), (
+        "试完的临时目录也要清掉"
+    )
 
 
 class _StubbornProcess:
@@ -1441,6 +1488,65 @@ class _StubbornProcess:
 
     def kill(self) -> None:
         self.killed = True
+
+
+def test_stop_removes_the_temp_profile_it_used(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用到临时资料目录就要负责删掉：一次登录几十上百 MB，不能关一个留一个。"""
+    temp_profile = artifacts_dir / "temp-profile"
+    temp_profile.mkdir(parents=True, exist_ok=True)
+    (temp_profile / "Cookies").write_bytes(b"x" * 32)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(bl, "fresh_profile_dir", lambda: temp_profile)
+
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "profile")
+    monkeypatch.setattr(
+        bl.subprocess,
+        "Popen",
+        lambda args, **kwargs: _PortWritingPopen(args, **kwargs),
+    )
+    browser.start()
+    assert temp_profile.exists(), "刚起来时目录还在（浏览器正开着它）"
+
+    browser.stop()
+
+    assert not temp_profile.exists(), "关掉浏览器后临时目录要删掉"
+    assert browser.temp_profile is None
+    assert browser.cleanup_temp_profile() is False, "删过一次就不再是「用到了临时目录」"
+
+
+def test_cleanup_temp_profile_gives_up_quietly_when_it_cannot_delete(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """删不掉也不许抛异常：收尾阶段的错不该盖住真正的问题。"""
+    temp_profile = artifacts_dir / "temp-profile"
+    temp_profile.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(bl, "TEMP_PROFILE_WAIT", 0.0)
+    monkeypatch.setattr(bl.shutil, "rmtree", lambda path, **kwargs: None)
+
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "profile")
+    browser.temp_profile = temp_profile
+    assert browser.cleanup_temp_profile() is False
+    assert browser.temp_profile is None
+
+
+def test_cleanup_temp_profile_skips_a_directory_that_is_gone(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """目录本来就不在（没用上临时目录 / 已经删过）就别去惊动进程表。"""
+    called: list[Path] = []
+    monkeypatch.setattr(
+        bl, "_kill_processes_using_profile", lambda profile: called.append(profile)
+    )
+
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "profile")
+    assert browser.cleanup_temp_profile() is False, "没用到临时目录时什么都不做"
+
+    browser.temp_profile = artifacts_dir / "nope"
+    assert browser.cleanup_temp_profile() is False
+    assert called == [], "目录不在就不该去关什么进程"
 
 
 def test_stop_escalates_to_a_whole_tree_kill(
@@ -1693,6 +1799,7 @@ def test_library_only_imports_the_standard_library() -> None:
         "queue",
         "re",
         "secrets",
+        "shutil",
         "socket",
         "struct",
         "subprocess",

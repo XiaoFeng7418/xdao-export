@@ -45,6 +45,14 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "check_update",
         lambda json_output=False: pytest.fail("自检不该去查更新"),
     )
+    # 这两个必须连**报告对象**一起换掉，只钉里面的小函数是不够的：
+    # `run_local_checks()` 会在自己的函数体里再取一次 `_loaded_settings()`，
+    # 于是「导出目录」那一项仍会读到运行测试这台机器的真实设置 —— 开发机上恰好
+    # 能写（全绿），干净的 CI 机器上写不进去（`fail`）→ 退出码 1，两个 ubuntu 作业
+    # 因此在 49df732 红了，而本机怎么跑都看不出来。`tests/test_cli.py:794` 的
+    # `_stub_preflight` 早就是这么钉的，这里是照抄它的做法。
+    monkeypatch.setattr(preflight, "run_local_checks", lambda **kwargs: preflight.Report())
+    monkeypatch.setattr(preflight, "run_network_checks", lambda: [])
 
 
 def _fake_find(monkeypatch: pytest.MonkeyPatch, path: Path, name: str = "假浏览器") -> None:
