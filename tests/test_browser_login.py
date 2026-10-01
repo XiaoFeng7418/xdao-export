@@ -1347,6 +1347,143 @@ def test_start_switches_profile_when_the_config_one_is_not_writable(
         assert str(created[2]) in browser.profile_note
 
 
+def test_a_launch_error_that_never_retries_still_deletes_the_temp_profile(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """启动本身就抛错（连进程都没起来）时也没人删临时目录。
+
+    这种错不走 start() 的「换目录重试」分支：换目录救不了它，于是临时目录
+    一直留在 %TEMP% 里。真机上量到过一百多个这样的空壳，一半是这么来的。
+    """
+    temp_profile = artifacts_dir / "temp-profile"
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(bl, "fresh_profile_dir", lambda: temp_profile)
+
+    def boom(args: list[str], **kwargs: object) -> None:
+        raise _win_error(2, "系统找不到指定的文件。", args[0])
+
+    monkeypatch.setattr(bl.subprocess, "Popen", boom)
+    browser = bl.LoginBrowser(bl.BrowserInfo("假的浏览器", "没有这个.exe"), artifacts_dir / "p")
+    with pytest.raises(bl.CdpError):
+        browser.start()
+
+    assert not temp_profile.exists(), "起都起不来，临时目录不该留着"
+    assert browser.temp_profile is None
+
+
+def test_failed_attempts_also_delete_the_temp_profile(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """起不来的那次也要把临时目录删掉：失败尝试同样会在目录里落文件。
+
+    真机上量到过：%TEMP% 里积了一百多个 ``xdao-export-browser-profile-*``，
+    其中一批是**空壳** —— 浏览器一起来就退，只在「成功」那一步才记 ``temp_profile``
+    的话，这些目录永远没人删；一连失败几次就攒一堆。
+    """
+    temp_profile = artifacts_dir / "temp-profile"
+    other = artifacts_dir / "temp-profile-2"
+
+    def fake_fresh() -> Path:
+        # 真机上 ``fresh_profile_dir`` 只给名字、目录由 ``_launch`` 里的 mkdir 建出来；
+        # 这里干脆先建出来 —— 不然「目录不该还在」就成了一句空话（没建过的路径当然不在）。
+        temp_profile.mkdir(parents=True, exist_ok=True)
+        (temp_profile / "Cookies").write_bytes(b"x" * 16)
+        return temp_profile
+
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(bl, "fresh_profile_dir", fake_fresh)
+    monkeypatch.setattr(bl, "fallback_profile_dirs", lambda profile: [other])
+    monkeypatch.setattr(
+        bl.subprocess,
+        "Popen",
+        lambda args, **kwargs: _DeadBrowserPopen(args),
+    )
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "profile")
+    monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [browser.info])
+    with pytest.raises(bl.BrowserLoginError):
+        browser.start()
+
+    assert not temp_profile.exists(), "失败的那次也要把临时目录清掉"
+    assert browser.temp_profile is None, "清过一次就不再记着它"
+    assert other.exists(), "备用目录该照常被试到（只是不归我们删）"
+
+
+def test_each_browser_gets_a_fresh_temp_profile_and_none_is_left_behind(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """换浏览器时要换一个**新的**临时目录，别把刚删掉的那个又建出来。
+
+    真机上就是这么在 %TEMP% 里留下空壳的：第一个浏览器把临时目录试败、目录当场删掉，
+    换下一个浏览器时第一个候选还是那个路径，``_launch`` 的 mkdir 又把它建出来 ——
+    可这时 ``temp_profile`` 已经清空了，那一份就永远没人删（量到的空目录就是这么来的）。
+    """
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    chrome = _fake_browser_info(artifacts_dir, "Chrome", "chrome.exe")
+    handed_out: list[Path] = []
+
+    def fake_fresh() -> Path:
+        fresh = artifacts_dir / f"temp-profile-{len(handed_out) + 1}"
+        fresh.mkdir(parents=True, exist_ok=True)
+        (fresh / "Cookies").write_bytes(b"x" * 16)
+        handed_out.append(fresh)
+        return fresh
+
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(bl, "fresh_profile_dir", fake_fresh)
+    monkeypatch.setattr(bl, "fallback_profile_dirs", lambda profile: [])
+    monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [edge, chrome])
+    monkeypatch.setattr(
+        bl.subprocess, "Popen", lambda args, **kwargs: _DeadBrowserPopen(args)
+    )
+    browser = bl.LoginBrowser(edge, artifacts_dir / "browser-profile", timeout=5.0)
+    with pytest.raises(bl.BrowserLoginError):
+        browser.start()
+
+    assert len(handed_out) == 2, "两个浏览器各拿一个干净目录，不共用"
+    assert not any(path.exists() for path in handed_out), "试完一个都不许留在 %TEMP% 里"
+    assert browser.temp_profile is None
+
+
+def test_a_fallback_profile_under_the_temp_dir_is_cleaned_up_too(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """备用候选里有一个也建在系统临时目录下（见 ``fallback_profile_dirs``）。
+
+    那也是我们建出来的：「起来就退」的每次尝试都会把那个候选新建一遍，失败之后
+    就在 %TEMP% 里留一个空壳（真机上量到过一批短名字的 ``…-<pid>`` 就是这么来的）。
+    配置目录下的备用目录不归我们删 —— 那是用户的地盘，留着下次还能用。
+    """
+    fake_temp = artifacts_dir / "temp-root"
+    fake_temp.mkdir(parents=True, exist_ok=True)
+    under_temp = fake_temp / f"xdao-export-{bl.USER_DATA_DIR_NAME}-{os.getpid()}"
+    fresh = artifacts_dir / "temp-profile"
+    other = artifacts_dir / "browser-profile-1"
+
+    def fake_fresh() -> Path:
+        fresh.mkdir(parents=True, exist_ok=True)
+        return fresh
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(fake_temp))
+    monkeypatch.setattr(bl, "fresh_profile_dir", fake_fresh)
+    monkeypatch.setattr(bl, "fallback_profile_dirs", lambda profile: [other, under_temp])
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(
+        bl, "browser_candidates", lambda info=None, env=None: [bl.BrowserInfo("Edge", "msedge.exe")]
+    )
+    monkeypatch.setattr(
+        bl.subprocess, "Popen", lambda args, **kwargs: _DeadBrowserPopen(args)
+    )
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "browser-profile", timeout=5.0
+    )
+    with pytest.raises(bl.BrowserLoginError):
+        browser.start()
+
+    assert not fresh.exists(), "头一个候选（临时目录）要收掉"
+    assert not under_temp.exists(), "建在系统临时目录下的备用目录也要收掉"
+    assert other.exists(), "配置目录下的备用目录是用户的地盘，别动它"
+
+
 def test_start_still_reports_a_real_failure(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

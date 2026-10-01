@@ -434,6 +434,34 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.10**：补上 v0.13.9 漏掉的一处收尾 —— **临时资料目录在建出来过的情况下一定收掉**。
+  v0.13.9 只记「成功用上临时目录」这一种情形（`_fresh_used`），
+  `LoginBrowser._launch()` 里 `Popen` 抛 `OSError` 时也**不经过** `start()` 的换目录重试分支，
+  于是「浏览器一起来就退」（重试全败）和「启动就抛错」两条失败路径都没人删目录：
+  真机上 `%TEMP%` 积了 147 个 `xdao-export-browser-profile-*`，123 个是空壳。
+  改法：去掉 `_fresh_used`，`fresh_profile_dir()` 建出目录时就记到 `self.temp_profile`，
+  `__exit__` 里 `cleanup_temp_profile()` 无条件调用（它自己会判断 `temp_profile` 在不在），
+  `_launch()` 的 `except OSError` 里补一次 `cleanup_temp_profile()`。
+  备用目录（`fallback_profile_dirs`）不归程序删。
+  真机复量又抓到**第二层**：`start()` 的候选表只在浏览器循环**外面**算一次，换下一个浏览器时
+  第一个候选还是刚删掉的那个临时路径，`_launch` 的 `mkdir` 把它**重新建出来**，而这时
+  `temp_profile` 已经清成 `None` —— 那一份空壳没人管（真机上量到的空目录就是它）。
+  另外 `fallback_profile_dirs()` 的第三个候选建在 `%TEMP%` 下
+  （`xdao-export-browser-profile-<pid>`），从来没被记账，每次失败都新建一遍、也一样留着。
+  最终改法：候选表挪进浏览器循环（每个浏览器各拿一个新临时目录）；`LoginBrowser` 记一张
+  **只增不减**的清单 `self._temp_dirs`（`_fresh_candidate()` 给的名字、以及 `_launch()` 里建在
+  系统临时目录下的候选都记上，判据是 `_is_temp_profile_dir()`：位置在系统临时目录 + 名字前缀
+  `xdao-export-browser-profile`），`cleanup_temp_profile()` 挨个删、删到过东西才返回 True；
+  `start()` 最后报错前再兜底收一次。真机探针 `_scratch/probe_failed_cleanup_dead.py` 复跑：
+  3 个临时目录全删、`%TEMP%` 里剩 0 个。
+  用例：`tests/test_browser_login.py` 的
+  `test_failed_attempts_also_delete_the_temp_profile`（原来那版假 `fresh_profile_dir`
+  只返回路径、不真建目录，所以 `not temp_profile.exists()` 是**真空断言** —— 改成会真
+  mkdir 的替身）、`test_a_launch_error_that_never_retries_still_deletes_the_temp_profile`、
+  `test_each_browser_gets_a_fresh_temp_profile_and_none_is_left_behind`（两个浏览器各拿一个
+  新目录、都不留）、`test_a_fallback_profile_under_the_temp_dir_is_cleaned_up_too`
+  （把 `tempfile.gettempdir` 指到临时根，验「%TEMP% 下的备用候选也要收、配置目录里的不动」）。
+
 - **v0.13.9**：「用浏览器登录」改用**新建的临时资料目录**（`fresh_profile_dir()`，系统临时目录 + 进程内序号），不再复用配置目录里那个留到现在的旧目录 —— 现场是「自检里浏览器起得来、登录却一起来就退（Edge 退出码 21）」，两条路只差资料目录。关窗时 `LoginBrowser.stop()` 会 `cleanup_temp_profile()`（先 `_kill_processes_using_profile()` 收掉命令行里带该目录的浏览器进程，再 0.25 秒一次 `rmtree`、给 `TEMP_PROFILE_WAIT = 3.0` 秒，删掉立刻返回），删不掉也不抛异常。`_launch` 早退分支里的退出码 21 会追一句「未必是崩溃原因」。`gui.py`：`LoginDialog` 收下 `app=`，`SettingsDialog._open_browser_login` 把 `BrowserLoginDialog.failure` 写进运行日志（「浏览器登录没成：…」），用户贴日志就能带上真正的原因。用例：`tests/test_browser_login.py` 里候选顺序改成「临时目录 → 配置目录 → 备用目录」，新增 4 个临时目录用例，另加 `tests/test_gui_entry.py` 三条日志用例。
 
 - **v0.13.8**：补丁版，把「浏览器到底起不起得来」并进默认自检。`--selftest --check-browser`
