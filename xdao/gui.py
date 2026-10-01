@@ -848,7 +848,7 @@ class BrowserLoginDialog(tk.Toplevel):
         wrap_to_width(self.intro, minimum=260)
 
         # 「这次用哪个浏览器」：定下来之前这行是空的，定下来才填上（见 _set_browser_note）。
-        # 常有人把系统默认浏览器改成 Chrome、实际打开的却还是 Edge（改设置没落地、
+        # 把系统默认浏览器改成 Chrome、实际打开的却还是 Edge 时（改设置没落地、
         # 或者程序在用备用的那个），当场把名字写出来能省掉一轮来回。
         self.browser_note_var = tk.StringVar(value="")
         tk.Label(
@@ -1140,7 +1140,7 @@ class BrowserLoginDialog(tk.Toplevel):
                 if value and value != verified:
                     # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
                     # 上一回登录的旧饼干还躺在里面，会话早就过期了。不验一下就会
-                    # 「界面说登录成功、导出却全是未登录」—— 用户报的就是这个。
+                    # 「界面说登录成功、导出却全是未登录」——就是这么来的。
                     # verify_userhash_live 自己会把这块饼干装进客户端再问服务端。
                     note = verify_userhash_live(self.client, value)
                     if note is None:
