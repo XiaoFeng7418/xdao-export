@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1334 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1327 通过、7 项跳过）、
+单元测试 1357 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1350 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 85 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -93,6 +93,7 @@ xdao-export/
 │  ├─ test_repo_check.py   tools/repo_check.py：读不到东西时不许说没问题（7）
 │  ├─ test_make_release.py 发版：附件不在就别建 Release，发完再核一遍（17）
 │  ├─ test_push_via_api.py 备用推送：提交对象逐字节重建、--exclude 写错先拦下（32）
+│  ├─ test_sync_from_api.py API 重建远端历史：合并的每条支线、工作区核对（23）
 │  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级（61）
 │  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（22，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
