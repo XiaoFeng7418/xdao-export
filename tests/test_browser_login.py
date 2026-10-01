@@ -2025,7 +2025,7 @@ def test_build_apply_cookie_script_has_the_needed_pieces() -> None:
         "export",
         "userhash",
         bl.COOKIE_SITE,
-        "document.body.innerHTML",
+        "document.documentElement.outerHTML",
         "await fetch",
         "credentials: 'include'",
     ):
@@ -2041,6 +2041,25 @@ def test_build_apply_cookie_script_has_the_needed_pieces() -> None:
     # 取值要覆盖导出接口的三种返回形态。
     assert 'data.cookie' in script
     assert r'/"cookie"\s*:\s*"([^"]+)"/' in script
+
+
+def test_build_apply_cookie_script_fetches_the_list_when_the_page_has_none() -> None:
+    """当前页不是饼干列表时要自己去要一份。
+
+    用户登录完停在站点自己的跳转页/论坛/用户首页都很正常，那些页面的 DOM 里
+    没有列表；少了这一步，兜底每 5 秒白跑一次，界面等到超时也没反应。
+    """
+    script = bl.build_apply_cookie_script()
+    # 当前页里找不到 id 时才发请求（用户恰好停在列表页上就别多此一举）。
+    assert "ids.length === 0" in script
+    assert "await grab(BASE + 'index.html')" in script
+    # 取回来的 HTML 要能解析：链接正则之外，还要能退回 <tr> 第二个单元格。
+    assert "new DOMParser()" in script
+    assert "parseFromString(source, 'text/html')" in script
+    # 请求自带超时：站点不回话时脚本自己认输，别拖到 CDP 的 15 秒超时。
+    assert "new AbortController()" in script
+    assert "control.abort()" in script
+    assert "signal: control.signal" in script
 
 
 def test_build_apply_cookie_script_points_at_the_cookie_interfaces() -> None:

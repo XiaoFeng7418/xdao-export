@@ -695,6 +695,12 @@ class LoginDialog(tk.Toplevel):
 BROWSER_POLL_SECONDS = 1.5
 # 没读到 userhash 时，隔这么久去饼干页领一次（用户登录成功那一刻正好用上）。
 BROWSER_LEAF_SECONDS = 5.0
+# 隔这么久把状态换成「已经等了 N 秒」。
+#
+# 为什么要有这一句：用户可能在**自己平时的浏览器**里登录，程序看不到，界面又一直
+# 停在「请在里面登录…」上一动不动 —— 看起来就像卡死了。换成带秒数的句子，至少
+# 让人知道程序在等、等的是哪个窗口里的登录。
+BROWSER_PROGRESS_SECONDS = 15.0
 # 等用户登录的上限；到点给一句能照做的话，而不是一直转圈。
 BROWSER_LOGIN_TIMEOUT = 300.0
 # 等浏览器把调试端口写出来的上限（冷启动 + 首次建 profile 会偏慢）。
@@ -734,6 +740,19 @@ def _find_login_browser(settings: AppSettings | None = None) -> object:
     backend = _load_browser_login()
     explicit = (settings or AppSettings.load()).pdf_browser
     return backend.find_browser(explicit or None)
+
+
+def _waiting_status(waited: int) -> str:
+    """「还在等」那句话（``waited`` 是已经等了多少秒）。
+
+    分开写成一个函数是为了让「等哪儿的登录」这句话只有一份：界面上的状态、
+    超时提示、测试断言引的都是这里，改口径不会漏掉某处。
+    """
+    return (
+        f"已经等了 {waited} 秒，还没在浏览器里看到登录。"
+        "要在这个窗口打开的那个浏览器里登录，程序才看得到；"
+        "登录成功后这里会自己关掉。"
+    )
 
 
 def verify_userhash_live(client, userhash: str) -> str | None:
@@ -954,6 +973,9 @@ class BrowserLoginDialog(tk.Toplevel):
                 current = self.status_var.get()
                 self._set_status(f"{current}（{payload}）" if current else str(payload))
                 continue
+            if kind == "status":  # 换一句状态（「已经等了 N 秒…」）：是替换，不是追加
+                self._set_status(str(payload))
+                continue
             if kind == "browser_closed":
                 self.failure = "浏览器窗口已经关掉了，还没取到饼干。"
                 self._set_status(
@@ -1123,8 +1145,10 @@ class BrowserLoginDialog(tk.Toplevel):
             ("ready", "浏览器已经打开了：请在里面登录 X 岛用户系统。登录成功后这里会自动关掉。")
         )
 
-        deadline = time.monotonic() + BROWSER_LOGIN_TIMEOUT
-        next_leaf = time.monotonic() + BROWSER_LEAF_SECONDS
+        started = time.monotonic()
+        deadline = started + BROWSER_LOGIN_TIMEOUT
+        next_leaf = started + BROWSER_LEAF_SECONDS
+        next_progress = started + BROWSER_PROGRESS_SECONDS
         verified: str | None = None  # 已经验过、当场就认的饼干：别每一轮都去问一遍
         said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
         while not self._stop.is_set():
@@ -1158,7 +1182,11 @@ class BrowserLoginDialog(tk.Toplevel):
             except Exception as exc:
                 self._queue.put(("error", f"读取浏览器饼干失败：{exc}"))
                 return
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= next_progress:
+                next_progress = now + BROWSER_PROGRESS_SECONDS
+                self._queue.put(("status", _waiting_status(int(now - started))))
+            if now >= deadline:
                 break
             self._stop.wait(BROWSER_POLL_SECONDS)
         if not self._stop.is_set():
@@ -1166,7 +1194,8 @@ class BrowserLoginDialog(tk.Toplevel):
                 (
                     "error",
                     f"等了 {BROWSER_LOGIN_TIMEOUT / 60:.0f} 分钟还没看到登录成功。"
-                    "请确认浏览器窗口里已经登录完成，再点「重新打开浏览器」试一次。",
+                    "要在这个窗口打开的浏览器里登录，程序才看得到 —— "
+                    "在自己平时用的浏览器里登录不行；也可以点「直接粘贴饼干登录」。",
                 )
             )
 

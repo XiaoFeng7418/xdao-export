@@ -465,6 +465,20 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.15**（修「浏览器登录成功后程序一直没反应」）：`xdao/browser_login.py` 的
+  `_APPLY_COOKIE_JS` 原来只在当前页面的 DOM 里找 `Cookie/switchTo/id/<id>` 链接 —— 登录后页面
+  停在论坛/用户首页时找不到，兜底每 5 秒静默返回 None，5 分钟才超时；现在当前页找不到就自己
+  `fetch` 一次 `.../Member/User/Cookie/index.html` 再解析（同源、带登录会话；匿名时拿回的是站点
+  那张「跳转提示」页，不会误判），`grab()` 统一 8 秒 `AbortController` 超时 + `credentials:
+  'include'`。界面侧（`xdao/gui.py`）新增 `BROWSER_PROGRESS_SECONDS = 15.0` 与
+  `_waiting_status()`，队列新增**替换**语义的 `("status", …)` 消息，超时文案补「在自己平时用的
+  浏览器里登录不行 / 可以用『直接粘贴饼干登录』」。
+  真机核验：取饼干那条链（真 Edge + 临时资料目录 + 真 CDP）9/9 —— 改动前的脚本在「已登录但页面
+  不是列表」时返回空（复现），改动后取到饼干，匿名页不被当成饼干，当前页就是列表时不多发请求；
+  界面这一层（真 Tk 对话框 + 真浏览器）6/6 —— 等待期间状态栏报时长、登录后窗口自己关掉、userhash
+  写进客户端；收尾 `%TEMP%` 无残留、无遗留进程。
+  用例：`tests/test_browser_login.py` 改 1 条新增 1 条、`tests/test_gui_browser_login.py` 新增 2 条；
+  全量两轮。
 - **v0.13.14**（只改文字，不改功能）：全仓去掉「复述来源」的句式。README、`packaging/使用说明.txt`、
   `docs/RELEASE_NOTES_*.md`、MAINTENANCE、源码注释与用例文档字符串里的「有用户问…」「有人反馈…」
   「有人报过…」「这位用户 / 那位用户…」一律改成直接写现象与规则；规则本身（「## 注释与文档的写法」）
