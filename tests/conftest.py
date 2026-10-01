@@ -8,8 +8,10 @@ pytest 自己新建的 ``tmp_path`` 会在写入时报「拒绝访问」。
 
 from __future__ import annotations
 
+import gc
 import os
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -236,3 +238,36 @@ def artifacts_dir() -> Path:
         yield path
     finally:
         shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _settle_threads_before_interpreter_shutdown():
+    """整套跑完先收拾干净再让解释器退出。
+
+    2026-10-01 实测：全套跑完最后一行 `100%` 之后就崩了，报
+
+        Exception ignored in: <function Variable.__del__ …>
+        RuntimeError: main thread is not in main loop
+        Fatal Python error: _enter_buffered_busy: could not acquire lock for
+        <_io.BufferedWriter name='<stderr>'> at interpreter shutdown,
+        possibly due to daemon threads
+
+    —— 界面用例里真开过 Tk，退出时那些 ``Variable`` 才被 GC 到，而这时主线程
+    已经不在了，于是 ``__del__`` 抛异常、又要往 stderr 写，正好撞上后台线程
+    占着输出锁：**没有汇总行，退出码还变成 1**，看着像测试失败，其实全绿。
+
+    所以在这里（解释器还完好、主线程还在）先把垃圾收掉、把后台线程等一等。
+    """
+    yield
+    gc.collect()
+    for _ in range(3):
+        alive = [
+            thread
+            for thread in threading.enumerate()
+            if thread is not threading.main_thread()
+        ]
+        if not alive:
+            break
+        for thread in alive:
+            thread.join(timeout=1.0)
+        gc.collect()

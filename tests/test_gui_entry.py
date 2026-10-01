@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import queue
 import time
@@ -1001,8 +1002,8 @@ class _FakeUpdateButton:
 class _UpdateApp:
     """只实现新版本检查这条路的 App 会用到的那点东西。
 
-    ``_update_done`` / ``_poll_update`` / ``_offer_download`` 直接借用真实现
-    （它们的逻辑就是要测的），其余属性用假的顶上。
+    ``_update_done`` / ``_poll_update`` / ``_offer_download`` / 升级那一串
+    都直接借用真实现（它们的逻辑就是要测的），其余属性用假的顶上。
     """
 
     def __init__(self, root) -> None:
@@ -1012,13 +1013,33 @@ class _UpdateApp:
         self._update_button = _FakeUpdateButton()
         self._checking_update = True
         self._update_queue = queue.Queue()
+        # 一键升级的状态：真实现会读它，缺了会 AttributeError
+        self._upgrading = False
+        self._upgrade_spawned = False
+        self._upgrade_queue = queue.Queue()
+        self.upgrades_started: list[object] = []
+        self.finished: list[tuple[bool, str, str]] = []
+        self.quits: list[bool] = []
 
     def log(self, message: str) -> None:
         self.logged.append(message)
 
+    def _start_upgrade(self, result) -> None:
+        self.upgrades_started.append(result)
+
+    def _upgrade_finish(self, ok: bool, message: str, action: str) -> None:
+        """只记下来：真实现会弹对话框、还会**结束进程**，用例里不能让它跑。"""
+        self.finished.append((ok, message, action))
+        self._upgrading = False
+
     _update_done = gui.App._update_done
     _poll_update = gui.App._poll_update
     _offer_download = gui.App._offer_download
+    _upgrade_worker = gui.App._upgrade_worker
+    _upgrade_progress = gui.App._upgrade_progress
+    _upgrade_progress_text = gui.App._upgrade_progress_text
+    _update_button_text = gui.App._update_button_text
+    _end_self_for_upgrade = gui.App._end_self_for_upgrade
 
 
 def _call_update_worker(app, monkeypatch, result) -> None:
@@ -1091,6 +1112,344 @@ def test_app_schedules_one_update_check_after_startup():
     from xdao.gui import App
 
     source = inspect.getsource(App.__init__)
-    pattern = r"root\.after\(\s*\d+,\s*lambda:\s*self\.check_update\(silent=True\)"
+    pattern = r"root\.after\(\s*\d+,\s*self\.check_update\(silent=True\)|root\.after\(\s*\d+,\s*lambda:\s*self\.check_update\(silent=True\)"
     assert re.search(pattern, source), "App 起来之后没有安排那次新版本检查"
     assert source.count("check_update(silent=True)") == 1, "启动时只该问一次"
+
+
+# ---------- 一键升级（界面这条路） ----------
+
+
+def _newer_result(*, asset: bool = True):
+    from xdao import update_check
+
+    return update_check.UpdateResult(
+        ok=True,
+        newer=True,
+        current="0.12.0",
+        latest=update_check.ReleaseInfo(
+            tag="v9.9.9",
+            url="https://example.invalid/9",
+            asset_url="https://example.invalid/9/xdao-export-v9.9.9-win64.zip" if asset else "",
+            asset_name="xdao-export-v9.9.9-win64.zip" if asset else "",
+            asset_size=11 * 1024 * 1024 if asset else 0,
+        ),
+    )
+
+
+class _UpgradeSpy:
+    """升级那一路的替身：记下被调了什么，一次都不碰网络和文件系统。
+
+    ``confirm`` 决定「自检通过后那次二次确认」用户答什么；``test_ok``
+    决定候选版本的 ``--selftest`` 过不过；``boom`` 让下载直接炸。
+    """
+
+    def __init__(self, *, staging, test_ok=True, confirm=True, boom=False) -> None:
+        from xdao import updater
+
+        self.calls: list[str] = []
+        self.staging = staging
+        self.plans = [
+            updater.UpgradePlan(True, "", staging / "app", staging / "app" / "xdao-export.exe", 4242)
+        ]
+        self.test_ok = test_ok
+        self.confirm = confirm
+        self.boom = boom
+        self.spawned = False
+        self.discarded: list[object] = []
+
+    def plan_upgrade(self, **kwargs):
+        self.calls.append("plan")
+        return self.plans[0]
+
+    def default_staging_root(self):
+        return self.staging
+
+    def detect_proxy(self):
+        return ""
+
+    def download_asset(self, url, target, **kwargs):
+        self.calls.append("download")
+        if self.boom:
+            raise OSError("网络断了")
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_bytes(b"zip")
+        if kwargs.get("progress"):
+            kwargs["progress"](10, 100)
+
+    def extract_payload(self, archive, into):
+        self.calls.append("extract")
+        Path(into).mkdir(parents=True, exist_ok=True)
+        return Path(into)
+
+    def payload_launcher(self, payload):
+        return Path(payload) / "xdao-export.exe"
+
+    def run_selftest(self, exe, **kwargs):
+        self.calls.append("selftest")
+        if self.test_ok:
+            return True, "本机自检全部通过。"
+        return False, "有 1 项没过：配置目录"
+
+    def spawn_helper(self, plan, payload):
+        self.calls.append("spawn")
+        self.spawned = True
+
+    def discard_staging(self, root=None):
+        self.calls.append("discard")
+        self.discarded.append(root)
+
+
+def _drive_upgrade(app, result, monkeypatch, spy, *, agree=True, seconds=30.0):
+    """像真界面那样跑一遍升级：后台线程干活，这里扮演主线程收发消息。
+
+    **必须真开一个线程**：``_upgrade_worker`` 会在「二次确认」那一步阻塞等
+    主线程的回答（``decision.get()``），同步调用它会把自己等死。
+    """
+    import threading
+
+    _patch_updater(monkeypatch, spy)
+    # 升级成功后真实现会结束进程（`os._exit`）——用例里必须挡掉，否则整套测试当场没了
+    monkeypatch.setattr(gui.os, "_exit", lambda code=0: None)
+    worker = threading.Thread(target=app._upgrade_worker, args=(result, app._upgrade_queue))
+    worker.daemon = True
+    worker.start()
+    messages: list[tuple] = []
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            message = app._upgrade_queue.get(timeout=1.0)
+        except queue.Empty:
+            if not worker.is_alive() and app._upgrade_queue.empty():
+                break
+            continue
+        messages.append(message)
+        kind, payload = message
+        if kind == "confirm":
+            payload[1].put(bool(agree))  # type: ignore[index]
+        elif kind == "finish":
+            break
+    worker.join(timeout=5.0)
+    assert not worker.is_alive(), "升级线程没退出来"
+    # 后台线程碰过 Tk，垃圾回收趁还在主线程时做掉；否则会在别的线程里析构
+    # Tk 变量并抛 RuntimeError（表现成 PytestUnraisableExceptionWarning）。
+    gc.collect()
+    time.sleep(0.2)
+    gc.collect()
+    return messages
+
+
+def _patch_updater(monkeypatch, spy) -> None:
+    from xdao import updater
+
+    monkeypatch.setattr(updater, "plan_upgrade", spy.plan_upgrade)
+    monkeypatch.setattr(updater, "default_staging_root", spy.default_staging_root)
+    monkeypatch.setattr(updater, "detect_proxy", spy.detect_proxy)
+    monkeypatch.setattr(updater, "download_asset", spy.download_asset)
+    monkeypatch.setattr(updater, "extract_payload", spy.extract_payload)
+    monkeypatch.setattr(updater, "payload_launcher", spy.payload_launcher)
+    monkeypatch.setattr(updater, "run_selftest", spy.run_selftest)
+    monkeypatch.setattr(updater, "spawn_helper", spy.spawn_helper)
+    monkeypatch.setattr(updater, "discard_staging", spy.discard_staging)
+
+
+def test_upgrade_worker_runs_the_whole_five_steps(dialog_root, tmp_path, monkeypatch):
+    """下载 → 解压 → 自检 → 二次确认 → 交给帮手，五步一步都不能少。"""
+    from xdao import updater
+
+    app = _UpdateApp(dialog_root)
+    spy = _UpgradeSpy(staging=tmp_path / updater.STAGING_DIR_NAME)
+
+    messages = _drive_upgrade(app, _newer_result(), monkeypatch, spy)
+
+    assert spy.calls[:5] == ["plan", "download", "extract", "selftest", "spawn"]
+    assert spy.spawned is True
+    assert app._upgrade_spawned is True, "交给帮手之后不能再删暂存（帮手要用）"
+    assert spy.discarded == [], "已经交给帮手了，暂存不能删"
+    kinds = [kind for kind, _ in messages]
+    assert kinds[-1] == "finish"
+    ok, message, action = messages[-1][1]
+    assert ok is True
+    assert action == "exit", "帮手在等我们退出，得真的退"
+    assert "9.9.9" in message
+
+
+def test_upgrade_worker_keeps_the_old_copy_when_the_selftest_fails(
+    dialog_root, tmp_path, monkeypatch
+):
+    """新版自检没过就什么都别换，而且要把暂存清掉。"""
+    from xdao import updater
+
+    app = _UpdateApp(dialog_root)
+    spy = _UpgradeSpy(staging=tmp_path / updater.STAGING_DIR_NAME, test_ok=False)
+
+    messages = _drive_upgrade(app, _newer_result(), monkeypatch, spy)
+
+    assert "spawn" not in spy.calls, "自检没过还想换？"
+    assert app._upgrade_spawned is False
+    assert spy.discarded == [spy.staging], "没换成，暂存要清掉"
+    ok, message, _ = messages[-1][1]
+    assert ok is False
+    assert "不换" in message
+
+
+def test_upgrade_worker_does_not_swap_when_the_user_says_no(
+    dialog_root, tmp_path, monkeypatch
+):
+    """自检过了、但用户在第二次确认上答「不」—— 一样什么都不换。"""
+    from xdao import updater
+
+    app = _UpdateApp(dialog_root)
+    spy = _UpgradeSpy(staging=tmp_path / updater.STAGING_DIR_NAME)
+
+    messages = _drive_upgrade(app, _newer_result(), monkeypatch, spy, agree=False)
+
+    assert "spawn" not in spy.calls
+    assert spy.discarded == [spy.staging]
+    ok, message, _ = messages[-1][1]
+    assert ok is False
+    assert "取消" in message
+
+
+def test_upgrade_worker_survives_a_dead_network(dialog_root, tmp_path, monkeypatch):
+    from xdao import updater
+
+    app = _UpdateApp(dialog_root)
+    spy = _UpgradeSpy(staging=tmp_path / updater.STAGING_DIR_NAME, boom=True)
+
+    messages = _drive_upgrade(app, _newer_result(), monkeypatch, spy)
+
+    assert "spawn" not in spy.calls
+    assert spy.discarded == [spy.staging]
+    ok, message, _ = messages[-1][1]
+    assert ok is False
+    assert "网络断了" in message, "失败原因要如实写出来"
+
+
+def test_upgrade_worker_stops_when_the_release_has_no_package(
+    dialog_root, tmp_path, monkeypatch
+):
+    """发布里没挂 zip 就别去下，直接告诉用户手工下载。"""
+    from xdao import updater
+
+    app = _UpdateApp(dialog_root)
+    spy = _UpgradeSpy(staging=tmp_path / updater.STAGING_DIR_NAME)
+
+    messages = _drive_upgrade(app, _newer_result(asset=False), monkeypatch, spy)
+
+    assert spy.calls == ["plan", "discard"]
+    assert spy.discarded == [spy.staging]
+    ok, message, _ = messages[-1][1]
+    assert ok is False
+    assert "手工下载" in message
+
+
+def test_upgrade_progress_asks_once_more_before_swapping(dialog_root, monkeypatch):
+    """自检通过之后还要再问一句才动手 —— 用户答「是」就继续。"""
+    app = _UpdateApp(dialog_root)
+    ask = {"called": 0}
+
+    def fake_ask(*args, **kwargs):
+        ask["called"] += 1
+        return True
+
+    monkeypatch.setattr(gui.messagebox, "askyesno", fake_ask)
+    decision: queue.Queue = queue.Queue()
+
+    keep_going = app._upgrade_progress("confirm", ("v9.9.9", decision))
+
+    assert keep_going is True
+    assert ask["called"] == 1
+    assert decision.get() is True
+
+
+def test_upgrade_progress_records_a_cancel(dialog_root, monkeypatch):
+    app = _UpdateApp(dialog_root)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
+    decision: queue.Queue = queue.Queue()
+
+    assert app._upgrade_progress("confirm", ("v9.9.9", decision)) is True
+    assert decision.get() is False
+    assert any("取消" in line for line in app.logged)
+
+
+def test_upgrade_progress_finishes_and_stops_polling(dialog_root):
+    app = _UpdateApp(dialog_root)
+    app._upgrading = True
+
+    assert app._upgrade_progress("finish", (False, "没换成", "")) is False
+    assert app.finished == [(False, "没换成", "")]
+    assert app._upgrading is False
+
+
+def test_upgrade_progress_text_shows_a_percentage(dialog_root):
+    app = _UpdateApp(dialog_root)
+
+    app._upgrade_progress_text((512, 1024))
+
+    assert app._update_button.text == "升级中 50%"
+
+
+def test_upgrade_progress_text_falls_back_to_kilobytes(dialog_root):
+    app = _UpdateApp(dialog_root)
+
+    app._upgrade_progress_text((2048,))
+
+    assert app._update_button.text == "升级中 2 KB"
+
+
+def test_upgrade_progress_text_ignores_junk(dialog_root):
+    """后台线程万一塞了看不懂的东西，按钮文字也不该被写坏。"""
+    app = _UpdateApp(dialog_root)
+
+    app._upgrade_progress_text("不知道这是什么")
+    app._upgrade_progress_text(())
+
+
+def test_end_self_for_upgrade_quits_the_loop_and_ends_the_process(
+    dialog_root, monkeypatch
+):
+    """换完之后必须**真的结束进程**：帮手在等老进程消失，只 quit() 不够。
+
+    实测（`_scratch\\probe_quit_exits.py`）真机上 `root.quit()` 之后进程还活着
+    （哪怕只剩一个主线程），帮手等满 60 秒就放弃 —— 用户看到「升级完成」，
+    目录其实没换。
+    """
+    app = _UpdateApp(dialog_root)
+    exited: list[int] = []
+    monkeypatch.setattr(gui.os, "_exit", lambda code=0: exited.append(code))
+
+    app.root.quit = lambda: app.quits.append(True)  # type: ignore[method-assign]
+    gui.App._end_self_for_upgrade(app)
+
+    assert app.quits == [True], "先正常退出事件循环"
+    assert exited == [0], "再把进程结束掉，不然帮手永远等不到"
+    assert any("让给新版本" in line for line in app.logged)
+
+
+def test_upgrade_finish_calls_the_end_self_step_on_success(dialog_root):
+    app = _UpdateApp(dialog_root)
+    app.end_self_calls = []
+
+    def fake_end_self(self=app):
+        app.end_self_calls.append(True)
+
+    app._end_self_for_upgrade = fake_end_self  # type: ignore[method-assign]
+
+    gui.App._upgrade_finish(app, True, "新版本 0.13.0 已就位。", "exit")
+
+    assert app.end_self_calls == [True], "换成功了就必须走「结束自己」这一步"
+    assert app._update_button.text == "升级完成"
+
+
+def test_upgrade_finish_does_not_end_the_process_when_it_failed(
+    dialog_root, monkeypatch
+):
+    app = _UpdateApp(dialog_root)
+    exited: list[int] = []
+    monkeypatch.setattr(gui.os, "_exit", lambda code=0: exited.append(code))
+
+    gui.App._upgrade_finish(app, False, "没换成", "")
+
+    assert exited == [], "没成功就别退，用户还得接着用"
+    assert app._update_button.text == "有新版本", "没换成，按钮得回到「有新版本」让人再试"

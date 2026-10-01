@@ -28,6 +28,7 @@ import secrets
 import socket
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -193,6 +194,50 @@ def user_data_dir(config_dir: Path) -> Path:
     return Path(config_dir) / USER_DATA_DIR_NAME
 
 
+def fallback_profile_dirs(profile: Path) -> list[Path]:
+    """``profile`` 用不了时的备用目录（按顺序试）。
+
+    真机上遇到过这一条：配置目录里的 ``browser-profile`` 因为权限或占用，
+    浏览器一碰就是「[WinError 5] 拒绝访问」，用户看到的就是一句
+    「打开浏览器失败」，怎么点都打不开。这时候换到临时目录下的一个新 profile
+    通常就能起来 —— 登录窗口本来就是临时的，放哪儿都能用。
+
+    优先复用同一个父目录下带后缀的新目录（把浏览器状态留在用户自己的配置目录里），
+    只有父目录本身也写不进去，才退到系统临时目录。
+    """
+    profile = Path(profile)
+    parent = profile.parent
+    options = [parent / f"{USER_DATA_DIR_NAME}-{os.getpid()}-{int(time.time())}", profile / "_new"]
+    try:
+        temp_root = Path(tempfile.gettempdir())
+        options.append(temp_root / f"xdao-export-{USER_DATA_DIR_NAME}-{os.getpid()}")
+    except OSError:  # pragma: no cover —— 拿不到临时目录就算了
+        pass
+    return [candidate for candidate in options if candidate != profile]
+
+
+def _profile_failure(exc: BaseException) -> bool:
+    """这次失败是不是「这个 profile 用不了」造成的（权限 / 占用）。
+
+    只看 Windows 的错误码：5 = 拒绝访问，32 = 文件被占用。别的错（比如浏览器
+    路径不对、启动就退出）换目录也没用，别白白重试一遍。
+
+    要顺着 ``__cause__`` / ``__context__`` 一起看：启动失败是包成
+    :class:`CdpError` 抛出来的，只盯着最外层会漏掉里面那个 ``PermissionError``。
+    """
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if getattr(current, "winerror", None) in (5, 32):
+            return True
+        pending.extend((current.__cause__, current.__context__))
+    return False
+
+
 def build_args(
     info: BrowserInfo,
     profile: Path,
@@ -341,6 +386,10 @@ class LoginBrowser:
     ) -> None:
         self.info = info
         self.profile = Path(profile)
+        #: 这次真正用的浏览器资料目录（换了备用目录时和 ``profile`` 不一样）。
+        self._profile = Path(profile)
+        #: 换了目录时留给用户看的一句话（见 :attr:`profile_note`）。
+        self._profile_note = ""
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
@@ -349,12 +398,59 @@ class LoginBrowser:
         self.ws_path = ""
         self.browser_ws_url = ""
 
+    @property
+    def profile_note(self) -> str:
+        """启动时若换了 profile 目录，这里记着一句给用户看的话。"""
+        return self._profile_note
+
     def start(self) -> "LoginBrowser":
-        """启动浏览器并等它把调试端口写出来。"""
+        """启动浏览器并等它把调试端口写出来。
+
+        默认用配置目录里的 ``browser-profile``。**这个目录坏了不该让整个登录
+        功能不可用**：真机上出现过「[WinError 5] 拒绝访问」——用户点多少次
+        「用浏览器登录」都是一句「打开浏览器失败」。所以碰上「权限 / 占用」
+        这类目录问题就换一个 profile 再试（见 :func:`fallback_profile_dirs`），
+        实在不行才把原始错误抛上去。
+        """
         if self.process is not None:
             return self
-        self.profile.mkdir(parents=True, exist_ok=True)
-        port_file = self.profile / "DevToolsActivePort"
+        candidates = [self.profile, *fallback_profile_dirs(self.profile)]
+        first_error: BaseException | None = None
+        for index, chosen in enumerate(candidates):
+            try:
+                return self._launch(chosen)
+            except Exception as exc:  # noqa: BLE001 —— 下面按错误码决定要不要换目录重试
+                self._reset_process()
+                if not _profile_failure(exc):
+                    raise
+                if first_error is None:
+                    first_error = exc
+                if index == 0:
+                    # 头一次失败就换目录重试，用户只会在日志里看到一句说明。
+                    self._profile = chosen
+        # 备用目录也不行：如实把原始错误报上去，别拿最后一次的错盖掉真原因。
+        if first_error is None:  # pragma: no cover —— candidates 至少有一个，走不到这儿
+            raise CdpError(f"启动 {self.info.name} 失败：找不到可用的浏览器资料目录。")
+        raise first_error
+
+    def _reset_process(self) -> None:
+        """把上一次没起来的进程收干净，好让同一个对象再试一个目录。"""
+        if self.process is None:
+            return
+        try:
+            self.stop()
+        except Exception:  # noqa: BLE001 —— 收尾失败不该盖住启动的真正错误
+            self.process = None
+
+    def _launch(self, chosen: Path) -> "LoginBrowser":
+        """真正启一次浏览器（``chosen`` 这次要用的 profile 目录）。"""
+        try:
+            chosen.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # 连目录都建不出来（父目录也写不进去）也算「这个 profile 用不了」，
+            # 交给 start() 去换下一个备用目录。
+            raise CdpError(f"浏览器资料目录用不了：{exc}") from exc
+        port_file = chosen / "DevToolsActivePort"
         # 上次崩溃可能留下过期端口：留着它会让等待立刻「成功」，然后连到一个死端口。
         try:
             port_file.unlink()
@@ -362,7 +458,7 @@ class LoginBrowser:
             pass
         try:
             self.process = subprocess.Popen(
-                build_args(self.info, self.profile, self.proxy, self.start_url),
+                build_args(self.info, chosen, self.proxy, self.start_url),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -394,6 +490,11 @@ class LoginBrowser:
                     self.port, self.ws_path = 0, ""
                 if self.port:
                     self.browser_ws_url = f"ws://127.0.0.1:{self.port}{self.ws_path}"
+                    self._profile_note = (
+                        ""
+                        if chosen == self.profile
+                        else f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
+                    )
                     return self
             time.sleep(_POLL_INTERVAL)
 
