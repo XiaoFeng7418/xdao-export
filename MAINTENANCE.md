@@ -465,6 +465,29 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.11**：加一条**启动时清扫** —— 程序被强杀时没人收尾，那些临时资料目录会一直
+  留在 `%TEMP%` 里（v0.13.9/v0.13.10 只盖住「程序自己收尾」的路径；真机上量到过 147 个）。
+  `xdao/browser_login.py` 新增 `TEMP_DIR_PREFIXES`（`xdao-export-browser-profile` 与
+  `xdao-browser-check-` 两种前缀，`_is_temp_profile_dir()` 改成按它判断 —— 顺带把
+  `--check-browser` 自建的那份也纳进来，那份以前只靠 `browser_check.check_one()` 末尾一次
+  `shutil.rmtree(ignore_errors=True)`，浏览器正咽气时静默失败，真机 `%TEMP%` 里攒了 5 个）、
+  `SWEEP_MIN_AGE = 3600.0`、`SWEEP_PROBE_TIMEOUT = 0.5`、`_profile_in_use(profile)`
+  （读 `DevToolsActivePort` → `parse_devtools_port()` → `cdp._http_json_once()` 问
+  `/json/version`，任何一步失败都算「没人用」）、
+  `sweep_stale_temp_profiles(*, min_age=SWEEP_MIN_AGE, keep=())`（三条全中才删：位置+名字前缀、
+  mtime 够老、端口没人答话；`keep` 里的不碰；删不掉的不计数）。调用点在 `xdao/gui.py` 启动处
+  的后台线程 `_sweep_temp_profiles()`（清不干净也不影响启动）。
+  用例：`tests/test_browser_login.py` 新增 9 条（删旧的/留新的与别人的、端口答话的不动、
+  `keep`、拿不到临时目录返回 0、删不掉不计数、符号链接不动、`_profile_in_use` 四种形态、
+  `_is_temp_profile_dir` 两种前缀、自检目录由 `stop()` 收掉），`tests/test_gui_entry.py` 加
+  启动线程那条。
+  **真机核验**：`D:\小玩意\_scratch\probe_sweep_v1311.py`（造旧的/新的/别人的目录各一，
+  再真起一个浏览器）→ 删 2 留 3、活浏览器那份 `_profile_in_use() == True`、门槛 0 的清扫也不动它、
+  `stop()` 后目录消失、收尾 0 残留；第一跑顺带清掉了真机上积的 5 个自检遗留目录。
+  `D:\小玩意\_scratch\probe_check_dir_cleanup.py`（把 `browser_check` 自己那次 `rmtree`
+  换成空操作）→ 自检目录照样消失，证明是 `LoginBrowser.stop()` 兜住的。
+  源码跑 `--selftest --offline --check-browser` 之后 `%TEMP%` 里 0 个 `xdao-browser-check-*`。
+
 - **v0.13.10**：补上 v0.13.9 漏掉的一处收尾 —— **临时资料目录在建出来过的情况下一定收掉**。
   v0.13.9 只记「成功用上临时目录」这一种情形（`_fresh_used`），
   `LoginBrowser._launch()` 里 `Popen` 抛 `OSError` 时也**不经过** `start()` 的换目录重试分支，

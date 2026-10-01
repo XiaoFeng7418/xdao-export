@@ -2044,6 +2044,10 @@ class App:
         # 上次升级换下来的旧目录（<名字>.old-<时间戳>）留一天就够了，顺手清掉。
         # 放在后台线程里：列目录、删目录都不该拖慢启动。
         threading.Thread(target=self._cleanup_old_backups, daemon=True).start()
+        # 上一版（以及被强杀的那几次）可能把临时资料目录留在 %TEMP% 里：那次登录
+        # 窗口用的资料目录一次就是几十上百 MB，攒起来很可观。启动后在后台扫掉旧的，
+        # 还有浏览器开着的、或者刚建出来的，一律不碰（判据见 browser_login 里那个函数）。
+        threading.Thread(target=self._sweep_temp_profiles, daemon=True).start()
         # 刚升级完的那一次，帮手自己住在暂存目录里、删不掉自己，于是留了个记号；
         # 等老进程（连同帮手）彻底走人之后再收，所以晚几秒、也在后台线程里做。
         self.root.after(3000, lambda: threading.Thread(
@@ -2054,6 +2058,20 @@ class App:
             from . import updater
 
             updater.cleanup_backups()
+        except Exception:  # noqa: BLE001 —— 清不干净也不该影响启动
+            pass
+
+    def _sweep_temp_profiles(self) -> None:
+        """扫掉以前留在 %TEMP% 里的临时资料目录（登录窗口、自检各一份）。
+
+        程序被强杀时没人收尾，那些目录会一直留着；正常路径由
+        ``LoginBrowser.cleanup_temp_profile()`` 当场删掉。放后台线程里做：
+        要列目录，还要挨个问一次调试端口。
+        """
+        try:
+            from . import browser_login
+
+            browser_login.sweep_stale_temp_profiles()
         except Exception:  # noqa: BLE001 —— 清不干净也不该影响启动
             pass
 

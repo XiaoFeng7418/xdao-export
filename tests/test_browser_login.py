@@ -1484,6 +1484,226 @@ def test_a_fallback_profile_under_the_temp_dir_is_cleaned_up_too(
     assert other.exists(), "配置目录下的备用目录是用户的地盘，别动它"
 
 
+def _backdate(path: Path, seconds: float) -> None:
+    """把路径的修改时间往前拨，让它算「旧的」。"""
+    stamp = time.time() - seconds
+    os.utime(path, (stamp, stamp))
+
+
+def _temp_profile(root: Path, name: str, *, age: float | None = None) -> Path:
+    """在假的临时根下造一个「我们建的」目录；给了 ``age`` 就把它拨旧。"""
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "Cookies").write_text("x", encoding="utf-8")
+    if age is not None:
+        _backdate(path, age)
+    return path
+
+
+def test_sweep_removes_old_temp_profiles_and_leaves_the_rest(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """启动时清扫：旧的删掉，别的（刚建的、不是我们的、不是目录的）一概不碰。
+
+    「程序被强杀」这条路没人收尾 —— v0.13.10 只盖住了程序自己收尾的那几种失败。
+    """
+    root = artifacts_dir / "temp-root"
+    root.mkdir(parents=True, exist_ok=True)
+    old_login = _temp_profile(
+        root, f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-1000-1", age=2 * bl.SWEEP_MIN_AGE
+    )
+    old_check = _temp_profile(root, "xdao-browser-check-abc123", age=2 * bl.SWEEP_MIN_AGE)
+    new_login = _temp_profile(root, f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-2000-1")
+    new_check = _temp_profile(root, "xdao-browser-check-def456")
+    stranger = _temp_profile(root, "some-other-tool", age=2 * bl.SWEEP_MIN_AGE)
+    plain_file = root / f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-3000-1"
+    plain_file.write_text("名字像但不是目录", encoding="utf-8")
+    _backdate(plain_file, 2 * bl.SWEEP_MIN_AGE)
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
+    monkeypatch.setattr(bl, "_profile_in_use", lambda profile: False)
+
+    assert bl.sweep_stale_temp_profiles() == 2
+    assert not old_login.exists(), "登录窗口那份旧的该删"
+    assert not old_check.exists(), "自检那份旧的也该删 —— 它同样是我们建的"
+    assert new_login.exists(), "刚建出来的多半是别的实例正在用，别碰"
+    assert new_check.exists(), "自检那份同上"
+    assert stranger.exists(), "不是我们建的目录，一个都不许动"
+    assert plain_file.exists(), "名字像但我们没把它当目录，别动"
+
+
+def test_sweep_skips_a_profile_a_browser_is_still_using(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """浏览器还开着那份资料目录时（程序被强杀就会这样）不能删。"""
+    root = artifacts_dir / "temp-root"
+    root.mkdir(parents=True, exist_ok=True)
+    busy = _temp_profile(
+        root, f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-1000-1", age=2 * bl.SWEEP_MIN_AGE
+    )
+    idle = _temp_profile(
+        root, f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-1000-2", age=2 * bl.SWEEP_MIN_AGE
+    )
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
+    monkeypatch.setattr(bl, "_profile_in_use", lambda profile: profile == busy)
+
+    assert bl.sweep_stale_temp_profiles() == 1
+    assert busy.exists(), "还有浏览器在用，删了等于把它脚下的目录抽走"
+    assert not idle.exists(), "没人用的那份照删"
+
+
+def test_sweep_keeps_the_paths_it_was_told_to_keep(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``keep`` 里的路径一律不碰（这次会话自己建的那几份）。"""
+    root = artifacts_dir / "temp-root"
+    root.mkdir(parents=True, exist_ok=True)
+    mine = _temp_profile(
+        root, f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-1000-1", age=2 * bl.SWEEP_MIN_AGE
+    )
+    other = _temp_profile(
+        root, f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-1000-2", age=2 * bl.SWEEP_MIN_AGE
+    )
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
+    monkeypatch.setattr(bl, "_profile_in_use", lambda profile: False)
+
+    assert bl.sweep_stale_temp_profiles(keep=[mine]) == 1
+    assert mine.exists(), "这次会话正在用的那份不能被自己扫掉"
+    assert not other.exists()
+
+
+def test_sweep_returns_zero_when_it_cannot_even_look(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """拿不到、列不出临时目录时安静地返回 0（不该在启动线程里炸）。"""
+
+    def no_temp_dir() -> str:
+        raise OSError("没有临时目录")
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", no_temp_dir)
+    assert bl.sweep_stale_temp_profiles() == 0
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(artifacts_dir / "没有这个目录"))
+    assert bl.sweep_stale_temp_profiles() == 0
+
+
+def test_sweep_does_not_count_a_directory_it_could_not_delete(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """删不掉（被占用、被安全软件拦下）就留着，下一版再说 —— 但不能报成删掉了。"""
+    root = artifacts_dir / "temp-root"
+    root.mkdir(parents=True, exist_ok=True)
+    stubborn = _temp_profile(
+        root, f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-1000-1", age=2 * bl.SWEEP_MIN_AGE
+    )
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
+    monkeypatch.setattr(bl, "_profile_in_use", lambda profile: False)
+    monkeypatch.setattr(bl.shutil, "rmtree", lambda path, **kwargs: None)
+
+    assert bl.sweep_stale_temp_profiles() == 0
+    assert stubborn.exists()
+
+
+def test_sweep_leaves_a_symlink_with_our_name_alone(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """名字像但其实是符号链接的，不跟着删 —— 指向哪儿不归我们管。"""
+    root = artifacts_dir / "temp-root"
+    root.mkdir(parents=True, exist_ok=True)
+    target = artifacts_dir / "somebody-elses-dir"
+    target.mkdir(parents=True, exist_ok=True)
+    link = root / f"xdao-export-{bl.USER_DATA_DIR_NAME}-4242-1000-1"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("这台机器不给普通用户建符号链接")
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
+    monkeypatch.setattr(bl, "_profile_in_use", lambda profile: False)
+
+    assert bl.sweep_stale_temp_profiles() == 0
+    assert link.exists(), "符号链接本身不该被删"
+    assert target.exists(), "它指向的目录更不该被删"
+
+
+def test_profile_in_use_asks_the_devtools_port(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """判据就是这个：调试端口答话＝还有浏览器在用；文件不在、坏了、端口是死的都算没人用。"""
+    profile = artifacts_dir / "profile-in-use"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "DevToolsActivePort").write_text("5555\n/devtools/browser/abc\n", encoding="utf-8")
+    asked: list[str] = []
+
+    def fake_once(url: str, timeout: float = 5.0) -> object:
+        asked.append(url)
+        return {"Browser": "Edg/1"}
+
+    monkeypatch.setattr(cdp, "_http_json_once", fake_once)
+    assert bl._profile_in_use(profile) is True
+    assert asked == ["http://127.0.0.1:5555/json/version"], "要按端口文件里那个端口去问"
+
+    def refused(url: str, timeout: float = 5.0) -> object:
+        raise bl.CdpError(f"读取浏览器的调试接口失败：{_REFUSED}")
+
+    monkeypatch.setattr(cdp, "_http_json_once", refused)
+    assert bl._profile_in_use(profile) is False, "端口是死的，说明浏览器早没了"
+
+    monkeypatch.setattr(cdp, "_http_json_once", fake_once)
+    assert bl._profile_in_use(artifacts_dir / "没有这个目录") is False, "连端口文件都没有"
+    (profile / "DevToolsActivePort").write_text("这不是数字\n", encoding="utf-8")
+    assert bl._profile_in_use(profile) is False, "端口文件是坏的"
+
+
+def test_is_temp_profile_dir_recognises_both_kinds_and_nothing_else(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """认位置 + 名字前缀：登录那份、自检那份都算我们的；别人的、配置目录里的都不算。"""
+    root = artifacts_dir / "temp-root"
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
+
+    assert bl._is_temp_profile_dir(root / f"xdao-export-{bl.USER_DATA_DIR_NAME}-1-2-3")
+    assert bl._is_temp_profile_dir(root / "xdao-browser-check-abc123")
+    assert not bl._is_temp_profile_dir(root / "some-other-tool")
+    assert not bl._is_temp_profile_dir(artifacts_dir / "browser-profile")
+    assert not bl._is_temp_profile_dir(
+        root / f"xdao-export-{bl.USER_DATA_DIR_NAME}-1-2-3" / "Default"
+    ), "系统临时目录**里面**的子目录不算 —— 收尾收的是那一份资料目录本身"
+
+
+def test_a_self_check_profile_is_cleaned_up_by_stop(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--check-browser`` 自建的那份资料目录（``xdao-browser-check-…``）也得由我们收。
+
+    以前只认登录那份名字，自检这份不在清单里，收尾只剩 ``browser_check`` 自己那一次
+    ``rmtree(ignore_errors=True)`` —— 浏览器还在咽气时它会静默失败，真机 %TEMP% 里
+    攒了 5 个。
+    """
+    fake_temp = artifacts_dir / "temp-root"
+    fake_temp.mkdir(parents=True, exist_ok=True)
+    check_dir = fake_temp / "xdao-browser-check-abc123"
+    check_dir.mkdir()
+
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(fake_temp))
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(
+        bl.subprocess, "Popen", lambda args, **kwargs: _PortWritingPopen(args, **kwargs)
+    )
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), check_dir, timeout=5.0)
+    browser.fallback_profiles = False  # 自检那条路就是这样：只用给它的那份目录
+    browser.start()
+
+    assert browser.temp_profile is None, "自检不用临时资料目录，用的是它自己建的那份"
+    assert check_dir in browser._temp_dirs, "自检那份也要记进清单，收尾才有人删"
+    browser.stop()
+    assert not check_dir.exists(), "stop() 得把它收掉（自带重试，不等 browser_check 那一次）"
+
+
 def test_start_still_reports_a_real_failure(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
