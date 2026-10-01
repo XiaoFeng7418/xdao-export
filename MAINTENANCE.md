@@ -482,6 +482,15 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   真机：`_scratch/probe_paste_dialog_v1313.py` 两个窗口在最小尺寸下「被裁 0 个」，用浏览器登录窗口的
   介绍 7 行干净无断词，真窗口里粘整段 cookie 摘出 `userhash`；截图
   `_scratch/_shots/browser_login_intro.png.png`、`_scratch/_shots/paste_cookie_560x430.png.png`。
+  **真机验收（打包版）**：exe 2774727 字节；`--version` → 「X岛串导出工具 0.13.13」退出码 0；
+  `--selftest --offline --check-browser` 仍是基线（2 处走不通、1 处要注意，退出码 1，浏览器那条照样
+  「起得来」：Edg/154.0.4258.48、调试端口 58995 答得上话 0.4 秒），跑完 `%TEMP%` 里产品自己的临时
+  目录 0 个。冻结核验 `_scratch/check_frozen_code_v1313.py` → 「包里的代码是对的」（PYZ 211 个模块、
+  26 个 xdao 模块，新增钉子全在）。升级 E2E `_scratch/probe_upgrade_e2e_v1313.py`：现场 v0.13.12 →
+  新版自己下载/自检/替换/重启，见证进程记下「现场版本 0.13.13、换上去的 exe 与包里的那份字节一致
+  True、现场 993 项、记号目录清干净、普通暂存目录年龄 4.9 秒 < 阈值 600 秒」。`tools/repo_check.py`
+  13/13；CI run 36868219766（master）与 36868226373（标签 v0.13.13）都是 success。全量测试两轮各
+  `1212 passed, 7 skipped`。
 - **v0.13.12**：修「窗口拉小的时候说明文字被裁」这一类毛病（用户报的是自检窗口介绍，
   普查下来一共四处）。`xdao/gui.py` 只加两个模块级辅助、不碰业务逻辑：
   `wrap_to_width(label, *, minimum=200)`（`<Configure>` 里
