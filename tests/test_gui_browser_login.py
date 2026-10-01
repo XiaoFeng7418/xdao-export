@@ -23,6 +23,7 @@ import pytest
 
 from xdao import browser_login, gui
 from xdao.client import XdaoClient
+from xdao.gui import verify_userhash_live as real_verify_userhash_live
 from xdao.settings import AppSettings
 
 # 假的调试端口与 userhash：只在本进程里用，不指向任何真实东西。
@@ -231,6 +232,17 @@ def clean_fake_sessions():
     _FakeSession.instances.clear()
 
 
+@pytest.fixture(autouse=True)
+def assume_live_cookies(monkeypatch):
+    """默认让「这块饼干还算数」这一步直接通过。
+
+    它要真去问 X 岛（一次 HTTPS），用例不该靠网络；这里想钉的是「浏览器起来 →
+    读到 userhash → 存进客户端 → 收尾」这条链路，不是服务端认不认。专门验这一点的
+    用例自己把它换成假的返回值。
+    """
+    monkeypatch.setattr(gui, "verify_userhash_live", lambda client, value: None)
+
+
 @pytest.fixture
 def install_browser_shim(monkeypatch, artifacts_dir):
     """装上替身，返回 shim；``exit_immediately=True`` 表示浏览器刚起就退出。
@@ -286,13 +298,20 @@ def browser_shim(install_browser_shim) -> _FakeSubprocess:
 
 @pytest.fixture
 def open_dialog(root_window, artifacts_dir):
-    """造一个对话框并保证收尾：就算断言失败也不留在跑的线程/进程/窗口。"""
+    """造一个对话框并保证收尾：就算断言失败也不留在跑的线程/进程/窗口。
+
+    ``client`` 可以换：对话框一起来后台线程就开始跑了，等造完再去改
+    ``dialog.client`` 已经太晚（那正是「验饼干」这一步要用的东西）。想看
+    「验饼干到底问了谁」，就把替身在这里交进去。
+    """
     client = XdaoClient()
     settings = AppSettings(_path=Path(artifacts_dir) / "config.json")
     created: list[gui.BrowserLoginDialog] = []
 
-    def factory() -> gui.BrowserLoginDialog:
-        dialog = gui.BrowserLoginDialog(root_window, client, settings)
+    def factory(client_for_dialog=None) -> gui.BrowserLoginDialog:
+        dialog = gui.BrowserLoginDialog(
+            root_window, client_for_dialog if client_for_dialog is not None else client, settings
+        )
         dialog.start()  # 不等 __init__ 里那次 after：用例直接开跑
         created.append(dialog)
         return dialog
@@ -388,6 +407,115 @@ def test_start_opens_the_browser_and_returns_the_userhash(
     assert browser_shim.processes, "浏览器进程没有被启动过"
     assert all(process.returncode is not None for process in browser_shim.processes)
     assert browser_shim.processes[-1].terminated
+
+
+def test_stale_cookie_from_the_browser_is_not_reported_as_a_success(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """浏览器资料目录里躺着的旧饼干不许当成功。
+
+    用户报过「登录窗口里明明登进去了，程序却没登录上」：程序只要在浏览器里看到
+    ``userhash`` 这块 cookie 就宣布成功并关窗，而那块饼干可能是上一次留下的、
+    服务端早就不认了 —— 关窗之后导出全是未登录。这一版改成先问服务端认不认。
+    """
+    asked: list[str] = []
+
+    def stale(client, value: str) -> str | None:
+        asked.append(value)
+        return gui.BROWSER_STALE_COOKIE_MESSAGE
+
+    monkeypatch.setattr(gui, "verify_userhash_live", stale)
+    dialog = open_dialog()
+
+    def saw_note() -> bool:
+        for session in _dialog_sessions():
+            session.cookies = [{"name": "userhash", "value": FAKE_USERHASH}]
+        return "X 岛不认" in dialog.status_var.get()
+
+    assert _wait_for(root_window, saw_note), f"界面上没说清饼干不认：{dialog.status_var.get()!r}"
+    # 关键：窗口不许关，也不许把这块饼干当成登录结果。
+    assert dialog.winfo_exists(), "饼干不认却把窗口关了"
+    assert dialog.userhash is None, "饼干不认却把 userhash 交出去了"
+    assert asked and asked[0] == FAKE_USERHASH, f"压根没问过服务端：{asked!r}"
+
+
+class _AskClient:
+    """冒充 ``XdaoClient``：只看它被问了哪个地址、收到什么饼干。"""
+
+    SITE = "https://www.nmbxd1.com"
+
+    def __init__(self) -> None:
+        self.imported: list[str] = []
+        self.urls: list[str] = []
+
+    def import_userhash(self, value: str) -> str:
+        self.imported.append(value)
+        return value
+
+    def _request_following_jumps(self, url, **kwargs):
+        self.urls.append(url)
+        return b"<html><body>cookie list</body></html>", url
+
+    @staticmethod
+    def jump_page_url(html: str) -> str:
+        return ""
+
+
+def test_verify_userhash_live_asks_the_cookie_page_with_that_cookie():
+    """真问一次服务端：拿这块饼干去请「饼干」页，看它有没有被弹回登录页。
+
+    ``assume_live_cookies`` 那个 fixture 会把这一步短路掉（免得碰网络），但它一短路，
+    「到底问没问、问的是谁」就没人钉了 —— 走哪条路、弹回登录页算不算不认，正是最容易
+    悄悄错掉的地方。所以这条用例自己把客户端换成假的，让真实现跑一遍。
+    """
+    fake = _AskClient()
+    # 真函数用 import 拿到的那个名字（模块级常量），**不要**在用例里读
+    # `gui.verify_userhash_live`：autouse 的 `assume_live_cookies` 在本用例开工前
+    # 就已经把模块属性换成替身了，那时读到的是替身（这一点吃过两次亏）。
+    live = real_verify_userhash_live
+
+    assert live(fake, FAKE_USERHASH) is None, "饼干没问题时不该报警"
+    assert fake.imported == [FAKE_USERHASH], "验之前得先把这块饼干装进客户端"
+    assert fake.urls == [f"{_AskClient.SITE}/Member/User/Cookie/index.html"], fake.urls
+
+    # 掉进登录页 = 饼干不认。
+    class _Stale(_AskClient):
+        def _request_following_jumps(self, url, **kwargs):
+            self.urls.append(url)
+            return b"<html></html>", f"{self.SITE}/Member/User/Index/login.html"
+
+    stale = _Stale()
+    assert live(stale, FAKE_USERHASH) == gui.BROWSER_STALE_COOKIE_MESSAGE
+
+    # 网络出问题 ≠ 饼干不认：得说清是「没验成」，不能让用户以为要重新登录。
+    class _Broken(_AskClient):
+        def _request_following_jumps(self, url, **kwargs):
+            raise RuntimeError("网断了")
+
+    broken = _Broken()
+    note = live(broken, FAKE_USERHASH)
+    assert note is not None and note.startswith("没法确认"), note
+    assert "网断了" in note, note
+
+
+def test_the_dialog_asks_the_server_before_calling_it_a_success():
+    """对话框那条路上确实接了「验一下」，而且用的是拿到的那个值。
+
+    上面一条钉的是「怎么验」，这条钉的是「接线」：只看源码，产品代码里
+    ``_worker`` 必须把这个函数叫起来 —— 接错了线，上面串再多断言也白搭。
+    """
+    tree = ast.parse(Path(gui.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "verify_userhash_live"
+    ]
+    assert len(calls) == 1, f"产品代码里应该有且只有一处调用，实际 {len(calls)} 处"
+    assert [ast.unparse(arg) for arg in calls[0].args] == ["self.client", "value"], ast.unparse(
+        calls[0]
+    )
 
 
 def _note_failure(dialog: gui.BrowserLoginDialog) -> str:
