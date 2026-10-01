@@ -4,6 +4,8 @@ name: tests
 # 用例本身不联网（全部用测试替身），因此 runner 不需要任何凭据。
 # 标签也要匹配：`version-consistency` 那个 job 只在 `refs/tags/v*` 上跑，
 # 只写 branches 的话它永远等不到触发条件（v0.13.0 那次就是手动补跑的）。
+# 动作版本：checkout@v7 / setup-python@v7（跑在 Node 24 上）。用回 v4/v5 的话，
+# 每次跑都会多一条「Node.js 20 is deprecated」的警告注解（2026-10-02 修掉）。
 on:
   push:
     branches: ["**"]
@@ -44,9 +46,9 @@ jobs:
       # 才不会把「按预期跳过」当成不干净的运行（守卫默认要求界面用例必须真跑到）。
       XDAO_HEADLESS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
 
@@ -97,8 +99,8 @@ jobs:
     # 只在推送 tag 时检查：代码版本号必须与 tag 相同，避免发错版本
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: 比对 tag 与 xdao.__version__
