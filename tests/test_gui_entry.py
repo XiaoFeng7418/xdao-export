@@ -13,6 +13,7 @@ from __future__ import annotations
 import gc
 import json
 import queue
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -982,6 +983,111 @@ def test_selftest_dialog_copy_puts_the_report_on_the_clipboard(
     assert "已复制" in status
     assert "本机自检" in clipboard
     assert app.logged, "自检结果没有写进运行日志"
+
+
+def _wait_until(root, predicate, timeout: float = 20.0) -> bool:
+    """等界面把后台线程的结果搬上来（Tk 只能在主线程里 update）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        root.update()
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return bool(predicate())
+
+
+def test_selftest_dialog_has_a_way_to_find_out_if_the_browser_even_starts(
+    dialog_root, artifacts_dir, monkeypatch
+):
+    """自检里要能回答「浏览器到底起不起得来」——不是「装没装」。
+
+    这条路真的会把假浏览器启一次（假货自己写端口文件、假调试服务答一句话），
+    所以它验的是整条链路：按钮 → 后台线程 → ``browser_check.check_browsers``
+    → 结论写回文本区。假货用闸门拦住到**真结果已经回到队列里**为止，这样
+    「跑着的按钮是禁用的」不是靠抢时间断言出来的。
+    """
+    from http.server import HTTPServer
+
+    from .test_browser_check import _VersionHandler, _fake_browser
+
+    from xdao import browser_check, browser_login
+
+    _isolate_settings(monkeypatch, artifacts_dir)
+    server = HTTPServer(("127.0.0.1", 0), _VersionHandler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    info = _fake_browser(artifacts_dir, "live", str(port))
+    monkeypatch.setattr(
+        browser_login, "find_browser", lambda explicit=None, env=None: info
+    )
+    monkeypatch.setattr(
+        browser_check, "find_browser", lambda explicit=None, env=None: info
+    )
+    gate = threading.Event()
+    # 先把真实现存下来：monkeypatch 之后模块属性就是替身了，
+    # 替身里再调 ``browser_check.check_browsers`` 会自己调自己（第一次写成那样，
+    # 界面上显示的是 ``RecursionError: maximum recursion depth exceeded``）。
+    real_check = browser_check.check_browsers
+
+    def gated_check(*args, **kwargs):
+        report = real_check(*args, **kwargs)
+        gate.wait(20.0)  # 结果已经在手上，但先别交回主线程
+        return report
+
+    monkeypatch.setattr(browser_check, "check_browsers", gated_check)
+    app = _SelftestApp(dialog_root)
+    dialog = _open_selftest(dialog_root, app)
+    try:
+        labels = {_text_of(w) for w in _walk(dialog)}
+        dialog._run_browser_check()
+        dialog.update_idletasks()
+        busy_text = dialog.browser_button.instate(["disabled"])
+        busy_status = dialog.status_var.get()
+        gate.set()
+        got = _wait_until(dialog_root, lambda: "答得上话" in dialog.text.get("1.0", "end"))
+        content = dialog.text.get("1.0", "end")
+        ready = dialog.browser_button.instate(["!disabled"])
+    finally:
+        gate.set()
+        _close(dialog)
+        server.shutdown()
+        server.server_close()
+
+    assert "试浏览器" in labels, "自检对话框里没有这个按钮"
+    assert busy_text is True, "试浏览器的时候按钮该禁用，免得点出两条后台线程"
+    assert "正在试" in busy_status, f"跑的时候该有状态提示，实际是 {busy_status!r}"
+    assert got, f"没等到浏览器结论：{content!r}"
+    assert "[可以]" in content
+    assert "假浏览器" in content
+    assert ready, "跑完了按钮该恢复"
+    assert any("浏览器可以用" in line for line in app.logged), app.logged
+
+
+def test_selftest_browser_check_says_so_when_the_probe_itself_blows_up(
+    dialog_root, artifacts_dir, monkeypatch
+):
+    """探测自己出错也要说人话，不能让异常在后台线程里消失。"""
+    from xdao import browser_check
+
+    _isolate_settings(monkeypatch, artifacts_dir)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("探测炸了")
+
+    monkeypatch.setattr(browser_check, "check_browsers", boom)
+    app = _SelftestApp(dialog_root)
+    dialog = _open_selftest(dialog_root, app)
+    try:
+        dialog._run_browser_check()
+        got = _wait_until(dialog_root, lambda: "探测炸了" in dialog.text.get("1.0", "end"))
+        content = dialog.text.get("1.0", "end")
+        ready = dialog.browser_button.instate(["!disabled"])
+    finally:
+        _close(dialog)
+
+    assert got, f"没等到出错说明：{content!r}"
+    assert "[不行]" in content
+    assert ready, "出错也要把按钮放开"
 
 
 # ---------- 新版本检查（界面这条路） ----------

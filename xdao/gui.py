@@ -1671,6 +1671,10 @@ class SelftestDialog(tk.Toplevel):
         super().__init__(app.root)
         self.configure(bg=BG)
         self.app = app
+        # 浏览器那一项在后台线程里跑，结果经由这个队列回到主线程
+        # （Tk 不能在别的线程里动）。
+        self._browser_queue: queue.Queue = queue.Queue()
+        self._browser_busy = False
         self.title("环境自检")
         # 卡片用 stretch=True 撑满窗口，文本区跟着长；这里给个初始大小即可，
         # 用户拉大拉小都能用。620 高时报告一趟看得完。
@@ -1688,7 +1692,9 @@ class SelftestDialog(tk.Toplevel):
         ttk.Label(
             card.body,
             text="查本机：配置与缓存目录、导出目录、浏览器、导出格式。"
-            "只读不动，不会改你的设置。",
+            "只读不动，不会改你的设置。"
+            "「试浏览器」会真的启动一次浏览器（临时资料目录，试完就关，"
+            "不碰你自己的登录状态），用来回答「用浏览器登录为什么点不动」。",
             style="CardMuted.TLabel",
             justify="left",
         ).pack(anchor="w", pady=(theme.gap(1), 0))
@@ -1731,6 +1737,11 @@ class SelftestDialog(tk.Toplevel):
         # 联网检查单独一个按钮：它会真的去请求接口，慢的时候要等好几秒
         self.net_button = ttk.Button(row, text="检查联网", command=self._run_network)
         self.net_button.pack(side="left", padx=(theme.gap(1.5), 0))
+        # 浏览器能不能起来是另一回事：真的把浏览器启一次，慢的时候十几秒
+        self.browser_button = ttk.Button(
+            row, text="试浏览器", command=self._run_browser_check
+        )
+        self.browser_button.pack(side="left", padx=(theme.gap(1.5), 0))
         ttk.Button(
             row, text="复制结果", style="Ghost.TButton", command=self._copy
         ).pack(side="right", padx=(theme.gap(1.5), 0))
@@ -1785,6 +1796,82 @@ class SelftestDialog(tk.Toplevel):
             self.status_var.set("")
             self.net_button.state(["!disabled"])
         self.app.log("环境自检：联网那两项已经测过。")
+
+    def _run_browser_check(self) -> None:
+        """真的把浏览器启一次，回答「到底起不起得来」。
+
+        「环境自检」里的浏览器那一项只看得到「装没装」；装了却一起来就被安全
+        软件拦下时，用户点「用浏览器登录」只会看到失败。这一项把那句话补上：
+        启动、等调试端口、问一句，然后立刻关掉（临时资料目录，不碰用户的登录
+        状态）。费时以秒计，所以放后台线程，主线程只轮询结果。
+        """
+        if self._browser_busy:
+            return
+        from . import browser_check
+
+        self._clear()
+        self._append("正在试浏览器：要真的启动一次，慢的时候十几秒。")
+        self._append("")
+        self._browser_busy = True
+        self.browser_button.state(["disabled"])
+        self.status_var.set("正在试浏览器…")
+        # 设置里指定了浏览器就试那个（和「用浏览器登录」同一套挑选逻辑）；
+        # 取不到设置（测试里的替身）就留空，交给自动挑选。
+        settings = getattr(self.app, "settings", None)
+        explicit = getattr(settings, "pdf_browser", "") or ""
+
+        def work() -> None:
+            def progress(message: str) -> None:
+                self._browser_queue.put(("progress", message))
+
+            try:
+                report = browser_check.check_browsers(explicit or "", progress=progress)
+            except Exception as exc:  # noqa: BLE001 —— 探测自己出错也要说人话
+                self._browser_queue.put(
+                    ("error", f"{type(exc).__name__}: {exc}")
+                )
+            else:
+                self._browser_queue.put(("done", report))
+
+        threading.Thread(target=work, daemon=True).start()
+        self._schedule_browser_poll()
+
+    def _schedule_browser_poll(self) -> None:
+        """排下一轮轮询；窗口已经关掉就安静收摊（后台线程仍在跑，随进程结束）。"""
+        try:
+            self.after(BROWSER_UI_POLL_MS, self._poll_browser_check)
+        except tk.TclError:  # pragma: no cover - 窗口在探测途中被关掉
+            self._browser_busy = False
+
+    def _poll_browser_check(self) -> None:
+        if not self._browser_busy:
+            return
+        try:
+            kind, payload = self._browser_queue.get_nowait()
+        except queue.Empty:
+            self._schedule_browser_poll()
+            return
+        if kind == "progress":
+            # 进度只更新右下角那行状态，正文留给结论
+            self.status_var.set(str(payload))
+            self._schedule_browser_poll()
+            return
+        self._browser_busy = False
+        self.browser_button.state(["!disabled"])
+        self.status_var.set("")
+        if kind == "error":
+            self._append(f"[不行] 试浏览器这步自己出错了：{payload}")
+            self.app.log("环境自检：试浏览器那步出错了。")
+            return
+        report = payload
+        self._append(report.render())
+        self.text.see("end")
+        if report.ok:
+            good = report.first_ok()
+            name = good.name if good is not None else "浏览器"
+            self.app.log(f"环境自检：浏览器可以用（{name}）——「用浏览器登录」这条路是通的。")
+        else:
+            self.app.log("环境自检：本机的浏览器都起不来，「用浏览器登录」暂时用不了。")
 
     def _copy(self) -> None:
         text = self.text.get("1.0", "end").strip()
