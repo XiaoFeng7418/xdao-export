@@ -318,6 +318,12 @@ class OutputDirNotWritable(Exception):
 # 做不了）。探针要和真实导出物同类，结论才有意义。
 PROBE_NAME = "xdao-write-test.tmp"
 
+# 探针的第二个名字：第一个名字被安全软件/策略单独挡掉时，换一个再探一次。
+# 2026-10-02 真机：用户的导出目录（文档下的自建文件夹）与 %LOCALAPPDATA% 兜底
+# **同时**被判「写不进去」，可磁盘、权限、盘符都正常，导出也照常跑完 ——
+# 一个名字被拦不等于目录不能写，所以不能只凭一次失败就下结论。
+PROBE_ALT_NAME = "xdao-write-test.txt"
+
 
 def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
     """确认导出目录可写，返回规范化后的目录。
@@ -356,6 +362,69 @@ def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
     return target
 
 
+def _probe_once(target: Path, name: str) -> str:
+    """用 ``name`` 在 ``target`` 里探一次：能写返回空串，不能写返回「哪一步 + 为什么」。
+
+    两步都要过：先在目录里写一个文件，再建一个临时子目录并在里面写文件
+    （真实导出/缓存都会往下一层建目录，只探表层会把不可写的目录判成「能写」）。
+    探针自己收拾干净，不留文件也不留目录。
+    """
+    probe = target / name
+    try:
+        probe.write_text("ok", encoding="utf-8")
+    except OSError as exc:
+        return f"写 {name} 时：{exc}"
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+    child = target / f"{name}.d{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    try:
+        child.mkdir()
+    except OSError as exc:
+        return f"建子目录 {child.name} 时：{exc}"
+    try:
+        (child / name).write_text("ok", encoding="utf-8")
+    except OSError as exc:
+        return f"在子目录 {child.name} 里写文件时：{exc}"
+    finally:
+        try:
+            (child / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            child.rmdir()
+        except OSError:
+            pass
+    return ""
+
+
+def probe_writable(directory: Path | str) -> tuple[bool, str]:
+    """探一次目录能不能写，返回 ``(能不能写, 不能写的原因)``。
+
+    和 :func:`can_write_dir` 探的是同一件事，区别只有一个：**把失败原因带回来**。
+    只回一句「写不进去」在真机上没法排查 —— 2026-10-02 那位用户的导出目录和
+    %LOCALAPPDATA% 兜底一起报不可写，可他拿别的程序写同一个目录毫无问题，
+    程序自己最后也把文件写进去了：错的是探针，不是目录。
+
+    两个名字各探一遍（``xdao-write-test.tmp`` / ``xdao-write-test.txt``）：
+    探针名被安全软件单独挡掉是见过的真事，换一个名字能写就不该判「不可写」。
+    """
+    target = Path(directory)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return False, f"目录建不出来：{exc}"
+    reasons: list[str] = []
+    for name in (PROBE_NAME, PROBE_ALT_NAME):
+        reason = _probe_once(target, name)
+        if not reason:
+            return True, ""
+        reasons.append(reason)
+    return False, "；".join(reasons)
+
+
 def can_write_dir(directory: Path | str) -> bool:
     """轻量探测：目录能不能写。只回答是或否，不抛异常。
 
@@ -364,45 +433,11 @@ def can_write_dir(directory: Path | str) -> bool:
 
     探测要**往下一层**探，不能只看这一层：实测过 ``D:\\X岛\\.cache`` 这一级
     建得出来、``.cache\\pages`` 却拒绝访问——只探表层会把这种目录判成"能写"，
-    然后换目录的兜底逻辑就永远不会触发（v0.5.1 的实测教训）。所以这里既试建
-    文件，也试建一个临时子目录，任何一步失败就算不能写。
+    然后换目录的兜底逻辑就永远不会触发（v0.5.1 的实测教训）。
+
+    想知道**为什么**写不进去（排查用），用 :func:`probe_writable`。
     """
-    target = Path(directory)
-    probe = target / PROBE_NAME
-    write_ok = True
-    try:
-        target.mkdir(parents=True, exist_ok=True)
-        probe.write_text("ok", encoding="utf-8")
-    except OSError:
-        write_ok = False
-    finally:
-        try:
-            probe.unlink(missing_ok=True)
-        except OSError:
-            pass
-    if not write_ok:
-        return False
-    # 下一层：真实导出/缓存都会在自己下面建子目录（cache/pages、images/ab/ 等）。
-    child = target / f"{PROBE_NAME}.d{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    try:
-        child.mkdir()
-    except OSError:
-        return False
-    try:
-        (child / PROBE_NAME).write_text("ok", encoding="utf-8")
-    except OSError:
-        return False
-    finally:
-        # 先删文件再删目录，别在用户目录里留垃圾。
-        try:
-            (child / PROBE_NAME).unlink(missing_ok=True)
-        except OSError:
-            pass
-        try:
-            child.rmdir()
-        except OSError:
-            pass
-    return True
+    return probe_writable(directory)[0]
 
 
 @dataclass(frozen=True)
@@ -444,6 +479,16 @@ def _unique_dir(path: Path) -> Path:
     return path
 
 
+def _with_reason(text: str, why: str) -> str:
+    """把「为什么」拼进说明里；没拿到原因（测试注入的探针）就只留正文。"""
+    return f"{text}（{why}）" if why else text
+
+
+# 拿不到具体原因时给的经典解释：Windows 的「受控文件夹访问」（勒索软件防护）
+# 默认保护桌面/文档/图片/视频，只有白名单里的程序能写 —— 这是最常见的成因。
+CLASSIC_BLOCK_HINT = "当前账户没有写入权限，或被安全软件的「受控文件夹访问」拦截"
+
+
 def choose_writable_dir(
     requested: Path | str,
     *,
@@ -468,34 +513,45 @@ def choose_writable_dir(
     target = Path(requested)
     if check(target):
         return DirChoice(target, [], False)
+    # 用真身探测时把原因一并带回来（「为什么」是排查的唯一线索）；
+    # 测试注入的 probe 只回答是/否，这里就不编原因。
+    why = "" if probe is not None else probe_writable(target)[1]
+    # 探不通不等于导出会失败（v0.5.0 那次教训），所以措辞是「先说清楚，再照常往下走」。
+    tail = "这一趟仍然写在你选的目录里；真写不进去会在导出时报出真实的文件名与错误。"
 
     if not allow_fallback:
         return DirChoice(
             target,
-            [f"{kind}目录 {target} 写不进去（当前账户没有写入权限，或被安全软件拦截）。"],
+            [f"{kind}目录 {target} 写不进去（{why or CLASSIC_BLOCK_HINT}）。" + tail],
             False,
         )
 
+    last_reason = ""
     for base in fallback_dirs():
         candidate = _unique_dir(base)
         if check(candidate):
             return DirChoice(
                 candidate,
                 [
-                    f"{kind}目录 {target} 写不进去（当前账户没有写入权限，或被安全软件的"
-                    f"「受控文件夹访问」拦截），已自动改用 {candidate}。",
+                    f"{kind}目录 {target} 写不进去（{why or CLASSIC_BLOCK_HINT}），"
+                    f"已自动改用 {candidate}。",
                     f"这次的成品都在 {candidate} 里；想固定用别的位置，可以在「设置」里"
                     "换一个目录，或把本程序加入安全软件的白名单。",
                 ],
                 True,
             )
+        if probe is None:
+            last_reason = probe_writable(candidate)[1]
 
-    # 连兜底位置都写不进去：这种情况只能如实报错，让真实写盘失败带着真名报出来。
+    # 连兜底位置都探不通：如实说清两边各自的原因，然后照原目录继续
+    # —— 真写不进去时，导出会带着真实文件名和 errno 报出来。
+    first = fallback_dirs()[0]
     return DirChoice(
         target,
         [
-            f"{kind}目录 {target} 写不进去，连备用位置（{fallback_dirs()[0]}）也不行，"
-            "请检查磁盘是否已满、是否只读，或安全软件是否拦截了本程序。"
+            _with_reason(f"{kind}目录 {target} 写不进去", why)
+            + _with_reason(f"，连备用位置（{first}）也不行", last_reason)
+            + "。" + tail
         ],
         False,
     )

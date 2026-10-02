@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -2661,6 +2662,16 @@ class SelftestDialog(tk.Toplevel):
         widget.bind("<Button-3>", lambda event: menu.tk_popup(event.x_root, event.y_root))
 
 
+def _spawn(command: list[str]) -> None:
+    """拉起一个独立进程：不等它、不接管它的输出。
+
+    ``explorer`` 无论开没开成都会立刻返回、退出码也不可信，所以「到底打开了没有」
+    只能看它有没有抛异常 —— 抛了才轮到下一次尝试。
+    """
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen(command, close_fds=True, creationflags=flags)
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -3694,15 +3705,44 @@ class App:
             self.refresh_cache_info()
 
     def open_folder(self) -> None:
+        """打开导出目录（三道尝试，失败要说清是为什么）。
+
+        2026-10-02 真机：``os.startfile`` 在那台机器上被拒，界面上只弹了一个写着
+        路径的提示框，看起来像「打开目录」这个按钮根本没用 —— 真正的原因
+        （系统不让程序拉起资源管理器）被吞掉了。现在：``os.startfile`` 不行就
+        直接叫 ``explorer``，再不行用 ``/select,``；每一次失败都记进运行日志，
+        全都不行时把原因一起写给用户看。
+        """
         folder = self.output_var.get().strip()
         if not folder:
             messagebox.showwarning("提示", "请先选择导出目录。")
             return
-        Path(folder).mkdir(parents=True, exist_ok=True)
         try:
-            os.startfile(folder)  # type: ignore[attr-defined]
-        except Exception:
-            messagebox.showinfo("目录", folder)
+            Path(folder).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.log(f"打开目录失败：{folder} —— 目录建不出来：{exc}")
+            messagebox.showerror("打不开这个目录", f"{folder}\n\n目录建不出来：{exc}")
+            return
+        reasons: list[str] = []
+        for label, opener in (
+            ("os.startfile", lambda: os.startfile(folder)),  # type: ignore[attr-defined]
+            ("explorer", lambda: _spawn(["explorer", folder])),
+            ("explorer /select,", lambda: _spawn(["explorer", f"/select,{folder}"])),
+        ):
+            try:
+                opener()
+            except Exception as exc:  # noqa: BLE001 —— 换下一种打开方式就是了
+                reasons.append(f"{label}：{exc}")
+                continue
+            self.log(f"已打开目录：{folder}（{label}）")
+            return
+        detail = "\n".join(reasons)
+        self.log(f"打开目录失败：{folder} —— {detail}")
+        messagebox.showinfo(
+            "目录",
+            f"{folder}\n\n系统没有让程序打开这个文件夹，试过的办法都失败了：\n{detail}\n\n"
+            "可以自己把这个路径粘到资源管理器的地址栏里。",
+        )
 
     def clear_log(self) -> None:
         self.log_text.config(state="normal")

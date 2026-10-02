@@ -908,3 +908,101 @@ def test_ask_pasted_cookie_returns_none_when_the_window_is_closed(
 
     assert gui.ask_pasted_cookie(app.root) is None
 
+
+# ---------- 「打开目录」：三道尝试 + 失败说清原因（v0.13.27）----------
+
+
+def test_open_folder_falls_back_to_explorer(app: gui.App, monkeypatch, tmp_path: Path) -> None:
+    """``os.startfile`` 被系统拒了就直接叫 explorer，并把这步写进日志。
+
+    2026-10-02 真机：那台机器上 ``os.startfile`` 抛异常，界面上只弹了一个写着
+    路径的提示框，用户以为按钮坏了 —— 真正的原因（系统不让程序拉起资源管理器）
+    被吞掉了。
+    """
+    folder = tmp_path / "X岛备份"
+    app.output_var.set(str(folder))
+    attempts: list[list[str]] = []
+    shown: list[tuple[str, str]] = []
+
+    def refuse(*args, **kwargs):
+        raise OSError(31, "连到系统上的设备没有发挥作用")
+
+    monkeypatch.setattr(gui.os, "startfile", refuse, raising=False)
+    monkeypatch.setattr(gui, "_spawn", lambda command: attempts.append(command))
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, msg: shown.append((title, msg)))
+
+    app.open_folder()
+
+    assert attempts and attempts[0][0] == "explorer"
+    assert str(folder) in attempts[0][1]
+    assert shown == [], "备用方式成功时不该再弹提示框"
+    assert folder.is_dir(), "打开之前要先把目录建出来"
+    assert f"已打开目录：{folder}" in app.log_text.get("1.0", "end")
+
+
+def test_open_folder_says_why_when_every_way_fails(
+    app: gui.App, monkeypatch, tmp_path: Path
+) -> None:
+    """三条路都不行时，每一步的原因都要写进日志与提示框（不再只弹一个路径）。"""
+    folder = tmp_path / "X岛备份"
+    app.output_var.set(str(folder))
+    shown: list[tuple[str, str]] = []
+
+    def refuse(*args, **kwargs):
+        raise OSError(5, "拒绝访问")
+
+    monkeypatch.setattr(gui.os, "startfile", refuse, raising=False)
+    monkeypatch.setattr(gui, "_spawn", refuse)
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, msg: shown.append((title, msg)))
+
+    app.open_folder()
+
+    assert shown and shown[0][0] == "目录"
+    assert str(folder) in shown[0][1]
+    assert "拒绝访问" in shown[0][1]
+    log = app.log_text.get("1.0", "end")
+    for label in ("os.startfile", "explorer", "explorer /select,"):
+        assert f"{label}：" in shown[0][1]
+        assert f"{label}：" in log
+
+
+def test_open_folder_reports_a_directory_it_cannot_create(
+    app: gui.App, monkeypatch, tmp_path: Path
+) -> None:
+    """目录建不出来时当场说清（这个 mkdir 以前在 try 外面，会炸成 Tk 回调异常）。"""
+    folder = tmp_path / "打不开的目录" / "X岛备份"
+    app.output_var.set(str(folder))
+    errors: list[tuple[str, str]] = []
+    spawned: list[list[str]] = []
+    real_mkdir = Path.mkdir
+
+    def fake_mkdir(self, *args, **kwargs):
+        if str(self).startswith(str(tmp_path)):
+            raise PermissionError(13, "Permission denied")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setattr(gui, "_spawn", lambda command: spawned.append(command))
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: errors.append((title, msg)))
+
+    app.open_folder()
+
+    assert spawned == [], "目录都建不出来就不该再去拉资源管理器"
+    assert errors and errors[0][0] == "打不开这个目录"
+    assert "Permission denied" in errors[0][1]
+    assert "目录建不出来" in app.log_text.get("1.0", "end")
+
+
+def test_open_folder_asks_for_a_directory_first(app: gui.App, monkeypatch) -> None:
+    """没填目录时先提示，不去碰系统。"""
+    app.output_var.set("")
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, msg: warnings.append((title, msg))
+    )
+
+    app.open_folder()
+
+    assert warnings and warnings[0][0] == "提示"
+
+
