@@ -7,14 +7,23 @@
 描述与话题都从代码里的格式注册表推导：
     xdao.exporters.EXPORTERS  →  描述里列出全部格式名，话题里自动补上对应标签
 
+这个脚本会往**公开仓库**写东西，所以两道护栏都在：
+1. 写之前先验推导出来的值（空的、超长的、GitHub 不认的话题一律拦下，一个请求都不发）；
+2. 写完**再读回来核对**，只有读回来确实一致了才说「已同步」—— 只说「发过请求了」
+   等于把「远端没照办」也报成成功（GitHub 会规范化话题、截断描述）。
+
 用法：
     python tools/repo_info.py --repo XiaoFeng7418/xdao-export            # 只检查
     python tools/repo_info.py --repo XiaoFeng7418/xdao-export --apply    # 检查并同步
+
+退出码：0 = 已经一致，或者同步完读回来核对通过；1 = 发现不一致（没加 --apply）、
+推导出来的值不合格、或者发过请求但读回来还是不一样。
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -63,6 +72,12 @@ BASE_TOPICS = [
 
 DESCRIPTION_MAX = 350
 
+# GitHub 对话题的限制：超过 20 个、单个超过 50 个字符、或者带非法字符，
+# 都会在写入时被 422 拒绝，回一句看不出所以然的话。写之前自己先验一遍。
+TOPIC_MAX = 20
+TOPIC_NAME_MAX = 50
+TOPIC_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
 
 def format_names() -> list[str]:
     """按注册表顺序列出格式名（未知格式就退回大写键名）。"""
@@ -81,9 +96,32 @@ def expected_topics() -> list[str]:
 
 def describe(repo: str, token: str) -> None:
     info = request_json("GET", f"/repos/{repo}", token)
-    print(f"仓库 {info['full_name']}")
+    print(f"仓库 {info.get('full_name') or repo}")
     print(f"  描述：{info.get('description') or '（未设置）'}")
     print(f"  话题：{', '.join(info.get('topics') or []) or '（未设置）'}")
+
+
+def facade_problems(description: str, topics: list[str]) -> list[str]:
+    """推导出来的门面信息合格吗？不合格就一条都不许往远端写。
+
+    这个脚本写的是**公开仓库**，而写坏的后果是「门面被清空」或「被 GitHub 挡回来
+    只报一句含糊话」，所以宁可在这里拦住、一个请求都不发。
+    """
+    problems: list[str] = []
+    if not description.strip():
+        problems.append("描述是空的 —— 这会把仓库描述清掉")
+    elif len(description) > DESCRIPTION_MAX:
+        problems.append(f"描述太长（{len(description)} > {DESCRIPTION_MAX} 个字符），先改模板")
+    if not topics:
+        problems.append("话题是空的 —— 这会把仓库话题全清掉")
+    elif len(topics) > TOPIC_MAX:
+        problems.append(f"话题太多（{len(topics)} > {TOPIC_MAX} 个），GitHub 会拒绝")
+    for name in topics:
+        if len(name) > TOPIC_NAME_MAX:
+            problems.append(f"话题太长（{name!r}，超过 {TOPIC_NAME_MAX} 个字符）")
+        elif not TOPIC_PATTERN.match(name):
+            problems.append(f"话题不合规（{name!r}：只能用小写字母、数字与连字符）")
+    return problems
 
 
 def apply(repo: str, token: str, *, patch: bool = True) -> list[str]:
@@ -91,7 +129,7 @@ def apply(repo: str, token: str, *, patch: bool = True) -> list[str]:
     info = request_json("GET", f"/repos/{repo}", token)
     changed: list[str] = []
 
-    want_desc = expected_description()
+    want_desc = expected_description().strip()
     have_desc = (info.get("description") or "").strip()
     if have_desc != want_desc:
         changed.append(f"描述：{have_desc or '（空）'}\n   →   {want_desc}")
@@ -110,8 +148,12 @@ def apply(repo: str, token: str, *, patch: bool = True) -> list[str]:
     if not changed:
         return []
 
-    if len(want_desc) > DESCRIPTION_MAX:
-        raise SystemExit(f"描述太长（{len(want_desc)} > {DESCRIPTION_MAX}），先改模板")
+    problems = facade_problems(want_desc, want_topics)
+    if problems:
+        print("推导出来的仓库门面有问题，先改代码再同步（这次一个请求都没发）：")
+        for problem in problems:
+            print(f"  × {problem}")
+        raise SystemExit(1)
 
     if patch:
         # 描述走仓库端点，话题必须走它自己的端点（仓库端点的 topics 字段是只读的）
@@ -137,12 +179,23 @@ def main(argv: list[str]) -> int:
     print("\n发现不一致：")
     for line in changed:
         print(f"  ! {line}")
-    if args.apply:
-        print("\n已同步到远端。")
-        describe(args.repo, token)
-        return 0
-    print("\n加 --apply 即可同步。")
-    return 1
+    if not args.apply:
+        print("\n加 --apply 即可同步。")
+        return 1
+
+    # 发过请求 ≠ 改成了：GitHub 会规范化话题（去重、大小写）、截断描述，写入也可能
+    # 只回了个 200 却没落库。所以写完再读一遍，读回来一致才敢说「已同步」。
+    still = apply(args.repo, token, patch=False)
+    if still:
+        print("\n× 已经发过同步请求，但重新读回来的还是不一样：")
+        for line in still:
+            print(f"  × {line}")
+        print("  多半是远端把值规范化/截断了，或者这次写入没生效 —— 别当成同步好了。")
+        return 1
+
+    print("\n已同步到远端（写完之后重新读回来核对过）。")
+    describe(args.repo, token)
+    return 0
 
 
 if __name__ == "__main__":
