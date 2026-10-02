@@ -765,7 +765,10 @@ def test_leaf_cookie_does_not_steal_the_page_while_the_login_form_is_open(
                 }
             }
             session.cookies = []
-        return bool(_dialog_sessions()) and bool(dialog.hint_var.get())
+        return (
+            bool(_dialog_sessions())
+            and "登录" in dialog.hint_var.get()
+        )
 
     assert _wait_for(root_window, on_the_form), "诊断行没有写出来"
     session = _dialog_sessions()[0]
@@ -797,7 +800,11 @@ def test_the_dialog_never_navigates_the_users_tab(
     assert not [
         url for url in session.navigations if "/Cookie/" in url
     ], f"程序动了用户的标签页：{session.navigations}"
-    assert dialog.hint_var.get(), "诊断行没有写出来"
+    # 诊断行是主线程从队列里取出来才写进 hint_var 的，别跟上面那几条断言抢时间
+    # （2026-10-02 CI 上真抢过一次：`assert dialog.hint_var.get()` 红在「诊断行没有写出来」）。
+    assert _wait_for(
+        root_window, lambda: bool(dialog.hint_var.get()), timeout=10.0
+    ), "诊断行没有写出来"
     dialog._on_cancel()
 
 
