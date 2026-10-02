@@ -43,3 +43,7 @@ $f = 'xdao-export-v0.13.28-win64.zip'
 账号被盗时两者会一起被换，它挡不住那种情况。真要往系统层面走，只有代码签名能让 Windows
 不再显示「未知发布者」，而免费的签名（SignPath Foundation，面向开源）证书主体是
 SignPath Foundation 而不是个人网名。签名这一半在申请流程里，等有结果再单独说。
+
+**签名来源**：本项目的免费代码签名由 [SignPath.io](https://signpath.io/) 提供、证书由
+[SignPath Foundation](https://signpath.org/) 颁发（**正在申请中**）。获批之后，官方免安装包只由
+GitHub Actions 从本仓库构建后提交签名，本机打的包不会作为官方下载。
