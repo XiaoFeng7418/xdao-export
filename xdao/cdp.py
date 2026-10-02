@@ -489,6 +489,10 @@ class CDPSession:
             url = self._resolve_page_url()
         elif _split_ws_url(url)[2].startswith("/devtools/browser"):
             url = self._resolve_page_url()
+        self._attach(url)
+
+    def _attach(self, url: str) -> None:
+        """对**指定页面标签**的调试地址开连接（connect / retarget 共用这一具身体）。"""
         host, port, _ = _split_ws_url(url)
         try:
             sock = socket.create_connection((host, port), timeout=self._timeout)
@@ -504,11 +508,50 @@ class CDPSession:
             raise
         # 之后靠 close() 打断阻塞读：用户可能盯着登录页发呆很久，空闲不算超时。
         sock.settimeout(None)
+        # 换挂重连（retarget）时旧连接留下的「断线原因」要一笔勾销，
+        # 不然 call() 会拿着上一次连接的死因直接拒绝服务。
+        with self._state_lock:
+            self._failure = ""
         self._sock = sock
         self._ws_url = url
         self._frames = _FrameReader(sock, leftover)
         self._reader = threading.Thread(target=self._read_loop, name="cdp-reader", daemon=True)
         self._reader.start()
+
+    def retarget(self) -> bool:
+        """重新挂到「该挂的那个页面标签」上（v0.13.31），返回是否换了标签/重连过。
+
+        为什么需要：``connect()`` 挂上的是**那一刻**的标签，之后永不换 —— 可用户的
+        浏览器是活的：他可能把那个标签关掉再开一个，也可能在同一个浏览器实例里
+        **另开一个窗口**去登录（真机 m34935：程序挂在登录页那个旧标签上，用户在
+        新窗口的饼干页里登录、点「应用」，程序却一路说「页面停在登录页」，
+        页面里的 fetch 也问不到登录态）。这里每轮重新数一遍标签：
+
+        - 有本站点的页面标签 → 挂到它上面（哪怕现在这条连接还活着）；
+        - 没有站点页面 → 连接还活着就按兵不动（别把用户正停着的页面换来换去），
+          连接已经断了才退而挂第一个页面标签。
+
+        读标签列表本身失败（浏览器进程没了）照抛，由调用方决定怎么收场。
+        """
+        pages = self._page_targets()
+        if not pages:
+            raise CdpError("浏览器里没有可用的页面标签，读不到登录状态。")
+        # 这里必须**严格**按站点前缀认站点页：pick_site_page 没有命中时会兜底挑
+        # 「第一个普通页面」，那是给 connect 等页面开出来用的。挂错标签重连若拿它
+        # 当「站点页」，用户每开一个普通网页都会被程序当成目标追过去换挂，
+        # 「别把用户正停着的页面换来换去」就成了空话。
+        prefixes = tuple(self._site_urls or ())
+        site = next(
+            (page for page in pages if str(page.get("url", "")).startswith(prefixes)),
+            None,
+        )
+        candidate = str((site if site is not None else pick_page(pages))["webSocketDebuggerUrl"])
+        alive = self._sock is not None and not self._failure
+        if alive and (candidate == self._ws_url or site is None):
+            return False
+        self.close()
+        self._attach(candidate)
+        return True
 
     def close(self) -> None:
         """关掉连接，不抛异常。"""

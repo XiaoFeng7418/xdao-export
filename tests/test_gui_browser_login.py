@@ -155,6 +155,10 @@ class _FakeSession:
         # 「按地址读」就是全部答案，行为不变。
         self.all_cookies: list[dict] = []
         self.read_all_error: Exception | None = None
+        # v0.13.31：界面层每轮先重挑标签。替身没有真标签，默认永远报「没换」；
+        # 用例想让 retarget 抛异常（演「连接断了」），把它换成 raise 的函数即可。
+        self.retarget_error: Exception | None = None
+        self.retargets = 0
         _FakeSession.instances.append(self)
 
     def __enter__(self) -> "_FakeSession":
@@ -170,6 +174,14 @@ class _FakeSession:
 
     def close(self) -> None:
         self.closed = True
+
+    def retarget(self) -> bool:
+        # v0.13.31：界面层每轮先重挑标签再读。替身没有真标签，默认报「没换」；
+        # 用例把 retarget_error 设成异常就能演「连接断了、下一轮才救回来」。
+        self.retargets += 1
+        if self.retarget_error is not None:
+            raise self.retarget_error
+        return False
 
     def call(self, method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
         self.calls.append((method, params or {}))
@@ -613,11 +625,14 @@ def test_explicit_browser_in_the_settings_is_the_one_that_gets_used(
     chosen = open_dialog.set_explicit_browser()  # type: ignore[attr-defined]
 
     dialog = open_dialog()
-    # 同上：等窗口上真的写出「这次用谁」，而不是只等会话连上。
+    # 等窗口上真的写出「这次用谁」，而不是只等会话连上。那句话在 browser.start()
+    # **之前**就投了队（gui.py 里先报「用谁」再启动），所以要连进程一起等，
+    # 否则机器忙时这里会抢在假 Popen 落账前断言（以前偶发失败就是这个竞态）。
     assert _wait_for(
         root_window,
         lambda: "这次用" in dialog.browser_note_var.get()
-        and " 打开" in dialog.browser_note_var.get(),
+        and " 打开" in dialog.browser_note_var.get()
+        and bool(shim.processes),
     ), _note_failure(dialog)
     assert dialog._browser is not None
     assert Path(dialog._browser.info.path) == chosen
@@ -892,6 +907,8 @@ def test_timeout_message_lists_the_steps_the_program_tried(
     用户和我们都看不出卡在哪一步。
     """
     monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 1.5)
+    # 这条钉的是超时那句的形状；「到点续等」由 v0.13.31 那组用例单独钉，这里关掉免把用例拖长。
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_EXTRA_ROUNDS", 0)
     dialog = open_dialog()
     login_url = browser_login.LOGIN_URL
 
@@ -953,6 +970,108 @@ def test_the_dialog_keeps_working_after_the_http_path_fails(
         url for url in session.navigations if "/Cookie/" in url
     ], f"程序动了用户的标签页：{session.navigations}"
     dialog._on_cancel()
+
+
+# ---------- v0.13.31：挂错标签、一次读挂、超时续等、验饼干换口音 ----------
+
+
+def test_every_round_reselects_the_tab_before_reading_it(
+    root_window, browser_shim, open_dialog
+):
+    """每一轮读之前先 retarget 重挑标签（v0.13.31）。
+
+    真机 m34935：用户关掉登录那个标签、另开一个去饼干页登录，程序却盯着
+    connect() 那一刻挂上的旧标签一路报「页面停在登录页」。从这一版起每轮
+    重新挑一次，挂错了当场换过去。
+    """
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    assert _wait_for(root_window, lambda: session.retargets > 3, timeout=10.0), (
+        "轮询没在每轮开头重挑标签"
+    )
+    dialog._on_cancel()
+
+
+def test_one_flaky_read_retries_instead_of_killing_the_wait(
+    root_window, browser_shim, open_dialog
+):
+    """读挂一下不算挂：下一轮 retarget 会重连，等待必须继续（v0.13.31）。
+
+    以前（v0.13.30 及更早）循环里任何异常都立刻认输，对话框当场写「读取浏览器
+    饼干失败」—— 而用户正关标签、重开页面的那一下 CDP 就是会抽风。这里演一次
+    抽风：连着两次读挂之后放开替身，程序要能自己缓过来并读到饼干。
+    """
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.read_error = browser_login.BrowserLoginError("调试连接断了（演一下）")
+
+    def recovered() -> bool:
+        # 挂够两次就放开（认输上限是 4 次，这里必须够不着）。
+        if len(session.cookie_reads) >= 2:
+            session.read_error = None
+            session.cookies = [{"name": "userhash", "value": FAKE_USERHASH}]
+        return dialog.userhash == FAKE_USERHASH
+
+    assert _wait_for(root_window, recovered, timeout=10.0), "一次读挂就把等待掐死了"
+    assert session.retargets >= 2, "缓过来之前没重挑过标签"
+    assert _wait_for(root_window, lambda: not dialog.winfo_exists())
+
+
+def test_the_live_check_speaks_with_the_browsers_own_user_agent(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """验饼干算不算数之前，主客户端先换成浏览器自报的 UA（v0.13.31）。
+
+    站点会把「同一罐饼干、另一张嘴」的请求弹回登录页（m34394），而主客户端
+    写死的 UA 正是另一张嘴 —— 不换的话，用户刚点「应用」挣来的**新**饼干也会被
+    验成「旧饼干不认」（m34935 截图里那句冤案就是这么来的）。
+    """
+    seen: list[str | None] = []
+
+    def spy(client, value: str) -> str | None:
+        seen.append(client.user_agent)
+        return None
+
+    monkeypatch.setattr(gui, "verify_userhash_live", spy)
+    dialog = open_dialog()
+
+    def ready() -> bool:
+        for session in _dialog_sessions():
+            # navigator.userAgent 落在替身的兜底返回值上（见 _FakeSession.evaluate）。
+            session.evaluate_value = "Edg/140.0"
+            session.cookies = [{"name": "userhash", "value": FAKE_USERHASH}]
+        return dialog.userhash is not None
+
+    assert _wait_for(root_window, ready), "没能从浏览器读到 userhash"
+    assert seen, "没验过饼干"
+    assert set(seen) == {"Edg/140.0"}, f"验饼干时客户端的 UA 不是浏览器那一张：{seen}"
+
+
+def test_the_wait_extends_itself_while_the_browser_is_still_open(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """到点了、浏览器还开着：自动续等，续到上限为止才报超时（v0.13.31）。
+
+    m34935 的抱怨就是「我登录了它已经不看了」—— 五分钟到点时用户还在打密码，
+    程序直接宣布超时撒手。这里把一轮压到 0.6 秒、续两轮，钉住：报超时那句话
+    出现之前，程序至少多盯了整两轮没撒手。
+    """
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 0.6)
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_EXTRA_ROUNDS", 2)
+    dialog = open_dialog()
+    started = time.monotonic()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    assert _wait_for(
+        root_window,
+        lambda: "还没看到登录成功" in dialog.status_var.get(),
+        timeout=15.0,
+    ), "续等用完也没报超时"
+    waited = time.monotonic() - started
+    # 0.6 秒 ×（首轮 + 续两轮）≈ 1.8 秒：明显超过一轮，又没越过上限。
+    assert waited > 3 * 0.6, f"没续等，只等了 {waited:.1f} 秒就撒手"
+    assert waited < 4 * 0.6 + 1.5, f"续等越过了上限：{waited:.1f} 秒"
 
 
 def test_the_diagnosis_joins_what_the_program_learned() -> None:
@@ -1571,6 +1690,8 @@ def test_http_leaf_cookie_detail_reaches_the_timeout_message(
 ):
     """两条路都没成时，HTTP 那条路的原话也要进超时那句话（截图里唯一的线索）。"""
     monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 3.0)
+    # 同上：这条钉那句超时的**内容**，不钉续等（不关会把 15 秒的等待窗口顶满）。
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_EXTRA_ROUNDS", 0)
     dialog = open_dialog()
     home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
     pages = {home: {"url": home, "login": False, "jump": "", "kind": "other", "ids": []}}
@@ -1808,9 +1929,15 @@ class _StubBrowserLoginDialog(tk.Toplevel):
 
 
 def test_errors_while_reading_cookies_land_in_the_dialog(
-    root_window, browser_shim, open_dialog
+    root_window, browser_shim, open_dialog, monkeypatch
 ):
-    """读饼干出错：提示落到对话框的对话窗上，不能抛成未捕获异常。"""
+    """读饼干出错：提示落到对话框的对话窗上，不能抛成未捕获异常。
+
+    v0.13.31 起一次失败不再立刻认输（下一轮 retarget 会重连），这里把上限压到 1
+    来钉「最终还是要落到对话框上」；「磕一下不死」由
+    ``test_one_flaky_read_retries_instead_of_killing_the_wait`` 钉住。
+    """
+    monkeypatch.setattr(gui, "BROWSER_READ_RETRY_LIMIT", 1)
     dialog = open_dialog()
 
     def failed() -> bool:

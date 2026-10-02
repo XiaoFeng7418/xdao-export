@@ -723,6 +723,15 @@ BROWSER_LEAF_SECONDS = 5.0
 BROWSER_PROGRESS_SECONDS = 15.0
 # 等用户登录的上限；到点给一句能照做的话，而不是一直转圈。
 BROWSER_LOGIN_TIMEOUT = 300.0
+# 到点了、可浏览器窗口还开着（用户可能正慢慢登录）时，自动**再等一轮**的次数
+# （v0.13.31）。真机 m34935：用户在程序开的窗口里登录、点「应用」，程序却在
+# 5 分钟头上撒手不管 —— 用户对着还开着的窗口完全不知道程序已经不看了。
+# 3 轮 × 5 分钟 = 一共最多 20 分钟，够一次认真的登录；再多就该建议换路子了。
+BROWSER_LOGIN_EXTRA_ROUNDS = 3
+# 连续多少轮「读浏览器」都抛异常才算真失败（v0.13.31）。以前一次异常整轮即死
+# （用户关一个标签、CDP 报一句「目标没了」就全丢），现在每轮先重挑标签再读，
+# 读挂了也先重连，连着好几轮都救不回来才认输。
+BROWSER_READ_RETRY_LIMIT = 4
 # 等浏览器把调试端口写出来的上限（冷启动 + 首次建 profile 会偏慢）。
 BROWSER_START_TIMEOUT = 30.0
 # 主线程消费消息队列的间隔（毫秒），跟本文件其它对话框保持一致。
@@ -806,6 +815,10 @@ def verify_userhash_live(client, userhash: str) -> str | None:
     X 岛会把请求弹回登录页（真机实测：``_request_following_jumps`` 返回的
     ``final_url`` 落在 ``Member/User/Index/login.html``），认的时候才会停在饼干
     列表页。只读一次页面，不发任何写操作。
+
+    ``client.user_agent`` 由**调用方**在验之前换成浏览器自报的 UA（v0.13.31）：
+    站点会把「同一罐饼干、另一个 UA」的请求弹回登录页（m34394），不换就会把
+    用户刚挣来的**新**饼干误判成「旧饼干不认」（m34935 的冤案）。
     """
     index_url = f"{client.SITE}/Member/User/Cookie/index.html"
     # 自己把饼干放进客户端再问：不留「调用方得先 import 一次」这种暗规矩 ——
@@ -870,6 +883,9 @@ class BrowserLoginDialog(tk.Toplevel):
         # 这两个由后台线程写、_poll 读 —— 只是字符串引用，够用。
         self._jar_note = ""
         self._http_note = ""
+        # 浏览器自报的 UA（读一次就缓存，v0.13.31）：领饼干、验饼干、之后导出都改用
+        # 这张嘴说话 —— 饼干是浏览器挣来的，站点认不认常常就看请求像不像它。
+        self._browser_ua: str | None = None
         self._ui_job: str | None = None
         self._closing = False
 
@@ -1302,8 +1318,10 @@ class BrowserLoginDialog(tk.Toplevel):
 
         started = time.monotonic()
         deadline = started + BROWSER_LOGIN_TIMEOUT
+        extra_left = BROWSER_LOGIN_EXTRA_ROUNDS  # 到点了浏览器还开着就自动续等（v0.13.31）
         next_leaf = started + BROWSER_LEAF_SECONDS
         next_progress = started + BROWSER_PROGRESS_SECONDS
+        read_failures = 0  # 连着几轮「读」都抛异常才认输（v0.13.31）
         verified: str | None = None  # 已经验过、当场就认的饼干：别每一轮都去问一遍
         said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
         leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行
@@ -1316,6 +1334,11 @@ class BrowserLoginDialog(tk.Toplevel):
                 self._queue.put(("browser_closed", None))
                 return
             try:
+                # 每一轮先把「挂哪个标签」重新定一遍（v0.13.31）：connect() 挂上的是
+                # 那一刻的标签，可用户会关标签、会在这个实例里另开窗口去登录 ——
+                # 真机 m34935 就是程序挂在旧的登录页标签上，用户在饼干页那个窗口里
+                # 登录好了，程序却一路说「页面停在登录页」。
+                session.retarget()
                 value, fill_note = self._read_userhash(backend, session)
                 if fill_note and fill_note not in leaf_hints:
                     # 「按地址那读漏了、整罐读补上」要留痕（v0.13.29）：这句话是下次
@@ -1385,6 +1408,16 @@ class BrowserLoginDialog(tk.Toplevel):
                     # 上一回登录的旧饼干还躺在里面，会话早就过期了。不验一下就会
                     # 「界面说登录成功、导出却全是未登录」——就是这么来的。
                     # verify_userhash_live 自己会把这块饼干装进客户端再问服务端。
+                    #
+                    # 问之前先让主客户端**换成浏览器的口音**（v0.13.31）：真机 m34394
+                    # 查明站点会把「同一罐饼干、另一个 UA」的请求弹回登录页，而主客户
+                    # 端写死的 UA 恰好就是这一种 —— 不换的话，用户刚点「应用」挣来的
+                    # **新**饼干也会被验成「旧饼干不认」（m34935 截图里那句就是这么来的
+                    # 冤案）。登录成功后导出的也是同一个会话，继续用这张嘴说话正合适。
+                    if self._browser_ua is None:
+                        self._browser_ua = self._read_browser_ua(backend, session)
+                    if self._browser_ua:
+                        self.client.user_agent = self._browser_ua
                     note = verify_userhash_live(self.client, value)
                     if note is None:
                         verified = value
@@ -1404,26 +1437,52 @@ class BrowserLoginDialog(tk.Toplevel):
                         if not said_dead:
                             said_dead = True
                             self._queue.put(("note", note))
+                read_failures = 0  # 这一轮读通了，前面的磕绊一笔勾销
             except Exception as exc:
-                self._queue.put(("error", f"读取浏览器饼干失败：{exc}"))
-                return
+                # 一次读挂不算挂（v0.13.31）：用户正关标签、重开页面时 CDP 会抽风一下，
+                # 下一轮开头的 retarget 会把连接挪到正确的标签上重连。连着好几轮都
+                # 救不回来才认输 —— 认输那句话保持原样，老用例钉的就是它。
+                read_failures += 1
+                if read_failures >= BROWSER_READ_RETRY_LIMIT:
+                    self._queue.put(("error", f"读取浏览器饼干失败：{exc}"))
+                    return
+                self._stop.wait(BROWSER_POLL_SECONDS)
+                continue
             now = time.monotonic()
             if now >= next_progress:
                 next_progress = now + BROWSER_PROGRESS_SECONDS
                 self._queue.put(("status", _waiting_status(int(now - started))))
             if now >= deadline:
-                break
+                # 到点了、可浏览器窗口还开着：多半是用户还在慢慢登录，别撒手（v0.13.31）。
+                # 真机 m34935 的抱怨就是「我登录了它已经不看了」。续到上限为止，
+                # 界面上照旧每 15 秒报一次「已经等了 N 秒」，用户看得见程序还在盯。
+                process = browser.process
+                if extra_left > 0 and (process is None or process.poll() is None):
+                    extra_left -= 1
+                    deadline = now + BROWSER_LOGIN_TIMEOUT
+                else:
+                    break
             self._stop.wait(BROWSER_POLL_SECONDS)
         if not self._stop.is_set():
             # 把领饼干试过的几步按顺序拼进这句话：它会进运行日志（窗口一关就找不到了），
             # 是「到底卡在哪一步」唯一的书面记录。只留最后一条不够用 —— 「饼干罐里还是没有
             # userhash」这种最没信息量的收尾会盖掉前面「用户还没登录」那条（v0.13.20）。
             steps = leaf_hints[-3:]
-            self._queue.put(("error", self._timeout_message(steps, self._diagnosis())))
+            self._queue.put(
+                (
+                    "error",
+                    self._timeout_message(
+                        steps, self._diagnosis(), time.monotonic() - started
+                    ),
+                )
+            )
 
     @staticmethod
-    def _timeout_message(steps: list[str], diagnosis: str) -> str:
+    def _timeout_message(steps: list[str], diagnosis: str, waited: float | None = None) -> str:
         """等超时那句话（v0.13.24）：顺序（试过的几步）+ 书面诊断一起写出来。
+
+        ``waited``（v0.13.31）：这一轮实际等了多久（秒）。自动续等之后实际时长可能
+        远大于 ``BROWSER_LOGIN_TIMEOUT``，那句话里的分钟数要照实说，不能还报 5 分钟。
 
         为什么两样都要：``steps`` 说明**卡在哪一步**，``diagnosis`` 里是饼干名单和
         「走 HTTP 领饼干」那条路的原话。用户报问题时贴的就是运行日志 —— 以前这里只有
@@ -1439,8 +1498,11 @@ class BrowserLoginDialog(tk.Toplevel):
                 f"{'①②③'[index]} {text}" for index, text in enumerate(steps)
             )
             tail = f"（程序试过的几步：{numbered}）"
+        waited_minutes = (
+            BROWSER_LOGIN_TIMEOUT if waited is None else max(waited, BROWSER_LOGIN_TIMEOUT)
+        ) / 60
         return (
-            f"等了 {BROWSER_LOGIN_TIMEOUT / 60:.0f} 分钟还没看到登录成功。"
+            f"等了 {waited_minutes:.0f} 分钟还没看到登录成功。"
             "要在这个窗口打开的浏览器里登录，程序才看得到 —— "
             "在自己平时用的浏览器里登录不行；也可以点「直接粘贴饼干登录」。"
             f"{tail}{diagnosis}"
@@ -1626,6 +1688,20 @@ class BrowserLoginDialog(tk.Toplevel):
         return None, ""
 
     @staticmethod
+    def _read_browser_ua(backend, session) -> str:
+        """问浏览器自报的 UA（v0.13.30 起领饼干用，v0.13.31 起验饼干也用）。
+
+        读不到（老替身没有这个方法、页面答不上来）就返回空串，调用方按缺省走，不拦路。
+        """
+        read_ua = getattr(backend, "read_user_agent", None)
+        if not callable(read_ua):
+            return ""
+        try:
+            return str(read_ua(session) or "").strip()
+        except Exception:  # noqa: BLE001 —— 读不到 UA 就用缺省，不拦路
+            return ""
+
+    @staticmethod
     def _try_leaf_cookie_http(backend, session) -> tuple[str | None, str]:
         """领饼干的两条路（v0.13.30）：先浏览器页面内 fetch，再 HTTP 重放（带浏览器的 UA）。
 
@@ -1651,13 +1727,7 @@ class BrowserLoginDialog(tk.Toplevel):
         if not cookies:
             # 没得试也要留痕（v0.13.25）：这句只进书面记录，见 `_QUIET_HTTP_NOTES`。
             return None, _joined_leaf_notes(first_note, BROWSER_HTTP_NO_COOKIES_NOTE)
-        user_agent = ""
-        read_ua = getattr(backend, "read_user_agent", None)
-        if callable(read_ua):
-            try:
-                user_agent = str(read_ua(session) or "").strip()
-            except Exception:  # noqa: BLE001 —— 读不到 UA 就用缺省，不拦路
-                user_agent = ""
+        user_agent = BrowserLoginDialog._read_browser_ua(backend, session)
         try:
             result = backend.apply_leaf_cookie_over_http(cookies, user_agent=user_agent)
         except Exception as exc:  # noqa: BLE001 —— 同上

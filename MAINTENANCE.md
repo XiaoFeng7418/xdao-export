@@ -677,6 +677,30 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.31**（修「用浏览器登录」真机复验暴露的四处基础毛病）：0.13.30 复验仍失败（用户截图
+  m34935：在程序窗口里登录**并点了「应用」**，对话框却报页面内 fetch 被弹回登录页 + HTTP 重放
+  TLS 超时，还写着「这个窗口里的登录没成」；状态行里带「多半是旧饼干」的冤案）。拆出四件事：
+  ① **挂死标签**：`connect()` 在浏览器启动那一刻挑定页面标签后**永不换** —— 用户关掉那个标签
+  另开一个去登录，程序一路盯着旧标签报「页面停在登录页」（`edge://sync-confirmation-dialog/`
+  注释里预告过的坑，真以另一种形式爆了）；② **一抛即死**：worker 循环里任何异常都当场
+  「读取浏览器饼干失败」认输，而关标签那一下 CDP 就是要抽风一次；③ **5 分钟到点永久撒手**，
+  用户还在输密码；④ **验饼干换脸冤案**：`verify_userhash_live` 用主客户端写死的 Chrome/124 UA
+  去验用户刚应用成功的新饼干，站点弹回登录页 → 被误报「旧饼干不认」。改法：
+  `cdp.CDPSession` 把 connect 尾部抽成 `_attach(url)`（重连时勾销旧 `_failure`，不然 `call()`
+  拿着上次死因拒绝服务），新增 `retarget()`：每轮重数标签，**严格按站点前缀**认站点页
+  （不能用 `pick_site_page` —— 它没命中时兜底挑「第一个普通页面」，retarget 拿它当站点页会追着
+  用户每开一个网页换挂）；没有站点页且连接活着→按兵不动，连接死了→重挂第一个页；一个页都没有
+  →抛 `CdpError` 由界面层数次数。worker：每轮 try 首行 `session.retarget()`；except 改
+  `read_failures` 计数，连续 `BROWSER_READ_RETRY_LIMIT`(4) 轮才认输；deadline 到点若
+  `browser.process` 还活着自动续 `BROWSER_LOGIN_EXTRA_ROUNDS`(3) 轮（超时句分钟数照
+  `time.monotonic()-started` 实报）；verify 前把 `self.client.user_agent` 换成
+  `read_user_agent(session)` 问来的浏览器 UA（缓在 `self._browser_ua`，只问一次）。
+  用例：`tests/test_browser_login.py` 237 → 242（retarget×5：换挂/不拆正确连接/不追普通页/
+  救死连接/无页抛错）、`tests/test_gui_browser_login.py` 55 → 59（每轮重挑/磕一下不死自己缓过来/
+  验饼干用的是浏览器那张嘴/到点自动续等）；顺手修一处**既有竞态**（`test_explicit_browser…`
+  等「这次用」那句时浏览器可能还没 Popen —— 等待条件补 `shim.processes`）。本机全量
+  **1747 passed / 7 skipped**（收集 1754 项）。另按用户点名（m34935）把**版本号规矩**写进
+  发布说明：0.13.x 排到 31 是「用浏览器登录」这条线每次真机反馈修一版，新功能线才进 0.14。
 - **签名申请被拒、缓期再申请**（2026-10-02）：SignPath Foundation 当日回信拒绝免费签名申请，
   理由不是质量而是可见度 —— 社区采用（stars/forks/contributors）、外部文章、独立引用或讨论
   （Reddit/Stack Overflow/YouTube 等）、机构背书、持续活动这些公开信号项目还不够；来信欢迎

@@ -824,6 +824,107 @@ def test_resolve_page_url_gives_up_and_uses_what_is_there(
     assert session._resolve_page_url().endswith("/devtools/page/BLANK")
 
 
+# ---------- retarget()：每轮重挑标签（v0.13.31，真机 m34935） ----------
+
+_STALE_TAB = {
+    "type": "page",
+    "url": "about:blank",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/STALE",
+}
+_SITE_TAB = {
+    "type": "page",
+    "url": bl.LOGIN_URL,
+    "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/SITE",
+}
+
+
+def _retarget_session(
+    monkeypatch: pytest.MonkeyPatch,
+    pages: list[dict],
+    *,
+    attached_ws: str,
+    alive: bool = True,
+) -> tuple[object, list[str]]:
+    """造一条「已经挂着某个标签」的会话；返回（会话, 后来挂上去的地址表）。"""
+    monkeypatch.setattr(bl, "_http_json", lambda url, timeout=5.0: pages)
+    session = bl._new_session("http://127.0.0.1:9222/json/list")
+    session._ws_url = attached_ws  # type: ignore[attr-defined]
+    session._sock = object() if alive else None  # type: ignore[attr-defined]
+    if not alive:
+        session._failure = "调试连接已关闭。"  # type: ignore[attr-defined]
+    attached: list[str] = []
+    monkeypatch.setattr(session, "_attach", attached.append)
+    monkeypatch.setattr(session, "close", lambda: None)
+    return session, attached
+
+
+def test_retarget_moves_onto_the_site_tab(monkeypatch: pytest.MonkeyPatch) -> None:
+    """用户把挂着的那个标签关掉另开一个去登录：下一轮就得换过去。
+
+    m34935 的冤案正是这里 —— connect 那一刻挂的标签此后永不更换，程序一路盯着
+    旧标签报「页面停在登录页」，用户在新的饼干页里登录成功它也不看。
+    """
+    session, attached = _retarget_session(
+        monkeypatch, [_STALE_TAB, _SITE_TAB], attached_ws=_STALE_TAB["webSocketDebuggerUrl"]
+    )
+    assert session.retarget() is True
+    assert attached == [_SITE_TAB["webSocketDebuggerUrl"]]
+
+
+def test_retarget_leaves_a_correct_attachment_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已经挂在站点页上：什么都不做，别把好好的连接拆了重连。"""
+    session, attached = _retarget_session(
+        monkeypatch, [_STALE_TAB, _SITE_TAB], attached_ws=_SITE_TAB["webSocketDebuggerUrl"]
+    )
+    assert session.retarget() is False
+    assert attached == []
+
+
+def test_retarget_does_not_chase_the_user_off_their_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """浏览器里还没有本站点的页面、手头的连接又活着：按兵不动。
+
+    用户可能正停在别处看（甚至刚把登录页关了在想要不要登），连接没断就不该
+    把他的页面换来换去。
+    """
+    other = {
+        "type": "page",
+        "url": "https://example.com/",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/OTHER",
+    }
+    session, attached = _retarget_session(
+        monkeypatch, [other], attached_ws=_STALE_TAB["webSocketDebuggerUrl"]
+    )
+    assert session.retarget() is False
+    assert attached == []
+
+
+def test_retarget_revives_a_dead_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """连接已经断了（标签被关、进程重启）：哪怕没有站点页也先重挂回第一个页面。
+
+    这是「读挂一下不算挂」能缓过来的底气：下一轮 retarget 自己把连接救回来。
+    """
+    session, attached = _retarget_session(
+        monkeypatch,
+        [_STALE_TAB],
+        attached_ws=_STALE_TAB["webSocketDebuggerUrl"],
+        alive=False,
+    )
+    assert session.retarget() is True
+    assert attached == [_STALE_TAB["webSocketDebuggerUrl"]]
+
+
+def test_retarget_reports_no_tabs_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """一个页面标签都不剩：照抛，让界面层数着次数决定收场。"""
+    monkeypatch.setattr(bl, "_http_json", lambda url, timeout=5.0: [])
+    session = bl._new_session("http://127.0.0.1:9222/json/list")
+    with pytest.raises(cdp.CdpError, match="没有可用的页面标签"):
+        session.retarget()
+
+
 class _FakePageSession:
     """只实现 current_url/call 的假会话：导航决策不必真连浏览器。"""
 
