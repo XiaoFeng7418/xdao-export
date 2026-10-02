@@ -426,8 +426,10 @@ def test_can_write_dir_probes_a_subdirectory(out_dir, monkeypatch):
     real_mkdir = Path.mkdir
 
     def fake_mkdir(self, *args, **kwargs):
-        # 只让"探针子目录"这一级失败，模拟权限只放开到上一级的目录
-        if "xdao-write-test.tmp.d" in self.name:
+        # 只让"探针子目录"这一级失败，模拟权限只放开到上一级的目录。
+        # 两个探针名都要挡：只要有一个名字能写，v0.13.27 起就会判成"能写"
+        # （名字被安全软件拦掉是另一回事，见下面的重试用例）。
+        if ".d" in self.name and self.name.startswith("xdao-write-test."):
             raise PermissionError(13, "Permission denied", str(self))
         return real_mkdir(self, *args, **kwargs)
 
@@ -440,6 +442,59 @@ def test_can_write_dir_leaves_no_litter(out_dir):
     from xdao.exporters._shared import PROBE_NAME, can_write_dir
 
     assert can_write_dir(out_dir) is True
+    assert list(out_dir.iterdir()) == []
+
+
+# ---------- 探针名被单独挡掉时不能判「目录不可写」（v0.13.27）----------
+
+
+def test_can_write_dir_retries_with_a_second_probe_name(out_dir, monkeypatch):
+    """第一个探针名字写不动时，换个名字能写就算能写。
+
+    2026-10-02 真机：用户的导出目录和 %LOCALAPPDATA% 兜底**一起**被判
+    「写不进去」，可磁盘、权限、盘符都正常，导出最后也照常写完了 ——
+    错的是探针（名字被安全软件挡），不是目录。
+    """
+    from xdao.exporters._shared import PROBE_ALT_NAME, PROBE_NAME, can_write_dir
+
+    real_write_text = Path.write_text
+
+    def fake_write_text(self, *args, **kwargs):
+        if self.name.startswith(PROBE_NAME):
+            raise PermissionError(13, "Permission denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+    assert can_write_dir(out_dir) is True
+    assert not (out_dir / PROBE_NAME).exists()
+    assert not (out_dir / PROBE_ALT_NAME).exists()
+
+
+def test_probe_writable_reports_the_real_reason(out_dir, monkeypatch):
+    """探不通必须说得出原因 —— 真机上只有「写不进去」四个字是没法排查的。"""
+    from xdao.exporters._shared import PROBE_ALT_NAME, PROBE_NAME, probe_writable
+
+    real_write_text = Path.write_text
+
+    def fake_write_text(self, *args, **kwargs):
+        if self.name.startswith("xdao-write-test"):
+            raise PermissionError(13, "Permission denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+    ok, why = probe_writable(out_dir)
+    assert ok is False
+    assert "Permission denied" in why
+    assert PROBE_NAME in why and PROBE_ALT_NAME in why
+
+
+def test_probe_writable_answers_yes_without_a_reason(out_dir):
+    """能写时不给原因，也不留垃圾。"""
+    from xdao.exporters._shared import probe_writable
+
+    assert probe_writable(out_dir) == (True, "")
     assert list(out_dir.iterdir()) == []
 
 
@@ -538,6 +593,36 @@ def test_choose_writable_dir_reports_when_everything_fails(tmp_path, monkeypatch
     assert choice.path == blocked
     assert choice.fallback is False
     assert "也不行" in "".join(choice.notes)
+    # 探不通也**不拦下导出**：措辞必须说清"这一趟照样写你选的目录"。
+    assert "仍然写在你选的目录里" in "".join(choice.notes)
+
+
+def test_choose_writable_dir_puts_the_real_reason_in_the_note(tmp_path, monkeypatch):
+    """用真探针时，说明里要带上系统给的原话 —— 否则真机上没法查。
+
+    这一条复现的正是 2026-10-02 的现场：两个位置全被判不可写，而原因
+    （``Permission denied``）以前被吞掉了，日志里只剩一句「请检查磁盘」。
+    """
+    from xdao.exporters import _shared
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+    real_write_text = Path.write_text
+
+    def fake_write_text(self, *args, **kwargs):
+        if self.name.startswith("xdao-write-test"):
+            raise PermissionError(13, "Permission denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+    choice = _shared.choose_writable_dir(tmp_path / "导出")
+
+    assert choice.path == tmp_path / "导出"
+    assert choice.fallback is False
+    text = "".join(choice.notes)
+    assert "Permission denied" in text
+    assert "连备用位置" in text
 
 
 def test_fallback_dirs_stay_inside_appdata_and_temp(tmp_path, monkeypatch):

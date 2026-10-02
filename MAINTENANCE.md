@@ -677,6 +677,36 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.27**（接 v0.13.26：探针误报「写不进去」要说得出系统原话，「打开目录」要真的去开）：
+  用户用 0.13.26 复验报「导出目录仍旧是不可写」，运行日志原文是「导出目录 …（文档下的自建
+  文件夹）写不进去，连备用位置（%LOCALAPPDATA%\xdao-export\导出）也不行，请检查磁盘是否已满、
+  是否只读，或安全软件是否拦截了本程序。」—— 可同一个进程随后照常抓页、下载图片、写出成品，
+  说明错的是探针、不是目录。根因与改法（三条）：
+  ① `xdao/exporters/_shared.py` 的 `can_write_dir()` 只探一次，且 `except OSError` 把原因丢掉；
+  现在拆成 `_probe_once()` 与 `probe_writable() -> tuple[bool, str]`：**两个探针名**
+  （`PROBE_NAME = "xdao-write-test.tmp"` 与新增的 `PROBE_ALT_NAME = "xdao-write-test.txt"`）
+  各探一遍，任一能写就算能写 —— 探针名被安全软件单独挡掉是 2026-09-30 就见过的事；
+  `can_write_dir()` 退化成 `probe_writable(...)[0]`，两处「往下一层探」的教训照旧保留。
+  ② `choose_writable_dir()` 的说明带上真实原因（新增 `_with_reason()` 与 `CLASSIC_BLOCK_HINT`）：
+  注入探针（测试）没原因时仍给「当前账户没有写入权限，或被安全软件的受控文件夹访问拦截」，
+  真探针失败时改成系统原话；两条路都探不通时不再用「请检查磁盘是否已满」这种硬失败口吻，
+  而是「这一趟仍然写在你选的目录里；真写不进去会在导出时报出真实的文件名与错误」。
+  ③ `xdao/gui.py` 的 `App.open_folder()` 以前是 `try: os.startfile(folder) / except: 弹一个写着
+  路径的框` —— 真机上 `os.startfile` 被系统拒，用户以为按钮坏了、原因被吞掉。现在按
+  `os.startfile` → `explorer` → `explorer /select,` 依次试（新增模块级 `_spawn()`：
+  `subprocess.Popen(..., close_fds=True, creationflags=CREATE_NO_WINDOW)`），每次失败都
+  `self.log()`，全失败时把三步原因一起写进提示框；另外 `Path(folder).mkdir()` 移进 try
+  （以前它炸在 Tk 回调里，用户只会看到「回调异常」）。
+  用例：`tests/test_exporters.py` 73 → 77（第二个探针名能写就算能写、探不通要带回系统原话、
+  能写时不给原因也不留垃圾、说明里要有真实原因）；`tests/test_window.py` 37 → 41
+  （os.startfile 失败就退到 explorer 并记日志、三步全失败时原因进日志与提示框、目录建不出来时
+  当场说清、没填目录先提示）；「往下一层探」那条用例改成两个探针名都挡。
+  本机全量 **1676 passed / 7 skipped**（收集 1683 项）。
+  另外，README 与 `packaging/使用说明.txt` 的「用途与声明」补上「与 X 岛的关系 / 隐私 / 致谢」
+  三节（应使用者的要求，参照岛上同类第三方客户端的写法）：与 X 岛官方无隶属、合作、赞助或
+  授权关系；饼干只在本机、除向 X 岛发请求外不发给第三方、不内置统计/广告/崩溃上报；
+  致谢数据来源、前辈工具（Rcrwrate/Xdnmb_downer）、Python 与 Tkinter（只用标准库、打包用
+  PyInstaller）。
 - **v0.13.26**（接 v0.13.25：那条 HTTP 路不再「可能一次都没试」，结论一律留痕）：
   用户用 0.13.25 复验「用浏览器登录」时贴的截图里，一次性窗口**已经登录成功**
   （`…/Member/User/Index/index.html`），对话框只有一行「浏览器里的饼干：PHPSESSID、
