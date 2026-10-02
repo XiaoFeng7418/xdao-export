@@ -102,6 +102,47 @@ def test_request_following_jumps_lands_on_the_target_page():
     ]
 
 
+def test_request_following_jumps_stops_on_a_success_page_whose_href_is_empty():
+    """「饼干切换成功!」那页的 ``<a id="href" href="">`` 是空的：跟跳必须就地停住。
+
+    用户报的那张页面（停在「饼干切换成功!」一直跳）就是这条：空 href 一旦被当成
+    「再去一趟当前地址」，浏览器会原地重载、程序会自己跟着自己转。HTTP 这条路
+    必须钉住「空 href = 到头了」。
+    """
+    client = XdaoClient()
+    success = (
+        '<html><head><title>跳转提示</title></head><body><div class="system-message">'
+        '<h1>:)</h1><p class="success">饼干切换成功!</p>'
+        '<p class="jump">页面自动 <a id="href" href="">跳转</a> '
+        '等待时间： <b id="wait">1</b></p></div></body></html>'
+    )
+    fake, calls = _responder({}, default=success)
+    client._request = fake  # type: ignore[method-assign]
+
+    raw, final = client._request_following_jumps("https://www.nmbxd1.com/switch.html")
+
+    assert final == "https://www.nmbxd1.com/switch.html"
+    assert calls == ["https://www.nmbxd1.com/switch.html"], "空 href 不该被当成新地址"
+    assert "饼干切换成功" in raw.decode("utf-8")
+
+
+def test_request_following_jumps_stops_when_the_page_points_at_itself():
+    """跳转目标就是当前页时也要停 —— 否则两跳额度在原地用完，判断会跟着乱。"""
+    client = XdaoClient()
+    url = "https://www.nmbxd1.com/loop.html"
+    page = (
+        '<html><head><title>跳转提示</title></head><body>'
+        f'<p class="jump"><a id="href" href="{url}">跳转</a></p></body></html>'
+    )
+    fake, calls = _responder({}, default=page)
+    client._request = fake  # type: ignore[method-assign]
+
+    _, final = client._request_following_jumps(url)
+
+    assert final == url
+    assert calls == [url]
+
+
 def test_apply_cookie_reports_a_session_that_did_not_stick():
     """被弹回登录页时不能说「账号里没有饼干」—— 真相是这次登录根本没进去。"""
     client = XdaoClient()
@@ -143,6 +184,40 @@ def test_apply_cookie_returns_the_userhash_from_the_export_link():
     client._request = fake  # type: ignore[method-assign]
 
     assert client.apply_cookie() == "REALHASH123"
+
+
+def test_apply_cookie_strips_the_html_suffix_before_building_the_next_url():
+    """列表页链接带 ``.html`` 时，自己拼地址不能再叠一次。
+
+    钉住的是**两个请求的确切地址**：用宽松的路由键匹配，「…/switchTo/id/abc123.html.html」
+    这种 404 会悄悄溜过去 —— v0.13.23 之前这条路一直没被钉住。
+    """
+    client = XdaoClient()
+    switch_url = "https://www.nmbxd1.com/Member/User/Cookie/switchTo/id/abc123.html"
+    export_url = "https://www.nmbxd1.com/Member/User/Cookie/export/id/abc123.html"
+    success = (
+        '<html><head><title>跳转提示</title></head><body>'
+        '<p class="success">饼干切换成功!</p>'
+        '<p class="jump"><a id="href" href="">跳转</a></p></body></html>'
+    )
+    fake, calls = _responder(
+        {
+            "/Cookie/index.html": COOKIE_LIST,
+            switch_url: success,
+            export_url: '{"cookie": "HASHFROMEXPORT"}',
+        }
+    )
+    client._request = fake  # type: ignore[method-assign]
+
+    assert client.apply_cookie() == "HASHFROMEXPORT"
+    assert calls == [
+        "https://www.nmbxd1.com/Member/User/Cookie/index.html",
+        switch_url,
+        export_url,
+    ]
+    assert {cookie.value for cookie in client._jar if cookie.name == "userhash"} == {
+        "HASHFROMEXPORT"
+    }
 
 
 def test_login_reports_a_jump_back_to_the_login_page():

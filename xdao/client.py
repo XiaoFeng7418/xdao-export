@@ -626,6 +626,10 @@ class XdaoClient:
             )
 
         cookie_id = ids[0]
+        # 列表页的链接两种写法都见过：/switchTo/id/461037 与 /switchTo/id/461037.html。
+        # 下面要自己拼一次 ".html"，所以先把链接里可能带来的后缀剥掉，
+        # 否则会请求成 461037.html.html（404）—— 这条路以前没用例钉过，v0.13.24 补上。
+        cookie_id = re.sub(r"\.html?$", "", cookie_id, flags=re.IGNORECASE)
         # 同样跟着「跳转提示」页走：应用饼干这一跳也可能被弹回去。
         self._request_following_jumps(
             f"{self.SITE}/Member/User/Cookie/switchTo/id/{cookie_id}.html"
