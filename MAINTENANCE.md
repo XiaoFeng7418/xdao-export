@@ -363,6 +363,16 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    从来没试过（本机 2026-10-02 验过：只摘链接，目标目录里的文件一个都没动；`icacls /t` 也不会穿过
    junction 改到目标那边）；目录读不动时不再让工具崩在半路；`free_up` 的两句 icacls 不再用
    `cmd /c … & …` 串起来、只看最后一句的返回码。八处都注入验过：退回旧写法，用例立刻红。
+   **PDF 诊断的结论也有用例兜着**（2026-10-02 补上）：`tests/test_pdf_diag.py` 27 条，把 `find_browser`
+   与子进程全顶掉、诊断产物顶到临时目录（默认写进仓库的 `.test-artifacts/`）。钉死的三件事：
+   文件存在不等于成功（浏览器被拦下后写的错误页要按 `%PDF` 文件头判掉）；找不到浏览器、启动失败、
+   一种方式都没成，都必须走进结论那句话里，而且退出码是 1；参数与正式实现是同一套（含
+   `launch_flags()`）。九处都注入验过：退回旧写法，用例立刻红。
+   同一轮还揪出：原来那项「经 cmd 启动」**从来没成过** —— `cmd /c "<命令>" > out 2> err` 会被
+   cmd 自己的引号规则拆坏（用 `where.exe` 与真浏览器各试了四种引号写法，全部返回 1：「The
+   filename, directory name, or volume label syntax is incorrect.」/「The network path was not
+   found.」；把命令写进 `.cmd` 文件也过不了中文路径与代码页那一关）。现在换成「分离进程」：
+   同一条命令行改用 `DETACHED_PROCESS` 启动、输出写文件，真机上六种方式全绿（都能出 %PDF）。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
@@ -385,7 +395,7 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
 **怎么找出来的**（以后遇到同类「冻结进程里子进程崩」照这个顺序）：
 
 1. 先用诊断开关 `main.py --pdfdiag` / `python tools/pdf_diag.py` 确认打包版里
-   浏览器到底能不能起来（会打印 `sys.frozen` 与「浏览器附加参数」）；
+   浏览器到底能不能起来（会打印 `sys.frozen` 与「浏览器附加参数」，最后收一句结论：退出码 0 = 至少有一种方式真的生成了 PDF，1 = 一种都没成 —— 看到 1 就是「导出 PDF 在这台机器上会失败」）；
 2. 冻结探针（PyInstaller `console=True` 打包一个小脚本）里直接调 `render_html_to_pdf`，
    **同一次运行里对照「不给开关 / 给开关」**，排除机器与网络因素；
 3. 用 `CreateProcessW` 之类的启动方式矩阵逐个换（见下表），直到变量收敛到一个开关。
@@ -1094,6 +1104,10 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
      诊断必须和正式实现走同一条路，否则它给出的「启动失败」是误导；直接
      `python tools/pdf_diag.py` 时要自己把仓库根塞进 `sys.path`（否则
      `ModuleNotFoundError: No module named 'xdao'`）。
+    2026-10-02 又补上三处：以前只看「文件在不在、是不是非空」，浏览器被拦下后写的错误页也算成功
+    （现在验 `%PDF` 文件头），而且不管成没成都返回 0（现在没生成 PDF 就返回 1）；六种启动方式
+    逐条记结果，结论里写明是哪几种成的；「经 cmd 启动」那项换成「分离进程」（`DETACHED_PROCESS`），
+    因为旧写法被 cmd 的引号规则拆坏、从来没成过 —— 实测记录见上面第 8 条。
   2. `exporters/pdf.py` 的 `is_frozen()` 委托给 `browser_flags.is_frozen()`，
      **判据只留一处**；`browser_launch_failure_hint()` 的文案重写成「多半是浏览器路径
      不对或安全软件拦下」，并且只在冻结环境才追加第二段。

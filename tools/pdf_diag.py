@@ -3,15 +3,26 @@
 用打包版（或源码）的命令行入口跑一份自检：
 1. 显示它看到的浏览器路径、工作目录、关键环境变量、这次要补的附加参数；
 2. 直接用与正式实现同一套参数启动浏览器，打印退出码与输出；
-3. 分别测试「继承当前环境」「干净环境」「最小 PATH」「经 cmd 启动」几种方式。
+3. 分别测试「管道捕获输出」「重定向到文件」「最小 PATH」「分离进程」
+   「干净环境」「干净环境去掉 Tcl/Tk」几种方式；
+4. 最后收成一句结论：这台机器到底能不能导出 PDF，能的话是哪几种方式成的。
 
 历史：v0.3.0 起打包版启动浏览器会拿到 ``STATUS_BREAKPOINT``，当时就是靠这个工具
 一步步排除的；v0.10.0 由 ``xdao/browser_flags.py`` 自动补 ``--no-sandbox`` 修好。
+2026-10-02：原来那项「经 cmd 启动」**一直是坏的** —— ``cmd /c "<命令>" > out 2> err``
+这种写法会被 cmd 自己的引号规则拆坏（实测四种引号写法都返回 1：「The filename,
+directory name, or volume label syntax is incorrect.」），而那时诊断工具不管成没成
+都返回 0，所以坏了好几年也没人发现。现在换成「分离进程」：同样一条命令行，但用
+``DETACHED_PROCESS`` 启动、输出写文件，让浏览器脱离本进程的控制台与句柄继承关系
+（真机实测能出 PDF）。
 现在它仍然有用 —— 换了浏览器、装了安全软件、遇到「导出 PDF 失败」时，
 先看这里的第一行与「浏览器附加参数」。
 
 用法（用打包版运行）：``xdao-export.exe --pdfdiag``（隐藏开关，见 main.py），
 或者直接用源码运行本文件。
+
+退出码：0 = 至少有一种启动方式真的生成了一份 PDF；1 = 一种都没成，或者这台机器上
+根本找不到浏览器。**看到 1 就是「现在导出 PDF 会失败」**，别把它当成诊断工具自己出错。
 """
 
 from __future__ import annotations
@@ -20,6 +31,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -29,6 +41,51 @@ if __package__ in (None, ""):
 
 from xdao.browser_flags import launch_flags
 from xdao.exporters.pdf import find_browser
+
+PDF_MAGIC = b"%PDF"
+# 让浏览器脱离本进程的控制台与句柄继承关系。不用 ``cmd /c``：cmd 的引号规则会把
+# 命令行拆坏（见模块开头的历史说明），实测四种写法都跑不起来。
+DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+
+
+@dataclass
+class Attempt:
+    """一种启动方式的结果。
+
+    ``problem`` 是 None 才表示真的生成了一份 PDF；否则那句话就是失败原因
+    （「没有生成文件」/「生成的文件是 0 字节」/「生成的文件开头不是 %PDF…」等）。
+    """
+
+    label: str
+    problem: str | None
+    code: int | None = None
+    output: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.problem is None
+
+
+def artifacts_root() -> Path:
+    """诊断产物的根目录。
+
+    放在仓库内的 ``.test-artifacts/pdfdiag`` 下：诊断会生成浏览器 profile 与崩溃
+    转储，不能散落在系统临时目录里。用例会把它顶到临时目录，免得脏了仓库。
+    """
+    return Path(__file__).resolve().parent.parent / ".test-artifacts" / "pdfdiag"
+
+
+def pdf_problem(target: Path) -> str | None:
+    """这个文件算不算一份像样的 PDF。None = 没问题，否则是一句人话。"""
+    if not target.exists():
+        return "没有生成文件"
+    size = target.stat().st_size
+    if size == 0:
+        return "生成的文件是 0 字节"
+    head = target.open("rb").read(8)
+    if not head.startswith(PDF_MAGIC):
+        return f"生成的文件开头不是 %PDF，而是 {head!r}"
+    return None
 
 
 def show_environment() -> None:
@@ -54,12 +111,9 @@ def try_launch(
     cwd: Path | None = None,
     use_pipes: bool = True,
     minimal_path: bool = False,
-    via_cmd: bool = False,
-) -> None:
-    # 产物一律放在仓库内的 .test-artifacts 下：诊断会生成浏览器 profile 与
-    # 崩溃转储，绝不能写到仓库里，也不该散落在系统临时目录。
-    root = Path(__file__).resolve().parent.parent / ".test-artifacts" / "pdfdiag"
-    work = root / f"run-{label.replace(' ', '_').replace('/', '_')}"
+    detached: bool = False,
+) -> Attempt:
+    work = artifacts_root() / f"run-{label.replace(' ', '_').replace('/', '_')}"
     work.mkdir(parents=True, exist_ok=True)
     source = work / "source.html"
     source.write_text("<!DOCTYPE html><html><body><h1>诊断</h1></body></html>", encoding="utf-8")
@@ -71,7 +125,7 @@ def try_launch(
         browser = find_browser()
     except Exception as exc:
         print(f"  {label}: 找不到浏览器 —— {exc}")
-        return
+        return Attempt(label=label, problem=f"找不到浏览器：{exc}")
 
     env = {} if clean_env else dict(os.environ)
     if clean_env:
@@ -117,13 +171,16 @@ def try_launch(
     stdout_file = work / "browser.out"
     stderr_file = work / "browser.err"
     try:
-        if via_cmd:
-            # 经由 cmd.exe 启动，让浏览器脱离本进程的句柄继承关系。
-            inner = subprocess.list2cmdline(command)
-            full = f'"{inner}" > "{stdout_file}" 2> "{stderr_file}"'
-            completed = subprocess.run(
-                ["cmd", "/c", full], timeout=180, env=env, cwd=str(cwd or work),
-            )
+        if detached:
+            # 不用 cmd.exe：cmd 的引号规则会把命令行拆坏（模块开头有实测记录），
+            # 改用 DETACHED_PROCESS 达到同一个目的 —— 浏览器不继承本进程的控制台
+            # 与句柄，输出仍旧重定向到文件。
+            with stdout_file.open("wb") as out, stderr_file.open("wb") as err:
+                completed = subprocess.run(
+                    command, stdout=out, stderr=err, timeout=180, env=env,
+                    cwd=str(cwd or work),
+                    creationflags=DETACHED_PROCESS if os.name == "nt" else 0,
+                )
             code = completed.returncode
             output = ""
             for path in (stderr_file, stdout_file):
@@ -151,23 +208,59 @@ def try_launch(
                     output += path.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
         print(f"  {label}: 启动失败 {type(exc).__name__}: {exc}")
-        return
+        return Attempt(label=label, problem=f"启动失败 {type(exc).__name__}: {exc}")
 
-    produced = target.exists() and target.stat().st_size > 0
-    print(f"  {label}: 退出码={code} 生成PDF={'是' if produced else '否'}"
-          f" 体积={target.stat().st_size if produced else 0}")
-    if not produced and output.strip():
-        print("    浏览器输出：", output.strip().replace("\n", " | ")[:300])
+    problem = pdf_problem(target)
+    size = target.stat().st_size if target.exists() else 0
+    print(f"  {label}: 退出码={code} 生成PDF={'是' if problem is None else '否'} 体积={size}")
+    if problem is not None:
+        print(f"    —— {problem}")
+        if output.strip():
+            print("    浏览器输出：", output.strip().replace("\n", " | ")[:300])
+    return Attempt(label=label, problem=problem, code=code, output=output)
+
+
+def summarize(attempts: list[Attempt]) -> int:
+    """把几种方式的结果收成一句结论，并给出退出码。"""
+    print("\n=== 结论 ===")
+    good = [attempt.label for attempt in attempts if attempt.ok]
+    if good:
+        print(f"  ✓ 这台机器能渲染 PDF（成功的方式：{'、'.join(good)}）。")
+        others = [attempt.label for attempt in attempts if not attempt.ok]
+        if others:
+            print(f"    另外 {len(others)} 种方式没成（{'、'.join(others)}）—— "
+                  f"正式导出走的是能成的那条路，可以不管。")
+        return 0
+
+    missing = [a for a in attempts if (a.problem or "").startswith("找不到浏览器")]
+    if len(missing) == len(attempts):
+        print("  × 一种方式都没成：这台机器上找不到可用的浏览器。")
+        print("    装一个 Chrome 或 Edge（或者在设置里把浏览器路径指过去），再跑一次这个诊断。")
+        return 1
+
+    print(f"  × {len(attempts)} 种启动方式都没能生成 PDF —— 这台机器现在导出 PDF 会失败，"
+          f"不是「诊断没问题」。")
+    wrong = [a for a in attempts if (a.problem or "").startswith("生成的文件开头")]
+    if wrong:
+        print(f"    其中 {len(wrong)} 种写出了文件但不是 PDF（{'、'.join(a.label for a in wrong)}）"
+              f"—— 多半是浏览器被拦下之后写了错误页。")
+    print("    上面每一行的退出码与浏览器输出就是线索；参数与正式实现是同一套"
+          "（见「浏览器附加参数」那一行）。")
+    return 1
 
 
 def main() -> int:
     show_environment()
     print("\n=== 直接启动浏览器 ===")
-    try_launch("管道捕获输出", clean_env=False)
-    try_launch("重定向到文件", clean_env=False, use_pipes=False)
-    try_launch("最小PATH", clean_env=False, use_pipes=False, minimal_path=True)
-    try_launch("经cmd启动", clean_env=False, use_pipes=False, via_cmd=True)
-    return 0
+    attempts = [
+        try_launch("管道捕获输出", clean_env=False),
+        try_launch("重定向到文件", clean_env=False, use_pipes=False),
+        try_launch("最小PATH", clean_env=False, use_pipes=False, minimal_path=True),
+        try_launch("分离进程", clean_env=False, use_pipes=False, detached=True),
+        try_launch("干净环境", clean_env=True, use_pipes=False),
+        try_launch("干净环境去Tcl", clean_env=True, drop_tcl=True, use_pipes=False),
+    ]
+    return summarize(attempts)
 
 
 if __name__ == "__main__":
