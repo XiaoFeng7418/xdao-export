@@ -354,6 +354,15 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    参数只看 `flags.txt` 存不存在、内容对不对从不比对（docstring 却写着「参数原样透传」）。
    现在六项逐条判定，任何一项不过就 `不通过 —— N 项没过` 并返回 1。
    五处都注入验过：退回旧写法，用例立刻红。
+   **清理残留目录这个「会删东西」的工具也有护栏兜着**（2026-10-02 补上）：`tests/test_clean_scratch.py` 37 条，
+   真删也真造链接（Windows 上用 `mklink /J` 造目录联接、POSIX 上用 `os.symlink`，两个平台都真跑、不跳过）。
+   补上的东西：盘符根目录、用户主目录、带 `.git` 的仓库目录、当前工作目录本身或它的祖先一律先拦下，
+   并说清为什么（拦下就是没删，退出码 1）；新增 `--dry-run`；传进来是文件或链接就不走 `rmtree` ——
+   `shutil.rmtree` 对符号链接和 junction 会直接报「Cannot call rmtree on a symbolic link」，旧写法把它
+   当成「删除被拒」，接着去调权限、最后误报「被其它程序占用」，而真正管用的 `os.rmdir(junction)`
+   从来没试过（本机 2026-10-02 验过：只摘链接，目标目录里的文件一个都没动；`icacls /t` 也不会穿过
+   junction 改到目标那边）；目录读不动时不再让工具崩在半路；`free_up` 的两句 icacls 不再用
+   `cmd /c … & …` 串起来、只看最后一句的返回码。八处都注入验过：退回旧写法，用例立刻红。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
