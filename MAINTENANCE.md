@@ -684,6 +684,26 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `docs/SIGNING.md` 第五节执行：README「代码签名政策」改为「申请未获批准」、v0.13.29 发布
   说明签名段改事实、已发布 Release v0.13.29 正文用 `gh release edit` 同步；不对外宣称有任何
   签名，`.sha256` 与 PE 版本信息作者名照旧。
+- **v0.13.30**（修「浏览器窗口里明明登录着，程序自己领饼干却被弹回登录页」）：0.13.29 复验仍失败
+  （用户截图 m34394：工具的 Edge 窗口里「回复成功」发得出去，对话框却说「自动取饼干这条路试过了：
+  浏览器里还是没有 userhash」+「领饼干那条路：登录后没能进入用户系统（X 岛把请求弹回了登录页）」）。
+  拆下来两件事：① 前半句其实是**实话** —— 一次性窗口里用户从没去过饼干页，罐里本来就没有 userhash
+  （0.13.29 的整罐读没读错）；② 真正堵路的是 HTTP 重放的**客户端长相**：`XdaoClient` 写死
+  Chrome/124 UA，浏览器跑的是 Edge 的另一身 UA；同一会话换个 UA 回访，X 岛判定不是同一个客户端把
+  请求弹回登录页（表单登录不受影响，因为它整套 urllib 自洽）。改法三件套：
+  `client.XdaoClient(..., user_agent=None)` 传 `None` 时行为一字不变；`browser_login.read_user_agent
+  (session)` 现场 `evaluate("navigator.userAgent")`（崩了回空串）；新增主路
+  `apply_leaf_cookie_in_browser(session)` —— 在页面里 `fetch(url,{credentials:'same-origin'})`
+  走列表→（认「跳转提示」跟跳，`MAX_COOKIE_JUMPS` 封顶）→switchTo→export，取 `userhash_from_export_text`
+  再退整罐读；**只在 current_url 落在 nmbxd1 域时动手**，全程零导航（护栏不变量沿用 0.13.23）。
+  `gui._try_leaf_cookie_http` 编排成双路：fetch 先走、不通退 HTTP 重放（带浏览器 UA），两条都败时
+  `_joined_leaf_notes` 把两句拼成一行给人看全貌；成功时 detail 留空。诊断标签「走 HTTP 领饼干：」
+  改「领饼干那条路：」—— 一行里现在装着两条路的话，旧标签撒谎（历史文档里的旧措辞不改）。
+  getattr 护栏让 backend 缺新面时**逐字**退回旧单条行为（0.13.25 契约不破）。用例：
+  `tests/test_browser_login.py` 226 → 237（read_user_agent×2、_SpyClient UA×1、in-browser×8）、
+  `tests/test_gui_browser_login.py` 49 → 55（双路编排×5、拼接规则×1）；本机全量
+  **1738 passed / 7 skipped**（收集 1745 项）。发布说明里给了解围两步：窗口里手动开饼干页点
+  「应用」、或 F12 复制 userhash 走「直接粘贴饼干登录」。
 - **v0.13.29**（修「用浏览器登录」读不到浏览器里明明存在的 userhash）：真机报告（2026-10-02
   四张截图）：对话框名单里从头到尾没有 userhash、等到超时，而同一个浏览器 F12 的
   Application→Cookie 面板里 userhash 一直在（值形如 `D-9691%04%02…`，百分号编码的纯 ASCII），

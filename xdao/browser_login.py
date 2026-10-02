@@ -1723,7 +1723,11 @@ def summarize_cookies(cookies: Iterable[dict]) -> str:
 
 
 def apply_leaf_cookie_over_http(
-    cookies: Iterable[dict], *, client=None, timeout: float = 20.0
+    cookies: Iterable[dict],
+    *,
+    client=None,
+    timeout: float = 20.0,
+    user_agent: str = "",
 ) -> LeafCookie:
     """拿浏览器里的饼干，走 HTTP 那条路「应用饼干」并读出 userhash（v0.13.22）。
 
@@ -1733,13 +1737,23 @@ def apply_leaf_cookie_over_http(
     HTTP 这条路从 v0.6.1 起就在用（:meth:`XdaoClient.apply_cookie`）：认「跳转提示」页、
     跟着跳、相对地址补前缀、从导出页正文里抠值、读 cookie jar 兜底，全都是现成的。
 
+    ``user_agent``（v0.13.30）：真机 m34394/m34396 上这条路「登录后没能进入用户系统
+    （X 岛把请求弹回了登录页）」，而同一时刻用户的浏览器里回帖是成功的 —— 会话活着，
+    被弹的是**重放**：饼干罐是 Edge 建立的，嘴却是 urllib 的缺省 UA（Chrome/124），
+    站点把两张嘴认成了两个人。界面层把浏览器自报的 UA（:func:`read_user_agent`）传进来，
+    这一趟才像在跟自己的会话说话。留空时按缺省 UA 走（老行为）。
+
     ``client`` 只给用例注入用；给 None 时自己建一个 :class:`XdaoClient`（用缺省网络设置，
     登录窗口本来就不带用户设置）。失败时把服务端/网络层那句话原样放进 ``detail`` ——
     界面层会把它写进「程序试过的几步」，是用户截图里唯一的书面线索。
     """
     from .client import XdaoClient, XdaoError
 
-    session_client = client if client is not None else XdaoClient(timeout=timeout)
+    session_client = (
+        client
+        if client is not None
+        else XdaoClient(timeout=timeout, user_agent=user_agent or None)
+    )
     try:
         session_client.import_cookies(cookies)
         value = session_client.apply_cookie()
@@ -1748,3 +1762,141 @@ def apply_leaf_cookie_over_http(
     except Exception as exc:  # noqa: BLE001 —— 网络层的意外也要变成一句人话
         return LeafCookie(None, f"走 HTTP 领饼干时出错：{exc}")
     return LeafCookie(value, "")
+
+
+def read_user_agent(session: "CDPSession") -> str:
+    """浏览器自报的 User-Agent（v0.13.30），读不到给空串。
+
+    为什么要有它：HTTP 重放那条路（:func:`apply_leaf_cookie_over_http`）在真机上被弹回
+    登录页，而同一时刻用户的浏览器里回帖是成功的（m34394/m34396）—— 会话活着，被弹的是
+    **重放**：饼干是 Edge 建立的，嘴是 urllib 的缺省 UA。界面层把这里读到的 UA 传进 HTTP
+    重放，让它用原主的嗓音说话。读不到就空串 —— 它是辅助，不该拦住领饼干本身。
+    """
+    try:
+        return str(session.evaluate("navigator.userAgent") or "").strip()
+    except Exception:  # noqa: BLE001 —— 页面正在换文档之类：没有就算了
+        return ""
+
+
+def build_page_fetch_script(url: str) -> str:
+    """生成「在页面里用 fetch GET 一个同源地址」的脚本（v0.13.30）。
+
+    为什么用 fetch：请求由浏览器自己发出 —— UA、头、TLS 指纹、饼干罐（含 HttpOnly/Secure）
+    全是原主的，不存在 HTTP 重放那种「换一张嘴说话就被弹回登录页」的问题；而它是后台请求，
+    **一个标签页都不碰**（v0.13.21 立的规矩是不动用户的页面，不是不能用浏览器发请求）。
+    ``redirect:'follow'`` 让真 302 由浏览器自己跟完；站点的「跳转提示」页是 200 加 JS 倒数，
+    得由调用方认正文里的目标再决定下一跳。``credentials:'same-origin'`` 带上整罐饼干。
+    结果是一个 JSON 字符串：成功 ``{url, status, text}``；fetch 抛错
+    ``{url:'', status:0, text:'', error:"…"}``。
+    """
+    return (
+        "(async () => {"
+        "  try {"
+        f"    const r = await fetch({json.dumps(url)}, "
+        "{credentials: 'same-origin', redirect: 'follow'});"
+        "    const t = await r.text();"
+        "    return JSON.stringify({url: r.url, status: r.status, text: t});"
+        "  } catch (e) {"
+        "    return JSON.stringify({url: '', status: 0, text: '', error: String(e)});"
+        "  }"
+        "})()"
+    )
+
+
+def _fetch_in_page(session: "CDPSession", url: str) -> dict | None:
+    """页面内 GET 一趟：成回 ``{url,status,text}``，fetch 报错也回（带 ``error``）；意外回 None。"""
+    try:
+        raw = session.evaluate(build_page_fetch_script(url), True)
+    except Exception:  # noqa: BLE001 —— CSP 拦脚本、换文档之类：这一趟就是「没问动」
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001 —— 浏览器回了个认不出的形状，按没回话处理
+        return None
+    if not isinstance(data, dict) or "text" not in data:
+        return None
+    return data
+
+
+def apply_leaf_cookie_in_browser(
+    session: "CDPSession", urls: list[str] | None = None
+) -> LeafCookie:
+    """在浏览器页面里把「列表 → 应用 → 导出」走一遍，全程 fetch、不导航（v0.13.30）。
+
+    为什么加这条路（真机 m34394/m34396）：HTTP 重放被弹回登录页、浏览器里回帖却成功 ——
+    差的是客户端长相（UA/头/TLS 指纹），不是会话。页面内 fetch 由浏览器自己发，身份**天然
+    全等**，把这些变量一次消掉；它不导航，所以不会重演 v0.13.21 的「把用户拖去站点倒计时页
+    原地重载」。协议照 :meth:`XdaoClient.apply_cookie`（v0.6.1 起线上跑通）逐条搬：
+    GET「饼干」列表 → 认「跳转提示」页跟跳（相对地址按当前落点补全）→ 正则/``<td>`` 两样
+    认 id → GET ``switchTo``（主站就是在这趟的响应里把 userhash 种进罐）→ GET ``export``
+    从正文抠值 → 读罐兜底。任何一步没成都带一句人话回来，界面层照旧回落 HTTP 重放。
+    """
+    from .client import XdaoClient  # 局部导入：避开与 client 的循环依赖
+
+    try:
+        current = str(session.current_url() or "")
+    except Exception:  # noqa: BLE001 —— 读地址的意外也算「这一趟没问动」
+        current = ""
+    if not current:
+        return LeafCookie(None, "浏览器窗口里现在没有可读的页面，页面内领饼干这条路走不了。")
+    host = urllib.parse.urlsplit(current).hostname or ""
+    if host and "nmbxd1" not in host:
+        return LeafCookie(
+            None, f"浏览器窗口里现在打开的不是 X 岛（{host}），页面内领饼干这条路走不了。"
+        )
+
+    index_url = f"{_cookie_action_base()}index.html"
+    page = _fetch_in_page(session, index_url)
+    if page is None:
+        return LeafCookie(None, "在浏览器页面里问「饼干」列表没问动（页面可能正在换地址）。")
+    final_url = str(page.get("url") or index_url)
+    text = str(page.get("text") or "")
+    hops = 0
+    while hops < MAX_COOKIE_JUMPS:
+        target = XdaoClient.jump_page_url(text)
+        if not target:
+            break
+        nxt = _fetch_in_page(session, urllib.parse.urljoin(final_url, target))
+        if nxt is None:
+            return LeafCookie(None, "跟着站点的「跳转提示」页走时，页面内 fetch 没问动。")
+        page = nxt
+        final_url = str(page.get("url") or final_url)
+        text = str(page.get("text") or "")
+        hops += 1
+
+    ids = re.findall(r"Cookie/(?:switchTo|export)/id/([^/\s\"'<]+)", text)
+    if not ids:
+        # 兼容只有表格、没有链接的写法：每行第二个单元格是 id（同 apply_cookie）。
+        for row in re.findall(r"<tr[^>]*>(.*?)</tr>", text, flags=re.S):
+            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, flags=re.S)
+            if len(cells) >= 2:
+                candidate = re.sub(r"<[^>]+>", "", cells[1]).strip()
+                if candidate:
+                    ids.append(candidate)
+    if not ids:
+        if "login" in final_url:
+            message = XdaoClient.jump_page_message(text)
+            detail = f"X 岛回话：{message}。" if message else "X 岛把页面弹回了登录页。"
+            return LeafCookie(
+                None,
+                f"在浏览器页面里问「饼干」列表也被弹回了登录页（{detail}）—— "
+                "这个窗口里的登录没成。请重新登录。",
+            )
+        message = XdaoClient.jump_page_message(text)
+        if message:
+            return LeafCookie(None, f"浏览器页面里没能读到「饼干」列表（X 岛回话：{message}）。")
+        return LeafCookie(
+            None, "浏览器页面里的「饼干」列表没认出可应用的饼干（这个账号可能还没领过一块）。"
+        )
+
+    cookie_id = re.sub(r"\.html?$", "", ids[0], flags=re.IGNORECASE)
+    # switchTo 的响应正是主站把 userhash 种进罐的那一趟；这一跳没问动也继续往下 ——
+    # 值可能已经种上了，导出与读罐各认一遍再说。
+    _fetch_in_page(session, f"{_cookie_action_base()}switchTo/id/{cookie_id}.html")
+    export = _fetch_in_page(session, f"{_cookie_action_base()}export/id/{cookie_id}.html")
+    value = userhash_from_export_text(str(export.get("text") or "")) if export else None
+    if not value:
+        value = read_userhash_cookie(session, urls)
+    if value:
+        return LeafCookie(value, "")
+    return LeafCookie(None, "浏览器里应用了饼干，可导出页正文和罐里都没看到 userhash。")

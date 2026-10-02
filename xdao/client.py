@@ -101,16 +101,22 @@ class XdaoClient:
         retries: int = 2,
         proxy: str | None = None,
         throttle: float = 0.08,
+        user_agent: str | None = None,
     ) -> None:
         """
         timeout  : 单次请求超时秒数
         retries  : 失败重试次数（指数退避）
         proxy    : 代理地址，如 http://127.0.0.1:7890；留空则读取环境变量
         throttle : 两次请求之间的最小间隔秒数，避免请求过密
+        user_agent : 覆盖默认 UA（v0.13.30）。重放浏览器会话饼干时用浏览器自己的
+                   UA —— 站点把会话认到建立它的客户端上，换一张嘴说话就被弹回登录页
+                   （真机 m34394：浏览器里回帖成功、程序重放同一罐饼干却被弹）。
+                   留空则用模块常量 USER_AGENT，与旧行为逐字一致。
         """
         self.timeout = float(timeout)
         self.retries = max(0, int(retries))
         self._throttle_interval = max(0.0, float(throttle))
+        self.user_agent = (user_agent or "").strip() or None
 
         handlers: list[urllib.request.BaseHandler] = []
         self.proxy = (proxy or "").strip() or self._proxy_from_env()
@@ -185,7 +191,7 @@ class XdaoClient:
         """
         self._throttle()
         merged_headers = {
-            "User-Agent": USER_AGENT,
+            "User-Agent": self.user_agent or USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Accept-Encoding": "gzip, deflate",

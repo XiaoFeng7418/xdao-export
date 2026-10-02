@@ -970,7 +970,7 @@ def test_the_diagnosis_joins_what_the_program_learned() -> None:
     dialog._http_note = "服务端说：这块饼干已经过期了"
     assert dialog._diagnosis() == (
         "（浏览器里的饼干：PHPSESSID（还没有 userhash）。；"
-        "走 HTTP 领饼干：服务端说：这块饼干已经过期了）"
+        "领饼干那条路：服务端说：这块饼干已经过期了）"
     )
 
 
@@ -1008,7 +1008,10 @@ def test_the_failure_reason_carries_the_diagnosis(
     failure = dialog.failure
     assert "调试连接断了" in failure, failure
     assert "浏览器里的饼干" in failure, failure
-    assert "走 HTTP 领饼干：服务端说：这块饼干已经过期了" in failure, failure
+    # v0.13.30：这一行里此刻还带着页面内 fetch 那句话（两条路都败要看全貌），
+    # 所以钉「标签在」+「站点原话在」，不钉连写。
+    assert "领饼干那条路：" in failure, failure
+    assert "服务端说：这块饼干已经过期了" in failure, failure
 
 
 def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
@@ -1213,7 +1216,12 @@ def test_try_leaf_cookie_hands_the_waiting_flag_to_the_library() -> None:
 
 
 class _HttpLeafBackend:
-    """只演 ``_try_leaf_cookie_http`` 需要的那三个接口的替身。"""
+    """只演 ``_try_leaf_cookie_http`` 需要的那几个接口的替身。
+
+    v0.13.30：``apply_leaf_cookie_over_http`` 多收一个 ``user_agent``（界面层从浏览器
+    读来再传下去），这里记下它好断言；``apply_leaf_cookie_in_browser`` / ``read_user_agent``
+    **默认不给** —— 老替身没有这两面时界面层必须照跑（getattr 守卫），由用例自愿装上。
+    """
 
     def __init__(self, cookies, *, value=None, detail="", error=None) -> None:
         self.cookies = list(cookies)
@@ -1221,12 +1229,14 @@ class _HttpLeafBackend:
         self.detail = detail
         self.error = error
         self.handed: list[list] = []
+        self.user_agents: list[str] = []
 
     def read_site_cookies(self, session):
         return list(self.cookies)
 
-    def apply_leaf_cookie_over_http(self, cookies):
+    def apply_leaf_cookie_over_http(self, cookies, *, user_agent=""):
         self.handed.append(list(cookies))
+        self.user_agents.append(user_agent)
         if self.error is not None:
             raise self.error
         return browser_login.LeafCookie(self.value, self.detail)
@@ -1361,6 +1371,120 @@ def test_try_leaf_cookie_http_turns_a_crash_into_one_readable_line() -> None:
     assert value is None
     assert "走 HTTP 领饼干时出错" in detail, detail
     assert "连接被重置" in detail, detail
+
+
+class _PageFetchBackend(_HttpLeafBackend):
+    """装上 v0.13.30 两张新面的替身：页面内 fetch 领饼干 + 浏览器自报 UA。
+
+    ``_HttpLeafBackend`` 故意没有这两面，由上面那组用例钉住「缺了就完整退回
+    v0.13.29」；这一组才演新链路本身。
+    """
+
+    def __init__(
+        self,
+        cookies,
+        *,
+        page_value=None,
+        page_detail="",
+        page_error=None,
+        user_agent="",
+        **kwargs,
+    ) -> None:
+        super().__init__(cookies, **kwargs)
+        self.page_value = page_value
+        self.page_detail = page_detail
+        self.page_error = page_error
+        self.user_agent = user_agent
+        self.page_calls = 0
+
+    def read_user_agent(self, session):
+        return self.user_agent
+
+    def apply_leaf_cookie_in_browser(self, session):
+        self.page_calls += 1
+        if self.page_error is not None:
+            raise self.page_error
+        return browser_login.LeafCookie(self.page_value, self.page_detail)
+
+
+def test_page_fetch_wins_before_the_http_replay_is_bothered() -> None:
+    """第一条路（页面内 fetch）拿到值，HTTP 重放**一趟都不许跑**。
+
+    顺序本身就是这条版本的意义（真机 m34394/m34396）：重放被弹回登录页而浏览器里回帖
+    成功 —— 差的只是客户端长相。fetch 由浏览器自己发，身份天然全等，先问它。
+    """
+    jar = [{"name": "PHPSESSID", "value": "abc", "domain": ".nmbxd1.com"}]
+    backend = _PageFetchBackend(jar, page_value=FAKE_USERHASH, user_agent="Edg/999")
+    value, note = gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object())
+    assert value == FAKE_USERHASH
+    assert note == ""
+    assert backend.page_calls == 1
+    assert backend.handed == [], "fetch 都拿到值了，不许再跑重放"
+
+
+def test_page_fetch_failure_falls_back_to_http_replay_with_the_browsers_ua() -> None:
+    """fetch 没成 → 回落 HTTP 重放，并且把浏览器自报的 UA 一路带下去。"""
+    jar = [{"name": "PHPSESSID", "value": "abc", "domain": ".nmbxd1.com"}]
+    ua = "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Edg/124.0.0.0"
+    backend = _PageFetchBackend(
+        jar,
+        page_detail="在浏览器页面里问「饼干」列表也被弹回了登录页",
+        value=FAKE_USERHASH,
+        user_agent=ua,
+    )
+    value, note = gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object())
+    assert value == FAKE_USERHASH
+    assert note == "", "第二条路救回来了，前一条路的失败话不必再讲"
+    assert backend.user_agents == [ua]
+
+
+def test_both_leaf_paths_failing_shows_the_whole_picture() -> None:
+    """两条路都败 → 界面上必须同时看得见两条路各自的原话（v0.13.30）。
+
+    只留一条的话，「fetch 也被弹回登录页」（会话真死了）和「fetch 没问动、重放被弹回」
+    （多半是客户端长相）这两种完全不同的诊断就分不开了 —— m34394 正是靠这组对照定位的。
+    """
+    jar = [{"name": "PHPSESSID", "value": "abc", "domain": ".nmbxd1.com"}]
+    backend = _PageFetchBackend(
+        jar,
+        page_detail="在浏览器页面里问「饼干」列表没问动（页面可能正在换地址）。",
+        detail="登录后没能进入用户系统（X 岛把请求弹回了登录页。）",
+    )
+    value, note = gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object())
+    assert value is None
+    assert note == (
+        "页面内 fetch：在浏览器页面里问「饼干」列表没问动（页面可能正在换地址）。"
+        "；HTTP 重放：登录后没能进入用户系统（X 岛把请求弹回了登录页。）"
+    ), note
+
+
+def test_page_fetch_shape_mismatch_is_written_not_swallowed() -> None:
+    """fetch 取回一个不像饼干的东西：写形状（绝不写值），HTTP 重放照跑、两行都留。"""
+    secret = "这是一段中文说明，不是一块饼干"
+    jar = [{"name": "PHPSESSID", "value": "abc", "domain": ".nmbxd1.com"}]
+    backend = _PageFetchBackend(jar, page_value=secret, detail="站点没回话。")
+    value, note = gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object())
+    assert value is None
+    assert "页面内 fetch 取到了值，但形状不像 userhash" in note, note
+    assert secret not in note, f"诊断里把值本身写出来了：{note}"
+    assert backend.handed == [jar], "fetch 被粗筛挡下，HTTP 重放必须接着试"
+    assert "HTTP 重放：站点没回话。" in note, note
+
+
+def test_page_fetch_crash_becomes_a_line_and_http_still_runs() -> None:
+    """第一条路整个抛出来（会话断了之类）：变成一句话，不拦第二条路。"""
+    jar = [{"name": "PHPSESSID", "value": "abc", "domain": ".nmbxd1.com"}]
+    backend = _PageFetchBackend(jar, page_error=RuntimeError("连接断了"), value=FAKE_USERHASH)
+    value, note = gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object())
+    assert value == FAKE_USERHASH
+    assert backend.user_agents == [""], "没读 UA 的替身传空串，HTTP 支按缺省走"
+
+
+def test_joined_leaf_notes_only_joins_when_both_have_something_to_say() -> None:
+    """拼接行的规矩（v0.13.30）：只有一条有话时**原样**返回那条 —— 逐字断言不许被前缀污染。"""
+    assert gui._joined_leaf_notes("", "乙") == "乙"
+    assert gui._joined_leaf_notes("甲", "") == "甲"
+    assert gui._joined_leaf_notes("甲", "乙") == "甲；HTTP 重放：乙"
 
 
 def test_the_timeout_message_carries_the_diagnosis_too() -> None:

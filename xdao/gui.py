@@ -1032,7 +1032,7 @@ class BrowserLoginDialog(tk.Toplevel):
             pass
 
     def _set_http_note(self, text: str) -> None:
-        """把「走 HTTP 领饼干」那一路的结论写在自己的行上，并当场写进运行日志（v0.13.26）。
+        """把领饼干那条路（v0.13.30 起含 fetch 与 HTTP 重放）的结论写在自己的行上，并当场写进运行日志（v0.13.26）。
 
         为什么要写日志：用户报问题时贴的是运行日志，而等待期间这句话原来只活在界面上
         （关掉窗口就没了）。m32057 那次最要命 —— 日志里除了「就绪」和「已是最新版本」
@@ -1059,15 +1059,15 @@ class BrowserLoginDialog(tk.Toplevel):
         """把「卡在哪一步」的书面线索拼成一句（v0.13.23）：它会跟着失败原因进运行日志。
 
         用户报问题贴的是运行日志，所以这里必须带上两样：浏览器里有哪些饼干（只看名字）、
-        走 HTTP 那条路时站点/网络层的原话。少了它们，日志里只剩一句「还没取到饼干」，
-        跟「查不动」没区别（m30629 那次就是如此：截图里只有 CDP 那句「还没登录」，
-        连 HTTP 那条路到底跑没跑都看不出来）。
+        领饼干那条路（v0.13.30 起含页面内 fetch 与 HTTP 重放两条）的原话。少了它们，
+        日志里只剩一句「还没取到饼干」，跟「查不动」没区别（m30629 那次就是如此：
+        截图里只有 CDP 那句「还没登录」，连 HTTP 那条路到底跑没跑都看不出来）。
         """
         parts: list[str] = []
         if self._jar_note:
             parts.append(self._jar_note)
         if self._http_note:
-            parts.append(f"走 HTTP 领饼干：{self._http_note}")
+            parts.append(f"领饼干那条路：{self._http_note}")
         if not parts:
             return ""
         return "（" + "；".join(parts) + "）"
@@ -1594,32 +1594,74 @@ class BrowserLoginDialog(tk.Toplevel):
         return _jar_signature(cookies)
 
     @staticmethod
-    def _try_leaf_cookie_http(backend, session) -> tuple[str | None, str]:
-        """用整罐饼干走 HTTP 那条路领饼干（v0.13.22）：不碰用户眼前那个标签页。
+    def _leaf_from_page_fetch(backend, session) -> tuple[str | None, str]:
+        """第一条路（v0.13.30）：在浏览器页面里 fetch 领饼干，返回 ``(值或 None, 一句人话)``。
 
-        返回 ``(值, 一句人话)``。浏览器里的会话饼干整罐交给
-        :func:`browser_login.apply_leaf_cookie_over_http` 去跑 ``XdaoClient`` 那套从
-        v0.6.1 起就在线上跑通的协议（认「跳转提示」页、跟着跳、从**导出页的正文**里
-        抠 userhash）。为什么不继续让浏览器自己去跳：站点给值的落点正是导出页，而
-        浏览器那条路上它会被弹回登录页，跳转页还会自己原地重载 —— 用户看到的就是
-        「停在『饼干切换成功!』一直跳」（m29953/m29954）。
+        为什么先走它（真机 m34394/m34396）：HTTP 重放报「登录后没能进入用户系统（X 岛把
+        请求弹回了登录页）」，而同一时刻浏览器里回帖是成功的 —— 会话活着，差的是**客户端
+        长相**：饼干罐是浏览器建立的，嘴却是 urllib 的缺省 UA，站点把重放当成了别人。
+        页面内 fetch 由浏览器自己发，UA/头/饼干罐全是原主的，身份天然全等；它也不导航，
+        不碰用户眼前那个标签页（v0.13.21 立的规矩是「不动标签页」，不是「不能用浏览器
+        发请求」）。
+
+        老 backend 可能没有 ``apply_leaf_cookie_in_browser``（旧替身、旧模块）：``getattr``
+        守卫，缺了就当这条路没话可说，行为完整退回 v0.13.29 的单路 HTTP 重放。
+        """
+        fetcher = getattr(backend, "apply_leaf_cookie_in_browser", None)
+        if not callable(fetcher):
+            return None, ""
+        try:
+            result = fetcher(session)
+        except Exception as exc:  # noqa: BLE001 —— 兜底路径，失败不算流程错误
+            return None, f"页面内 fetch 领饼干时出错：{exc}"
+        value = str(getattr(result, "value", "") or "").strip()
+        detail = str(getattr(result, "detail", "") or "")
+        if value and backend.looks_like_userhash(value):
+            return value, detail
+        if value:
+            shape = f"页面内 fetch 取到了值，但形状不像 userhash（{_describe_value_shape(value)}）"
+            return None, f"{detail}；{shape}" if detail else f"{shape}。"
+        if detail:
+            return None, f"页面内 fetch：{detail}"
+        return None, ""
+
+    @staticmethod
+    def _try_leaf_cookie_http(backend, session) -> tuple[str | None, str]:
+        """领饼干的两条路（v0.13.30）：先浏览器页面内 fetch，再 HTTP 重放（带浏览器的 UA）。
+
+        返回 ``(值, 一句人话)``。顺序与 UA 的理由见 :meth:`_leaf_from_page_fetch`：页面内
+        fetch 没成（页面正在换文档、脚本被拦……）才回落 ``apply_leaf_cookie_over_http`` ——
+        并且这一趟带上浏览器自报的 UA（``backend.read_user_agent``，缺了就不带、走缺省），
+        两条路都比以前更像原主。HTTP 重放本身是 v0.13.22 起的老路：把整罐饼干交给
+        ``XdaoClient`` 那套从 v0.6.1 起就在线上跑通的协议（认「跳转提示」页、跟着跳、从
+        **导出页的正文**里抠 userhash）。
 
         ``may_skip_for_typing``（已删，v0.13.26）：「用户可能还在输验证码」时就跳过这一条
         的那套判断，真机上反而把答案藏了起来 —— 罐里只要有一块空值的饼干，程序就以为
         「还没登录完」，整轮一次都不试，界面上只剩「还没有 userhash」（m32057）。现在
         一律照试，由**时间**节流（``BROWSER_LEAF_HTTP_SECONDS``），试过什么一律留痕。
         """
+        page_value, first_note = BrowserLoginDialog._leaf_from_page_fetch(backend, session)
+        if page_value:
+            return page_value, first_note
         try:
             cookies = backend.read_site_cookies(session)
         except Exception as exc:  # noqa: BLE001 —— 兜底路径，失败不算流程错误
-            return None, f"读浏览器里的饼干时出错：{exc}"
+            return None, _joined_leaf_notes(first_note, f"读浏览器里的饼干时出错：{exc}")
         if not cookies:
             # 没得试也要留痕（v0.13.25）：这句只进书面记录，见 `_QUIET_HTTP_NOTES`。
-            return None, BROWSER_HTTP_NO_COOKIES_NOTE
+            return None, _joined_leaf_notes(first_note, BROWSER_HTTP_NO_COOKIES_NOTE)
+        user_agent = ""
+        read_ua = getattr(backend, "read_user_agent", None)
+        if callable(read_ua):
+            try:
+                user_agent = str(read_ua(session) or "").strip()
+            except Exception:  # noqa: BLE001 —— 读不到 UA 就用缺省，不拦路
+                user_agent = ""
         try:
-            result = backend.apply_leaf_cookie_over_http(cookies)
+            result = backend.apply_leaf_cookie_over_http(cookies, user_agent=user_agent)
         except Exception as exc:  # noqa: BLE001 —— 同上
-            return None, f"走 HTTP 领饼干时出错：{exc}"
+            return None, _joined_leaf_notes(first_note, f"走 HTTP 领饼干时出错：{exc}")
         value = str(getattr(result, "value", "") or "").strip()
         detail = str(getattr(result, "detail", "") or "")
         if value and backend.looks_like_userhash(value):
@@ -1632,10 +1674,11 @@ class BrowserLoginDialog(tk.Toplevel):
             # 饼干列表一切正常，程序却一个字都不说）。只写形状、不写值本身 —— 那可能是
             # 真凭据，日志会被贴到公开的地方。
             shape = f"HTTP 那条路取到了值，但形状不像 userhash（{_describe_value_shape(value)}）"
-            return None, f"{detail}；{shape}" if detail else f"{shape}。"
+            note = f"{detail}；{shape}" if detail else f"{shape}。"
+            return None, _joined_leaf_notes(first_note, note)
         if not detail:
-            return None, "HTTP 那条路没取到值，站点也没说为什么。"
-        return None, detail
+            detail = "HTTP 那条路没取到值，站点也没说为什么。"
+        return None, _joined_leaf_notes(first_note, detail)
 
 
 def _describe_value_shape(value: str) -> str:
@@ -1652,6 +1695,21 @@ def _describe_value_shape(value: str) -> str:
     escaped = text.count("%")
     head = "字母数字" if text[:1].isalnum() and text[:1].isascii() else "非字母数字"
     return f"{len(text)} 个字符，{wide} 个非 ASCII，{escaped} 个百分号，开头是{head}"
+
+
+def _joined_leaf_notes(page_note: str, http_note: str) -> str:
+    """把两条领饼干路的结论拼成对话框那一行（v0.13.30）。
+
+    为什么要拼而不是挑一条：两条路都败时，看到的必须是**全貌** —— 「页面内 fetch 被弹回
+    登录页」和「HTTP 重放被弹回登录页」是完全不同的线索（前者说明会话真死了，后者多半是
+    客户端长相的问题，m34394 靠这个才定位）。第一条路没话可说时原样返回第二条：老替身的
+    断言（逐字相等）不许被前缀影响。
+    """
+    if not page_note:
+        return http_note
+    if not http_note:
+        return page_note
+    return f"{page_note}；HTTP 重放：{http_note}"
 
 
 def _jar_signature(cookies) -> tuple[tuple[str, str], ...]:
