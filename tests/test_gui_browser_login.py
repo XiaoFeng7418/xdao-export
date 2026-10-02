@@ -1113,9 +1113,16 @@ def test_try_leaf_cookie_http_tries_anyway_when_the_jar_looks_logged_in() -> Non
 
 
 def test_try_leaf_cookie_http_does_not_connect_while_the_jar_is_empty() -> None:
-    """罐里还没有会话饼干（用户一个字都没填）时，一个请求都不该发。"""
+    """罐里还没有会话饼干（用户一个字都没填）时，一个请求都不该发。
+
+    没得试也要留一句书面记录（v0.13.25）：以前这里返回空字符串，于是「这条路没跑」
+    在日志里一个字都不留，用户报「拿不到 userhash」时看不出程序试没试。
+    """
     backend = _HttpLeafBackend([])
-    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (None, "")
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (
+        None,
+        gui.BROWSER_HTTP_NO_COOKIES_NOTE,
+    )
     assert backend.handed == [], "罐里是空的却照样去连了站点"
 
 
@@ -1134,9 +1141,66 @@ def test_try_leaf_cookie_http_hands_the_whole_jar_over() -> None:
 
 
 def test_try_leaf_cookie_http_rejects_a_value_that_is_not_a_userhash() -> None:
-    """HTTP 那条路回来的东西同样要过 ``looks_like_userhash``，不能照单全收。"""
-    backend = _HttpLeafBackend([{"name": "a", "value": "b"}], value="x")
-    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (None, "")
+    """HTTP 那条路回来的东西同样要过 ``looks_like_userhash``，不能照单全收。
+
+    而且被挡下时要**说得出话**（v0.13.25）：以前这里静默返回空 detail，界面上只剩
+    「还没有 userhash」，用户和我都看不出程序到底接住过什么（m31725：用户自己在站点里
+    看饼干列表一切正常，程序却一个字都不说）。只写值的形状，不写值本身 —— 那是凭据。
+    """
+    secret = "这是一句人话，不是一块饼干"
+    backend = _HttpLeafBackend([{"name": "a", "value": "b"}], value=secret)
+    value, detail = gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object())
+    assert value is None
+    assert "形状不像 userhash" in detail, detail
+    assert "个字符" in detail, detail
+    assert secret not in detail, f"诊断里把值本身写出来了：{detail}"
+
+
+def test_try_leaf_cookie_http_accepts_a_value_with_high_bytes() -> None:
+    """高位字节/替换字符不再一票否决（v0.13.25）：真假交给服务端去判。
+
+    真机上站点从导出页回给我们的值可能带着二进制字节解出来的字符，老粗筛要求
+    「全是可打印 ASCII」，于是把真值判成「不像」—— 用户看到的就是「程序什么都不说」。
+    """
+    value = "D-\x91\x04\x02\x12\xf8\xb8E9"
+    backend = _HttpLeafBackend([{"name": "PHPSESSID", "value": "x"}], value=value)
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (value, "")
+
+
+def test_try_leaf_cookie_http_admits_when_the_site_says_nothing() -> None:
+    """站点既没给值也没给原话时，也要写一句「没取到值」而不是静默（v0.13.25）。"""
+    backend = _HttpLeafBackend([{"name": "PHPSESSID", "value": "x"}])
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (
+        None,
+        "HTTP 那条路没取到值，站点也没说为什么。",
+    )
+
+
+def test_describe_value_shape_never_prints_the_value() -> None:
+    """形状描述只报「几个字符、几个非 ASCII、几个百分号、开头是什么」。"""
+    text = gui._describe_value_shape("D-%91%04%02%12")
+    assert "个字符" in text and "个非 ASCII" in text and "个百分号" in text
+    assert "D-" not in text, f"形状描述里漏出了值本身：{text}"
+    assert gui._describe_value_shape("") == "0 个字符，0 个非 ASCII，0 个百分号，开头是非字母数字"
+
+
+def test_jar_signature_notices_changes_and_ignores_the_order() -> None:
+    """罐头指纹：只看「变了没有」，与饼干在列表里的先后无关（v0.13.25）。"""
+    one = [{"name": "PHPSESSID", "value": "a"}, {"name": "_uid", "value": "b"}]
+    same_the_other_way_round = [
+        {"name": "_uid", "value": "b"},
+        {"name": "PHPSESSID", "value": "a"},
+    ]
+    assert gui._jar_signature(one) == gui._jar_signature(same_the_other_way_round)
+    assert gui._jar_signature([]) == ()
+    assert gui._jar_signature(one) != gui._jar_signature(
+        [{"name": "PHPSESSID", "value": "a"}, {"name": "_uid", "value": "c"}]
+    )
+    assert gui._jar_signature(one) != gui._jar_signature(
+        [{"name": "PHPSESSID", "value": "a"}, {"name": "_uid", "value": "b"}, {"name": "x", "value": "y"}]
+    )
+    # 坏数据不该把它弄崩：不是字典的条目直接跳过。
+    assert gui._jar_signature([None, "x", {"name": "a", "value": "b"}]) == (("a", "b"),)
 
 
 def test_try_leaf_cookie_http_turns_a_crash_into_one_readable_line() -> None:
@@ -1262,6 +1326,47 @@ def test_http_leaf_cookie_detail_reaches_the_timeout_message(
     # 顺序也钉住：HTTP 那条路是**后**试的，它的原话要排在浏览器那条路之后
     # （不然「把原话挪到末尾」这个行为被改掉也没人发现）。
     assert status.index(marker) > status.index("userhash"), status
+
+
+def test_the_http_path_is_not_repeated_while_the_jar_stays_the_same(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """罐头没变的那些轮次不该再连站点（v0.13.25）。
+
+    等用户登录的那几分钟里，站点那边什么都没变，可程序每 5 秒就调一次
+    ``apply_leaf_cookie_over_http`` —— 一趟登录最多两百来个请求全打在空气上。
+    罐头一变（用户登录完，站点开始给新饼干）就该立刻再试一次。
+    """
+    dialog = open_dialog()
+    home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+    calls: list[list] = []
+
+    def fake_http(cookies, **kwargs):
+        calls.append(list(cookies))
+        return browser_login.LeafCookie(None, "站点说：这个账号还没有可用的饼干")
+
+    monkeypatch.setattr(browser_login, "apply_leaf_cookie_over_http", fake_http)
+
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "memberUserspapapa", "value": "logged-in"},
+    ]
+    session.pages = {home: {"url": home, "login": False, "jump": "", "kind": "other", "ids": []}}
+    session.current_url_value = home
+
+    assert _wait_for(root_window, lambda: bool(calls), timeout=10.0), "第一轮就没去试 HTTP"
+    # BROWSER_LEAF_SECONDS 被 fast_browser_polling 调成 0.15 秒：这一秒里够跑好几轮。
+    _pump(root_window, 1.0)
+    assert len(calls) == 1, f"罐头一直是同一罐，却连了 {len(calls)} 次站点"
+
+    # 罐头一变（用户登录完，站点把会话饼干换了新值）就该立刻再试一次。
+    session.cookies = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "memberUserspapapa", "value": "logged-in-for-real"},
+    ]
+    assert _wait_for(root_window, lambda: len(calls) >= 2, timeout=10.0), "罐头变了却没再试"
 
 
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:

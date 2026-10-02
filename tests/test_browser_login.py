@@ -2015,6 +2015,37 @@ def test_looks_like_userhash_rejects_everything_else(value: str) -> None:
     assert not bl.looks_like_userhash(value)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        # 百分号转义：站点正文里最常见的一种写法。
+        "D-%91%04%02%12%F8%B8E9",
+        # 二进制字节被解码出来的样子（替换字符、高位字节、控制字符混在一起）：
+        # 旧规则要求「全是可打印 ASCII」，真值就这么被静默丢掉的（m31725）。
+        "D-\x91\x04\x02\x12\xf8\xb8E9",
+        "\u00d2\u00ea\x04\x02\x12\xf8",
+        "\ufffd\ufffdD-%91%04",
+    ],
+)
+def test_looks_like_userhash_keeps_values_that_are_not_plain_ascii(value: str) -> None:
+    """v0.13.25 放宽：不再要求「全是可打印 ASCII」，真假交给服务端去判。"""
+    assert bl.looks_like_userhash(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "并没有权限访问这块饼干",
+        "<div>userhash</div>",
+        "userhash：这块饼干已经过期了",
+        "饼干 列表 请 重新登录",
+    ],
+)
+def test_looks_like_userhash_still_rejects_page_text(value: str) -> None:
+    """放宽的是「高位字节」，不是「人话」：站点把整句话塞进正文时还得挡住。"""
+    assert not bl.looks_like_userhash(value)
+
+
 # ---------------------------------------------------------------- 应用饼干
 
 

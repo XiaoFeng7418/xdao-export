@@ -1151,21 +1151,36 @@ def _pick_site_page(pages: list[dict]) -> dict | None:
 # ---------------------------------------------------------------- 饼干
 
 
-def looks_like_userhash(value: str) -> bool:
-    """像不像一个 userhash：非空、无空白、无 ``;``、至少 6 位可打印 ASCII。
+#: 「这明显是一句话，不是一个值」：中日韩文字与全角标点。
+#:
+#: 站点把人话（「没权限访问」之类）塞进正文时，粗筛得能挡住；除此之外一律放行。
+_LOOKS_LIKE_PROSE = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
 
-    X 岛的 userhash 是 8 位左右的不透明串。这里是给「用户粘贴了一堆东西」
-    兜底用的粗筛，不要求它懂 X 岛的内部规则。
+
+def looks_like_userhash(value: str) -> bool:
+    """像不像一个 userhash：非空、至少 6 位、无空白、无 ``;``、不成句中文。
+
+    X 岛的 userhash 是 8 位左右的不透明串。这里是给「用户粘贴了一堆东西」和
+    「站点正文里抠出来的值」兜底用的粗筛，不要求它懂 X 岛的内部规则 ——
+    真假由 :func:`xdao.gui.verify_userhash_live` 去问服务端。
+
+    2026-10-02（v0.13.25）放宽：以前要求**全是可打印 ASCII**。真机上站点从导出页
+    回给我们的值只要含一个非 ASCII 字符（正文里的字节被解码成替换字符，或高位字节），
+    这里就判「不像」；而调用方当时是**一声不响**地丢掉，界面上只剩「还没有 userhash」。
+    m31725 正是这样：用户自己在站点里看饼干列表一切正常，程序却一个字都不说。
+    现在只挡一眼就不是值的东西（空白、``;``、尖括号、成句的中文）。
     """
     if not value or len(value) < 6:
         return False
-    if ";" in value:
+    if ";" in value or "<" in value or ">" in value:
         return False
     # 空白要显式挡：``str.isprintable()`` 认为空格是可打印的，只靠它会把
     # 「ABC 12345」这种两句拼在一起的东西当成一个值。
     if any(character.isspace() for character in value):
         return False
-    return all(character.isprintable() and ord(character) < 128 for character in value)
+    if _LOOKS_LIKE_PROSE.search(value):
+        return False
+    return any(character.isprintable() for character in value)
 
 
 def _bare_candidate(token: str) -> str | None:

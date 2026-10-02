@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 #: 这个文件自己：它写着禁词，扫自己只会自己撞自己。
 SELF = "tests/test_public_material.py"
 
-#: 允许出现的串号：X岛官方的测试串，以及编出来的占位编号。
-ALLOWED_THREADS = frozenset({"50000001", "12345678"})
+#: 允许出现的串号：X岛官方的测试串、岛方公开的使用指南与免责声明，以及编出来的占位编号。
+ALLOWED_THREADS = frozenset({"50000001", "50577215", "11689471", "12345678"})
 
 #: ``C:\Users\<这里>`` 允许的写法：占位符或明显编的。
 ALLOWED_USER_DIRS = frozenset({"你", "<你", "...", "me"})
