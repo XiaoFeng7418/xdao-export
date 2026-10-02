@@ -27,12 +27,13 @@
 
 发布者：**晓风**（GitHub [@XiaoFeng7418](https://github.com/XiaoFeng7418)）。
 
-**现状：还没有代码签名证书，正在申请 [SignPath Foundation](https://signpath.org/) 的免费开源签名。**
-所以现在下载到的 `xdao-export.exe` 在 Windows 上会显示成「未知发布者」，也可能被 SmartScreen 提醒一次 ——
-这是没有签名证书时的正常现象，不代表文件被人改过。拿到证书之前，请照 Release 里附的 `.sha256`
-自己核一遍（做法见上面的「下载后核对一下」）。
+**现状：还没有代码签名证书。** 2026-10-02 [SignPath Foundation](https://signpath.org/) 的免费开源签名
+申请**未获批准**（对方来信：项目目前还缺少社区采用、外部引用等公开可见度信号），决定等项目有人用、
+有了这些信号之后再去申请。所以现在下载到的 `xdao-export.exe` 在 Windows 上会显示成「未知发布者」，
+也可能被 SmartScreen 提醒一次 —— 这是没有签名证书时的正常现象，不代表文件被人改过。拿到证书之前，
+请照 Release 里附的 `.sha256` 自己核一遍（做法见上面的「下载后核对一下」）。
 
-获批之后的流程是固定的：
+签名流水线已经备在仓库里，获批即可启用；启用后的流程是固定的：
 
 - 官方发布包**只由 GitHub Actions 构建**（`.github/workflows/build.yml`，源码与打包脚本都在本仓库里，
   可以自己复核），本机打的包不会作为官方下载。
@@ -41,8 +42,8 @@
   本项目由个人独立维护。
 - 只签本仓库自己构建的 `xdao-export.exe`；随包一起分发的 Python、Tcl/Tk、OpenSSL 等第三方组件
   属上游项目，不由本项目签名，也不改动其内容。
-- 免费代码签名由 SignPath.io 提供，证书由 SignPath Foundation 颁发。
-  （Free code signing provided by SignPath.io, certificate by SignPath Foundation.）
+- 获批之后按 SignPath 的要求在 README 标明：免费代码签名由 SignPath.io 提供，证书由 SignPath
+  Foundation 颁发。（Free code signing provided by SignPath.io, certificate by SignPath Foundation.）
 
 代码签名的意义是「让改动看得出来」，不是「让文件改不了」：**核对下载来源与 `.sha256` 永远是最靠得住的一步**。
 

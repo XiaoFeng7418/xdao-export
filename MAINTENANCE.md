@@ -677,6 +677,13 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **签名申请被拒、缓期再申请**（2026-10-02）：SignPath Foundation 当日回信拒绝免费签名申请，
+  理由不是质量而是可见度 —— 社区采用（stars/forks/contributors）、外部文章、独立引用或讨论
+  （Reddit/Stack Overflow/YouTube 等）、机构背书、持续活动这些公开信号项目还不够；来信欢迎
+  以后再申请。用户决定：**等项目有人用之后再申请**，现在不急着再递。退路按
+  `docs/SIGNING.md` 第五节执行：README「代码签名政策」改为「申请未获批准」、v0.13.29 发布
+  说明签名段改事实、已发布 Release v0.13.29 正文用 `gh release edit` 同步；不对外宣称有任何
+  签名，`.sha256` 与 PE 版本信息作者名照旧。
 - **v0.13.29**（修「用浏览器登录」读不到浏览器里明明存在的 userhash）：真机报告（2026-10-02
   四张截图）：对话框名单里从头到尾没有 userhash、等到超时，而同一个浏览器 F12 的
   Application→Cookie 面板里 userhash 一直在（值形如 `D-9691%04%02…`，百分号编码的纯 ASCII），
