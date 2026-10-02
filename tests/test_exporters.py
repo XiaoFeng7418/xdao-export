@@ -16,6 +16,7 @@ from xdao.exporters import (
     EXPORTERS,
     HtmlBuilder,
     OutputDirNotWritable,
+    PdfBuilder,
     ThreadData,
     TxtBuilder,
     create_exporter,
@@ -604,6 +605,38 @@ def test_create_exporter_returns_right_class_and_falls_back():
     assert isinstance(create_exporter("txt", client), TxtBuilder)
     assert isinstance(create_exporter("html", client), HtmlBuilder)
     assert isinstance(create_exporter("不存在的格式", client), HtmlBuilder)
+
+
+def test_create_exporter_keeps_the_pdf_only_arguments():
+    """PDF 专属的那几项要能穿过「按能力逐级回退」的链条，落到导出器身上。
+
+    这条链条的毛病很隐蔽：`PdfBuilder` 不收 `image_mode`，所以第一层只要带着
+    `image_mode` 就整体 `TypeError`，一定会掉到第二层 —— 而第二层原来没带
+    `browser_path` / `pdf_timeout` / `fallback_html`，于是**设置里指定的浏览器、超时、
+    「渲染失败就改存 HTML」这三项对 PDF 导出全都不起作用**（2026-10-02 发现；
+    `tests/test_watcher.py` 的监控 PDF 用例只钉了「传给 create_exporter 的参数」，
+    所以一直没红）。
+    """
+    from xdao.pdf_opts import PdfOptions
+
+    options = PdfOptions(paper="a3", margin="none")
+    exporter = create_exporter(
+        "pdf",
+        FakeClient(),
+        filename_template="[{id}] {title}",
+        image_mode="embed",
+        browser_path="C:/假的浏览器.exe",
+        pdf_timeout=123,
+        fallback_html=False,
+        pdf_options=options,
+    )
+
+    assert isinstance(exporter, PdfBuilder)
+    assert exporter.browser_path == "C:/假的浏览器.exe"
+    assert exporter.timeout == 123
+    assert exporter.fallback_html is False
+    assert exporter.pdf_options is options
+    assert exporter.filename_template == "[{id}] {title}"
 
 
 @pytest.mark.parametrize("key", ["html", "txt", "markdown", "epub"])

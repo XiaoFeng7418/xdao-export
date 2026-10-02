@@ -690,8 +690,15 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   207 → 212、`tests/test_gui_browser_login.py` 28 → 36（新增的 autouse fixture
   `no_real_http_leaf_cookie` 让既有 28 条只验 CDP 那条路、绝不真发 HTTP）；九处注入全部变红
   （罐子判据两头改错、整段停用 HTTP 兜底、值不校验、原话不挪到末尾、服务端那句话不原样带出、
-  不扫同名旧饼干、会话饼干当过期、空条目照装）。本机全量 **1640 passed / 7 skipped**
-  （收集 1647 项）。
+  不扫同名旧饼干、会话饼干当过期、空条目照装）。本机全量 **1641 passed / 7 skipped**
+  同版顺手修掉一处旧毛病：`create_exporter()` 那条「按能力逐级回退」的链里，`PdfBuilder` 不收
+  `image_mode`，所以第一层必 `TypeError`、PDF 一定落到第二层 —— 而第二层原来只带
+  `image_mode + pdf_options`，把 `browser_path` / `pdf_timeout` / `fallback_html` 三项悄悄丢掉了
+  （真机表现：设置里指定了浏览器，PDF 导出还是用默认的那个）。第二层现在＝第一层去掉
+  `image_mode`，`image_mode + pdf_options` 那层挪到第三层供 EPUB 回落；`tests/test_exporters.py`
+  新增 `test_create_exporter_keeps_the_pdf_only_arguments`，`tests/test_watcher.py` 的监控 PDF
+  用例改成假渲染并钉住渲染层收到的参数（它原来会真起浏览器，CI 上因此红过一条）。
+  （收集 1648 项）。
 - **v0.13.21**（真机上报「自动切换饼干之后一直卡在那里」；同版把开发期的界面截图工具
   `tools/gui_shot.py` 补上用例）：用户报的是 —— 在 0.13.20 里能正常登录、也自己跳到了
   「饼干」页，程序自动切换饼干之后就再也没有下文。真机截图证据：浏览器停在
@@ -1346,6 +1353,23 @@ Edge / Chrome，所以「系统默认浏览器是 Firefox」的机器仍然能�
 认过去，程序读一次它的整罐饼干（`read_site_cookies()`），剩下的交回 HTTP
 （`apply_leaf_cookie_over_http()`）—— 也因此**不需要**再驱动用户的标签页，
 `BROWSER_LEAF_NAV_LIMIT` 用完也只是「不再动页面」，每轮照旧能领。
+
+## 逐级回退的构造函数：只钉「传了什么」看不出来（2026-10-02 发现）
+
+`create_exporter()` 用「带全部参数 → `TypeError` 就删一项再试」来兼容各个导出器的构造签名。
+这条链有个安静的失效模式：某一层**本该带上的参数**忘了带，程序不会报错 —— 它只是把那一层的
+参数漏给导出器，而导出器通常都有默认值，于是行为悄悄回退，谁也不会发现。
+
+这次是 PDF：`PdfBuilder` 不收 `image_mode`，所以第一层必 `TypeError`、PDF 一定在第二层建起来，
+而第二层原来没带 `browser_path` / `pdf_timeout` / `fallback_html` —— 真机表现是「设置里指定了
+浏览器，PDF 导出还是用默认那个」。原来那条用例只断言「`create_exporter()` 收到的参数」，
+所以一直是绿的。
+
+规矩：给这条链加参数时，用例要钉**导出器实例真正收到什么**（属性值），不是「谁传了什么」；
+每加一项就补一条断言。另外，测试里遇到「真起浏览器」的用例（例如监控 PDF 那条）一律换成
+假渲染 —— 它在 CI 的 windows 机器上会因为等不到调试端口而红，一条用例就能把整轮 CI 拖红。
+（注入验证时也要注意：这条链里「一层的样子」和「另一层的样子」很容易长得像，片段不唯一就会
+锚错层 —— 删掉第一层的参数，用例照样全绿，等于什么都没验。片段必须锚到唯一位置。）
 
 ## 敏感串扫描：提交信息扫了，文档容易漏（2026-10-01 发现）
 

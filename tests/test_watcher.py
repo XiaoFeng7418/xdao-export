@@ -413,8 +413,15 @@ def test_resolved_cache_dir_prefers_explicit_setting():
 
 
 def test_check_once_hands_pdf_options_and_browser_to_the_exporter(monkeypatch):
-    """监控导出 PDF 时，设置里的纸张/边距与浏览器路径必须传下去。"""
+    """监控导出 PDF 时，设置里的纸张/边距与浏览器路径必须传下去。
+
+    渲染换成假件：真渲染要**启动浏览器**，而这条用例验的是「设置有没有一路传到渲染层」，
+    与浏览器起不起得来无关。真机渲染由 `tests/test_pdf_render.py` 在
+    `XDAO_PDF_TEST=1` 时单独跑（2026-10-02：这条用例在 CI 上因为浏览器起不来红过一次，
+    日志是 `CdpError: 等了 60 秒还没等到 Chrome 的调试端口`）。
+    """
     import xdao.watcher as watcher_module
+    from xdao.exporters import pdf as pdf_module
     from xdao.pdf_opts import PdfOptions
 
     _, out, cache = prepare_dirs("watcher-pdf-options")
@@ -422,13 +429,20 @@ def test_check_once_hands_pdf_options_and_browser_to_the_exporter(monkeypatch):
     target = WatchTarget("7001", format_key="pdf")
     options = PdfOptions(paper="a3", margin="none")
     seen: list[dict] = []
+    rendered: list[dict] = []
     real_create = watcher_module.create_exporter
 
     def spy_create(*args, **kwargs):
         seen.append(kwargs)
         return real_create(*args, **kwargs)
 
+    def fake_render(html, output_pdf, **kwargs):
+        rendered.append(kwargs)
+        Path(output_pdf).write_bytes(b"%PDF-1.4 fake\n")
+        return Path(output_pdf)
+
     monkeypatch.setattr(watcher_module, "create_exporter", spy_create)
+    monkeypatch.setattr(pdf_module, "render_html_to_pdf", fake_render)
 
     result = check_once(
         api,
@@ -439,10 +453,12 @@ def test_check_once_hands_pdf_options_and_browser_to_the_exporter(monkeypatch):
         pdf_options=options,
     )
 
-    assert result.ok
+    assert result.ok, result.error
     assert len(seen) == 1, "监控没有走到导出那一步"
     assert seen[0]["browser_path"] == "C:/假的浏览器.exe"
     assert seen[0]["pdf_options"] is options
+    assert rendered and rendered[0]["browser_path"] == "C:/假的浏览器.exe"
+    assert rendered[0]["options"] is options
 
 
 def test_check_once_defaults_keep_the_old_behaviour(monkeypatch):
