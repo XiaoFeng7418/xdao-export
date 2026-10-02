@@ -652,6 +652,18 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.20**（登录慢一点就再也领不到饼干 —— 0.13.18 真机上复现）：
+  程序开浏览器时把标签页停在登录页，头两次「领饼干」在登录页上**什么都没碰**就返回了
+  （结论「还没登录」），可导航次数照样被扣掉；等用户登进去，次数已经用满，之后每轮只重读
+  饼干罐 —— 而 `userhash` 只有真去「应用」（导航到 `switchTo`）才会被主站种下，于是
+  「明明登录好了，界面一路等到超时」。真机截图证据：状态行「已经等了 60 秒」、常驻提示
+  「自动取饼干这条路试过了：浏览器里还是没有 userhash。」，而浏览器里已经登录成功。
+  改法：只有**真动过**用户标签页的那次才扣次数（`if navigate and navigated:
+  leaf_attempts += 1`），登录页上的尝试不扣 —— 用户登进去后下一次轮询（≤5 秒）就会去领；
+  超时那句诊断也改成按顺序列出试过的几步（`leaf_hints[-3:]`，①②③），不再被收尾那句
+  「还是没有 userhash」盖掉有用信息。真机验收：`tests/test_gui_browser_login.py` 24 项全绿，
+  两处注入各自变红（还在登录页上也扣次数 → 1 红；只留最后一条诊断 → 1 红），
+  本机全量 1564 passed / 7 skipped。
 - **v0.13.19**（写明白「用浏览器登录」只支持 Chromium 内核，程序逻辑一行没动）：
   「用浏览器登录」整条路走的是 CDP，只有 Edge / Chrome / Chromium / Brave 能用；Firefox 是另一套
   内核（Marionette / WebDriver BiDi），本项目没实现 —— 可界面与两份公开文档从没把这件事说明白，
@@ -1227,6 +1239,15 @@ BiDi），本项目没有实现、也不打算实现。界面与 `packaging/使�
 `xdao/browser_login.py:253-261` 的 `choose_browser()` 认不出 Firefox 时会照旧往下找
 Edge / Chrome，所以「系统默认浏览器是 Firefox」的机器仍然能用这条路 —— 也就是说这里
 不需要任何功能改动，只用把话说明白。
+
+**导航次数只有「真动过标签页」才扣（v0.13.20）**：轮询循环里的 `BROWSER_LEAF_NAV_LIMIT`
+管的是「还能把用户眼前那个标签页拖去饼干页几次」。0.13.18 及以前是**先扣再用**，而用户还在
+登录页打字时 `fetch_leaf_cookie(navigate=True)` 什么都不碰就返回（「还没登录」）—— 两次机会
+在开头十几秒里用光，之后只剩 `navigate=False` 的重读，userhash 永远不会出现。现在的规矩：
+`navigated` 为真才算动过、才扣；`tests/test_gui_browser_login.py` 里的
+`test_login_finished_late_still_gets_a_chance_to_apply_the_cookie` 钉住「在登录页上耗几轮 →
+登进去还能领到」。另外超时那句诊断改成 `leaf_hints[-3:]` 的有序列表：只留最后一条时，
+收尾的「还是没有 userhash」会把「还没登录」盖掉，真机截图上看不出卡在哪。
 
 ## 敏感串扫描：提交信息扫了，文档容易漏（2026-10-01 发现）
 

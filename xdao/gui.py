@@ -1205,8 +1205,9 @@ class BrowserLoginDialog(tk.Toplevel):
         next_progress = started + BROWSER_PROGRESS_SECONDS
         verified: str | None = None  # 已经验过、当场就认的饼干：别每一轮都去问一遍
         said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
-        leaf_attempts = 0  # 已经导航去领过几次饼干（见 BROWSER_LEAF_NAV_LIMIT）
-        leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行，也拼进超时那句话
+        leaf_attempts = 0  # 已经**真去动过**用户标签页几次（见 BROWSER_LEAF_NAV_LIMIT）
+        leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行
+        leaf_hints: list[str] = []  # 领饼干试过的几步（按发生顺序、去重）：拼进超时那句话
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1220,11 +1221,15 @@ class BrowserLoginDialog(tk.Toplevel):
                     # 「应用」是跳转式的，页面里的 fetch 根本走不完那一跳），所以给自己
                     # 设个上限：头几次真去领，用完就只重读饼干罐，不再动他的页面。
                     navigate = leaf_attempts < BROWSER_LEAF_NAV_LIMIT
-                    if navigate:
-                        leaf_attempts += 1
                     value, detail, navigated = self._try_leaf_cookie(
                         backend, session, navigate=navigate
                     )
+                    # 只有**真动过**他的标签页才扣次数（v0.13.20）：用户还在登录页打字时，
+                    # 这一步什么都不碰就返回了（「还没登录」），要是照旧扣，两次机会会在开头
+                    # 十几秒里用光 —— 等他登进去，程序已经只会重读饼干罐，而 userhash 只有
+                    # 真去「应用」才会被种下，于是界面一路等到超时（0.13.18 真机上正是如此）。
+                    if navigate and navigated:
+                        leaf_attempts += 1
                     # 导航过就缓一缓：站点那边「应用」是跳转式的，几秒一轮会把用户的
                     # 标签页弹成风箱；只读饼干罐的那几次不打扰他，照旧 5 秒一轮。
                     next_leaf = leaf_now + (
@@ -1232,6 +1237,10 @@ class BrowserLoginDialog(tk.Toplevel):
                     )
                     if detail and detail != leaf_hint:
                         leaf_hint = detail
+                        if detail not in leaf_hints:
+                            # 有序留痕：只留最后一条的话，收尾那句「还是没看到 userhash」
+                            # 会把前面有用的「还没登录」盖掉，截图上看不出卡在哪。
+                            leaf_hints.append(detail)
                         self._queue.put(("hint", detail))
                 if value and value != verified:
                     # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
@@ -1262,9 +1271,19 @@ class BrowserLoginDialog(tk.Toplevel):
                 break
             self._stop.wait(BROWSER_POLL_SECONDS)
         if not self._stop.is_set():
-            # 把最后一次领饼干的结论拼进这句话：它会进运行日志（窗口一关就找不到了），
-            # 是「到底卡在哪一步」唯一的书面记录。
-            tail = f"（程序最后试到的一步：{leaf_hint}）" if leaf_hint else ""
+            # 把领饼干试过的几步按顺序拼进这句话：它会进运行日志（窗口一关就找不到了），
+            # 是「到底卡在哪一步」唯一的书面记录。只留最后一条不够用 —— 「饼干罐里还是没有
+            # userhash」这种最没信息量的收尾会盖掉前面「用户还没登录」那条（v0.13.20）。
+            steps = leaf_hints[-3:]
+            if not steps:
+                tail = ""
+            elif len(steps) == 1:
+                tail = f"（程序试过的一步：{steps[0]}）"
+            else:
+                numbered = " ".join(
+                    f"{'①②③'[index]} {text}" for index, text in enumerate(steps)
+                )
+                tail = f"（程序试过的几步：{numbered}）"
             self._queue.put(
                 (
                     "error",
