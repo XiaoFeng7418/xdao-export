@@ -218,10 +218,11 @@ class FakeBrowserLoginDialog:
 
     made: list["FakeBrowserLoginDialog"] = []
 
-    def __init__(self, master, client, settings) -> None:
+    def __init__(self, master, client, settings, log=None) -> None:
         self.master = master
         self.client = client
         self.settings = settings
+        self.log = log  # v0.13.26：真对话框拿它把「领饼干那条路」的结论写进运行日志
         self.userhash: str | None = None
         self.failure = ""
         FakeBrowserLoginDialog.made.append(self)
@@ -247,8 +248,8 @@ def _run_open_browser_login(monkeypatch, *, failure: str, userhash: str | None =
     holder.log = holder.logs.append
     FakeBrowserLoginDialog.made.clear()
 
-    def fake_dialog(master, client, settings):
-        dialog = FakeBrowserLoginDialog(master, client, settings)
+    def fake_dialog(master, client, settings, log=None):
+        dialog = FakeBrowserLoginDialog(master, client, settings, log=log)
         dialog.failure = failure
         dialog.userhash = userhash
         return dialog
@@ -273,6 +274,9 @@ def test_browser_login_failure_lands_in_the_run_log(monkeypatch):
     assert len(logs) == 1
     assert logs[0].endswith("Edge 刚起来就退出了（退出码 21）")
     assert "浏览器登录没成" in logs[0]
+    # v0.13.26：子窗口还要拿主窗口的日志出口，好把「领饼干那条路」的结论当场写进去
+    # （用户报问题时贴的是运行日志，那条路的原话以前只活在子窗口那行小字里）。
+    assert FakeBrowserLoginDialog.made[-1].log is holder.log
 
 
 def test_browser_login_success_does_not_log_a_failure(monkeypatch):
@@ -299,16 +303,18 @@ def test_browser_login_without_an_app_still_works(monkeypatch):
         log=lambda message: logs.append(message),
     )
 
-    def fake_dialog(master, client, settings):
-        dialog = FakeBrowserLoginDialog(master, client, settings)
+    def fake_dialog(master, client, settings, log=None):
+        dialog = FakeBrowserLoginDialog(master, client, settings, log=log)
         dialog.failure = "起不来"
         return dialog
 
     monkeypatch.setattr(gui, "BrowserLoginDialog", fake_dialog)
+    FakeBrowserLoginDialog.made.clear()
     gui.LoginDialog._open_browser_login(holder)
 
     assert holder.userhash is None
     assert logs == [], "没有主窗口就写不了日志，但也不许抛异常"
+    assert FakeBrowserLoginDialog.made[-1].log is None, "没有主窗口时不该凭空造一个日志出口"
 
 
 def _paste(monkeypatch, text):

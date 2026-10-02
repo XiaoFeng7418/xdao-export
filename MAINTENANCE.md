@@ -677,6 +677,33 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.26**（接 v0.13.25：那条 HTTP 路不再「可能一次都没试」，结论一律留痕）：
+  用户用 0.13.25 复验「用浏览器登录」时贴的截图里，一次性窗口**已经登录成功**
+  （`…/Member/User/Index/index.html`），对话框只有一行「浏览器里的饼干：PHPSESSID、
+  memberUserspapapa（还没有 userhash）」，运行日志里只有「就绪」和「已是最新版本」。
+  根因：v0.13.25 把 `xdao/gui.py` 里这条路的闸门写成 `if jar_now != last_http_jar:`
+  （`_jar_signature()` 算的「名字+值」指纹）—— 设计假设是「用户一登录，罐头必变」，可站点登录完
+  只换会话饼干的**值**、名字没变也没多出新饼干时，指纹就是不变的 ⇒ 整轮一次都不试 ⇒ 界面上只剩
+  饼干名单、日志里一条登录记录都没有。改法（三条）：
+  ① 闸门改成两条腿 —— `if leaf_now >= next_http or jar_now != last_http_jar:`：罐头一变立刻试，
+  没变也隔 `BROWSER_LEAF_HTTP_SECONDS = 30.0` 试一次（`xdao/gui.py:757` 的新常量；一趟
+  十分钟最多三十来个请求）。指纹改由新增的 `BrowserLoginDialog._jar_signature_now()` 现取
+  （读不到就回空串 ⇒ 和任何真指纹都不同 ⇒ 交给那条路自己报「读饼干出错」）。
+  ② 每条结论单独占一行：对话框新增 `self.http_var`/`self.http_label`（在 `hint_label` 之后），
+  worker 把结论放进 `("http", detail)` 队列项、由新增的 `_set_http_note()` 写成
+  「领饼干那条路：……」并 `self._log(...)` 写进运行日志 —— 以前它会被那句常驻的
+  「这个窗口里还没登录」顶掉、只活在内存里，用户截不到（对话框新增 `log=` 回调参数，
+  `SettingsDialog._open_browser_login()` 传 `getattr(app, "log", None)`）。
+  ③ 饼干名单点名**空值**饼干（`_jar_summary()` 的 `empty_note`）：站点把 `memberUserspapapa`
+  写成空壳时，罐子看着「登录过了」其实没有真会话 —— 这正是 v0.13.25 那条
+  `may_skip_for_typing`/`_jar_holds_a_session()` 判据判错的地方（两者都留着，但都不再当闸门；
+  `BROWSER_HTTP_SKIP_ANON_NOTE` 删掉）。
+  `tests/test_gui_browser_login.py` 43 → 47（③的两条、②的一条、以及「罐头不变也会再试」）；
+  原「罐头没变就别试」那条改成「节流窗口内不重复 + 罐头一变立刻再试」；`tests/test_gui_entry.py`
+  的 `FakeBrowserLoginDialog` 与两条 `fake_dialog` 补 `log` 形参并断言日志出口传对了。
+  反向验证：把闸门改回 `if jar_now != last_http_jar:`（去掉时间那一条腿），
+  `test_the_http_path_keeps_trying_even_when_nothing_changes` 立刻变红。
+  本机全量 **1668 passed / 7 skipped**（收集 1675 项）。
 - **v0.13.25**（接 v0.13.24：拿不到饼干时不再「什么都不说」，等登录期间不再空转着连站点）：
   用户复验 0.13.24 时贴的截图里，一次性窗口**已经在站点里登进去了**（他自己打开
   `…/Member/User/Cookie/index.html` 能看到 5 块饼干、每行都有「应用」），程序却只写
