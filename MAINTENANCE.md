@@ -1236,7 +1236,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   改这一步时别退化成无效检查。
 - 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。
 
-### 三个已经踩过的 CI 坑
+### 四个已经踩过的 CI 坑
 
 1. **测试夹具不能写死 Windows 形态**。`tests/test_pdf.py` 里造「假浏览器」时，
    原先只生成 `fake_browser.cmd`，结果 ubuntu 两个 job 全部挂在单元测试：
@@ -1269,6 +1269,13 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    改法：先把 `Z` 换成 `+00:00` 再解析（产品代码 `sync_from_api.git_ident` 本来就是这么
    写的，栽的是测试自己写的辅助函数）。**别只看本机**：碰日期时间、`tomllib`、`StrEnum`
    这类东西之前，先想一下 3.10 有没有。
+4. **Windows 形状的字符串别在 ubuntu 上按字面断言**（2026-10-02，提交 a72e26c）：
+   `tests/test_pdf_diag.py` 断言最小 PATH 的第二段「以 `windows\system32` 结尾」，
+   而套件在 ubuntu 上跑时 `os.path.join(r"C:\Windows", "system32")` 拼出来的是
+   `C:\Windows/system32`（正斜杠）→ ubuntu 两条 job `1 failed, 1380 passed, 106 skipped`，
+   windows 那条全绿。改法：**期望值也用 `os.path.join` 现拼**（这个 PATH 只对 Windows
+   有意义，但用例会在 Linux 上收集并执行）。注意 `tools/posix_check.py` 只预演浏览器
+   包装脚本那条路，**这类坑本机预演不出来**。
 
 ### 测试替身与真契约（v0.7.0 踩的坑）
 

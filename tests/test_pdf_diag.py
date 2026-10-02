@@ -255,7 +255,11 @@ def test_minimal_path_keeps_only_browser_and_system_dirs(
     path = run.calls[0][1]["env"]["PATH"]
     parts = path.split(";")
     assert parts[0] == str(exe.parent)
-    assert parts[1].lower().endswith(r"windows\system32")
+    # 期望值也用 os.path.join 现拼：在 ubuntu 上它给的是 "C:\Windows/system32"，
+    # 写死反斜杠的断言只在 Windows 上过得去（CI 上就是这么红过一次）。
+    assert parts[1].lower() == os.path.join(r"C:\Windows", "system32").lower()
+    assert parts[2].lower() == r"C:\Windows".lower()
+    assert parts[3].lower() == os.path.join(r"C:\Windows", "system32", "Wbem").lower()
     assert all("python" not in part.lower() for part in parts)
 
 
