@@ -806,6 +806,146 @@ def test_leaf_cookie_stops_navigating_the_users_tab_after_the_limit(
     dialog._on_cancel()
 
 
+def test_login_finished_late_still_gets_a_chance_to_apply_the_cookie(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """用户登录得慢一点，程序不能把「真去领饼干」的机会提前用光。
+
+    0.13.18 的真机现场：程序开浏览器时把标签页停在登录页，头两次「领饼干」都在登录页
+    上什么都没碰就返回了（「还没登录」），可次数照样被扣掉 —— 等用户登进去，程序已经只
+    会重读饼干罐，而 userhash 只有真去「应用」才会被主站种下，于是界面一路等到超时。
+    这里钉住：**只有真动过用户的标签页才扣次数**，登录晚了几十秒也还领得到。
+    """
+    monkeypatch.setattr(gui, "BROWSER_LEAF_NAV_LIMIT", 1)
+    dialog = open_dialog()
+    login_url = browser_login.LOGIN_URL
+    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
+    apply_url = f"{browser_login.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html"
+    home_url = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+    login_page = {
+        "url": login_url,
+        "login": True,
+        "jump": "",
+        "kind": "login",
+        "ids": [],
+    }
+
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.pages = {login_url: login_page}
+    session.cookies = []
+
+    # 用户在登录页上待「好几轮」——真机上这就是他打账号密码的那几十秒。
+    assert _wait_for(
+        root_window, lambda: len(session.cookie_reads) > 6, timeout=10.0
+    ), "轮询没跑起来"
+    session = _dialog_sessions()[0]
+    assert list_url not in session.navigations, "用户还在登录页，程序却把页面拖走了"
+
+    # 用户登进去了：站点自己把人带到用户首页，标签页地址跟着变（只摆这一次 ——
+    # 每轮都去改替身的地址，会和程序自己的导航打架，那验的就不是真实行为了）。
+    for item in _dialog_sessions():
+        item.pages = {
+            login_url: login_page,
+            home_url: {
+                "url": home_url,
+                "login": False,
+                "jump": "",
+                "kind": "other",
+                "ids": [],
+            },
+            list_url: {
+                "url": list_url,
+                "login": False,
+                "jump": "",
+                "kind": "list",
+                "ids": ["aaa"],
+                "href": apply_url,
+            },
+        }
+        item.current_url_value = home_url
+
+    def gives_the_cookie() -> bool:
+        # 主站的「应用」走完才 Set-Cookie —— 真机上正是落地那一跳把饼干种进罐里。
+        for item in _dialog_sessions():
+            if apply_url in item.navigations:
+                item.cookies = [{"name": "userhash", "value": FAKE_USERHASH}]
+        return dialog.userhash is not None
+
+    assert _wait_for(root_window, gives_the_cookie, timeout=10.0), "登录晚了就领不到饼干了"
+    session = _dialog_sessions()[0]
+    assert list_url in session.navigations, "登录成功后没去「饼干」页"
+    assert apply_url in session.navigations, "没跟着站点跳到「应用」地址"
+    assert dialog.userhash == FAKE_USERHASH
+
+
+def test_timeout_message_lists_the_steps_the_program_tried(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """超时那句话要按顺序留下试过的几步，不能只留最后一条。
+
+    收尾那条「自动取饼干这条路试过了：浏览器里还是没有 userhash」信息量最小，
+    只留它会把更有用的「这个窗口里还没登录」盖掉 —— 0.13.18 的截图上就是这样，
+    用户和我们都看不出卡在哪一步。
+    """
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 1.5)
+    dialog = open_dialog()
+    login_url = browser_login.LOGIN_URL
+    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
+    home_url = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.pages = {
+        login_url: {
+            "url": login_url,
+            "login": True,
+            "jump": "",
+            "kind": "login",
+            "ids": [],
+        }
+    }
+    session.cookies = []
+    assert _wait_for(
+        root_window, lambda: "还没登录" in dialog.hint_var.get(), timeout=5.0
+    ), "第一句诊断没出来"
+
+    # 用户登进去了，但这个账号还没领过饼干：只摆这一次地址，别和程序的导航打架。
+    for item in _dialog_sessions():
+        item.pages = {
+            home_url: {
+                "url": home_url,
+                "login": False,
+                "jump": "",
+                "kind": "other",
+                "ids": [],
+            },
+            list_url: {
+                "url": list_url,
+                "login": False,
+                "jump": "",
+                "kind": "empty",
+                "ids": [],
+                "rows": 0,
+            },
+        }
+        item.current_url_value = home_url
+        item.cookies = []
+
+    assert _wait_for(
+        root_window,
+        lambda: "没有可以应用的饼干" in dialog.hint_var.get(),
+        timeout=5.0,
+    ), "第二句诊断没出来"
+    assert _wait_for(
+        root_window, lambda: "还没看到登录成功" in dialog.status_var.get(), timeout=10.0
+    )
+    status = dialog.status_var.get()
+    assert "①" in status and "②" in status, status
+    assert status.index("还没登录") < status.index("没有可以应用的饼干"), status
+    assert "程序最后试到的一步" not in status
+
+
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:
     """「还在等」那句话：带秒数，并且点明是哪个浏览器窗口里的登录。"""
     text = gui._waiting_status(42)
