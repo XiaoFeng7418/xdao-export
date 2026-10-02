@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1487 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1480 通过、7 项跳过）、
+单元测试 1525 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1518 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 85 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -98,6 +98,7 @@ xdao-export/
 │  ├─ test_posix_check.py  tools/posix_check.py：六项逐条判定，参数透传/执行位/shebang 都要真查（29）
 │  ├─ test_clean_scratch.py 删东西之前先拦危险路径，链接只摘链接本身（37）
 │  ├─ test_pdf_diag.py     PDF 诊断：错误页不算成功、没生成 PDF 时退出码是 1（27）
+│  ├─ test_repo_info.py    仓库门面：写之前先验、写完再读回来核对（38）
 │  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级（61）
 │  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（22，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（72）
