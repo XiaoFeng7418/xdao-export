@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1653 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1646 通过、7 项跳过）、
+单元测试 1656 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1649 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 99 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -78,7 +78,7 @@ xdao-export/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
 │  ├─ conftest.py          测试夹具 + 两侧硬守卫：用户配置只读、白名单外跳过即失败
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（48）
-│  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（20）
+│  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（23）
 │  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（214）
 │  ├─ test_browser_scope.py 浏览器登录只支持 Chromium 内核：界面与两份公开文档都写着（3）
 │  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update（48）
@@ -182,7 +182,7 @@ xdao-export/
   `fetch_leaf_cookie()`。**v0.13.23 起界面层固定传 `navigate=False`：一个标签页都不动**，
   只读页面状态 + 饼干罐；领饼干的正事交给 `apply_leaf_cookie_over_http()`（读整罐饼干 →
   `XdaoClient.import_cookies()` + `XdaoClient.apply_cookie()`：认「跳转提示」页 → 跟着跳 →
-  `switchTo/id/{id}.html` → 从 `export/id/{id}.html` 的响应体里抠 userhash → 读 cookie jar
+  `switchTo/id/{id}.html`（**v0.13.24 起先剥掉链接末尾的 `.html`／`.htm` 再拼**：列表链接本身就带后缀，不剥会拼成 `{id}.html.html` 直接 404）→ 从 `export/id/{id}.html` 的响应体里抠 userhash → 读 cookie jar
   兜底；这套 HTTP 协议从 v0.6.1 起就在线上跑）。`fetch_leaf_cookie(navigate=True)` 那条老路
   还留着，但没有界面在调它。
   **为什么不导航**：站点那张「饼干切换成功!」倒计时页的落点写在页面里的 `<a id="href">` 上，

@@ -677,6 +677,18 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.24**（接 v0.13.23：修掉 HTTP 领饼干路上一处会 404 的拼地址）：把「应用饼干」搬回 HTTP
+  之后回头核这条路，发现 `XdaoClient.apply_cookie()`（`xdao/client.py:597`）取 id 的正则
+  `Cookie/(?:switchTo|export)/id/([^/\s"'<]+)` 会把列表页链接里的 `.html` **一起捕获**，而
+  `:631`／`:635` 又固定补一次 `.html` ⇒ 链接带后缀时会请求 `…/switchTo/id/461037.html.html`，
+  直接 404，userhash 也就拿不到（站点「饼干」页的链接确实是带 `.html` 的完整地址）。
+  它一直没被用例发现，是因为那两个接口的路由键写得太宽松（`"/Cookie/export/"` 子串匹配），
+  拼错的地址照样命中。改法只有一行：拼地址前
+  `cookie_id = re.sub(r"\.html?$", "", cookie_id, flags=re.IGNORECASE)`（带/不带后缀都稳）；
+  `tests/test_client.py` 20 → 23，新增「空 href 的成功页只请求一次」「跳转目标就是自己时只请求
+  一次」「switchTo/export 两个地址逐字钉住」三条。反向验证：把归一化那行换成原样返回，第三条
+  用例立刻报 `…/id/abc123.html.html` 变红，改回全绿。本机全量 **1649 passed / 7 skipped**
+  （收集 1656 项）。
 - **v0.13.23**（接 v0.13.22：把「导航用户的标签页」整个停掉，并把失败原因写进日志）：0.13.22
   发出去之后复验仍不通行，报「0.13.22还是无法登录，一直无限跳转」（截图里浏览器停在
   `…/Member/User/Cookie/switchTo/id/461037.html`，页面是站点自己的「饼干切换成功!」+
