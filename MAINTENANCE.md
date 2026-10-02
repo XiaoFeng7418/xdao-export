@@ -115,6 +115,8 @@ Get-FileHash <临时目录>\xdao-export-vX.Y.Z-win64.zip -Algorithm SHA256   # �
 Expand-Archive <临时目录>\xdao-export-vX.Y.Z-win64.zip -DestinationPath <临时目录>\解开
 & '<临时目录>\解开\xdao-export-vX.Y.Z-win64\xdao-export.exe' --version   # 应打出这个版本号
 & $py -X utf8 tools\gui_probe.py --exe '<临时目录>\解开\xdao-export-vX.Y.Z-win64\xdao-export.exe'
+#    必须报「界面已正常启动（主窗口：X岛串导出）」并退 0；退 2 是「没看到主窗口，
+#    需要人工确认」、退 1 是启动失败 —— 这两种都不算验过了。
 ```
 
 上面第 8 步值得单独跑：它验的是**用户那台机器上已经装着的旧版**能不能看见新包，
@@ -385,6 +387,19 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    还是不一样就返回 1 并写明「别当成同步好了」（旧代码只要请求没抛异常就印「已同步到远端。」
    并返回 0，等于把「远端没照办」报成成功：GitHub 会规范化话题、截断描述，写入也可能没落库）。
    十一处都注入验过：退回旧写法，用例立刻红。
+   **GUI 探针这一步也有用例兜着**（2026-10-02 补上）：`tests/test_gui_probe.py` 41 条，
+   窗口标题、进程、时间全是假的（`window_titles` 默认被顶成「炸」，漏顶的用例当场失败）。
+   **为什么值得补**：它是发布清单的最后一步（拿下载回来的包跑一遍，看界面能不能起来），
+   而旧写法只把标题里带「Unhandled exception」「fatal」的当失败，**别的标题一律报「界面已
+   正常启动」** —— 出错时 PyInstaller / Windows 弹的对话框、甚至别的程序留下的窗口都能骗过
+   这一步。现在认主窗口标题（`EXPECTED_TITLE = "X岛串导出"`，与 `xdao/gui.py` 里
+   `root.title("X岛串导出")` 是同一个串）：看见了才退 0；只看见别的窗口退 2（需要人工确认）；
+   看见错误对话框退 1。真机对照过：拿 `notepad.exe` 当 `--exe`，新写法给的是「没有看到主
+   窗口「X岛串导出」，只看到：无标题 - 记事本 —— 需要人工确认」（退 2），旧写法会说「界面已
+   正常启动」。另外两处也补了：`--exe` 路径不是文件、`--wait` 给了 0 或负数，都在**启动之前**
+   拦下并给结论（旧写法是 `FileNotFoundError` 的 traceback）；收尾改杀进程树（win 上
+   `taskkill /T /F /PID`），杀不干净会提醒去看任务管理器。十二处都注入验过：退回旧写法，
+   用例立刻红。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
@@ -554,8 +569,10 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    接不上 pwsh 的管道，只会得到空输出和一句 `OSError: [Errno 22] Invalid argument`。
 
 **怎么验收打包版的界面**：本机 `Start-Process -PassThru` 对 GUI 进程会卡住不返回，
-改用 `python tools/gui_probe.py --exe <exe 路径>` —— 启动、等 9 秒、枚举窗口标题、
-强制结束并给出结论；标题是「Unhandled exception in script」就说明启动失败。
+改用 `python tools/gui_probe.py --exe <exe 路径>` —— 启动、每 0.5 秒看一眼窗口标题
+（最多 `--wait` 秒，默认 8；看见主窗口或错误对话框就提前收工）、结束进程树、给结论：
+只有看见主窗口标题「X岛串导出」才退 0，只看见别的窗口退 2（需要人工确认），
+出现「Unhandled exception in script」这类错误对话框退 1。
 把输出目录设成用户的 `<盘符>\X岛`（config 里的默认值）时最容易暴露界面层的兜底问题。
 
 ## 桌面通知（v0.4.0，2026-09-30）
