@@ -29,6 +29,21 @@
 
 界面布局、导出结果与 0.13.21 完全一致。
 
+## 顺带修掉的一处旧毛病：设置里指定的浏览器对 PDF 导出不起作用
+
+`create_exporter()` 用「按能力逐级回退」来兼容不同导出器的构造签名：第一层带全部参数，
+只要 `TypeError` 就删掉一项再试。`PdfBuilder` 的构造签名里没有 `image_mode`（那是 EPUB 的），
+所以 PDF 一定会掉到第二层 —— 而第二层原来只带 `image_mode + pdf_options`，
+**`browser_path` / `pdf_timeout` / `fallback_html` 三项在那里被悄悄丢掉了**。真机上的表现是
+「在设置里指定了浏览器，PDF 导出却还是用默认的那个」。现在第二层＝第一层去掉 `image_mode`，
+其余照旧带着；`image_mode + pdf_options` 那一层挪到第三层供 EPUB 回落（实测 html / txt /
+markdown / epub 收到的参数逐项不变）。
+
+原来的用例只钉「传给 `create_exporter()` 的参数」，所以一直没红；现在
+`tests/test_exporters.py::test_create_exporter_keeps_the_pdf_only_arguments` 与
+`tests/test_watcher.py` 的监控 PDF 用例都改成钉「导出器**真正收到**什么」，
+后者顺带改成假渲染（不再真起浏览器，CI 上也就不会再因为等不到调试端口而红）。
+
 ## 真机核验
 
 - 本机全量：1640 passed / 7 skipped（共 1647 项）。

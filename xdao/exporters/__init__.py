@@ -75,19 +75,26 @@ def create_exporter(
             "fallback_html": fallback_html,
             "pdf_options": pdf_options,
         },
-        # pdf_options 在下面两层也要给：PdfBuilder 不收 image_mode，所以它其实是从
-        # 「progress + filename_template + pdf_options」那层才建起来的 —— 只写在第一层
-        # 的话，第一层会因 image_mode 整体 TypeError 掉，落到没有 pdf_options 的层，
-        # 用户设好的纸张/边距就被悄悄丢掉了。
+        # 第二层：**去掉 image_mode**（只有 EPUB 有它），其余照旧带着。
+        # pdf_options 与 browser_path 必须在这一层就带上，不能等到下面几层：PdfBuilder
+        # 的构造签名里没有 image_mode，所以第一层只要带了 image_mode 就整体 TypeError、
+        # 一定会落到这一层；而用户设好的纸张/边距（v0.8.0 报过）与浏览器路径
+        # （2026-10-02 发现）原来正是在这里被悄悄丢掉的 —— 后者在真机上的表现是
+        # 「设置里指定的浏览器对 PDF 导出不起作用」，`pdf_timeout` 与 `fallback_html`
+        # 同样在这一层丢。只钉「传给 create_exporter 的参数」看不出来，得把「导出器
+        # 真正收到什么」也钉住（tests/test_watcher.py 与 tests/test_exporters.py）。
         {
             "progress": progress,
             "filename_template": filename_template,
-            "image_mode": image_mode,
+            "browser_path": browser_path,
+            "pdf_timeout": pdf_timeout,
+            "fallback_html": fallback_html,
             "pdf_options": pdf_options,
         },
         {
             "progress": progress,
             "filename_template": filename_template,
+            "image_mode": image_mode,
             "pdf_options": pdf_options,
         },
         {"progress": progress, "filename_template": filename_template},
