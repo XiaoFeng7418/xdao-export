@@ -244,3 +244,76 @@ def test_request_records_response_headers_in_lower_case():
     assert raw == packed, "头里没写 Content-Encoding: gzip，这一层不该自己解压"
     assert client._last_response_headers["content-type"] == "image/png"
 
+
+def test_import_cookies_pours_a_browser_jar_into_the_client() -> None:
+    """v0.13.22：浏览器里那罐饼干整罐倒进来，HTTP 那条路才有会话可用。"""
+    client = XdaoClient()
+    count = client.import_cookies(
+        [
+            {"name": "PHPSESSID", "value": "abc123", "domain": ".nmbxd1.com", "path": "/"},
+            {"name": "userhash", "value": "OLD12345", "domain": ".nmbxd1.com", "path": "/"},
+        ]
+    )
+    assert count == 2
+    poured = {cookie.name: cookie.value for cookie in client._jar}
+    assert poured == {"PHPSESSID": "abc123", "userhash": "OLD12345"}
+
+
+def test_import_cookies_replaces_the_same_cookie_instead_of_stacking_it() -> None:
+    """同名同域同路径的饼干只能有一条：不然请求头里会出现两条 userhash。"""
+    client = XdaoClient()
+    client.import_cookies(
+        [{"name": "userhash", "value": "OLDHASH", "domain": ".nmbxd1.com", "path": "/"}]
+    )
+    client.import_cookies(
+        [{"name": "userhash", "value": "NEWHASH", "domain": ".nmbxd1.com", "path": "/"}]
+    )
+    pairs = [(cookie.domain, cookie.path) for cookie in client._jar if cookie.name == "userhash"]
+    assert pairs == [(".nmbxd1.com", "/")], "同名同域同路径的饼干叠成了两条"
+    assert next(iter(client._jar)).value == "NEWHASH"
+
+
+def test_import_cookies_replaces_a_stale_userhash_from_another_domain() -> None:
+    """客户端 jar 里已经有一条 userhash（别的域）时，导入后不能留下两条。
+
+    同一个请求头里出现 ``userhash=新; userhash=旧`` 时服务端取哪一条并不确定 ——
+    `set_userhash` 的注释里记着这个实测过的坑（登录成功却仍被接口回「必须登入领取
+    饼干后才可以访问」）。浏览器那份饼干可能同时在几个域上带同一个名字，所以导入时
+    要先把同名的旧值扫干净，而不是只换掉同域同路径的那一条。
+    """
+    client = XdaoClient()
+    client.set_userhash("OLDHASH")  # 4 个域各一条
+    assert client.import_cookies(
+        [{"name": "userhash", "value": "NEWHASH", "domain": ".nmbxd1.com", "path": "/"}]
+    ) == 1
+    left = [(cookie.domain, cookie.value) for cookie in client._jar if cookie.name == "userhash"]
+    assert left == [(".nmbxd1.com", "NEWHASH")], left
+
+
+def test_import_cookies_skips_entries_without_a_name_or_a_value() -> None:
+    """CDP 那边偶尔会给出空条目；装进去只会污染请求头。"""
+    client = XdaoClient()
+    assert client.import_cookies([{"name": "", "value": "x"}, {"name": "a", "value": ""}]) == 0
+    assert len(client._jar) == 0
+
+
+def test_import_cookies_falls_back_to_sane_domains_and_paths() -> None:
+    """CDP 的会话饼干没有 domain/path 时，按站点缺省补上，别装成一条谁都不发的饼干。"""
+    client = XdaoClient()
+    assert client.import_cookies([{"name": "PHPSESSID", "value": "abc123"}]) == 1
+    cookie = next(iter(client._jar))
+    assert cookie.domain == ".nmbxd1.com"
+    assert cookie.path == "/"
+
+
+def test_import_cookies_keeps_a_session_cookie_alive_within_this_client() -> None:
+    """浏览器里的会话饼干（CDP 给 expires=-1）不能因为「30 秒前就过期了」被丢掉。"""
+    client = XdaoClient()
+    client.import_cookies(
+        [{"name": "PHPSESSID", "value": "abc123", "domain": ".nmbxd1.com", "expires": -1}]
+    )
+    cookie = next(iter(client._jar))
+    assert cookie.expires is None
+    assert cookie.is_expired() is False
+    assert cookie.discard is True
+

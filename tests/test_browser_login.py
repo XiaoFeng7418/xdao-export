@@ -2482,6 +2482,94 @@ def test_fetch_leaf_cookie_reports_a_broken_session_instead_of_raising() -> None
     assert bl.apply_leaf_cookie(Broken()) is None  # type: ignore[arg-type]
 
 
+def test_read_site_cookies_hands_back_the_whole_jar() -> None:
+    """v0.13.22：界面层要的不是 userhash，而是**整罐**会话饼干。
+
+    HTTP 那条路（``XdaoClient.apply_cookie``）认站点会话，光有 userhash 跑不动
+    「应用饼干」那一串跳转。
+    """
+    session = _ScriptedSession(
+        cookies=[
+            {"name": "PHPSESSID", "value": "abc123", "domain": ".nmbxd1.com"},
+            {"name": "userhash", "value": "ABC12345", "domain": ".nmbxd1.com"},
+        ],
+        url=bl.LOGIN_URL,
+    )
+    cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
+    assert [item["name"] for item in cookies] == ["PHPSESSID", "userhash"]
+    assert session.cookie_reads, "没读饼干罐"
+    assert session.cookie_reads[0], "读饼干要把问的地址带上（只看域名看不到路径限定的那块）"
+    # 一个页面都不许动。
+    assert session.navigations == []
+
+
+def test_read_site_cookies_says_empty_instead_of_raising_on_a_broken_session() -> None:
+    """会话断了就当「罐里什么都没有」：调用方照旧回落浏览器那条路，不用分情况。"""
+
+    class Broken:
+        def current_url(self) -> str:
+            raise bl.CdpError("连接断了")
+
+        def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
+            raise bl.CdpError("连接断了")
+
+    assert bl.read_site_cookies(Broken()) == []  # type: ignore[arg-type]
+
+
+class _HttpClient:
+    """假客户端：只演 ``apply_cookie_over_http`` 用到的那两个方法。"""
+
+    def __init__(self, value: str | None = None, error: Exception | None = None) -> None:
+        self.value = value
+        self.error = error
+        self.imported: list[list] = []
+        self.applied = 0
+
+    def import_cookies(self, cookies) -> int:
+        self.imported.append(list(cookies))
+        return len(list(cookies))
+
+    def apply_cookie(self) -> str | None:
+        self.applied += 1
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+def test_apply_leaf_cookie_over_http_pours_the_jar_in_and_asks_for_a_cookie() -> None:
+    """整罐倒进客户端 → 调 ``apply_cookie()`` → 把值原样带回去。"""
+    jar = [
+        {"name": "PHPSESSID", "value": "abc123", "domain": ".nmbxd1.com"},
+        {"name": "userhash", "value": "OLD12345", "domain": ".nmbxd1.com"},
+    ]
+    client = _HttpClient("NEW12345")
+    result = bl.apply_leaf_cookie_over_http(jar, client=client)
+    assert result.value == "NEW12345"
+    assert result.detail == ""
+    assert result.navigated is False
+    assert client.imported == [jar]
+    assert client.applied == 1
+
+
+def test_apply_leaf_cookie_over_http_quotes_the_server_instead_of_raising() -> None:
+    """服务端那句人话要原样带出来 —— 界面会把它写进「程序试过的几步」，是唯一的书面线索。"""
+    from xdao.client import XdaoError
+
+    client = _HttpClient(error=XdaoError("导出页里没有 userhash（这一块还没领过）"))
+    result = bl.apply_leaf_cookie_over_http([{"name": "a", "value": "b"}], client=client)
+    assert result.value is None
+    assert result.detail == "导出页里没有 userhash（这一块还没领过）"
+
+
+def test_apply_leaf_cookie_over_http_reports_unexpected_errors_as_a_line() -> None:
+    """网络层的意外（不是 ``XdaoError``）也要变成一句人话，不能往上抛。"""
+    client = _HttpClient(error=RuntimeError("连接被重置"))
+    result = bl.apply_leaf_cookie_over_http([{"name": "a", "value": "b"}], client=client)
+    assert result.value is None
+    assert "走 HTTP 领饼干时出错" in result.detail
+    assert "连接被重置" in result.detail
+
+
 def test_cookie_urls_for_asks_several_addresses() -> None:
     """读饼干要问好几个地址：``Network.getCookies`` 只回「会发给这个地址」的饼干。"""
     elsewhere = f"{bl.COOKIE_SITE}/Member/User/Index/index.html"
