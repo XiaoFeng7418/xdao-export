@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1566 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1559 通过、7 项跳过）、
+单元测试 1569 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1562 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 85 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -80,6 +80,7 @@ xdao-export/
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（48）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（14）
 │  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（202）
+│  ├─ test_browser_scope.py 浏览器登录只支持 Chromium 内核：界面与两份公开文档都写着（3）
 │  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update（48）
 │  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（8）
 │  ├─ test_public_material.py 公开材料：真串号 / 本机个人目录 / 凭据（5）

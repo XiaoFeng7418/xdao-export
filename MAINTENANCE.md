@@ -652,6 +652,20 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.19**（写明白「用浏览器登录」只支持 Chromium 内核，程序逻辑一行没动）：
+  「用浏览器登录」整条路走的是 CDP，只有 Edge / Chrome / Chromium / Brave 能用；Firefox 是另一套
+  内核（Marionette / WebDriver BiDi），本项目没实现 —— 可界面与两份公开文档从没把这件事说明白，
+  装了 Firefox 的用户会一路白等。补的是话、不是功能：登录窗开头两行（`xdao/gui.py`）、
+  找不到浏览器时的提示、`README.md` 的功能条、`packaging/使用说明.txt` 的「支持的浏览器」那节，
+  再加一条机器把关 `tests/test_browser_scope.py`（界面与两份文档都写着，且候选表里确实没有
+  Firefox；将来真加了支持，它会提醒一起改说明）。因为动到会进包的东西，版本号四处跟着升。
+  真机验收：本机全量 **1562 passed / 7 skipped**（222.66 秒，收集 1569 项）；文本卫生正常
+  （`MAINTENANCE.md` CRLF 1361 / 裸 LF 0、`README.md` CRLF 476 / 裸 LF 0、
+  `使用说明.txt` BOM 1 / 裸 LF 516）；打包版 `--version` → `X岛串导出工具 0.13.19`，
+  `--selftest` 与 v0.13.18 那份逐行相同（只差版本号、exe 路径、缓存回落目录三行，都是退出码 1）；
+  免安装包里的 `使用说明.txt` 与仓库文件逐字节一致（41105 字节 / 516 行）；
+  `tools/repo_check.py` 14 项全绿。程序本体、界面布局、导出结果与 0.13.18 一致。
+
 - **v0.13.18**（免安装包里的说明补上五个命令行开关，只动文字与测试）：
   `packaging/使用说明.txt` 会随包发出去，却一次都没提过 `--cache-dir`、`--verify`、
   `--image-mode`、`--pdf-timeout`、`--pdf-margin-mm`。补写的同时把「文档与解析器一致」
@@ -1205,6 +1219,14 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    按**局部实例引用**收尾（`xdao/gui.py:671-686`），两个"起来之后才发现已取消"的守卫都用它。
    相应教训：`all(p.returncode is not None for p in processes)` 在 `processes` 为空时**恒真**，
    旧用例因此会空过 —— 断言孤儿必须先把"进程确实被拉起来"钉死。
+
+**只支持 Chromium 内核（Firefox 走不了这条路）**：整条路靠 CDP —— Chrome 与 Edge 都是
+Chromium，协议一致，所以一套实现同时支持两者；Firefox 用的是另一套（Marionette / WebDriver
+BiDi），本项目没有实现、也不打算实现。界面与 `packaging/使用说明.txt` 从 v0.13.19 起把这件事
+写在明处（登录窗开头两行 + 支持浏览器那一节），免得装了 Firefox 的用户反复试。
+`xdao/browser_login.py:253-261` 的 `choose_browser()` 认不出 Firefox 时会照旧往下找
+Edge / Chrome，所以「系统默认浏览器是 Firefox」的机器仍然能用这条路 —— 也就是说这里
+不需要任何功能改动，只用把话说明白。
 
 ## 敏感串扫描：提交信息扫了，文档容易漏（2026-10-01 发现）
 

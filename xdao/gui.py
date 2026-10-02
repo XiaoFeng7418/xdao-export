@@ -860,6 +860,8 @@ class BrowserLoginDialog(tk.Toplevel):
             text=(
                 "点开后弹出一个独立的浏览器窗口 —— 干净的一次性窗口：\n"
                 "没有你平时装的插件，也没有保存的密码。\n"
+                "用的是机器上的 Chrome / Edge（Chromium、Brave 也行）；\n"
+                "Firefox 内核的浏览器不行，两者不是同一套内核。\n"
                 "请在里面用 X岛账号登录一次（跟微软账号无关，别输微软密码）。\n"
                 "程序只取一个 X岛的登录饼干；关掉窗口后临时资料就删掉了，\n"
                 "你自己的浏览器一点也不受影响。\n"
@@ -1137,7 +1139,8 @@ class BrowserLoginDialog(tk.Toplevel):
             return
         if info is None:
             self._queue.put(
-                ("error", "没找到 Edge 或 Chrome。请先装一个，或者改用「直接粘贴饼干登录」。")
+                ("error", "没找到 Edge 或 Chrome。Windows 自带的 Edge 一般就有；"
+                          "Firefox 走不了这条路（内核不同）。也可以改用「直接粘贴饼干登录」。")
             )
             return
         self._queue.put(("browser", f"这次用 {info.name} 打开（{info.path}）。"))
