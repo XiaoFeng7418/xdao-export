@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1648 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1641 通过、7 项跳过）、
+单元测试 1653 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1646 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 99 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -79,7 +79,7 @@ xdao-export/
 │  ├─ conftest.py          测试夹具 + 两侧硬守卫：用户配置只读、白名单外跳过即失败
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（48）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（20）
-│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（212）
+│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（214）
 │  ├─ test_browser_scope.py 浏览器登录只支持 Chromium 内核：界面与两份公开文档都写着（3）
 │  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update（48）
 │  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（8）
@@ -90,7 +90,7 @@ xdao-export/
 │  ├─ test_browser_check.py 「浏览器到底行不行」的探测（8）
 │  ├─ test_selftest_browser_flag.py 自检里那条 --check-browser 真跑一遍（4）
 │  ├─ test_manual_blocks.py 使用说明的版本段：新的在上、衔接对得上、别夹整份复制（6）
-│  ├─ test_text_hygiene.py 所有被跟踪的文本文件：BOM 只一个、行尾不混用（5）
+│  ├─ test_text_hygiene.py 所有被跟踪的文本文件：BOM 只一个、行尾不混用、不整份翻行尾（7）
 │  ├─ test_repo_check.py   tools/repo_check.py：读不到东西时不许说没问题（7）
 │  ├─ test_make_release.py 发版：附件不在就别建 Release，发完再核一遍（17）
 │  ├─ test_push_via_api.py 备用推送：提交对象逐字节重建、--exclude 写错先拦下（32）
@@ -103,7 +103,7 @@ xdao-export/
 │  ├─ test_gui_probe.py    GUI 探针：看见主窗口才算起来，收尾要杀进程树（41）
 │  ├─ test_gui_shot.py     GUI 截图：一片同色不算截好，收尾要还 GDI 句柄（48）
 │  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级（61）
-│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（36，需真 Tk）
+│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（37，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（73）
 │  ├─ test_watcher.py      监控与配置（30）
 │  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（33）
@@ -179,14 +179,23 @@ xdao-export/
   **纯标准库**手写的（socket + base64 + hashlib + struct），连上 CDP 后用 `Network.getCookies`
   读 `userhash`（HttpOnly 的也读得到），一次问**好几个地址**（站点根 / 饼干页 / 当前页：
   CDP 的 `Network.getCookies` 只回「会发给这个地址」的饼干，只问一个会漏）。罐里没有时再调
-  `fetch_leaf_cookie()`：**导航**——跟着站点自己的「跳转提示」页跳到落点（userhash 是在落地
-  那一跳里种下的）→ 去「饼干」页 → 导航到最后一块的 `switchTo/id/{id}.html` → 重读饼干罐 →
-  还不行就导航一次 `export/id/{id}.html` 从页面正文里抠；最多 `MAX_COOKIE_JUMPS` 跳。
-  **不要再改回页面里的 `fetch`**：跳转提示页的第二跳是页面脚本做的，`fetch` 永远走不到，
+  `fetch_leaf_cookie()`。**v0.13.23 起界面层固定传 `navigate=False`：一个标签页都不动**，
+  只读页面状态 + 饼干罐；领饼干的正事交给 `apply_leaf_cookie_over_http()`（读整罐饼干 →
+  `XdaoClient.import_cookies()` + `XdaoClient.apply_cookie()`：认「跳转提示」页 → 跟着跳 →
+  `switchTo/id/{id}.html` → 从 `export/id/{id}.html` 的响应体里抠 userhash → 读 cookie jar
+  兜底；这套 HTTP 协议从 v0.6.1 起就在线上跑）。`fetch_leaf_cookie(navigate=True)` 那条老路
+  还留着，但没有界面在调它。
+  **为什么不导航**：站点那张「饼干切换成功!」倒计时页的落点写在页面里的 `<a id="href">` 上，
+  成功时它是**空的**，页面脚本 `location.href = href` 于是把当前地址再载一次 —— 程序一路导航，
+  就会把用户的标签页留在那张永远重载的页上（用户看到的「一直无限跳转」），而 userhash 始终
+  没种上（v0.13.17~v0.13.22 的真机现场都是它）。所以三条导航护栏（`BROWSER_LEAF_NAV_LIMIT` /
+  `BROWSER_LEAF_RETRY_SECONDS` / `BROWSER_LEAF_CAP_HINT`）连同「导航次数」那套机制一起删了。
+  **也不要改回页面里的 `fetch`**：跳转提示页的第二跳是页面脚本做的，`fetch` 永远走不到，
   饼干也就永远种不上（v0.13.15 真机上就是这样一路等到超时）。结果用
-  `LeafCookie(value, detail, navigated)` 带回来，`detail` 直接显示在窗口那行常驻诊断上。
-  界面层的护栏：`BROWSER_LEAF_NAV_LIMIT` 次导航上限（之后只重读饼干罐）、导航过一
-  次之后按 `BROWSER_LEAF_RETRY_SECONDS` 缓一缓、用户还停在登录页时绝不导航。
+  `LeafCookie(value, detail, navigated)` 带回来，`detail` 显示在窗口那行常驻诊断上。
+  拿不到时，界面还会把「浏览器里有哪些饼干（只写名字）」和 HTTP 那条路的原话拼进失败原因
+  （`_jar_summary()` / `_diagnosis()`），它会跟着运行日志里那句「浏览器登录没成：…」一起落地
+  —— 用户贴日志就能定位（v0.13.23 加这一段，就是为了让下一次真机报告有据可查）。
   界面侧是 `gui.py` 的 `BrowserLoginDialog`；线程只往 `queue.Queue` 投消息，主线程用 `after` 轮询，
   退出前必须停线程 + terminate 浏览器进程，不留孤儿进程（见下面「GUI 线程」一节的约定）。
 - 粘贴登录的宽容解析也在 `browser_login.py`：`parse_userhash_input(text)` 支持整段 cookie
