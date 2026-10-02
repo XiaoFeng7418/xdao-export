@@ -677,6 +677,31 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.25**（接 v0.13.24：拿不到饼干时不再「什么都不说」，等登录期间不再空转着连站点）：
+  用户复验 0.13.24 时贴的截图里，一次性窗口**已经在站点里登进去了**（他自己打开
+  `…/Member/User/Cookie/index.html` 能看到 5 块饼干、每行都有「应用」），程序却只写
+  「浏览器里的饼干：memberUserspapapa、PHPSESSID（还没有 userhash）」。查下来两件事：
+  ① `xdao/browser_login.py` 的 `looks_like_userhash()` 要求**全是可打印 ASCII**
+  （`all(character.isprintable() and ord(character) < 128 …)`），而站点从导出页正文里抠出来的值
+  可能带二进制字节解出来的字符 ⇒ 真值被判「不像」，而 `xdao/gui.py` 的 `_try_leaf_cookie_http()`
+  在那种情况下 `return None, detail`（detail 多半是空串）⇒ **一个字都不说**。改法：粗筛只挡
+  一眼就不是值的东西（空白、`;`、`<>`、成句中文 `_LOOKS_LIKE_PROSE`），真假交给
+  `verify_userhash_live()`；被挡下时用 `_describe_value_shape()` 写下「几个字符、几个非 ASCII、
+  几个百分号、开头是字母数字还是别的」（**不写值本身**，那是凭据）；`if not cookies` 与
+  「站点既没给值也没给原话」也各留一句，前一类进 `_QUIET_HTTP_NOTES`（只进日志，不顶掉
+  「这个窗口里还没登录」）。
+  ② 等登录期间 worker 每 `BROWSER_LEAF_SECONDS`（5 秒）就调一次 `_try_leaf_cookie_http`，
+  罐头根本没变 ⇒ 一趟登录最多两百来个请求白打。改法：`_jar_signature()` 算饼干罐指纹，
+  只有变了才试（读不到罐头就当作变了）。
+  `tests/test_browser_login.py` 214 → 222（放宽与「仍然挡住人话」两组参数化用例），
+  `tests/test_gui_browser_login.py` 38 → 43（形状描述、指纹、空罐与「站点没说」两条留痕，以及用
+  真 worker 跑的 `test_the_http_path_is_not_repeated_while_the_jar_stays_the_same`）。
+  反向验证：把 `xdao/gui.py` 里那句 `if jar_now != last_http_jar:` 改成 `if True:`，节流那条用例
+  立刻变红（实测连了 7 次）；改回来就绿。
+  公开材料同时补了「用途与声明」（README 与 `packaging/使用说明.txt`），写明用途、版权归属、
+  请勿违法使用，并给出岛规／使用指南／免责声明三条链接（后两条登记进
+  `tests/test_public_material.py` 的 `ALLOWED_THREADS`，否则 8 位数字会被判红）。
+  本机全量 **1664 passed / 7 skipped**（收集 1671 项）。
 - **v0.13.24**（接 v0.13.23：修掉 HTTP 领饼干路上一处会 404 的拼地址）：把「应用饼干」搬回 HTTP
   之后回头核这条路，发现 `XdaoClient.apply_cookie()`（`xdao/client.py:597`）取 id 的正则
   `Cookie/(?:switchTo|export)/id/([^/\s"'<]+)` 会把列表页链接里的 `.html` **一起捕获**，而
