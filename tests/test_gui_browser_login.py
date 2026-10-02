@@ -276,6 +276,21 @@ def assume_live_cookies(monkeypatch):
     monkeypatch.setattr(gui, "verify_userhash_live", lambda client, value: None)
 
 
+@pytest.fixture(autouse=True)
+def no_real_http_leaf_cookie(monkeypatch):
+    """挡住 v0.13.22 新加的那条 HTTP 路：用例一律不许真去连站点。
+
+    它默认说「HTTP 这条路没成、也没什么可说的」（空 detail），于是各条既有用例照旧
+    验浏览器那条路的老行为（罐里没有饼干时更是连请求都不会发）。要验 HTTP 路本身的
+    用例自己再 ``monkeypatch.setattr`` 覆盖一次。
+    """
+    monkeypatch.setattr(
+        browser_login,
+        "apply_leaf_cookie_over_http",
+        lambda cookies, **kwargs: browser_login.LeafCookie(None, ""),
+    )
+
+
 @pytest.fixture
 def install_browser_shim(monkeypatch, artifacts_dir):
     """装上替身，返回 shim；``exit_immediately=True`` 表示浏览器刚起就退出。
@@ -1095,6 +1110,173 @@ def test_try_leaf_cookie_hands_the_waiting_flag_to_the_library() -> None:
         _Backend, object(), navigate=False, waiting_for_login=False
     )
     assert seen[-1] == {"navigate": False, "waiting_for_login": False}
+
+
+class _HttpLeafBackend:
+    """只演 ``_try_leaf_cookie_http`` 需要的那三个接口的替身。"""
+
+    def __init__(self, cookies, *, value=None, detail="", error=None) -> None:
+        self.cookies = list(cookies)
+        self.value = value
+        self.detail = detail
+        self.error = error
+        self.handed: list[list] = []
+
+    def read_site_cookies(self, session):
+        return list(self.cookies)
+
+    def apply_leaf_cookie_over_http(self, cookies):
+        self.handed.append(list(cookies))
+        if self.error is not None:
+            raise self.error
+        return browser_login.LeafCookie(self.value, self.detail)
+
+    def looks_like_userhash(self, value):
+        return browser_login.looks_like_userhash(value)
+
+
+def test_try_leaf_cookie_http_leaves_a_bare_anonymous_jar_alone() -> None:
+    """用户可能还在输验证码：罐里只有一个匿名会话号时别去连站点。
+
+    未登录时站点只给一个 ``PHPSESSID``；这时候抢先去跑 HTTP 只会白连站点，而且
+    它那句「没权限访问」会把更有用的「这个窗口里还没登录」从提示里顶掉。
+    """
+    backend = _HttpLeafBackend([{"name": "PHPSESSID", "value": "abc123"}])
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(
+        backend, object(), may_skip_for_typing=True
+    ) == (None, "")
+    assert backend.handed == [], "罐里只有匿名会话号，却照样去领了饼干"
+
+
+def test_try_leaf_cookie_http_tries_anyway_when_the_jar_looks_logged_in() -> None:
+    """罐里有登录之后才有的饼干时，「可能还在打字」这个顾虑不成立：照试。
+
+    这条路不碰页面，所以它不会把正在输验证码的人从表单上拽走 —— 用户 m29953 就是
+    标签页被弹回登录页、罐里其实还登录着，程序一直在等他把表单再填一遍。
+    """
+    backend = _HttpLeafBackend(
+        [{"name": "PHPSESSID", "value": "abc123"}, {"name": "_uid", "value": "9527"}],
+        value=FAKE_USERHASH,
+    )
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(
+        backend, object(), may_skip_for_typing=True
+    ) == (FAKE_USERHASH, "")
+    assert backend.handed, "罐里登录着，却没去领饼干"
+
+
+def test_try_leaf_cookie_http_does_not_connect_while_the_jar_is_empty() -> None:
+    """罐里还没有会话饼干（用户一个字都没填）时，一个请求都不该发。"""
+    backend = _HttpLeafBackend([])
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (None, "")
+    assert backend.handed == [], "罐里是空的却照样去连了站点"
+
+
+def test_try_leaf_cookie_http_hands_the_whole_jar_over() -> None:
+    """整罐饼干都要交给 HTTP 那条路 —— 站点认的是会话，不只是 userhash。"""
+    jar = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "userhash", "value": FAKE_USERHASH},
+    ]
+    backend = _HttpLeafBackend(jar, value=FAKE_USERHASH)
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (
+        FAKE_USERHASH,
+        "",
+    )
+    assert backend.handed == [jar]
+
+
+def test_try_leaf_cookie_http_rejects_a_value_that_is_not_a_userhash() -> None:
+    """HTTP 那条路回来的东西同样要过 ``looks_like_userhash``，不能照单全收。"""
+    backend = _HttpLeafBackend([{"name": "a", "value": "b"}], value="x")
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (None, "")
+
+
+def test_try_leaf_cookie_http_turns_a_crash_into_one_readable_line() -> None:
+    """这条路是兜底，崩了不算流程错误，但要在界面上留一句人话（要进「试过的几步」）。"""
+    backend = _HttpLeafBackend(
+        [{"name": "a", "value": "b"}], error=RuntimeError("连接被重置")
+    )
+    value, detail = gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object())
+    assert value is None
+    assert "走 HTTP 领饼干时出错" in detail, detail
+    assert "连接被重置" in detail, detail
+
+
+def test_http_leaf_cookie_rescues_a_tab_parked_on_the_login_form(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """v0.13.22 的关键场面：标签页被弹回登录页，罐里其实还登录着。
+
+    用户 m29953/m29954 就卡在这里：程序把「页面停在登录页」当「用户还在打字」，
+    于是再也不去领饼干，一直等到超时（浏览器那边还在「饼干切换成功!」上原地跳）。
+    新走法：罐里有真会话就直接走 HTTP 领，**一个页面都不动**。
+    """
+    dialog = open_dialog()
+    login_url = browser_login.LOGIN_URL
+    handed: list[list] = []
+
+    def fake_http(cookies, **kwargs):
+        handed.append(list(cookies))
+        return browser_login.LeafCookie(FAKE_USERHASH, "")
+
+    monkeypatch.setattr(browser_login, "apply_leaf_cookie_over_http", fake_http)
+
+    def ready() -> bool:
+        for session in _dialog_sessions():
+            session.pages = {
+                login_url: {
+                    "url": login_url,
+                    "login": True,
+                    "jump": "",
+                    "kind": "login",
+                    "ids": [],
+                }
+            }
+            session.cookies = [
+                {"name": "PHPSESSID", "value": "abc123"},
+                # 登录之后才多出来的那一块：它说明罐里其实是登录着的（名字不重要，
+                # 判据只认「有一个不是 PHPSESSID、值也非空」）。
+                {"name": "_uid", "value": "9527"},
+            ]
+        return dialog.userhash is not None
+
+    assert _wait_for(root_window, ready), "罐里登录着、页面停在登录页时又卡住了"
+    session = _dialog_sessions()[0]
+    assert handed, "没把罐里的饼干交给 HTTP 那条路"
+    aside = [url for url in session.navigations if url != login_url]
+    assert aside == [], f"走了 HTTP 却还是动了用户的标签页：{aside}"
+    assert dialog.userhash == FAKE_USERHASH
+    assert _wait_for(root_window, lambda: not dialog.winfo_exists())
+
+
+def test_http_leaf_cookie_detail_reaches_the_timeout_message(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """两条路都没成时，HTTP 那条路的原话也要进超时那句话（截图里唯一的线索）。"""
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 3.0)
+    dialog = open_dialog()
+    urls, pages = _failed_apply_kit()
+    marker = "服务端说：这块饼干已经过期了"
+
+    monkeypatch.setattr(
+        browser_login,
+        "apply_leaf_cookie_over_http",
+        lambda cookies, **kwargs: browser_login.LeafCookie(None, marker),
+    )
+
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    session.pages = pages
+    session.current_url_value = urls["home"]
+    assert _wait_for(
+        root_window, lambda: "还没看到登录成功" in dialog.status_var.get(), timeout=15.0
+    )
+    status = dialog.status_var.get()
+    assert marker in status, status
+    # 顺序也钉住：HTTP 那条路是**后**试的，它的原话要排在浏览器那条路之后
+    # （不然「把原话挪到末尾」这个行为被改掉也没人发现）。
+    assert status.index(marker) > status.index("userhash"), status
 
 
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:

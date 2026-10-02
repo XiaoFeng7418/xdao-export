@@ -1611,3 +1611,45 @@ def fetch_leaf_cookie(
 def apply_leaf_cookie(session: "CDPSession") -> str | None:
     """只要值的老签名；要诊断就调 :func:`fetch_leaf_cookie`（界面层走那条）。"""
     return fetch_leaf_cookie(session).value
+
+
+def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> list[dict]:
+    """把浏览器里属于本站点的饼干**整罐**读出来（不只是 userhash，v0.13.22）。
+
+    界面层拿它去走 HTTP 那条熟路（:func:`apply_leaf_cookie_over_http`）：浏览器只负责
+    让用户把验证码认过去，剩下的协议交给 ``XdaoClient``。读失败返回空列表 —— 调用方按
+    「浏览器里还没有登录的痕迹」处理，不必区分「读不到」和「罐里是空的」。
+    """
+    try:
+        cookies = session.read_cookies(list(urls) if urls else cookie_urls_for(session))
+    except Exception:  # noqa: BLE001 —— 读不到就当罐里没有
+        return []
+    return [item for item in (cookies or []) if isinstance(item, dict)]
+
+
+def apply_leaf_cookie_over_http(
+    cookies: Iterable[dict], *, client=None, timeout: float = 20.0
+) -> LeafCookie:
+    """拿浏览器里的饼干，走 HTTP 那条路「应用饼干」并读出 userhash（v0.13.22）。
+
+    为什么不再让浏览器自己去跳站点的跳转页（v0.13.21 的做法）：站点给 userhash 的地方是
+    **导出页的响应体**（``{"cookie": "…"}``），而浏览器那条路上，导出页会被弹回登录页、
+    跳转页会自己原地重载 —— 用户看到的就是「停在『饼干切换成功!』一直跳」（m29953/m29954）。
+    HTTP 这条路从 v0.6.1 起就在用（:meth:`XdaoClient.apply_cookie`）：认「跳转提示」页、
+    跟着跳、相对地址补前缀、从导出页正文里抠值、读 cookie jar 兜底，全都是现成的。
+
+    ``client`` 只给用例注入用；给 None 时自己建一个 :class:`XdaoClient`（用缺省网络设置，
+    登录窗口本来就不带用户设置）。失败时把服务端/网络层那句话原样放进 ``detail`` ——
+    界面层会把它写进「程序试过的几步」，是用户截图里唯一的书面线索。
+    """
+    from .client import XdaoClient, XdaoError
+
+    session_client = client if client is not None else XdaoClient(timeout=timeout)
+    try:
+        session_client.import_cookies(cookies)
+        value = session_client.apply_cookie()
+    except XdaoError as exc:
+        return LeafCookie(None, str(exc))
+    except Exception as exc:  # noqa: BLE001 —— 网络层的意外也要变成一句人话
+        return LeafCookie(None, f"走 HTTP 领饼干时出错：{exc}")
+    return LeafCookie(value, "")

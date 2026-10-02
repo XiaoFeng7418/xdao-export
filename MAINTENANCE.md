@@ -669,6 +669,29 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.22**（接 v0.13.21：把「领饼干」从浏览器跳转改成走 HTTP）：0.13.21 发出去之后用户复验，
+  报「仍然是在切换饼干成功的界面一直跳」（截图里浏览器停在 `…/Cookie/switchTo/id/461037.html`，
+  页面是自己那张「饼干切换成功!」+「页面自动 跳转 等待时间： 0」）。拿站点真容核对：那一页的
+  跳转是**页面自己的 JS 倒计时**干的（`<a id="href" href="…">` + `setInterval` 到点
+  `location.href = href`），成功页的 `a#href` 指回自己时就变成原地重载 —— 用户看到的
+  「一直跳转」就是它。更关键的一条：**站点给 userhash 的落点从来不是那张跳转页的落地页，
+  而是「导出页」的响应体**（`{"cookie": "…"}`，`_extract_userhash_from_export` 从 v0.6.1 起
+  就是这么读的，见本文件里 v0.6.1 那条「接口 200 不等于内容页面」）。让浏览器自己去跳，就等于
+  把「能不能拿到 userhash」押在渲染无关的东西上。改法：浏览器那条路只负责让用户把验证码认
+  过去 —— `read_site_cookies()` 读一次整罐饼干，`apply_leaf_cookie_over_http()` 把整罐交给
+  `XdaoClient.import_cookies()` + `XdaoClient.apply_cookie()`（认「跳转提示」页、跟跳、从导出页
+  正文抠值），**一个页面都不动**。界面（`xdao/gui.py`）保留原来那条 CDP 路先跑，它领不到时再走
+  HTTP 兜底（`_try_leaf_cookie_http`）；「用户可能还在打验证码」只在**这一轮没动过页面、也从来
+  没真应用过**、且罐里只有一个匿名 `PHPSESSID` 时成立（`_jar_holds_a_session`）—— 否则「标签页
+  被弹回登录页、罐里其实还登录着」那种场面会永远卡住；这条 HTTP 路不碰页面，所以不受
+  `BROWSER_LEAF_NAV_LIMIT` 约束。`import_cookies` 按 `set_userhash` 的老规矩把**同名的旧饼干
+  按名字扫干净**（不分域、不分路径，抽成 `_drop_cookies_named()` 给两处共用），免得请求头里
+  出现两条 `userhash`。用例：`tests/test_client.py` 14 → 20、`tests/test_browser_login.py`
+  207 → 212、`tests/test_gui_browser_login.py` 28 → 36（新增的 autouse fixture
+  `no_real_http_leaf_cookie` 让既有 28 条只验 CDP 那条路、绝不真发 HTTP）；九处注入全部变红
+  （罐子判据两头改错、整段停用 HTTP 兜底、值不校验、原话不挪到末尾、服务端那句话不原样带出、
+  不扫同名旧饼干、会话饼干当过期、空条目照装）。本机全量 **1640 passed / 7 skipped**
+  （收集 1647 项）。
 - **v0.13.21**（真机上报「自动切换饼干之后一直卡在那里」；同版把开发期的界面截图工具
   `tools/gui_shot.py` 补上用例）：用户报的是 —— 在 0.13.20 里能正常登录、也自己跳到了
   「饼干」页，程序自动切换饼干之后就再也没有下文。真机截图证据：浏览器停在
@@ -1313,6 +1336,16 @@ Edge / Chrome，所以「系统默认浏览器是 Firefox」的机器仍然能�
 `tests/test_gui_browser_login.py` 的
 `test_leaf_cookie_keeps_trying_after_the_tab_is_bounced_back_to_login` 钉住「被弹回登录页之后
 还会再去饼干页」（老代码停在 1 次）。
+
+**浏览器只管验证码，领饼干走 HTTP（v0.13.22）**：`XdaoClient.apply_cookie()` 这条 HTTP 协议
+从 v0.6.1 起就在线上跑通了 —— 它会认「跳转提示」页（HTTP 200 也可能是跳转页）、跟着跳、从
+**导出页的响应体**里抠 userhash。浏览器那条路存在的唯一理由就是验证码（真人认一次），其余步骤
+在浏览器里做只是把一个已经解决的问题重新做一遍，还多出两个新的不确定性：站点那张跳转页是
+**页面自己的 JS 倒计时**（`setInterval` 到点 `location.href = href`），而成功页的 `a#href` 指回
+自己时会变成原地重载（用户看到的就是「一直跳转」）。所以现在的分工是：浏览器窗口负责把验证码
+认过去，程序读一次它的整罐饼干（`read_site_cookies()`），剩下的交回 HTTP
+（`apply_leaf_cookie_over_http()`）—— 也因此**不需要**再驱动用户的标签页，
+`BROWSER_LEAF_NAV_LIMIT` 用完也只是「不再动页面」，每轮照旧能领。
 
 ## 敏感串扫描：提交信息扫了，文档容易漏（2026-10-01 发现）
 

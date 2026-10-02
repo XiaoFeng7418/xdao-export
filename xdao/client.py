@@ -15,6 +15,7 @@ import zlib
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from pathlib import Path
+from typing import Iterable
 
 
 USER_AGENT = (
@@ -395,12 +396,7 @@ class XdaoClient:
 
         value = userhash.strip()
         # 先清掉 jar 里所有旧的 userhash，避免同名 cookie 叠加。
-        for cookie in list(self._jar):
-            if cookie.name == "userhash":
-                try:
-                    self._jar.clear(cookie.domain, cookie.path, cookie.name)
-                except KeyError:  # pragma: no cover - 已经被清掉了
-                    pass
+        self._drop_cookies_named("userhash")
         for domain in ("nmbxd1.com", ".nmbxd1.com", "api.nmb.best", ".api.nmb.best"):
             cookie = Cookie(
                 version=0,
@@ -434,6 +430,84 @@ class XdaoClient:
         value = (userhash or "").strip()
         self.set_userhash(value)
         return value
+
+    def _drop_cookies_named(self, name: str) -> None:
+        """把 jar 里所有叫这个名字的饼干清掉，不分域、不分路径（v0.13.22）。
+
+        为什么要按名字扫全罐：同一个 jar 里留下两条同名 cookie 时，请求头会变成
+        ``Cookie: userhash=新; userhash=旧``，服务端取哪一条并不确定 —— 实测过
+        这种情况（登录成功却仍被接口回「必须登入领取饼干后才可以访问」）。
+        :meth:`set_userhash` 与 :meth:`import_cookies` 都靠它保持「一个名字只剩一份」。
+        """
+        for cookie in list(self._jar):
+            if cookie.name == name:
+                try:
+                    self._jar.clear(cookie.domain, cookie.path, cookie.name)
+                except KeyError:  # pragma: no cover - 已经被清掉了
+                    pass
+
+    def import_cookies(self, cookies: Iterable[dict]) -> int:
+        """把浏览器里的饼干整罐装进自己的 jar，返回装进去几条（v0.13.22）。
+
+        为什么要它：浏览器那条路只需要负责「让用户把验证码认过去」，他在窗口里登录成功
+        之后，那份资料里的会话饼干**就是这个会话本身**。把这几条饼干交给已经跑了很久的
+        HTTP 流程（:meth:`apply_cookie`），比让浏览器自己去跳站点的跳转页可靠得多 ——
+        userhash 是在**导出页的响应体**里给出的（``{"cookie": "…"}``，见
+        :meth:`_extract_userhash_from_export`），浏览器把那一页渲染成什么、标签页有没有
+        被用户切走、跳转倒计时跑到第几秒，都不该决定这件事成不成（用户 m29953/m29954）。
+
+        ``cookies`` 收 CDP ``Network.getCookies`` 那种字典（``name``/``value``/``domain``/
+        ``path``/``secure``/``expires``）。名字或值为空的跳过；开始装某个名字之前，先把
+        jar 里同名的旧值**扫干净**（不分域、不分路径）：浏览器那份可能同时在几个域上带
+        同一个名字，叠起来就是两条 ``userhash`` 同时出现在请求头里（见
+        :meth:`_drop_cookies_named`）。
+        """
+        from http.cookiejar import Cookie
+
+        count = 0
+        swept: set[str] = set()
+        for item in cookies or ():
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            value = str(item.get("value") or "")
+            if not name or not value:
+                continue
+            if name not in swept:
+                swept.add(name)
+                self._drop_cookies_named(name)
+            domain = str(item.get("domain") or "").strip() or ".nmbxd1.com"
+            path = str(item.get("path") or "").strip() or "/"
+            expires: int | None = None
+            try:
+                raw_expires = float(item.get("expires"))  # CDP 给的是秒（会话饼干是 -1）
+            except (TypeError, ValueError):
+                raw_expires = 0.0
+            if raw_expires > 0:
+                expires = int(raw_expires)
+            self._jar.set_cookie(
+                Cookie(
+                    version=0,
+                    name=name,
+                    value=value,
+                    port=None,
+                    port_specified=False,
+                    domain=domain,
+                    domain_specified=True,
+                    domain_initial_dot=domain.startswith("."),
+                    path=path,
+                    path_specified=True,
+                    secure=bool(item.get("secure")),
+                    expires=expires,
+                    discard=expires is None,
+                    comment=None,
+                    comment_url=None,
+                    rest={},
+                    rfc2109=False,
+                )
+            )
+            count += 1
+        return count
 
     def fetch_login_form(self) -> LoginForm:
         login_url = f"{self.SITE}/Member/User/Index/login.html"
