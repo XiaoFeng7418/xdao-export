@@ -1,0 +1,79 @@
+name: build
+
+# 打免安装包（`xdao-export-vX-win64.zip` + 配套的 `.sha256`），上传成一个构件的 artifact。
+#
+# 为什么要有这个 workflow（2026-10-02）：
+# ① 官方包以前只在作者本机打（脚本在 `_scratch/`，进不了库），别人想核对「Release 里那个
+#    包是怎么来的」只能来问。搬进仓库后，谁都能照 `.github/workflows/build.yml` 复现；
+# ② 申请 SignPath Foundation 的免费开源代码签名有一条硬要求：**要签名的产物必须由
+#    GitHub 托管的 runner 构建**。所以这一步先跑通，签名只是接在它后面（见 docs/SIGNING.md）。
+#
+# 触发：手动（Actions -> build -> Run workflow），以及推 `v*` 标签时自动跑一次。
+# 动作版本：checkout@v7 / setup-python@v7 / upload-artifact@v7（都跑在 Node 24 上，
+# 用 v4/v5 会多出「Node.js 20 is deprecated」的警告注解）。
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: windows-latest / py3.12
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: 装 PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      # 打包脚本自己会先核「版本号 / 发布说明 / 使用说明」三处对齐没有，
+      # 再核包内三个 Windows 工具文件的 UTF-8 BOM，最后写 .sha256。
+      - name: 打包（含文档自检与 BOM 自检）
+        run: python tools/build_zip.py --out dist
+
+      - name: 上传构件
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: xdao-export-win64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+      # ---- 签名：等 SignPath Foundation 批准后再启用 ----
+      # 仓库里设好下面这个变量与四个密钥，这一步就自动生效；没设时整段跳过，
+      # 所以现在推 tag 也不会因为它报错。
+      #   vars.SIGNPATH_ENABLED=true
+      #   vars.SIGNPATH_ORGANIZATION_ID / SIGNPATH_PROJECT_SLUG / SIGNPATH_SIGNING_POLICY_SLUG
+      #   secrets.SIGNPATH_API_TOKEN
+      # 注意：SignPath 那边要先把 Artifact Configuration 的根元素设成 <zip-file>
+      # （GitHub 的 artifact 本身就是个 zip），并且**每次签名都要人工批准**。
+      - name: SignPath 签名（获批后自动生效）
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed

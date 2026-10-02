@@ -23,6 +23,29 @@
 - **致谢**：数据来源与内容规范以 X岛揭示板为准；「用途与声明」的写法参考了 Rcrwrate/Xdnmb_downer；
   本工具只用 Python 标准库写成（没有第三方运行时依赖，打包用 PyInstaller）。谢谢这些项目的作者。
 
+## 代码签名政策（Code signing policy）
+
+发布者：**晓风**（GitHub [@XiaoFeng7418](https://github.com/XiaoFeng7418)）。
+
+**现状：还没有代码签名证书，正在申请 [SignPath Foundation](https://signpath.org/) 的免费开源签名。**
+所以现在下载到的 `xdao-export.exe` 在 Windows 上会显示成「未知发布者」，也可能被 SmartScreen 提醒一次 ——
+这是没有签名证书时的正常现象，不代表文件被人改过。拿到证书之前，请照 Release 里附的 `.sha256`
+自己核一遍（做法见上面的「下载后核对一下」）。
+
+获批之后的流程是固定的：
+
+- 官方发布包**只由 GitHub Actions 构建**（`.github/workflows/build.yml`，源码与打包脚本都在本仓库里，
+  可以自己复核），本机打的包不会作为官方下载。
+- 每次发版把构建产物交给 [SignPath.io](https://signpath.io/) **人工看过再批准签名**，不自动签；签名后的包才挂到 Release 上。
+- 参与签名的角色：Author、Reviewer、Approver 均为晓风（GitHub [@XiaoFeng7418](https://github.com/XiaoFeng7418)），
+  本项目由个人独立维护。
+- 只签本仓库自己构建的 `xdao-export.exe`；随包一起分发的 Python、Tcl/Tk、OpenSSL 等第三方组件
+  属上游项目，不由本项目签名，也不改动其内容。
+- 免费代码签名由 SignPath.io 提供，证书由 SignPath Foundation 颁发。
+  （Free code signing provided by SignPath.io, certificate by SignPath Foundation.）
+
+代码签名的意义是「让改动看得出来」，不是「让文件改不了」：**核对下载来源与 `.sha256` 永远是最靠得住的一步**。
+
 ## 功能
 
 **登录**
@@ -545,9 +568,10 @@ xdao-export/
 │     └─ epub.py           EPUB 3（纯标准库实现）
 ├─ tools/clean_scratch.py  清理测试残留目录（危险目标先拦下，支持 --dry-run）
 ├─ tools/gui_shot.py       开发期界面截图（纯标准库，改界面后自查）
+├─ tools/build_zip.py      打免安装包 + 写 .sha256（本机与 CI 都用它）
 ├─ 诊断写入.ps1            导出目录写不进去时用来定位（随免安装包一起发出）
 ├─ 诊断写入-双击运行.cmd   不会用命令行就双击它，跑完留下诊断结果报告
-└─ tests/                  1700 个离线单元测试（1693 通过，另 7 个真机用例默认跳过）
+└─ tests/                  1722 个离线单元测试（1715 通过，另 7 个真机用例默认跳过）
 ```
 
 ## 开发
