@@ -1265,7 +1265,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   改这一步时别退化成无效检查。
 - 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。
 
-### 四个已经踩过的 CI 坑
+### 五个已经踩过的 CI 坑
 
 1. **测试夹具不能写死 Windows 形态**。`tests/test_pdf.py` 里造「假浏览器」时，
    原先只生成 `fake_browser.cmd`，结果 ubuntu 两个 job 全部挂在单元测试：
@@ -1305,6 +1305,16 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
    windows 那条全绿。改法：**期望值也用 `os.path.join` 现拼**（这个 PATH 只对 Windows
    有意义，但用例会在 Linux 上收集并执行）。注意 `tools/posix_check.py` 只预演浏览器
    包装脚本那条路，**这类坑本机预演不出来**。
+5. **走平台分支的用例要自己把平台钉住**（2026-10-02，提交 ce12f2f）：
+   `tools/gui_probe.py` 里 `IS_WINDOWS = sys.platform == "win32"` 决定收尾是
+   `taskkill /T /F /PID` 还是 `proc.kill()`，而 `tests/test_gui_probe.py` 有两条用例直接
+   断言「调了 taskkill」却没钉住平台 —— 本机 Windows 全绿，ubuntu 两条 job
+   `2 failed, 1458 passed, 106 skipped`。改法：加一个
+   `use_windows(monkeypatch, windows=True)` 帮手把 `gui_probe.IS_WINDOWS` 顶掉，走
+   Windows 分支的用例显式钉 True、POSIX 那条显式钉 False。
+   **本机预演**：把 `tools/gui_probe.py` 里的 `IS_WINDOWS` 临时改成 `False` 再跑这个测试文件
+   （记得跑完按字节还原并核对 sha256）—— 假装 Linux 也是 41 条全绿。记住判据：**用例跑在哪种
+   机器上，不该由运行环境决定它验哪条分支**。
 
 ### 测试替身与真契约（v0.7.0 踩的坑）
 
