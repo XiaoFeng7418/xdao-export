@@ -161,6 +161,24 @@ def test_window_uses_the_theme_background(app: gui.App) -> None:
     assert app.root.cget("bg").lower() == theme.PALETTE.bg.lower()
 
 
+def test_login_pill_follows_the_saved_cookie(app: gui.App) -> None:
+    """登录之后左上角那个标要跟着变（v0.13.24）。
+
+    它是 ``StatusPill``：建出来的时候就把文字**抄**走了，只改 ``status_var`` 它不会动。
+    真机上就是「运行日志说登录成功、左上角还写未登录」（用户 m31364 因此以为没登录上，
+    又去试别的路）。
+    """
+    app.settings.userhash = None
+    app.show_login_state()
+    assert app.status_var.get() == "未登录"
+    assert app.status_pill._text == "未登录"
+
+    app.settings.userhash = "TESTHASH"
+    app.show_login_state()
+    assert app.status_var.get() == "已登录"
+    assert app.status_pill._text == "已登录"
+
+
 # ---------------------------------------------------------------- 左右两栏
 
 

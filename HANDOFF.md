@@ -26,10 +26,10 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1656 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1649 通过、7 项跳过）、
+单元测试 1658 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1651 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
-其中界面相关的 99 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
+其中界面相关的 102 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。下面那张测试表的数字由 `tests/test_docs_facts.py`
 对着真实收集数把关：加删测试文件、用例数量变了，它就会红，照报红的位置改表即可。
 
@@ -103,7 +103,7 @@ xdao-export/
 │  ├─ test_gui_probe.py    GUI 探针：看见主窗口才算起来，收尾要杀进程树（41）
 │  ├─ test_gui_shot.py     GUI 截图：一片同色不算截好，收尾要还 GDI 句柄（48）
 │  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级（61）
-│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（37，需真 Tk）
+│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（38，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（73）
 │  ├─ test_watcher.py      监控与配置（30）
 │  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（33）
@@ -120,7 +120,7 @@ xdao-export/
 │  ├─ test_settings.py     配置读写（25）
 │  ├─ test_live_notify.py  真机通知（1，默认跳过）
 │  ├─ test_theme.py        配色/字体/间距/ttk 样式、Card 拉伸（27，需真 Tk）
-│  └─ test_window.py       主窗口布局回归（36，需真 Tk）
+│  └─ test_window.py       主窗口布局回归（37，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号
    ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理、响应体解包

@@ -687,8 +687,19 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   `cookie_id = re.sub(r"\.html?$", "", cookie_id, flags=re.IGNORECASE)`（带/不带后缀都稳）；
   `tests/test_client.py` 20 → 23，新增「空 href 的成功页只请求一次」「跳转目标就是自己时只请求
   一次」「switchTo/export 两个地址逐字钉住」三条。反向验证：把归一化那行换成原样返回，第三条
-  用例立刻报 `…/id/abc123.html.html` 变红，改回全绿。本机全量 **1649 passed / 7 skipped**
-  （收集 1656 项）。
+  用例立刻报 `…/id/abc123.html.html` 变红，改回全绿。
+  同一版还修了两处**只有真机才看得见**的地方（用户 m31364 报「日志说登录成功、左上角还写未登录」）：
+  ① 角标是 `StatusPill`（`xdao/widgets.py:209` 的 `set(text, tone=…)` 才会改），而 `App.open_login()`
+  以前只改 `self.status_var` —— 新增 `App.show_login_state()`（`xdao/gui.py`，紧邻 `open_login`）把两处
+  一起写，`tests/test_window.py` 新增 `test_login_pill_follows_the_saved_cookie` 钉住（36 → 37）。
+  ② 诊断三处补漏：`_jar_summary`（`xdao/gui.py:1389`）改用 `backend.userhash_from_cookies` 判断罐里
+  到底有没有 userhash（真机上那句写死的「还没有 userhash」把人带偏过）；`_try_leaf_cookie_http` 跳过时
+  返回新常量 `BROWSER_HTTP_SKIP_ANON_NOTE` 而不是空串（worker 里按值过滤，留痕但不顶掉「这个窗口里
+  还没登录」）；新增 `BrowserLoginDialog._timeout_message(steps, diagnosis)` —— 等超时那条以前**不带**
+  `_diagnosis()`，`_http_note` 只进「窗口已关」「payload」两条失败路径，所以用户日志里一条 HTTP 记录
+  都没有。验饼干失败（`verify_userhash_live` 非 None）时那句话也进「试过的几步」。`test_gui_browser_login.py`
+  37 → 38（新增 `test_the_timeout_message_carries_the_diagnosis_too`）。本机全量 **1651 passed / 7 skipped**
+  （收集 1658 项）。
 - **v0.13.23**（接 v0.13.22：把「导航用户的标签页」整个停掉，并把失败原因写进日志）：0.13.22
   发出去之后复验仍不通行，报「0.13.22还是无法登录，一直无限跳转」（截图里浏览器停在
   `…/Member/User/Cookie/switchTo/id/461037.html`，页面是站点自己的「饼干切换成功!」+

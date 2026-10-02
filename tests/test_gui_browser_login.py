@@ -1000,7 +1000,12 @@ def test_the_failure_reason_carries_the_diagnosis(
 
 
 def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
-    """罐子诊断三种情形都要有话说（v0.13.23）：读不到 / 空的 / 只有匿名会话号。"""
+    """罐子诊断三种情形都要有话说（v0.13.23）：读不到 / 空的 / 有会话饼干。
+
+    第四种情形是 v0.13.24 补的：罐里**已经有 userhash** 时不能再报「还没有 userhash」。
+    真机上就是这句话把我带偏过 —— 日志里看着像没读到饼干，其实读到了、只是站点不认
+    （m31364：浏览器里明明登着，程序却说罐里没有 userhash）。
+    """
 
     class _Backend:
         def __init__(self, cookies=None, error=None) -> None:
@@ -1013,6 +1018,7 @@ def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
             return self.cookies
 
         summarize_cookies = staticmethod(browser_login.summarize_cookies)
+        userhash_from_cookies = staticmethod(browser_login.userhash_from_cookies)
 
     assert gui.BrowserLoginDialog._jar_summary(
         _Backend(error=RuntimeError("连接断了")), object()
@@ -1023,6 +1029,9 @@ def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
     assert gui.BrowserLoginDialog._jar_summary(
         _Backend([{"name": "PHPSESSID", "value": "x"}]), object()
     ) == "浏览器里的饼干：PHPSESSID（还没有 userhash）。"
+    assert gui.BrowserLoginDialog._jar_summary(
+        _Backend([{"name": "userhash", "value": FAKE_USERHASH}]), object()
+    ) == "浏览器里的饼干：userhash（里面有 userhash）。"
 
 
 def test_try_leaf_cookie_hands_the_waiting_flag_to_the_library() -> None:
@@ -1076,11 +1085,14 @@ def test_try_leaf_cookie_http_leaves_a_bare_anonymous_jar_alone() -> None:
 
     未登录时站点只给一个 ``PHPSESSID``；这时候抢先去跑 HTTP 只会白连站点，而且
     它那句「没权限访问」会把更有用的「这个窗口里还没登录」从提示里顶掉。
+
+    跳过也要留一句书面记录（v0.13.24）：不然「跳过」与「跑了但站点没给值」在运行
+    日志里一个样，用户报「拿不到 userhash」时查不动（m31364 那份日志就是如此）。
     """
     backend = _HttpLeafBackend([{"name": "PHPSESSID", "value": "abc123"}])
     assert gui.BrowserLoginDialog._try_leaf_cookie_http(
         backend, object(), may_skip_for_typing=True
-    ) == (None, "")
+    ) == (None, gui.BROWSER_HTTP_SKIP_ANON_NOTE)
     assert backend.handed == [], "罐里只有匿名会话号，却照样去领了饼干"
 
 
@@ -1136,6 +1148,38 @@ def test_try_leaf_cookie_http_turns_a_crash_into_one_readable_line() -> None:
     assert value is None
     assert "走 HTTP 领饼干时出错" in detail, detail
     assert "连接被重置" in detail, detail
+
+
+def test_the_timeout_message_carries_the_diagnosis_too() -> None:
+    """等超时那句话要同时带上「试过的几步」和书面诊断（v0.13.24）。
+
+    用户报问题时贴的是运行日志。只写「试过的几步」的话，饼干名单和「走 HTTP 领饼干」
+    那条路的原话就永远进不了日志 —— m31364 那份日志里一条 HTTP 记录都没有，
+    看不出那条路到底跑没跑。
+    """
+    text = gui.BrowserLoginDialog._timeout_message(
+        [
+            "浏览器里的饼干：PHPSESSID（还没有 userhash）。",
+            "走 HTTP 领饼干：X 岛把请求弹回了登录页。",
+        ],
+        "（走 HTTP 领饼干：X 岛说这块饼干不认）",
+    )
+    assert "还没看到登录成功" in text
+    assert "① 浏览器里的饼干：PHPSESSID" in text
+    assert "② 走 HTTP 领饼干" in text
+    assert "走 HTTP 领饼干：X 岛说这块饼干不认" in text
+
+    # 只有一步时用「一步」的说法，不硬凑序号；诊断照样要有。
+    one = gui.BrowserLoginDialog._timeout_message(
+        ["浏览器里的饼干：PHPSESSID（还没有 userhash）。"], "（x）"
+    )
+    assert "①" not in one
+    assert "程序试过的一步" in one
+
+    # 一步都没有时不该硬凑序号；诊断照样要有。
+    alone = gui.BrowserLoginDialog._timeout_message([], "（读不到浏览器里的饼干：连接断了）")
+    assert "程序试过" not in alone
+    assert "连接断了" in alone
 
 
 def test_http_leaf_cookie_rescues_a_tab_parked_on_the_login_form(

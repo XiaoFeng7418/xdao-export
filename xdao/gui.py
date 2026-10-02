@@ -729,6 +729,13 @@ BROWSER_STALE_COOKIE_MESSAGE = (
 )
 # 验饼干这步撞上网络问题（不是「不认」）时说的话：请求本身没成，值得再试一次。
 BROWSER_VERIFY_FAILED_MESSAGE = "没法确认这个登录还算不算数（{detail}）。稍等一下，程序会接着试。"
+# 「走 HTTP 领饼干」这一轮**没跑**时留下的书面记录（v0.13.24）。
+#
+# 它只进运行日志（:meth:`BrowserLoginDialog._diagnosis`），**不进**用户眼前那句提示 ——
+# 那里「这个窗口里还没登录」比它有用，调用方按这个常量整句比对来跳过提示。
+# 为什么要留这一句：跳过与「跑了但站点没给值」原本在日志里长得一模一样，用户报
+# 「拿不到 userhash」时看不出这条路到底跑没跑（m31364 那份日志里就是一条 HTTP 记录都没有）。
+BROWSER_HTTP_SKIP_ANON_NOTE = "（没试这条：罐里只有匿名会话号，大概还没登录完。）"
 
 
 def _load_browser_login():
@@ -1284,7 +1291,12 @@ class BrowserLoginDialog(tk.Toplevel):
                             next_leaf = leaf_now + BROWSER_LEAF_SECONDS
                         elif http_detail:
                             self._http_note = http_detail
-                            if http_detail != leaf_hint:
+                            # 「没试这条」只进书面记录：用户眼前那句「这个窗口里还没登录」
+                            # 比它有用，别让这一句把它顶掉（v0.13.24）。
+                            if (
+                                http_detail != BROWSER_HTTP_SKIP_ANON_NOTE
+                                and http_detail != leaf_hint
+                            ):
                                 leaf_hint = http_detail
                                 if http_detail in leaf_hints:
                                     leaf_hints.remove(http_detail)
@@ -1305,9 +1317,15 @@ class BrowserLoginDialog(tk.Toplevel):
                             continue
                         self._queue.put(("ok", value))
                         return
-                    if note and not said_dead:
-                        said_dead = True
-                        self._queue.put(("note", note))
+                    if note:
+                        # 「X 岛不认这块饼干」是整轮里最有信息量的一句，必须进「试过的
+                        # 几步」：它以前只在对话框里闪一下、收尾那句超时提示就把它丢了，
+                        # 于是日志里只剩几行饼干名单（m31364 真机就是这样，看不出卡在哪）。
+                        if note not in leaf_hints:
+                            leaf_hints.append(note)
+                        if not said_dead:
+                            said_dead = True
+                            self._queue.put(("note", note))
             except Exception as exc:
                 self._queue.put(("error", f"读取浏览器饼干失败：{exc}"))
                 return
@@ -1323,24 +1341,32 @@ class BrowserLoginDialog(tk.Toplevel):
             # 是「到底卡在哪一步」唯一的书面记录。只留最后一条不够用 —— 「饼干罐里还是没有
             # userhash」这种最没信息量的收尾会盖掉前面「用户还没登录」那条（v0.13.20）。
             steps = leaf_hints[-3:]
-            if not steps:
-                tail = ""
-            elif len(steps) == 1:
-                tail = f"（程序试过的一步：{steps[0]}）"
-            else:
-                numbered = " ".join(
-                    f"{'①②③'[index]} {text}" for index, text in enumerate(steps)
-                )
-                tail = f"（程序试过的几步：{numbered}）"
-            self._queue.put(
-                (
-                    "error",
-                    f"等了 {BROWSER_LOGIN_TIMEOUT / 60:.0f} 分钟还没看到登录成功。"
-                    "要在这个窗口打开的浏览器里登录，程序才看得到 —— "
-                    "在自己平时用的浏览器里登录不行；也可以点「直接粘贴饼干登录」。"
-                    f"{tail}",
-                )
+            self._queue.put(("error", self._timeout_message(steps, self._diagnosis())))
+
+    @staticmethod
+    def _timeout_message(steps: list[str], diagnosis: str) -> str:
+        """等超时那句话（v0.13.24）：顺序（试过的几步）+ 书面诊断一起写出来。
+
+        为什么两样都要：``steps`` 说明**卡在哪一步**，``diagnosis`` 里是饼干名单和
+        「走 HTTP 领饼干」那条路的原话。用户报问题时贴的就是运行日志 —— 以前这里只有
+        ``steps``，于是「这条路到底跑没跑」在日志里查不出来（m31364 那份日志里
+        一条 HTTP 记录都没有，我因此白猜了一轮）。
+        """
+        if not steps:
+            tail = ""
+        elif len(steps) == 1:
+            tail = f"（程序试过的一步：{steps[0]}）"
+        else:
+            numbered = " ".join(
+                f"{'①②③'[index]} {text}" for index, text in enumerate(steps)
             )
+            tail = f"（程序试过的几步：{numbered}）"
+        return (
+            f"等了 {BROWSER_LOGIN_TIMEOUT / 60:.0f} 分钟还没看到登录成功。"
+            "要在这个窗口打开的浏览器里登录，程序才看得到 —— "
+            "在自己平时用的浏览器里登录不行；也可以点「直接粘贴饼干登录」。"
+            f"{tail}{diagnosis}"
+        )
 
     @staticmethod
     def _read_userhash(backend, session) -> str | None:
@@ -1402,7 +1428,17 @@ class BrowserLoginDialog(tk.Toplevel):
         names = backend.summarize_cookies(cookies)
         if not names:
             return "浏览器里现在没有任何属于 X 岛的饼干（还没登录过）。"
-        return f"浏览器里的饼干：{names}（还没有 userhash）。"
+        # 罐里到底有没有 userhash 要**看一眼**再说（v0.13.24）。
+        #
+        # 以前这句话写死成「（还没有 userhash）」：罐里明明有 userhash 时也这么报，
+        # 于是「这条路读到了饼干」和「这条路什么都没读到」在日志里一个样 ——
+        # 我自己就是被它带偏过（m31364 那份日志看着像没读到 userhash，其实读到了、
+        # 只是 X 岛不认那块旧饼干）。
+        pick = getattr(backend, "userhash_from_cookies", None)
+        if not callable(pick):  # pragma: no cover - 真后端一定有；替身才可能没有
+            return f"浏览器里的饼干：{names}。"
+        tail = "里面有 userhash" if pick(cookies) else "还没有 userhash"
+        return f"浏览器里的饼干：{names}（{tail}）。"
 
     @staticmethod
     def _try_leaf_cookie_http(
@@ -1429,7 +1465,9 @@ class BrowserLoginDialog(tk.Toplevel):
         if not cookies:
             return None, ""
         if may_skip_for_typing and not _jar_holds_a_session(cookies):
-            return None, ""
+            # 跳过也要留痕（v0.13.24）：这句只进 `_diagnosis()` 的书面记录，
+            # 调用方按常量整句比对，不拿它顶掉「这个窗口里还没登录」那句提示。
+            return None, BROWSER_HTTP_SKIP_ANON_NOTE
         try:
             result = backend.apply_leaf_cookie_over_http(cookies)
         except Exception as exc:  # noqa: BLE001 —— 同上
@@ -3157,6 +3195,25 @@ class App:
 
     # ---------- 交互 ----------
 
+    def show_login_state(self) -> None:
+        """把「登没登录」写到左上角那个标上（v0.13.24）。
+
+        为什么要有这么一个方法：角标是 :class:`StatusPill`，它建出来的时候就把文字
+        **抄**走了 —— 只改 ``status_var`` 它不会跟着变。用户 m31364 真机上撞见的
+        「日志说登录成功、左上角还写未登录」就是这里：``status_var`` 变了、标没变。
+        凡是动 ``settings.userhash`` 的地方，都从这一个出口过。
+        """
+        logged_in = bool(self.settings.userhash)
+        text = "已登录" if logged_in else "未登录"
+        try:
+            self.status_var.set(text)
+        except tk.TclError:  # pragma: no cover - 窗口已经销毁
+            return
+        try:
+            self.status_pill.set(text, tone="ok" if logged_in else "muted")
+        except tk.TclError:  # pragma: no cover - 同上
+            pass
+
     def open_login(self) -> None:
         try:
             dialog = LoginDialog(self.root, self.client, self.settings, app=self)
@@ -3164,7 +3221,7 @@ class App:
             if dialog.userhash:
                 self.settings.userhash = dialog.userhash
                 self.settings.save()
-                self.status_var.set("已登录")
+                self.show_login_state()
                 self.log("登录成功，饼干已保存。")
         except XdaoError as exc:
             messagebox.showerror("无法打开登录页", str(exc))
