@@ -35,6 +35,10 @@ from repo_info import expected_description, expected_topics  # noqa: E402
 
 REPO = "owner/name"
 REF_SHA = "a" * 40
+ZIP_ID = 7
+SHA_ID = 8
+SHA_PREFIX = f"/repos/{REPO}/releases/assets/{SHA_ID}"
+GOOD_SHA = "ab" * 32
 
 #: 临时仓库里跑 git 用的环境：给上提交者身份，并把全局/系统配置指到空文件，
 #: 免得继承本机（或 CI）的 user.name / core.autocrlf 之类设置。
@@ -49,13 +53,24 @@ GIT_ENV = {
 }
 
 
-def _release(tag: str | None = None) -> dict:
+def _zip_name(tag: str) -> str:
+    return f"xdao-export-{tag}-win64.zip"
+
+
+def _release(tag: str | None = None, *, assets: list[dict] | None = None) -> dict:
+    """一份「正常的」最新 Release：免安装包 + 与它配套的 .sha256。"""
     tag = tag or f"v{xdao.__version__}"
-    return {
-        "tag_name": tag,
-        "body": "免安装包在最下面。",
-        "assets": [{"name": f"xdao-export-{tag}-win64.zip"}],
-    }
+    if assets is None:
+        assets = [
+            {"name": _zip_name(tag), "id": ZIP_ID, "digest": f"sha256:{GOOD_SHA}"},
+            {"name": _zip_name(tag) + ".sha256", "id": SHA_ID},
+        ]
+    return {"tag_name": tag, "body": "免安装包在最下面。", "assets": assets}
+
+
+def _sha_text(tag: str | None = None, *, digest: str = GOOD_SHA, name: str = "") -> str:
+    tag = tag or f"v{xdao.__version__}"
+    return f"{digest}  {name or _zip_name(tag)}\n"
 
 
 def _routes(releases: list[dict] | None = None) -> dict[str, object]:
@@ -66,6 +81,7 @@ def _routes(releases: list[dict] | None = None) -> dict[str, object]:
             "tree": [{"path": "a.py", "sha": "1", "type": "blob"}],
             "truncated": False,
         },
+        SHA_PREFIX: _sha_text(),
         f"/repos/{REPO}/releases": releases if releases is not None else [_release()],
         f"/repos/{REPO}/issues": [],
         f"/repos/{REPO}": {
@@ -79,7 +95,7 @@ def _routes(releases: list[dict] | None = None) -> dict[str, object]:
     }
 
 
-def _run_main(monkeypatch, capsys, routes=None, **patches) -> tuple[int, str]:
+def _run_main(monkeypatch, capsys, routes=None, texts=None, **patches) -> tuple[int, str]:
     """跑一次 ``main()``，网络与仓库读取都换成假的；返回 (退出码, 输出)。"""
 
     def fake_request(method, path, *args, **kwargs):
@@ -90,8 +106,17 @@ def _run_main(monkeypatch, capsys, routes=None, **patches) -> tuple[int, str]:
                 return answer
         raise AssertionError(f"用例没准备这个请求：{path}")
 
+    def fake_text(path, *args, **kwargs):
+        for prefix, answer in (_routes() if texts is None else texts).items():
+            if path.startswith(prefix):
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+        raise AssertionError(f"用例没准备这段正文：{path}")
+
     monkeypatch.setattr(repo_check, "gh_token", lambda: "fake-token")
     monkeypatch.setattr(repo_check, "request_json", fake_request)
+    monkeypatch.setattr(repo_check, "request_text", fake_text)
     monkeypatch.setattr(repo_check, "local_commits", lambda: [{"sha": REF_SHA, "message": "init"}])
     monkeypatch.setattr(repo_check, "local_tree", lambda _dir: {"a.py": "1"})
     monkeypatch.setattr(repo_check, "worktree_changes", lambda _dir: [])
@@ -171,3 +196,63 @@ def test_an_unknown_path_in_the_fake_api_is_an_error(monkeypatch, capsys) -> Non
     """用例自己的底线：假 API 没准备的请求要炸，别静悄悄地走默认分支。"""
     with pytest.raises(AssertionError):
         _run_main(monkeypatch, capsys, routes={f"/repos/{REPO}/releases": [_release()]})
+
+
+# ---------------------------------------------------------------- 校验附件（.sha256）
+
+
+def test_a_release_with_a_matching_checksum_says_so(monkeypatch, capsys) -> None:
+    code, out = _run_main(monkeypatch, capsys)
+    assert code == 0
+    assert f"xdao-export-v{xdao.__version__}-win64.zip.sha256 与 xdao-export-v{xdao.__version__}-win64.zip 一致" in out
+
+
+def test_a_release_without_a_checksum_attachment_is_flagged(monkeypatch, capsys) -> None:
+    """没有 .sha256 附件：用户拿到包没法自己对一遍 —— 结论要说「需要处理」。"""
+    tag = f"v{xdao.__version__}"
+    assets = [{"name": _zip_name(tag), "id": ZIP_ID, "digest": f"sha256:{GOOD_SHA}"}]
+    code, out = _run_main(monkeypatch, capsys, routes=_routes([_release(assets=assets)]))
+
+    assert code == 0
+    assert "没有 .sha256 校验附件" in out
+    assert "1 项需要处理" in out
+
+
+def test_a_checksum_that_does_not_match_the_zip_is_an_error(monkeypatch, capsys) -> None:
+    """挂着一份和 zip 不配套的 .sha256，比不挂更坏：用户照它核对会以为下载坏了。"""
+    tag = f"v{xdao.__version__}"
+    routes = _routes()
+    code, out = _run_main(
+        monkeypatch, capsys, routes=routes, texts={SHA_PREFIX: _sha_text(tag, digest="cd" * 32)}
+    )
+
+    assert code == 1
+    assert "对不上" in out
+    assert "cdcdcdcdcdcd" in out and "abababababab" in out
+
+
+def test_a_checksum_that_is_not_a_hash_is_an_error(monkeypatch, capsys) -> None:
+    code, out = _run_main(monkeypatch, capsys, texts={SHA_PREFIX: "我忘了换行和摘要\n"})
+    assert code == 1
+    assert "不是一份能用的校验文件" in out
+
+
+def test_a_checksum_naming_another_file_is_an_error(monkeypatch, capsys) -> None:
+    """校验文件说的必须是发布页上那个包，不能是别的名字（那会让用户照着核对错文件）。"""
+    code, out = _run_main(
+        monkeypatch, capsys, texts={SHA_PREFIX: _sha_text(name="xdao-export-v0.0.1-win64.zip")}
+    )
+
+    assert code == 1
+    assert "说的是 xdao-export-v0.0.1-win64.zip" in out
+
+
+def test_a_checksum_that_cannot_be_read_is_not_reported_as_fine(monkeypatch, capsys) -> None:
+    """读不到附件正文 == 没查成，不许印成「一致」。"""
+    code, out = _run_main(
+        monkeypatch, capsys, texts={SHA_PREFIX: repo_check.ApiError("GET … -> 404\n{}")}
+    )
+
+    assert "读不到" in out
+    assert ".sha256 与" not in out
+    assert "1 项需要处理" in out
