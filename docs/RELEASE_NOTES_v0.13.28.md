@@ -1,5 +1,11 @@
 # v0.13.28：下载下来的包，能自己核对
 
+## 该下哪个附件
+
+下载 **免安装包** `xdao-export-v0.13.28-win64.zip`（解压后双击 `xdao-export.exe`，不需要装
+Python）。同一页还挂着一份 `xdao-export-v0.13.28-win64.zip.sha256` —— 那是给上面这个包核对
+用的校验文件，不是程序，不用解压。
+
 ## 这一版做了什么
 
 每个 Release 除了 zip，再多挂一份 `xdao-export-v0.13.28-win64.zip.sha256`。
