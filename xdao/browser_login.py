@@ -1240,6 +1240,7 @@ _FIND_APPLY_JS = r"""
     url: location.href,
     login: /\/Member\/User\/Index\/login\.html/i.test(location.pathname),
     jump: '',
+    countdown: false,
     kind: 'other',
     href: '',
     ids: [],
@@ -1259,6 +1260,13 @@ _FIND_APPLY_JS = r"""
     try { return new URL(raw, location.href).href; } catch (err) { return raw; }
   };
   if (jump) state.jump = absolute(jump);
+  // 站点自己的倒计时页（真机上是「饼干切换成功!」+「页面自动跳转 等待时间：1」）：
+  // userhash 是在**它跳完之后**那一跳的响应里由主站种下的。这一页上既没有 a#href
+  // 也没有 meta refresh，认不出来就等于「没什么可等的」——调用方会直接去读饼干罐、
+  // 再去导出页，把还在倒数的标签页拽走，那一跳就永远不发生了（用户 m29500 的截图：
+  // 标签页停在倒计时页，程序却报「还没登录」）。
+  const bodyText = (document.body ? document.body.innerText : '') || '';
+  state.countdown = /等待时间|自动\s*跳转|跳转提示/.test(bodyText);
   // 列表行的「应用」链接：同一个 id 会有 switchTo 与 export 两个链接，
   // 只记 switchTo（应用）那个；最新申领的饼干排在列表最后，所以取最后一个 id。
   const actions = {};
@@ -1288,7 +1296,7 @@ _FIND_APPLY_JS = r"""
       (COOKIE_BASE + 'switchTo/id/' + encodeURIComponent(last) + '.html');
   }
   if (state.login) state.kind = 'login';
-  else if (state.jump) state.kind = 'jump';
+  else if (state.jump || state.countdown) state.kind = 'jump';
   else if (last) state.kind = 'list';
   else if (state.rows) state.kind = 'empty';
   return state;
@@ -1298,6 +1306,14 @@ _FIND_APPLY_JS = r"""
 # 跟着站点自己的「跳转提示」页最多跳几次：列表 → switchTo → 落地页，两次就够，
 # 上限只是防站点把跳转写成一圈。
 MAX_COOKIE_JUMPS = 3
+# 站点自己的「跳转提示 / 倒计时」页要等多久（v0.13.21）。真机那一页上写着
+# 「等待时间：1」，可那是站点自己的 JS 在倒数，慢一点的机器、慢一点的网都会拖几秒；
+# 等不到就等不到，别把用户的一页停在那儿不管。
+JUMP_WAIT_SECONDS = 8.0
+# 应用之后等饼干罐里出现 userhash 等多久、隔多久看一眼（v0.13.21）：
+# 种 userhash 的是站点自己那一跳的响应，读早半拍罐里就是空的。
+COOKIE_WAIT_SECONDS = 4.0
+COOKIE_WAIT_POLL = 0.5
 # 一次导航最多等多久。等的是 ``document.readyState == 'complete'``：跳转提示页
 # 要在文档加载完之后才跳，早一瞬去读，读到的还是那张提示页。
 NAVIGATE_TIMEOUT = 10.0
@@ -1408,13 +1424,65 @@ def _navigate(session: "CDPSession", url: str) -> str:
     return href
 
 
-def _follow_jumps(session: "CDPSession", state: dict, hops: int) -> tuple[dict, int]:
-    """把站点自己的「跳转提示」页跟到底（最多 :data:`MAX_COOKIE_JUMPS` 跳）。"""
-    while state.get("jump") and hops < MAX_COOKIE_JUMPS:
-        hops += 1
-        _navigate(session, str(state["jump"]))
-        state = _page_state(session)
+def _follow_jumps(
+    session: "CDPSession", state: dict, hops: int, *, budget: float | None = None
+) -> tuple[dict, int]:
+    """等站点自己的「跳转提示」页跳完，并跟着跳（最多 :data:`MAX_COOKIE_JUMPS` 跳）。
+
+    v0.13.21 之前这里是**一次性读**：读的那一刻页面上没有 ``a#href``/meta refresh 就
+    什么都不做。真机上正好踩中 —— 导航到 ``switchTo`` 之后站点回的是它自己的倒计时页
+    （「饼干切换成功!」+「页面自动跳转 等待时间：1」），那一刻页面上确实两个都没有，
+    于是这一跳被跳过，调用方紧接着把标签页拖去导出页，站点自己的第二跳就再也没发生，
+    userhash 永远种不上（用户 m29500）。
+
+    现在分两种「还得等」的情况：页面上已经写好了目标（``jump``）就直接跟过去；只写着
+    「等待时间」就**等它自己跳**，每 :data:`NAVIGATE_POLL` 秒重读一次页面状态，跳完
+    （不再是跳转/倒计时页）或超过 ``budget`` 秒才收手。
+
+    ``budget`` 缺省取 :data:`JUMP_WAIT_SECONDS`（**取在调用时**，用例把那个常量改小
+    才拦得住这条路上的等待）。
+    """
+    if budget is None:
+        budget = JUMP_WAIT_SECONDS
+    deadline = time.monotonic() + budget
+    while hops < MAX_COOKIE_JUMPS and time.monotonic() < deadline:
+        jump = str(state.get("jump") or "")
+        if jump:
+            hops += 1
+            _navigate(session, jump)
+            state = _page_state(session)
+            continue
+        if not state.get("countdown"):
+            return state, hops
+        time.sleep(NAVIGATE_POLL)
+        try:
+            fresh = _page_state(session)
+        except CdpError:
+            continue  # 站点正在跳的时候读页面状态失败很正常，接着等
+        if fresh:
+            state = fresh
     return state, hops
+
+
+def _wait_for_cookie(
+    session: "CDPSession", urls: list[str] | None = None, *, budget: float | None = None
+) -> str | None:
+    """应用之后**等**饼干罐里出现 userhash（v0.13.21），不是只读一次。
+
+    站点是在跳转落地那一跳的响应里把 userhash 种进饼干罐的，读早半拍就是空；以前这里
+    只读一次，读空就判「应用了饼干，但浏览器里始终没出现 userhash」，然后去导出一趟 ——
+    正好把还在跳的标签页拽走，越试越不成功（用户 m29500 就是这么卡住的）。
+
+    ``budget`` 缺省取 :data:`COOKIE_WAIT_SECONDS`（取在调用时，方便用例调小）。
+    """
+    if budget is None:
+        budget = COOKIE_WAIT_SECONDS
+    deadline = time.monotonic() + budget
+    while True:
+        value = read_userhash_cookie(session, urls)
+        if value or time.monotonic() >= deadline:
+            return value
+        time.sleep(COOKIE_WAIT_POLL)
 
 
 def _page_text(session: "CDPSession") -> str:
@@ -1448,7 +1516,11 @@ def userhash_from_export_text(text: str) -> str | None:
 
 
 def fetch_leaf_cookie(
-    session: "CDPSession", urls: list[str] | None = None, *, navigate: bool = True
+    session: "CDPSession",
+    urls: list[str] | None = None,
+    *,
+    navigate: bool = True,
+    waiting_for_login: bool = True,
 ) -> LeafCookie:
     """登录之后去站点的「饼干」页领一块饼干，返回 :class:`LeafCookie`。
 
@@ -1456,14 +1528,20 @@ def fetch_leaf_cookie(
 
       1. 还在登录页 → 只说「还没登录」，**绝不导航**：用户可能正在输验证码，
          把他从表单上拽走比多等一会儿糟得多；
-      2. 当前页是站点自己的「跳转提示」页 → 跟着跳；
+      2. 当前页是站点自己的「跳转提示」页 → 等它跳完并跟着跳；
       3. 当前页不是「饼干」列表 → 导航到列表页（再跟着跳）；
       4. 列表里取最后一块（最新申领的权限最全）→ 导航到它的 ``switchTo`` 地址，
          这一步会让主站把 userhash 种进浏览器；
-      5. 重读饼干罐；还是没有，就再导航一次导出页，从页面文字里找一遍。
+      5. 等饼干罐里出现 userhash；还是没有，就再导航一次导出页，从页面文字里找一遍。
 
     ``navigate=False`` 时只重读一次饼干罐。这是给界面层的重试上限用的：
     用户迟迟没登录成时，不能每几秒就把他的标签页拖到「饼干」页去一次。
+
+    ``waiting_for_login=False``（界面层在**已经真去应用过**之后传，v0.13.21）表示
+    「页面停在登录页」不再按「用户正在打字」处理：程序自己那一趟导出页导航会把还没种上
+    userhash 的标签页弹到登录页，要是照旧早退，就再也不会去应用饼干，界面上只会每隔
+    几秒重复一句「这个窗口里还没登录（页面停在登录页）」直到超时（用户 m29500 卡住的
+    正是这一支）。这时宁可继续去「饼干」页试，也要把真实结果报回来。
     """
     try:
         if not navigate:
@@ -1472,16 +1550,18 @@ def fetch_leaf_cookie(
                 return LeafCookie(value, "")
             return LeafCookie(None, "自动取饼干这条路试过了：浏览器里还是没有 userhash。")
         state = _page_state(session)
-        if state.get("kind") == "login" or state.get("login"):
+        if (state.get("kind") == "login" or state.get("login")) and waiting_for_login:
             return LeafCookie(None, "这个窗口里还没登录（页面停在登录页）：先在里面登录 X 岛。")
         page_url = str(state.get("url") or "")
         host = urllib.parse.urlsplit(page_url).hostname or ""
         if host and "nmbxd1" not in host:
             return LeafCookie(None, f"浏览器窗口里现在打开的不是 X 岛（{host}），先在里面对 X 岛登录。")
         state, hops = _follow_jumps(session, state, 0)
-        if state.get("login"):
+        if state.get("login") and waiting_for_login:
             # 真机上走到的就是这一支（匿名开「饼干」页 → 站点把页面跳到登录页）：
             # `navigated` 必须按真跳没跳报，界面层拿它决定下次重试要不要缓一缓。
+            # 已经真去应用过之后（waiting_for_login=False）不再从这里返回：那多半是
+            # 程序自己那一趟导出页导航把标签页弹回来的，停在这里就再也领不到饼干了。
             return LeafCookie(
                 None, "跟着站点的跳转回到了登录页 —— 这个窗口里的登录没成。", hops > 0
             )
@@ -1511,7 +1591,9 @@ def fetch_leaf_cookie(
         )
         _navigate(session, href)
         state, hops = _follow_jumps(session, _page_state(session), hops)
-        value = read_userhash_cookie(session, urls)
+        # 等它种上（v0.13.21）：站点是在上面那一跳的**落地响应**里种 userhash 的，
+        # 读早半拍罐里就是空的 —— 以前读空就往下走去导出了。
+        value = _wait_for_cookie(session, urls)
         if value:
             return LeafCookie(value, "", True)
         _navigate(

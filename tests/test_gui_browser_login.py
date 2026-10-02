@@ -250,6 +250,12 @@ def fast_browser_polling(monkeypatch):
     # 「导航过一次就缓一缓」的间隔也调快：不然后面那句「不再导航」的用例要真空等 20 秒。
     monkeypatch.setattr(gui, "BROWSER_LEAF_RETRY_SECONDS", 0.2)
     monkeypatch.setattr(gui, "BROWSER_UI_POLL_MS", 20)
+    # v0.13.21：领饼干现在要「等站点自己的倒计时页跳完」再「等饼干罐里出现 userhash」，
+    # 这两段等待也调小，免得每条走到「应用」的用例都真空等几秒。
+    monkeypatch.setattr(browser_login, "NAVIGATE_POLL", 0.01)
+    monkeypatch.setattr(browser_login, "JUMP_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(browser_login, "COOKIE_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(browser_login, "COOKIE_WAIT_POLL", 0.01)
 
 
 @pytest.fixture(autouse=True)
@@ -944,6 +950,151 @@ def test_timeout_message_lists_the_steps_the_program_tried(
     assert "①" in status and "②" in status, status
     assert status.index("还没登录") < status.index("没有可以应用的饼干"), status
     assert "程序最后试到的一步" not in status
+
+
+def _failed_apply_kit() -> tuple[dict[str, str], dict[str, dict]]:
+    """一套「登录没问题、但饼干就是领不到」的页面脚本。
+
+    真机上的顺序（用户 m29500 的两张截图）：程序走到「应用」→ 站点回自己的跳转页 →
+    程序抢在站点那一跳之前导航去导出页 → 导出页（此时还没有 userhash）把标签页弹回
+    登录页。这里就照这个顺序摆：**导出页和登录页共用同一份登录页状态**。
+    """
+    urls = {
+        "login": browser_login.LOGIN_URL,
+        "home": f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html",
+        "list": browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH,
+        "apply": f"{browser_login.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html",
+        "export": f"{browser_login.COOKIE_SITE}/Member/User/Cookie/export/id/aaa.html",
+    }
+    login_page = {
+        "url": urls["login"],
+        "login": True,
+        "jump": "",
+        "kind": "login",
+        "ids": [],
+    }
+    pages = {
+        urls["home"]: {
+            "url": urls["home"],
+            "login": False,
+            "jump": "",
+            "kind": "other",
+            "ids": [],
+        },
+        urls["list"]: {
+            "url": urls["list"],
+            "login": False,
+            "jump": "",
+            "kind": "list",
+            "ids": ["aaa"],
+            "href": urls["apply"],
+        },
+        urls["apply"]: {
+            "url": urls["apply"],
+            "login": False,
+            "jump": "",
+            "kind": "other",
+            "ids": [],
+        },
+        urls["export"]: login_page,
+        urls["login"]: login_page,
+    }
+    return urls, pages
+
+
+def _start_with_one_failed_apply(root_window, open_dialog):
+    """摆好上面那套脚本，等第一趟「应用」走完（值领不到）。返回 (dialog, session, urls)。"""
+    urls, pages = _failed_apply_kit()
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = []  # 领不到：真机那次是切换成功、但 userhash 没种上
+    session.pages = pages
+    session.current_url_value = urls["home"]
+    assert _wait_for(
+        root_window, lambda: urls["apply"] in session.navigations, timeout=10.0
+    ), "第一趟「应用」都没走到"
+    assert _wait_for(
+        root_window, lambda: urls["export"] in session.navigations, timeout=10.0
+    ), "没等到导出页那一步"
+    return dialog, session, urls
+
+
+def test_leaf_cookie_keeps_trying_after_the_tab_is_bounced_back_to_login(
+    root_window, browser_shim, open_dialog
+):
+    """被弹回登录页之后还要接着去领饼干，不能就此停手（v0.13.21）。
+
+    0.13.20 的卡法：那一趟导出页导航把标签页弹到登录页，之后每次领饼干都在
+    「页面停在登录页」上早退 —— 标签页再也不动，界面上每两秒重复同一句
+    「这个窗口里还没登录（页面停在登录页）」，用户看到的就是「切换完饼干就卡住」。
+    """
+    dialog, session, urls = _start_with_one_failed_apply(root_window, open_dialog)
+    # 程序眼里标签页现在正停在登录页上（导出页被弹回登录页的那一份状态）。
+
+    def goes_back_to_the_list() -> bool:
+        return len([url for url in session.navigations if url == urls["list"]]) >= 2
+
+    assert _wait_for(
+        root_window, goes_back_to_the_list, timeout=10.0
+    ), "被弹回登录页之后就不再试着领饼干了"
+    dialog._on_cancel()
+
+
+def test_leaf_cookie_says_so_when_the_apply_budget_is_used_up(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """次数用完、改成只读饼干罐时，界面上要明说（v0.13.21）。
+
+    以前是静默降级：用完就只剩每两秒重复一句「自动取饼干这条路试过了：浏览器里还是
+    没有 userhash。」，用户从界面上看不出程序已经不再动浏览器里的标签页了。
+    """
+    monkeypatch.setattr(gui, "BROWSER_LEAF_NAV_LIMIT", 1)
+    dialog, _session, _urls = _start_with_one_failed_apply(root_window, open_dialog)
+    assert _wait_for(
+        root_window, lambda: "试满" in dialog.hint_var.get(), timeout=10.0
+    ), "次数用完了界面上没说"
+    hint = dialog.hint_var.get()
+    assert "1 次" in hint, hint
+    assert "只读饼干罐" in hint, hint
+    assert "不再动浏览器里的标签页" in hint, hint
+    dialog._on_cancel()
+
+
+def test_leaf_cookie_budget_is_high_enough_to_survive_a_slow_login() -> None:
+    """自动领饼干的名额不能太低（v0.13.21 从 2 提到 6）。
+
+    2 次在几十秒里就用完了，之后只剩「只读饼干罐」—— 用户看到的是「程序忽然再也不动
+    我的标签页了」。这条守卫防止有人又把它调小，也钉住那句降级说明的形状。
+    """
+    assert gui.BROWSER_LEAF_NAV_LIMIT >= 4
+    hint = gui.BROWSER_LEAF_CAP_HINT.format(limit=gui.BROWSER_LEAF_NAV_LIMIT)
+    assert str(gui.BROWSER_LEAF_NAV_LIMIT) in hint, hint
+    assert "只读饼干罐" in hint, hint
+    assert "不再动浏览器里的标签页" in hint, hint
+
+
+def test_try_leaf_cookie_hands_the_waiting_flag_to_the_library() -> None:
+    """界面层要把「已经真应用过没有」告诉库（v0.13.21）。
+
+    只有第一趟才该把登录页当免打扰牌（那才是用户可能正在打字）；之后停在登录页
+    是标签页被弹回去了，程序得继续去领。
+    """
+    seen: list[dict] = []
+
+    class _Backend:
+        @staticmethod
+        def fetch_leaf_cookie(session, *, navigate=True, waiting_for_login=True):
+            seen.append({"navigate": navigate, "waiting_for_login": waiting_for_login})
+            return browser_login.LeafCookie(None, "", True)
+
+    assert gui.BrowserLoginDialog._try_leaf_cookie(_Backend, object()) == (None, "", True)
+    assert seen == [{"navigate": True, "waiting_for_login": True}]
+
+    gui.BrowserLoginDialog._try_leaf_cookie(
+        _Backend, object(), navigate=False, waiting_for_login=False
+    )
+    assert seen[-1] == {"navigate": False, "waiting_for_login": False}
 
 
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:

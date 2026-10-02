@@ -2062,6 +2062,21 @@ def test_build_find_apply_script_points_at_the_cookie_interfaces() -> None:
     assert "switchTo/id/" in script
 
 
+def test_build_find_apply_script_reports_a_countdown_page() -> None:
+    """站点自己的倒计时页要能从脚本里认出来（v0.13.21）。
+
+    认不出来就等于「没什么可等的」：调用方读一眼就判定这一页是终点，然后去读饼干罐、
+    再去导出页，把还在倒数的标签页拽走 —— 站点自己那一跳再也不会发生（用户 m29500 的
+    截图里，标签页正停在「饼干切换成功!／页面自动跳转 等待时间：1」上）。
+    """
+    script = bl.build_find_apply_script()
+    assert "countdown" in script
+    assert "等待时间" in script
+    # 光有这两个词不够（注释里也写着它们）：要钉住真做判断的那两行。
+    assert "state.countdown = /等待时间|自动" in script
+    assert "state.jump || state.countdown" in script
+
+
 class _ScriptedSession:
     """按「地址 → 页面状态」脚本化的假会话：只管导航与饼干罐。
 
@@ -2279,6 +2294,144 @@ def test_fetch_leaf_cookie_falls_back_to_the_page_text_of_the_export_view() -> N
     assert export_url in session.navigations
 
 
+class _SiteHoppingSession(_ScriptedSession):
+    """站点自己的倒计时页：读第一眼只能看到「等待时间」，跳完之后才轮到落地页。
+
+    真机现场（用户 m29500）：点下「应用」之后站点回的是它自己的倒计时页
+    （「饼干切换成功!」+「页面自动跳转 等待时间：1」），那一页上既没有 ``a#href`` 也没有
+    meta refresh —— 那是一跳**只能等**的跳转，读一眼是看不到目标的。
+    """
+
+    def __init__(
+        self,
+        countdown_url: str,
+        countdown_state: dict,
+        landed_url: str,
+        landed_state: dict,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.countdown_url = countdown_url
+        self.countdown_state = countdown_state
+        self.landed_url = landed_url
+        self.landed_state = landed_state
+        self.countdown_reads = 0
+
+    def evaluate(self, expression: str, await_promise: bool = False) -> str:
+        if expression == bl.build_find_apply_script() and self.url == self.countdown_url:
+            self.countdown_reads += 1
+            if self.countdown_reads == 1:
+                return json.dumps(self.countdown_state)
+            # 站点自己那一跳落地：地址换了，主站也在这一跳的响应里种了 userhash。
+            self.url = self.landed_url
+            self.pages[self.landed_url] = self.landed_state
+            self.cookies = [{"name": "userhash", "value": "ABC12345", "domain": ".nmbxd1.com"}]
+            return json.dumps(self.landed_state)
+        return super().evaluate(expression, await_promise)
+
+
+def _countdown_state(url: str) -> dict:
+    return {"url": url, "login": False, "jump": "", "countdown": True, "kind": "jump", "ids": []}
+
+
+def test_fetch_leaf_cookie_waits_for_the_sites_own_countdown_page(monkeypatch) -> None:
+    """站点回的是它自己的倒计时页时要**等它跳**，不能读一眼就走（用户 m29500）。
+
+    0.13.20 只读一眼页面状态：看不到 ``a#href`` 就判定「没什么可等的」，紧接着把标签页
+    拖去导出页 —— 站点自己那一跳永远没发生，userhash 也就永远没种上，界面上只剩一句
+    「还没登录」一路到超时（用户截图里标签页正停在那一页上）。
+    """
+    monkeypatch.setattr(bl, "NAVIGATE_POLL", 0.01)
+    switch_url = f"{bl.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html"
+    landed_url = f"{bl.COOKIE_SITE}/Member/User/Index/index.html"
+    session = _SiteHoppingSession(
+        switch_url,
+        _countdown_state(switch_url),
+        landed_url,
+        {"url": landed_url, "login": False, "jump": "", "kind": "other", "ids": []},
+        pages={COOKIE_LIST_URL: _list_page_state("aaa")},
+        url=COOKIE_LIST_URL,
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value == "ABC12345"
+    assert result.navigated is True
+    assert session.countdown_reads >= 2, "倒计时页只读了一眼就走了"
+    assert switch_url in session.navigations
+    export_url = f"{bl.COOKIE_SITE}/Member/User/Cookie/export/id/aaa.html"
+    assert export_url not in session.navigations, "还没等站点跳完就把标签页拽去导出页了"
+
+
+def test_fetch_leaf_cookie_gives_up_on_a_countdown_page_that_never_lands(monkeypatch) -> None:
+    """倒计时页要是永远不跳，最多等 ``JUMP_WAIT_SECONDS`` 那么久，不能干等下去。"""
+    monkeypatch.setattr(bl, "JUMP_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(bl, "NAVIGATE_POLL", 0.01)
+    monkeypatch.setattr(bl, "COOKIE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(bl, "COOKIE_WAIT_POLL", 0.01)
+    switch_url = f"{bl.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html"
+    session = _ScriptedSession(
+        {COOKIE_LIST_URL: _list_page_state("aaa"), switch_url: _countdown_state(switch_url)},
+        [],
+        url=COOKIE_LIST_URL,
+    )
+    started = time.monotonic()
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert time.monotonic() - started < 5.0, "等那一页等太久了"
+    assert "userhash" in result.detail
+
+
+class _LateJarSession(_ScriptedSession):
+    """饼干罐慢半拍：第 N 次读才出现 userhash（真机上就是落地那一跳的响应到得晚）。"""
+
+    def __init__(self, put_on_read: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.put_on_read = put_on_read
+
+    def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
+        if len(self.cookie_reads) + 1 >= self.put_on_read:
+            self.cookies = [{"name": "userhash", "value": "ABC12345", "domain": ".nmbxd1.com"}]
+        return super().read_cookies(urls)
+
+
+def test_fetch_leaf_cookie_keeps_looking_for_the_cookie_to_land(monkeypatch) -> None:
+    """种饼干的是落地那一跳的响应，读早半拍罐里就是空的：要再看两眼。
+
+    这条钉住「不是只读一次」：这个假件只在第 3 次读罐子时才出现 userhash，而且导出页
+    正文里什么都没有 —— 值只能是从**等出来**的那次读里拿到的。
+    """
+    monkeypatch.setattr(bl, "COOKIE_WAIT_POLL", 0.01)
+    session = _LateJarSession(
+        3, pages={COOKIE_LIST_URL: _list_page_state("aaa")}, url=COOKIE_LIST_URL
+    )
+    result = bl.fetch_leaf_cookie(session)  # type: ignore[arg-type]
+    assert result.value == "ABC12345"
+    assert len(session.cookie_reads) >= 3, "只读了一眼饼干罐"
+
+
+def test_fetch_leaf_cookie_keeps_trying_after_the_page_was_bounced_to_login() -> None:
+    """被弹回登录页之后（``waiting_for_login=False``）要接着去领饼干，不能就此停手。
+
+    0.13.20 卡死的正是这一支：程序自己那一趟导出页导航把还没种上 userhash 的标签页弹到
+    了登录页，下一次读到的就是「登录页」，早退分支一进来就再也领不到饼干 —— 界面上每 5 秒
+    重复一句「这个窗口里还没登录（页面停在登录页）」，看着跟卡死没两样。
+    """
+    session = _ScriptedSession(
+        {bl.LOGIN_URL: _login_page_state(), COOKIE_LIST_URL: _login_page_state()},
+        [],
+        url=bl.LOGIN_URL,
+    )
+    result = bl.fetch_leaf_cookie(session, waiting_for_login=False)  # type: ignore[arg-type]
+    assert result.value is None
+    assert result.navigated is True
+    assert COOKIE_LIST_URL in session.navigations, "被弹回登录页之后连试都不试了"
+    assert "登录" in result.detail
+
+    # 默认那一档（用户可能正在登录页上打字）还是不许动他的页面。
+    quiet = _ScriptedSession({bl.LOGIN_URL: _login_page_state()}, url=bl.LOGIN_URL)
+    assert bl.fetch_leaf_cookie(quiet).navigated is False  # type: ignore[arg-type]
+    assert quiet.navigations == []
+
+
 def test_fetch_leaf_cookie_with_navigate_false_only_relooks_at_the_jar() -> None:
     """界面层用完导航次数上限之后走这条路：只重读饼干罐，绝不动用户的页面。"""
     empty = _ScriptedSession(url=bl.LOGIN_URL)
@@ -2442,10 +2595,14 @@ def test_public_api_surface_matches_the_ui_contract() -> None:
     ):
         assert hasattr(bl, name), name
     # 界面层按这个签名调（多一个少一个都要在 review 里说清楚）。
+    # `waiting_for_login` 是 v0.13.21 加的：界面层在「已经真去应用过」之后传 False，
+    # 让「页面停在登录页」不再被当成「用户还在登录页打字」。
     leaf = inspect.signature(bl.fetch_leaf_cookie)
-    assert list(leaf.parameters) == ["session", "urls", "navigate"]
+    assert list(leaf.parameters) == ["session", "urls", "navigate", "waiting_for_login"]
     assert leaf.parameters["navigate"].kind is inspect.Parameter.KEYWORD_ONLY
     assert leaf.parameters["navigate"].default is True
+    assert leaf.parameters["waiting_for_login"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert leaf.parameters["waiting_for_login"].default is True
     assert [field.name for field in dataclasses.fields(bl.LeafCookie)] == [
         "value",
         "detail",

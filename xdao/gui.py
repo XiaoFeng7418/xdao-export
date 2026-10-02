@@ -701,7 +701,15 @@ BROWSER_LEAF_SECONDS = 5.0
 # 为什么要设上限：站点那边「应用」要是反复不成（账号还没领过饼干、写法又变了），
 # 每 5 秒把用户的标签页弹到饼干页一次，比多等一会儿糟得多。用完这几次之后只重读
 # 饼干罐，剩下的时间留给用户自己登。
-BROWSER_LEAF_NAV_LIMIT = 2
+#
+# 2 → 6（v0.13.21）：一次「应用」现在要等站点自己的倒计时页跳完、再等饼干罐里出现
+# userhash，单次成功率高得多；上限太低的话，碰上站点那一跳慢半拍，两次机会会在几
+# 十秒里用完，然后就只剩「只读饼干罐」，界面一路等到超时（用户 m29500 的卡法）。
+BROWSER_LEAF_NAV_LIMIT = 6
+# 次数用完时挂在窗口上的那句话：降级这件事必须在界面上说出来，不能悄悄发生。
+BROWSER_LEAF_CAP_HINT = (
+    "已经把「自动领饼干」试满 {limit} 次，接下来只读饼干罐（不再动浏览器里的标签页）。"
+)
 # 导航过之后缓这么久再去下一次：站点「应用」是跳转式的，几秒一轮会把标签页弹成风箱。
 BROWSER_LEAF_RETRY_SECONDS = 20.0
 # 隔这么久把状态换成「已经等了 N 秒」。
@@ -1208,6 +1216,7 @@ class BrowserLoginDialog(tk.Toplevel):
         leaf_attempts = 0  # 已经**真去动过**用户标签页几次（见 BROWSER_LEAF_NAV_LIMIT）
         leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行
         leaf_hints: list[str] = []  # 领饼干试过的几步（按发生顺序、去重）：拼进超时那句话
+        cap_said = False  # 「次数用完、只读饼干罐了」只说一次，说完常驻那一行就留着它
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1221,8 +1230,24 @@ class BrowserLoginDialog(tk.Toplevel):
                     # 「应用」是跳转式的，页面里的 fetch 根本走不完那一跳），所以给自己
                     # 设个上限：头几次真去领，用完就只重读饼干罐，不再动他的页面。
                     navigate = leaf_attempts < BROWSER_LEAF_NAV_LIMIT
+                    if not navigate and leaf_attempts and not cap_said:
+                        # 降级这件事必须在界面上说出来（v0.13.21）：不然用户看到的只是
+                        # 「程序忽然不再去应用饼干了」，跟卡死没两样。
+                        cap_said = True
+                        cap_hint = BROWSER_LEAF_CAP_HINT.format(limit=BROWSER_LEAF_NAV_LIMIT)
+                        if cap_hint not in leaf_hints:
+                            leaf_hints.append(cap_hint)
+                        self._queue.put(("hint", cap_hint))
+                        leaf_hint = cap_hint
                     value, detail, navigated = self._try_leaf_cookie(
-                        backend, session, navigate=navigate
+                        backend,
+                        session,
+                        navigate=navigate,
+                        # 已经真去应用过之后（v0.13.21），页面停在登录页不再按「用户还在
+                        # 登录页打字」处理：那一趟导出页导航会把没种上 userhash 的标签页
+                        # 弹到登录页，照旧早退就再也不会去领饼干，只会一直重复那句
+                        # 「这个窗口里还没登录（页面停在登录页）」（用户 m29500 卡住的那支）。
+                        waiting_for_login=leaf_attempts == 0,
                     )
                     # 只有**真动过**他的标签页才扣次数（v0.13.20）：用户还在登录页打字时，
                     # 这一步什么都不碰就返回了（「还没登录」），要是照旧扣，两次机会会在开头
@@ -1241,7 +1266,10 @@ class BrowserLoginDialog(tk.Toplevel):
                             # 有序留痕：只留最后一条的话，收尾那句「还是没看到 userhash」
                             # 会把前面有用的「还没登录」盖掉，截图上看不出卡在哪。
                             leaf_hints.append(detail)
-                        self._queue.put(("hint", detail))
+                        if not cap_said:
+                            # 次数用完之后常驻那一行就留着那句说明（比每 5 秒重复一遍
+                            # 「饼干罐里还是没有 userhash」有用），但这一步照旧进历史。
+                            self._queue.put(("hint", detail))
                 if value and value != verified:
                     # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
                     # 上一回登录的旧饼干还躺在里面，会话早就过期了。不验一下就会
@@ -1309,7 +1337,13 @@ class BrowserLoginDialog(tk.Toplevel):
         return backend.userhash_from_cookies(session.read_cookies(urls))
 
     @staticmethod
-    def _try_leaf_cookie(backend, session, *, navigate: bool = True) -> tuple[str | None, str, bool]:
+    def _try_leaf_cookie(
+        backend,
+        session,
+        *,
+        navigate: bool = True,
+        waiting_for_login: bool = True,
+    ) -> tuple[str | None, str, bool]:
         """兜底：登录了却没看到 userhash，就去饼干页领一块新的。
 
         返回 ``(值, 一句人话, 是否导航过)``。这一步失败是常态（人还没登录完、页面
@@ -1317,9 +1351,14 @@ class BrowserLoginDialog(tk.Toplevel):
 
         为什么要那句人话：这条路以前是**静默**的（异常吞掉、返回 None），真机上表现
         为「明明登录好了，程序一路等到超时」，用户截图上没有任何线索（v0.13.17）。
+
+        ``waiting_for_login`` 直接转给 :func:`browser_login.fetch_leaf_cookie`：已经
+        真去应用过之后再看到登录页，不是「用户正在打字」，而是「标签页被弹回去了」。
         """
         try:
-            result = backend.fetch_leaf_cookie(session, navigate=navigate)
+            result = backend.fetch_leaf_cookie(
+                session, navigate=navigate, waiting_for_login=waiting_for_login
+            )
         except Exception as exc:  # noqa: BLE001 —— 兜底路径，失败不算流程错误
             return None, f"去「饼干」页领饼干时出错：{exc}", False
         value = str(getattr(result, "value", "") or "").strip()
