@@ -1402,7 +1402,7 @@ def read_userhash_cookie(
 ) -> str | None:
     """读一次饼干罐（不问服务端）。读不到或读失败都只是 ``None``。"""
     try:
-        cookies = session.read_cookies(list(urls) if urls else cookie_urls_for(session))
+        cookies = read_site_cookies(session, urls)
     except Exception:  # noqa: BLE001 —— 这里只回答「罐里有没有」
         return None
     return userhash_from_cookies(cookies)
@@ -1646,18 +1646,64 @@ def apply_leaf_cookie(session: "CDPSession") -> str | None:
     return fetch_leaf_cookie(session).value
 
 
+def named_userhash_entries(cookies: Iterable[dict]) -> list[dict]:
+    """罐里所有叫 userhash、域沾 ``nmbxd1`` 的饼干（v0.13.29，诊断用）。
+
+    与 :func:`userhash_from_cookies` 的差别只在**不认值的形状**：名字和域对上了就收。
+    界面层拿它区分「罐里根本没有」和「有但值长得不对」—— 后一句以前只能写成
+    「还没有 userhash」，跟真没有一模一样，用户截图里查无可查。
+    """
+    found: list[dict] = []
+    for cookie in cookies or []:
+        if not isinstance(cookie, dict) or cookie.get("name") != "userhash":
+            continue
+        domain = str(cookie.get("domain") or "").strip().lower()
+        if domain and "nmbxd1" not in domain:
+            continue
+        found.append(cookie)
+    return found
+
+
 def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> list[dict]:
     """把浏览器里属于本站点的饼干**整罐**读出来（不只是 userhash，v0.13.22）。
 
     界面层拿它去走 HTTP 那条熟路（:func:`apply_leaf_cookie_over_http`）：浏览器只负责
     让用户把验证码认过去，剩下的协议交给 ``XdaoClient``。
 
-    读不到就**抛**（v0.13.23）：以前这里把异常吞成空列表，界面层于是把「读不出来」和
-    「罐里没登录」当成同一件事 —— 真机上表现为 HTTP 那条路一声不响地被跳过，用户截图里
-    只剩 CDP 那句「还没登录」，查无可查（m30629）。现在调用方会把这句话原样说出来。
+    v0.13.29 起这罐是**两读合并**：先按地址过滤的 ``Network.getCookies``，再补一次
+    不问地址的整罐读（:meth:`CDPSession.read_all_cookies`），只留域沾 ``nmbxd`` 的、
+    按（名字、域、路径）去重。起因是真机上 ``getCookies`` 会系统性漏掉存储里明明白白
+    存在的 userhash（2026-10-02 的四张截图：对话框名单里从头到尾没有 userhash，同
+    一个浏览器的 F12 Application 面板里却一直有），过滤维度定位不出来，那就干脆把
+    不过滤的那一读也问一遍。整罐读失败不拖累主路，只用按地址那一读的结果。
+
+    按地址那一读读不到就**抛**（v0.13.23）：以前这里把异常吞成空列表，界面层于是把
+    「读不出来」和「罐里没登录」当成同一件事 —— 真机上表现为 HTTP 那条路一声不响地
+    被跳过，用户截图里只剩 CDP 那句「还没登录」，查无可查（m30629）。现在调用方会把
+    这句话原样说出来。
     """
     cookies = session.read_cookies(list(urls) if urls else cookie_urls_for(session))
-    return [item for item in (cookies or []) if isinstance(item, dict)]
+    merged = [item for item in (cookies or []) if isinstance(item, dict)]
+    seen = {
+        (str(item.get("name")), str(item.get("domain")), str(item.get("path")))
+        for item in merged
+    }
+    try:
+        whole = session.read_all_cookies()
+    except Exception:  # noqa: BLE001 —— 兜底路失败不该把主路也噤声
+        whole = []
+    for item in whole or []:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain") or "").strip().lower()
+        if "nmbxd" not in domain:
+            continue
+        key = (str(item.get("name")), str(item.get("domain")), str(item.get("path")))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
 
 
 def summarize_cookies(cookies: Iterable[dict]) -> str:

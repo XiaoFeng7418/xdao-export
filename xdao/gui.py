@@ -1316,7 +1316,12 @@ class BrowserLoginDialog(tk.Toplevel):
                 self._queue.put(("browser_closed", None))
                 return
             try:
-                value = self._read_userhash(backend, session)
+                value, fill_note = self._read_userhash(backend, session)
+                if fill_note and fill_note not in leaf_hints:
+                    # 「按地址那读漏了、整罐读补上」要留痕（v0.13.29）：这句话是下次
+                    # 真机报告里唯一能说明「漏在哪一读」的书面线索。
+                    leaf_hints.append(fill_note)
+                    self._queue.put(("hint", fill_note))
                 leaf_now = time.monotonic()
                 if not value and leaf_now >= next_leaf:
                     # 先报「浏览器里到底有哪些饼干」：真机上「读不出来」和「只有匿名会话号」
@@ -1442,8 +1447,13 @@ class BrowserLoginDialog(tk.Toplevel):
         )
 
     @staticmethod
-    def _read_userhash(backend, session) -> str | None:
-        """从 CDP 读到的饼干里挑出 userhash；没有就返回 None。
+    def _read_userhash(backend, session) -> tuple[str | None, str]:
+        """从 CDP 读到的饼干里挑出 userhash；没有就返回 ``(None, "")``。
+
+        返回 ``(值, 一句诊断)``：诊断只在「按地址那读漏了、整罐读补上」时非空
+        （v0.13.29），写清那块饼干藏在哪个域哪条路径下 —— 真机上 ``getCookies``
+        会系统性漏掉存储里存在的 userhash（2026-10-02 的四张截图），漏的维度
+        定位不出来，那就两读都问、把差别说出来。
 
         只负责「挑出来」，**不代表这个登录还能用** —— 这块饼干来自浏览器的
         资料目录，可能是上一次留下的。能不能用由 :func:`verify_userhash_live` 问服务端。
@@ -1453,7 +1463,37 @@ class BrowserLoginDialog(tk.Toplevel):
         超时（v0.13.17）。
         """
         urls = backend.cookie_urls_for(session)
-        return backend.userhash_from_cookies(session.read_cookies(urls))
+        url_cookies = session.read_cookies(urls)
+        value = backend.userhash_from_cookies(url_cookies)
+        if value:
+            return value, ""
+        try:
+            merged = backend.read_site_cookies(session, urls)
+        except Exception:  # noqa: BLE001 —— 兜底路失败不该变成流程错误
+            return None, ""
+        value = backend.userhash_from_cookies(merged)
+        if not value:
+            return None, ""
+        url_keys = {
+            (str(item.get("name")), str(item.get("domain")), str(item.get("path")))
+            for item in url_cookies or []
+            if isinstance(item, dict)
+        }
+        hidden = [
+            item
+            for item in backend.named_userhash_entries(merged)
+            if (str(item.get("name")), str(item.get("domain")), str(item.get("path")))
+            not in url_keys
+        ]
+        if hidden:
+            item = hidden[0]
+            note = (
+                "按地址读饼干漏了 userhash，是整罐读补上的"
+                f"（域={item.get('domain') or '？'}、路径={item.get('path') or '/'}）。"
+            )
+        else:
+            note = "按地址读饼干漏了 userhash，是整罐读补上的。"
+        return value, note
 
     @staticmethod
     def _try_leaf_cookie(
@@ -1525,7 +1565,19 @@ class BrowserLoginDialog(tk.Toplevel):
         pick = getattr(backend, "userhash_from_cookies", None)
         if not callable(pick):  # pragma: no cover - 真后端一定有；替身才可能没有
             return f"浏览器里的饼干：{names}。"
-        tail = "里面有 userhash" if pick(cookies) else "还没有 userhash"
+        if pick(cookies):
+            tail = "里面有 userhash"
+        else:
+            # 「有 userhash 但值长得不对」和「根本没有」要分开说（v0.13.29）：
+            # 以前两者都写成「还没有 userhash」，名单里明明列着 userhash 却这么报，
+            # 用户截图里自相矛盾 yet 查不出程序到底看见了什么。只写形状、不写值。
+            entries = getattr(backend, "named_userhash_entries", None)
+            named = entries(cookies) if callable(entries) else []
+            if named:
+                shape = _describe_value_shape(str(named[0].get("value") or ""))
+                tail = f"有 userhash 但值的形状不像（{shape}）"
+            else:
+                tail = "还没有 userhash"
         return f"浏览器里的饼干：{names}（{empty_note}{tail}）。"
 
     @staticmethod

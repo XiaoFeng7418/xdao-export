@@ -677,6 +677,33 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.29**（修「用浏览器登录」读不到浏览器里明明存在的 userhash）：真机报告（2026-10-02
+  四张截图）：对话框名单里从头到尾没有 userhash、等到超时，而同一个浏览器 F12 的
+  Application→Cookie 面板里 userhash 一直在（值形如 `D-9691%04%02…`，百分号编码的纯 ASCII），
+  用户拿同一块饼干在站里发串也发得出去 ⇒ 不是时序问题，是 `Network.getCookies` 的**地址过滤**
+  把那块饼干滤掉了（域/路径/Secure 哪个维度定位不出来）。改法（四处）：
+  ① `xdao/cdp.py` 新增 `CDPSession.read_all_cookies()`：先 `Network.getAllCookies`，`CdpError`
+  时退 `Storage.getCookies {}`（F12 面板走的就是 Storage 这一族），读失败照抛。
+  ② `xdao/browser_login.py` 的 `read_site_cookies()` 改成**两读合并**：按地址那读照旧（抛错
+  契约不变，v0.13.23），再补整罐读，只留域沾 `nmbxd` 的、按（名字、域、路径）去重；整罐读
+  失败不拖累主路。同文件新增 `named_userhash_entries()`（认名字和域、**不认值的形状**），
+  `read_userhash_cookie()` 改走合并后的罐子。
+  ③ `xdao/gui.py` 的 `_read_userhash()` 改返回 `(值, 一句诊断)`：按地址那读漏了、整罐读补上
+  时，诊断写明「域=…、路径=…」，worker 循环把它进 `leaf_hints` 并 queue 成 hint（运行日志
+  也留痕）；按地址就读到时整罐读一次都不碰、诊断留空。`_jar_summary()` 加一支：名单里有
+  userhash 但粗筛不认 → 尾巴写「有 userhash 但值的形状不像（形状）」（只写形状不写值，
+  v0.13.25 的规矩），不再和「还没有 userhash」混为一谈。
+  ④ 测试：`test_browser_login.py` +4（合并补漏、整罐读坏了不拖累主路、只问有没有那条路也吃
+  合并罐、`named_userhash_entries` 分开「有但不像」与「根本没有」），`test_gui_browser_login.py`
+  +2（`_read_userhash` 的补漏与诊断、`_jar_summary` 的形状分支）；两个替身 `_ScriptedSession` /
+  `_FakeSession` 加 `read_all_cookies`（默认空罐，老用例行为不变；`test_gui_browser_login.py`
+  里那份 ast 契约守卫会盯着库新增的 `session.*` 调用，替身漏接就红）。收集数 1722→1728
+  （1721 过、7 跳），README/HANDOFF 的数字同步改。
+  ⑤ 打包版自检报「配置目录/导出目录写不进去」在本机复核：v0.13.28 与 v0.13.29 两个打包版行为
+  完全一致（**非本版回归**）——exe 进程 mkdir/write 用户目录一律 `[Errno 13]`，同机 pwsh/cmd/
+  python 写同一目录全通；受控文件夹访问关着、DSH 沙箱排除 ⇒ 指向火绒 HIPS「只信有签名的程序」
+  式静默拒绝。于是 `xdao/preflight.py` 两条劝告把这类原因点名（安全软件只信签名程序 → 加信任区
+  或等签名版），发布说明补一段；探针与判定逻辑不动（拒绝是真的，不是探针误报）。
 - **v0.13.28**（接 0.13.27：下载下来的包能自己核对 —— 每个 Release 多挂一份 `.sha256`）：
   起因是使用者问「是不是还要有证书签名密码啥的防止其他人替换」。签名那一半的结论是：免费
   能拿到的只有 SignPath Foundation 的 OSS 证书，而那张证书签发给的是 SignPath Foundation

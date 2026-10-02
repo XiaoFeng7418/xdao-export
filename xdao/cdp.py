@@ -668,6 +668,26 @@ class CDPSession:
             return []
         return [cookie for cookie in cookies if isinstance(cookie, dict)]
 
+    def read_all_cookies(self) -> list[dict]:
+        """不按地址过滤，读浏览器 cookie 罐里的全部饼干（v0.13.29 的兜底路）。
+
+        ``Network.getCookies`` 只回「会发给这些地址」的那部分，按域、路径、
+        Secure 逐个过滤。真机上出现过 F12 的 Application 面板明明列着
+        userhash、``getCookies`` 却怎么都不回它的情形（2026-10-02 的四张
+        截图：对话框名单里始终没有 userhash，同一个浏览器存储里却有），
+        过滤维度没法定位，所以补这条不过滤的读法：先 ``Network.getAllCookies``，
+        浏览器不认这个命令就退 ``Storage.getCookies``（F12 面板走的就是
+        Storage 这一族）。读失败照抛，容不容忍由调用方决定。
+        """
+        try:
+            result = self.call("Network.getAllCookies")
+        except CdpError:
+            result = self.call("Storage.getCookies", {})
+        cookies = result.get("cookies")
+        if not isinstance(cookies, list):
+            return []
+        return [cookie for cookie in cookies if isinstance(cookie, dict)]
+
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
         """在页面里跑一段脚本，把结果当字符串拿回来。
 
