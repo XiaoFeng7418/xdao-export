@@ -26,10 +26,10 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1745 项（2026-10-02 数出来的一共这么多；本机 Windows 上 1738 通过、7 项跳过）、
+单元测试 1754 项（2026-10-03 数出来的一共这么多；本机 Windows 上 1747 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
-其中界面相关的 123 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
+其中界面相关的 127 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。下面那张测试表的数字由 `tests/test_docs_facts.py`
 对着真实收集数把关：加删测试文件、用例数量变了，它就会红，照报红的位置改表即可。
 
@@ -80,7 +80,7 @@ xdao-export/
 │  ├─ conftest.py          测试夹具 + 两侧硬守卫：用户配置只读、白名单外跳过即失败
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓（48）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包（23）
-│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析（237）
+│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口、WebSocket 帧层、粘贴解析、每轮重挑标签（242）
 │  ├─ test_browser_scope.py 浏览器登录只支持 Chromium 内核：界面与两份公开文档都写着（3）
 │  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update（48）
 │  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（8）
@@ -105,7 +105,7 @@ xdao-export/
 │  ├─ test_gui_probe.py    GUI 探针：看见主窗口才算起来，收尾要杀进程树（41）
 │  ├─ test_gui_shot.py     GUI 截图：一片同色不算截好，收尾要还 GDI 句柄（48）
 │  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级（61）
-│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（55，需真 Tk）
+│  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（59，需真 Tk）
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（77）
 │  ├─ test_watcher.py      监控与配置（30）
 │  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（33）
