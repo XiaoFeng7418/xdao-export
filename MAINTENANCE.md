@@ -677,6 +677,29 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.28**（接 0.13.27：下载下来的包能自己核对 —— 每个 Release 多挂一份 `.sha256`）：
+  起因是使用者问「是不是还要有证书签名密码啥的防止其他人替换」。签名那一半的结论是：免费
+  能拿到的只有 SignPath Foundation 的 OSS 证书，而那张证书签发给的是 SignPath Foundation
+  （证书主体必须是法律实体，网名不行），所以 Windows 上显示的发布者不会是他 —— 该走的是
+  申请流程（见 `_scratch/signpath_apply.md`，需要他本人注册账号并提交）。能立刻做、而且不
+  需要任何第三方批准的，是本版这件事：**让下载下来的包可核对**。改法（三条）：
+  ① `tools/make_release.py`：新增 `SIDECAR_SUFFIX = ".sha256"`、`request_text()`
+  （`Accept: application/octet-stream` —— 附件正文不能走 `request_json`）、`parse_sidecar()`
+  （只认一行 `<64 位十六进制>  <文件名>`，支持 `*name`、文件名可省，空/短/非十六进制一律
+  `ApiError`）、`verify_sidecar()`（目标必须是同目录的 `<附件名去掉 .sha256>`）；`main()` 在上传
+  前逐个核对，对不上就 `return 1` 拒绝发版 —— 「不配套的校验文件比没有更坏」。
+  ② `tools/repo_check.py`：新增 `sha256_finding()`，**不下载 zip**，直接比 GitHub Release
+  资产上的 `digest` 字段；读不到/没挂/没 digest 记 WARN（结论行会写「N 项需要处理」），
+  解析失败、文件名不是这个 zip、摘要不符记 BAD。体检由此从 14 项变成 15 项。
+  ③ `README.md` 与 `packaging/使用说明.txt`：下载表里多一行 `.sha256`，并给出两条 PowerShell
+  核对命令（`Get-FileHash` 对 `Get-Content`；或一条命令直接比、回 `True`）。
+  用例：`tests/test_make_release.py` 17 → 28（解析三态、五种坏格式、摘要一致/不符、目标文件不在、
+  好 sidecar 与 zip 一起上传、坏 sidecar 一个请求都不发）；`tests/test_repo_check.py` 7 → 13
+  （一致 → OK；没挂 → WARN 且退出码仍是 0、结论行写「1 项需要处理」；摘要不符 / 不是摘要 /
+  指向别的文件名 → BAD；读不到 → WARN 且不许印「.sha256 与」）。
+  本机全量 **1693 passed / 7 skipped**（收集 1700 项）。
+  打包脚本另外给 exe 写了 PE 版本信息（`CompanyName` 署名「晓风」，`ProductName` 是工具名，
+  版本号与本版一致）—— 免费方案里，这是唯一能让作者名真的出现在二进制里的位置。
 - **v0.13.27**（接 v0.13.26：探针误报「写不进去」要说得出系统原话，「打开目录」要真的去开）：
   用户用 0.13.26 复验报「导出目录仍旧是不可写」，运行日志原文是「导出目录 …（文档下的自建
   文件夹）写不进去，连备用位置（%LOCALAPPDATA%\xdao-export\导出）也不行，请检查磁盘是否已满、

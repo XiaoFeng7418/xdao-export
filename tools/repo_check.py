@@ -7,7 +7,8 @@
 3. 工作区有没有没提交的改动（这一项不看的话，上面两条说的是「HEAD 同步」，
    而按着没提交的改动照样会以为一切都推上去了）；
 4. 版本号是否处处一致（``xdao/__init__.py`` ↔ 最新 Release 标签 ↔ 附件名）；
-5. 最新 Release 是否具备预期的附件，说明里有没有提到免安装包；
+5. 最新 Release 是否具备预期的附件，说明里有没有提到免安装包，
+   以及挂着的那份 ``.sha256`` 校验文件是否真的对应这个包；
 6. 有没有积压的 issue / PR；
 7. 仓库基础设置（描述、话题、许可、默认分支）是否齐全。
 
@@ -26,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from make_release import ApiError, gh_token, request_json  # noqa: E402
+from make_release import ApiError, gh_token, parse_sidecar, request_json, request_text  # noqa: E402
 from push_via_api import find_pushed_prefix, local_commits, remote_chain  # noqa: E402
 from repo_info import expected_description, expected_topics  # noqa: E402
 
@@ -106,6 +107,39 @@ def remote_tree(repo: str, token: str, ref: str) -> dict[str, str]:
     if data.get("truncated"):
         raise ApiError("远端树被截断，无法完整比对")
     return {i["path"]: i["sha"] for i in data["tree"] if i["type"] == "blob"}
+
+
+def sha256_finding(repo: str, zip_asset: dict | None, sidecar: dict, token: str) -> tuple[str, str, str]:
+    """把 ``.sha256`` 附件与它描述的 zip 对一遍，返回一条 (级别, 区域, 说明)。
+
+    这里不下载 zip（十几 MB，体检不该顺手下这么大东西），而是拿 GitHub 从上传字节
+    算出来的 ``digest`` 比 —— 一样能说明「发布页上那份校验文件和那个包是配套的」。
+    """
+    area = "发布"
+    asset_id = sidecar.get("id")
+    if not asset_id:
+        return WARN, area, f"{sidecar['name']} 没有 id，读不到它的内容，没法核对"
+    try:
+        text = request_text(f"/repos/{repo}/releases/assets/{asset_id}", token)
+    except ApiError as exc:
+        return WARN, area, f"读不到 {sidecar['name']} 的内容：{exc}"
+    try:
+        digest, name = parse_sidecar(text, sidecar["name"][: -len(".sha256")])
+    except ApiError as exc:
+        return BAD, area, f"{sidecar['name']} 不是一份能用的校验文件：{exc}"
+    if zip_asset is None:
+        return WARN, area, f"{sidecar['name']} 在，但发布里没有 zip 给它核对"
+    if name != zip_asset["name"]:
+        return BAD, area, f"{sidecar['name']} 说的是 {name}，发布里挂的却是 {zip_asset['name']}"
+    recorded = (zip_asset.get("digest") or "").lower()
+    if not recorded.startswith("sha256:"):
+        return WARN, area, f"{sidecar['name']} 在（{digest[:12]}…），但 GitHub 没给 zip 的 digest，没法比对"
+    if recorded.split(":", 1)[1] != digest:
+        return BAD, area, (
+            f"{sidecar['name']} 与 {zip_asset['name']} 对不上："
+            f"附件写 {digest[:12]}…，GitHub 记的是 {recorded.split(':', 1)[1][:12]}…"
+        )
+    return OK, area, f"{sidecar['name']} 与 {zip_asset['name']} 一致（{digest[:12]}…）"
 
 
 def main(argv: list[str]) -> int:
@@ -248,6 +282,15 @@ def main(argv: list[str]) -> int:
             report.add(BAD, "发布", "最新 Release 没有免安装包，受限环境下用户会打不开")
         if has_exe:
             report.add(WARN, "发布", "还带着单文件版（exe）——它在中文路径下打不开，建议撤掉")
+        # 校验附件（v0.13.28 起）：用户拿到包只能靠它对一遍完整性。所以不只「有没有」，
+        # 还要把附件里那串跟 GitHub 记的 digest 对一遍 —— 挂着一份和 zip 不配套的
+        # .sha256，比不挂更坏：用户照它核对会以为下载坏了。
+        zip_asset = next((a for a in latest.get("assets", []) if a["name"].endswith(".zip")), None)
+        sidecar = next((a for a in latest.get("assets", []) if a["name"].endswith(".sha256")), None)
+        if zip_asset is not None and sidecar is None:
+            report.add(WARN, "发布", "最新 Release 没有 .sha256 校验附件，用户没法自己核对下载")
+        elif sidecar is not None:
+            report.add(*sha256_finding(args.repo, zip_asset, sidecar, token))
         if "免安装包" in (latest.get("body") or ""):
             report.add(OK, "发布", "发布说明里解释了下哪个附件")
         else:

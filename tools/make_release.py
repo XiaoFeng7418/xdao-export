@@ -8,11 +8,16 @@ Release 附件的上传接口与 Git Data API 的 blob 接口是两条不同的�
     python tools/make_release.py --repo owner/name --tag v0.2.0 ^
         --name "v0.2.0：四种格式 + 断点续传 + 串监控" ^
         --notes-file RELEASE_NOTES.md --asset dist/xxx.exe
+
+打包版从 v0.13.28 起还挂一份 ``*.sha256`` 校验文件（见 ``verify_sidecar``）：
+上传前会拿它跟旁边那个包对一遍，对不上就停手 —— 一份和 zip 不配套的校验文件
+比没有校验文件更坏，用户照着核对会以为下载坏了。
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -25,6 +30,9 @@ import urllib.request
 from pathlib import Path
 
 API = "https://api.github.com"
+
+#: 校验附件的后缀。附件名就是「它描述的那个文件的完整文件名 + 这个后缀」。
+SIDECAR_SUFFIX = ".sha256"
 
 
 class ApiError(RuntimeError):
@@ -100,6 +108,73 @@ def request_json(method: str, path: str, token: str, payload: dict | None = None
     raise ApiError(f"{method} {path} 连续失败：{last}")
 
 
+def request_text(path: str, token: str, retries: int = 4) -> str:
+    """按路径取一段文本 —— Release 附件的正文走这条。
+
+    ``request_json`` 会把响应当 JSON 解析；附件的正文不是 JSON，得单独走一条，
+    靠 ``Accept: application/octet-stream`` 让 GitHub 把原始字节给出来。
+    """
+    last: Exception | None = None
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(API + path)
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Accept", "application/octet-stream")
+        req.add_header("User-Agent", "xdao-release")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            if exc.code in (429,) or 500 <= exc.code < 600:
+                last = ApiError(f"{exc.code} {detail}")
+            else:
+                raise ApiError(f"GET {path} -> {exc.code}\n{detail}") from exc
+        except Exception as exc:
+            last = exc
+        if attempt < retries:
+            wait = min(15.0, 2.0 * (attempt + 1))
+            print(f"    （网络失败，{wait:.0f} 秒后重试：{type(last).__name__}）")
+            time.sleep(wait)
+    raise ApiError(f"GET {path} 连续失败：{last}")
+
+
+def parse_sidecar(text: str, fallback_name: str = "") -> tuple[str, str]:
+    """读一份 ``*.sha256`` 的内容，返回 (摘要, 文件名)。
+
+    只认 ``sha256sum`` 那一行：``<64 位十六进制>  <文件名>``（两个空格，文件名可省）。
+    文件名省略时用 ``fallback_name``（附件名去掉 ``.sha256``）。格式不对就抛 ``ApiError``。
+    """
+    line = next((raw.strip() for raw in text.splitlines() if raw.strip()), "")
+    if not line:
+        raise ApiError("校验文件是空的：里面应当有一行 <64 位十六进制>  <文件名>")
+    parts = line.split()
+    digest = parts[0].lower()
+    name = parts[1] if len(parts) > 1 else fallback_name
+    if name.startswith("*"):  # sha256sum -b 会加这个「二进制模式」记号
+        name = name[1:]
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise ApiError(f"校验文件里不是一行 64 位十六进制摘要：{line[:80]}")
+    if not name:
+        raise ApiError("校验文件里没写它描述的是哪个文件（附件名去不掉 .sha256）")
+    return digest, name
+
+
+def verify_sidecar(asset: Path) -> tuple[str, str]:
+    """核对一份 ``*.sha256`` 附件与它描述的那个文件（就在同一个目录里）。"""
+    digest, name = parse_sidecar(
+        asset.read_text(encoding="utf-8-sig"), asset.name[: -len(SIDECAR_SUFFIX)]
+    )
+    target = asset.parent / name
+    if not target.is_file():
+        raise ApiError(f"{asset.name} 说的文件不在这里：{target}")
+    actual = hashlib.sha256(target.read_bytes()).hexdigest()
+    if actual != digest:
+        raise ApiError(
+            f"{asset.name} 与 {name} 对不上：文件里写 {digest[:16]}…，实际算出来 {actual[:16]}…"
+        )
+    return digest, name
+
+
 def upload_asset(upload_url: str, asset: Path, token: str, retries: int = 3) -> dict:
     """把文件作为 Release 附件上传（二进制直传，不做 base64 包装）。
 
@@ -167,6 +242,15 @@ def main(argv: list[str]) -> int:
         print("× 附件文件不存在：" + "、".join(str(path) for path in gone))
         print("  先打包再发布 —— 发出一个只有说明的 Release，比不发还难收拾。")
         return 1
+
+    for sidecar in [path for path in assets if path.name.endswith(SIDECAR_SUFFIX)]:
+        try:
+            digest, name = verify_sidecar(sidecar)
+        except ApiError as exc:
+            print(f"× 校验文件对不上：{exc}")
+            print("  别把一份和包不配套的 .sha256 发出去 —— 用户照着核对会以为下载坏了。")
+            return 1
+        print(f"校验文件 {sidecar.name} 与 {name} 一致（{digest[:16]}…）")
 
     existing = None
     try:
