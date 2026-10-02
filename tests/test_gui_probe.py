@@ -121,6 +121,15 @@ def use_subprocess(monkeypatch, *, popen=None, run=None):
     )
 
 
+def use_windows(monkeypatch, windows: bool = True):
+    """把平台钉死。
+
+    CI 在 ubuntu 上跑，`IS_WINDOWS` 会是 False（本机 Windows 绿不代表 CI 绿，
+    2026-10-02 真的栽过一次），所以走 Windows 分支的用例必须自己钉住。
+    """
+    monkeypatch.setattr(gui_probe, "IS_WINDOWS", windows)
+
+
 def use_titles(monkeypatch, *rounds: list[str]):
     """让 window_titles 按轮次返回标题；轮次用完后一直返回最后一批。"""
     calls: list[int] = []
@@ -285,6 +294,7 @@ def test_dead_process_is_not_killed(monkeypatch):
 
 
 def test_windows_kills_the_whole_tree(monkeypatch):
+    use_windows(monkeypatch)
     run = _FakeTaskkill()
     use_subprocess(monkeypatch, run=run)
     proc = _FakeProc(pid=777)
@@ -294,7 +304,7 @@ def test_windows_kills_the_whole_tree(monkeypatch):
 
 
 def test_posix_uses_plain_kill(monkeypatch):
-    monkeypatch.setattr(gui_probe, "IS_WINDOWS", False)
+    use_windows(monkeypatch, windows=False)
     run = _FakeTaskkill()
     use_subprocess(monkeypatch, run=run)
     proc = _FakeProc()
@@ -304,6 +314,7 @@ def test_posix_uses_plain_kill(monkeypatch):
 
 
 def test_taskkill_failure_falls_back_to_kill(monkeypatch):
+    use_windows(monkeypatch)
     run = _FakeTaskkill(oserror=True)
     use_subprocess(monkeypatch, run=run)
     proc = _FakeProc()
@@ -312,6 +323,7 @@ def test_taskkill_failure_falls_back_to_kill(monkeypatch):
 
 
 def test_taskkill_hanging_falls_back_to_kill(monkeypatch):
+    use_windows(monkeypatch)
     run = _FakeTaskkill(timeout=True)
     use_subprocess(monkeypatch, run=run)
     proc = _FakeProc()
@@ -320,6 +332,7 @@ def test_taskkill_hanging_falls_back_to_kill(monkeypatch):
 
 
 def test_process_that_will_not_die_is_reported(monkeypatch):
+    use_windows(monkeypatch)
     run = _FakeTaskkill()
     use_subprocess(monkeypatch, run=run)
     proc = _FakeProc()
@@ -353,6 +366,7 @@ def test_non_positive_wait_is_refused(monkeypatch, capsys, tmp_path, value):
 
 
 def test_happy_path_reports_success(monkeypatch, capsys, tmp_path):
+    use_windows(monkeypatch)
     exe = tmp_path / "xdao-export.exe"
     exe.write_bytes(b"MZ")
     use_titles(monkeypatch, [MAIN_TITLE])
