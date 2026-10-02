@@ -18,6 +18,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -665,7 +666,15 @@ class LoginDialog(tk.Toplevel):
         等子窗口关掉再收回来（子窗口成功时会把本对话框一起关掉，那时就不用了）。
         """
         self.grab_release()
-        dialog = BrowserLoginDialog(self, self.client, self.settings)
+        app = getattr(self, "app", None)
+        # log=…：等待期间「领饼干那条路」的每条结论都当场写进运行日志（v0.13.26）。
+        # 以前只有「整轮没成」时外面补一笔，等待中的尝试在日志里一点痕迹都没有。
+        dialog = BrowserLoginDialog(
+            self,
+            self.client,
+            self.settings,
+            log=getattr(app, "log", None),
+        )
         try:
             self.wait_window(dialog)
         finally:
@@ -678,7 +687,6 @@ class LoginDialog(tk.Toplevel):
         # 问题时贴的是运行日志，所以这里补一笔：日志里那句「浏览器登录没成：…」
         # 才是能拿去查的东西。
         failure = getattr(dialog, "failure", "")
-        app = getattr(self, "app", None)
         if failure and app is not None:
             try:
                 app.log(f"浏览器登录没成：{failure}")
@@ -729,22 +737,24 @@ BROWSER_STALE_COOKIE_MESSAGE = (
 )
 # 验饼干这步撞上网络问题（不是「不认」）时说的话：请求本身没成，值得再试一次。
 BROWSER_VERIFY_FAILED_MESSAGE = "没法确认这个登录还算不算数（{detail}）。稍等一下，程序会接着试。"
-# 「走 HTTP 领饼干」这一轮**没跑**时留下的书面记录（v0.13.24）。
-#
-# 它只进运行日志（:meth:`BrowserLoginDialog._diagnosis`），**不进**用户眼前那句提示 ——
-# 那里「这个窗口里还没登录」比它有用，调用方按这个常量整句比对来跳过提示。
-# 为什么要留这一句：跳过与「跑了但站点没给值」原本在日志里长得一模一样，用户报
-# 「拿不到 userhash」时看不出这条路到底跑没跑（m31364 那份日志里就是一条 HTTP 记录都没有）。
-BROWSER_HTTP_SKIP_ANON_NOTE = "（没试这条：罐里只有匿名会话号，大概还没登录完。）"
 # 「走 HTTP 领饼干」这条路**没得试**时留下的书面记录（v0.13.25）：浏览器里一块属于
-# X 岛的饼干都读不到（还没登录过，或者饼干被浏览器存在了别处）。同样只进日志。
+# X 岛的饼干都读不到（还没登录过，或者饼干被浏览器存在了别处）。
 BROWSER_HTTP_NO_COOKIES_NOTE = "（没得试这条：浏览器里一块属于 X 岛的饼干都读不到。）"
 #: 只进书面记录、不顶替界面上那句提示的 HTTP 结论（调用方按整句比对）。
 #:
 #: 为什么要有这个集合：这类句子说的是「这条路没跑」，而用户眼前更需要知道的是
 #: 「这个窗口里还没登录」；可它们又必须出现在日志与超时提示的「试过的几步」里，
 #: 否则下次报告看不出程序到底试没试（m31364 那份日志里一条 HTTP 记录都没有）。
-_QUIET_HTTP_NOTES = frozenset({BROWSER_HTTP_SKIP_ANON_NOTE, BROWSER_HTTP_NO_COOKIES_NOTE})
+_QUIET_HTTP_NOTES = frozenset({BROWSER_HTTP_NO_COOKIES_NOTE})
+
+# 两次「走 HTTP 领饼干」之间至少隔这么久（秒，v0.13.26）。
+#
+# v0.13.25 用的是「饼干罐变了才试」，本意是别在用户打验证码时白连站点。真机上却换来
+# 了最难查的一种结果：整轮登录**一次都没试**，界面上只剩「还没有 userhash」，用户和
+# 我都看不出那条路到底跑没跑（m32057：对话框里只有一行饼干名单，运行日志里一条登录
+# 记录都没有）。所以改回按时间节流：不去猜罐子算不算「已经登录」，隔 30 秒就试一次
+# —— 一趟最多十分钟、三十来个请求，换「一定留下痕迹」是值得的。
+BROWSER_LEAF_HTTP_SECONDS = 30.0
 
 
 def _load_browser_login():
@@ -829,11 +839,16 @@ class BrowserLoginDialog(tk.Toplevel):
         master: tk.Tk,
         client: XdaoClient,
         settings: AppSettings | None = None,
+        log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
         self.configure(bg=BG)
         self.client = client
         self.settings = settings if settings is not None else AppSettings.load()
+        # 写运行日志的回调（v0.13.26）。以前只有「这一轮没成」时外面才补一笔，
+        # 于是等待中的那次尝试在日志里一点痕迹都没有（m32057：日志只有两行与登录无关
+        # 的话）；现在每一条领饼干的结论都当场写进去。
+        self._log = log
         # 成功后交给 LoginDialog；None 表示这次没成（用户取消或失败）。
         self.userhash: str | None = None
         # 没成的话，这里是能拿去查原因的那句话（由 _poll 从后台线程的消息里抄下来）。
@@ -944,6 +959,25 @@ class BrowserLoginDialog(tk.Toplevel):
         )
         wrap_to_width(self.hint_label, minimum=260)
 
+        # 「走 HTTP 领饼干」这条路自己的那一行（v0.13.26）。
+        #
+        # 为什么单开一行：这条路原来只在**没成**的收尾句里露面，等待中的尝试在界面上
+        # 一个字都没有（m32057：截图里只有饼干名单，日志里也没有一条 HTTP 记录）。
+        # 它跟上面那行分工：上面那行说「浏览器里读到什么」，这行说「拿这罐饼干去问站点，
+        # 站点回了什么」—— 两句话凑齐，才看得出卡在哪一步。
+        self.http_var = tk.StringVar(value="")
+        self.http_label = tk.Label(
+            card.body,
+            textvariable=self.http_var,
+            bg=CARD,
+            fg=MUTED,
+            font=SMALL_FONT,
+            justify="left",
+            anchor="w",
+            wraplength=420,
+        )
+        wrap_to_width(self.http_label, minimum=260)
+
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
         ttk.Button(
@@ -995,6 +1029,30 @@ class BrowserLoginDialog(tk.Toplevel):
                 self.hint_label.pack(fill="x", pady=(theme.gap(1), 0))
         except tk.TclError:  # pragma: no cover - 窗口已经销毁
             pass
+
+    def _set_http_note(self, text: str) -> None:
+        """把「走 HTTP 领饼干」那一路的结论写在自己的行上，并当场写进运行日志（v0.13.26）。
+
+        为什么要写日志：用户报问题时贴的是运行日志，而等待期间这句话原来只活在界面上
+        （关掉窗口就没了）。m32057 那次最要命 —— 日志里除了「就绪」和「已是最新版本」
+        什么都没有，等于整轮登录没留下任何可查的东西。
+        """
+        if not text:
+            return
+        try:
+            self.http_var.set(f"领饼干那条路：{text}")
+        except tk.TclError:  # pragma: no cover - 窗口已经销毁
+            return
+        try:
+            if not self.http_label.winfo_manager():
+                self.http_label.pack(fill="x", pady=(theme.gap(1), 0))
+        except tk.TclError:  # pragma: no cover - 窗口已经销毁
+            pass
+        if self._log is not None:
+            try:
+                self._log(f"领饼干那条路：{text}")
+            except Exception:  # pragma: no cover - 日志写不进去不该影响登录
+                pass
 
     def _diagnosis(self) -> str:
         """把「卡在哪一步」的书面线索拼成一句（v0.13.23）：它会跟着失败原因进运行日志。
@@ -1067,6 +1125,9 @@ class BrowserLoginDialog(tk.Toplevel):
                 continue
             if kind == "hint":  # 「程序刚才试到哪一步」：常驻那一行，见 _set_hint
                 self._set_hint(str(payload))
+                continue
+            if kind == "http":  # 「拿这罐饼干去问站点，站点回了什么」：单独一行（v0.13.26）
+                self._set_http_note(str(payload))
                 continue
             if kind == "browser_closed":
                 self.failure = "浏览器窗口已经关掉了，还没取到饼干。" + self._diagnosis()
@@ -1246,7 +1307,8 @@ class BrowserLoginDialog(tk.Toplevel):
         said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
         leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行
         leaf_hints: list[str] = []  # 领饼干试过的几步（按发生顺序、去重）：拼进超时那句话
-        last_http_jar: object | None = None  # 上一次走 HTTP 时饼干罐的指纹（v0.13.25）
+        next_http = started  # 下一次「走 HTTP 领饼干」最早什么时候（v0.13.26）
+        last_http_jar = ""  # 上一次试 HTTP 时罐头长什么样（变了就立刻再试一次）
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1289,40 +1351,29 @@ class BrowserLoginDialog(tk.Toplevel):
                         # 从 v0.6.1 起就是这么读的）；让浏览器自己去跳那张跳转页只会停在
                         # 「饼干切换成功!」上原地重载 —— 用户 m29953/m29954 卡的就是这里。
                         #
-                        # v0.13.25：只在饼干罐**真的变了**的时候才去连站点。等用户登录的那
-                        # 几分钟里罐头一直是同一罐，每 5 秒问一次纯属白问 —— 一趟登录下来
-                        # 最多两百来个请求全打在空气上（m31700 那笔账）。读不到罐头就当作
-                        # 变了，宁可多试一次，别漏掉真登录的那一趟。
-                        try:
-                            jar_now: object = _jar_signature(backend.read_site_cookies(session))
-                        except Exception:  # noqa: BLE001 —— 诊断路径，读不到不影响主流程
-                            jar_now = object()
-                        if jar_now != last_http_jar:
+                        # v0.13.25 曾经**只**按「饼干罐变了才试」来省请求，真机上却换来最
+                        # 哑的结局：罐头一直没变 ⇒ 整轮一次都没试 ⇒ 界面上只剩「还没有
+                        # userhash」（m32057）。v0.13.26 改成两条腿：罐头一变立刻试（用户
+                        # 刚登录完，这一步最要紧），没变也隔 `BROWSER_LEAF_HTTP_SECONDS`
+                        # 试一次 —— 一趟最多十分钟、三十来个请求，换「一定留下痕迹」值得。
+                        jar_now = self._jar_signature_now(backend, session)
+                        if leaf_now >= next_http or jar_now != last_http_jar:
                             last_http_jar = jar_now
+                            next_http = leaf_now + BROWSER_LEAF_HTTP_SECONDS
                             http_value, http_detail = self._try_leaf_cookie_http(
-                                backend,
-                                session,
-                                # 「用户可能还在打验证码」的场合只跳过**匿名**的罐子：里面已经有
-                                # 真会话就直接走 HTTP —— 它不碰用户的页面，也就不会把人从
-                                # 表单上拽走。
-                                may_skip_for_typing=True,
+                                backend, session
                             )
                             if http_value:
                                 value = http_value
                                 next_leaf = leaf_now + BROWSER_LEAF_SECONDS
                             elif http_detail:
                                 self._http_note = http_detail
-                                # 「没试/没得试这条」只进书面记录：用户眼前那句「这个窗口里
-                                # 还没登录」比它有用，别让这一句把它顶掉（v0.13.24/v0.13.25）。
-                                if (
-                                    http_detail not in _QUIET_HTTP_NOTES
-                                    and http_detail != leaf_hint
-                                ):
-                                    leaf_hint = http_detail
-                                    if http_detail in leaf_hints:
-                                        leaf_hints.remove(http_detail)
+                                # 每一条结论都要留下痕迹（v0.13.26）：常驻那一行留给
+                                # 「浏览器这条路」，HTTP 这条单独占一行、并当场写进运行
+                                # 日志 —— 用户截图时不必等到超时那句才看得到它。
+                                if http_detail not in leaf_hints:
                                     leaf_hints.append(http_detail)
-                                    self._queue.put(("hint", http_detail))
+                                self._queue.put(("http", http_detail))
                 if value and value != verified:
                     # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
                     # 上一回登录的旧饼干还躺在里面，会话早就过期了。不验一下就会
@@ -1453,6 +1504,17 @@ class BrowserLoginDialog(tk.Toplevel):
         names = backend.summarize_cookies(cookies)
         if not names:
             return "浏览器里现在没有任何属于 X 岛的饼干（还没登录过）。"
+        # 空值的饼干要点名（v0.13.26）：站点把 `memberUserspapapa` 写成空值时，罐子看上去
+        # 「登录过了」，其实只是一堆没有内容的壳 —— 用户看名单分不出来，而「罐里算不算
+        # 登录着」正是程序判断要不要去领饼干的依据（m32057 那张截图就分不出来）。
+        blank = [
+            str(item.get("name") or "").strip()
+            for item in cookies or []
+            if isinstance(item, dict)
+            and str(item.get("name") or "").strip()
+            and not str(item.get("value") or "")
+        ]
+        empty_note = f"其中有 {len(blank)} 块是空值：{'、'.join(blank)}；" if blank else ""
         # 罐里到底有没有 userhash 要**看一眼**再说（v0.13.24）。
         #
         # 以前这句话写死成「（还没有 userhash）」：罐里明明有 userhash 时也这么报，
@@ -1463,12 +1525,23 @@ class BrowserLoginDialog(tk.Toplevel):
         if not callable(pick):  # pragma: no cover - 真后端一定有；替身才可能没有
             return f"浏览器里的饼干：{names}。"
         tail = "里面有 userhash" if pick(cookies) else "还没有 userhash"
-        return f"浏览器里的饼干：{names}（{tail}）。"
+        return f"浏览器里的饼干：{names}（{empty_note}{tail}）。"
 
     @staticmethod
-    def _try_leaf_cookie_http(
-        backend, session, *, may_skip_for_typing: bool = False
-    ) -> tuple[str | None, str]:
+    def _jar_signature_now(backend, session) -> tuple[tuple[str, str], ...] | str:
+        """现在这一罐的指纹（v0.13.26）：读一次饼干，只用来判断「和上一罐一样吗」。
+
+        指纹只活在内存里、从不进日志。读不到时回一个**空串**（和任何真指纹都不同）：
+        这种时候宁可让 HTTP 那条路自己去报「读饼干出错」，也别把它静默跳过。
+        """
+        try:
+            cookies = backend.read_site_cookies(session)
+        except Exception:  # noqa: BLE001 —— 读不到就当成「变了」，由那条路去说话
+            return ""
+        return _jar_signature(cookies)
+
+    @staticmethod
+    def _try_leaf_cookie_http(backend, session) -> tuple[str | None, str]:
         """用整罐饼干走 HTTP 那条路领饼干（v0.13.22）：不碰用户眼前那个标签页。
 
         返回 ``(值, 一句人话)``。浏览器里的会话饼干整罐交给
@@ -1478,10 +1551,10 @@ class BrowserLoginDialog(tk.Toplevel):
         浏览器那条路上它会被弹回登录页，跳转页还会自己原地重载 —— 用户看到的就是
         「停在『饼干切换成功!』一直跳」（m29953/m29954）。
 
-        ``may_skip_for_typing``：「用户可能还在输验证码」的场合，罐里只有一个匿名
-        会话号（站点未登录时只给一个 ``PHPSESSID``）就先不试 —— 白连站点，而且它那句
-        「没权限访问」会把更有用的「这个窗口里还没登录」顶掉。罐里已经有真会话
-        （登录之后才多出来的那些饼干）就照试：这条路不碰页面，不会把人从表单上拽走。
+        ``may_skip_for_typing``（已删，v0.13.26）：「用户可能还在输验证码」时就跳过这一条
+        的那套判断，真机上反而把答案藏了起来 —— 罐里只要有一块空值的饼干，程序就以为
+        「还没登录完」，整轮一次都不试，界面上只剩「还没有 userhash」（m32057）。现在
+        一律照试，由**时间**节流（``BROWSER_LEAF_HTTP_SECONDS``），试过什么一律留痕。
         """
         try:
             cookies = backend.read_site_cookies(session)
@@ -1490,10 +1563,6 @@ class BrowserLoginDialog(tk.Toplevel):
         if not cookies:
             # 没得试也要留痕（v0.13.25）：这句只进书面记录，见 `_QUIET_HTTP_NOTES`。
             return None, BROWSER_HTTP_NO_COOKIES_NOTE
-        if may_skip_for_typing and not _jar_holds_a_session(cookies):
-            # 跳过也要留痕（v0.13.24）：这句只进 `_diagnosis()` 的书面记录，
-            # 调用方按常量整句比对，不拿它顶掉「这个窗口里还没登录」那句提示。
-            return None, BROWSER_HTTP_SKIP_ANON_NOTE
         try:
             result = backend.apply_leaf_cookie_over_http(cookies)
         except Exception as exc:  # noqa: BLE001 —— 同上
@@ -1537,6 +1606,10 @@ def _jar_signature(cookies) -> tuple[tuple[str, str], ...]:
 
     等用户登录的那几分钟里，站点那边什么都没变，可程序每 5 秒就去连一次站点领饼干
     （一趟最多两百来个请求，全打在空气上）。指纹只活在内存里，从不进日志。
+
+    v0.13.26 起它只管「罐头变了没有」这一半 —— 另一半（罐头一直没变也别干等着）由
+    :data:`BROWSER_LEAF_HTTP_SECONDS` 按时间管：真机上出现过「罐头一直没变 ⇒ 整轮
+    一次都没试 ⇒ 什么都没留下」的哑巴结局（m32057）。
     """
     items: list[tuple[str, str]] = []
     for item in cookies or []:
@@ -1550,9 +1623,11 @@ def _jar_signature(cookies) -> tuple[tuple[str, str], ...]:
 def _jar_holds_a_session(cookies) -> bool:
     """罐里除了匿名会话号还有别的吗（＝浏览器里大概真登录着）。
 
-    判据刻意宽：只要有一个名字不是 ``PHPSESSID``、值也非空的饼干就算。它只用来决定
-    「要不要在用户可能还打着验证码时去连一次站点」—— 宁可多试一次，别漏掉真登录的
-    那一趟（用户 m29953 就是标签页被弹回登录页、罐里其实还登录着）。
+    判据刻意宽：只要有一个名字不是 ``PHPSESSID``、值也非空的饼干就算。
+
+    v0.13.26 起**没有调用点了**：这条判据被用来决定「要不要去领饼干」，而真机上
+    站点把 ``memberUserspapapa`` 写成空值时，罐子看着「登录过了」、其实一个真会话都
+    没有 —— 判错的代价是整轮一次都不试（m32057）。留作参考与测试，别再拿它做闸门。
     """
     for item in cookies or []:
         if not isinstance(item, dict):

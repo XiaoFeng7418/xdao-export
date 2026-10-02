@@ -354,9 +354,12 @@ def open_dialog(root_window, artifacts_dir):
     settings = AppSettings(_path=Path(artifacts_dir) / "config.json")
     created: list[gui.BrowserLoginDialog] = []
 
-    def factory(client_for_dialog=None) -> gui.BrowserLoginDialog:
+    def factory(client_for_dialog=None, log=None) -> gui.BrowserLoginDialog:
         dialog = gui.BrowserLoginDialog(
-            root_window, client_for_dialog if client_for_dialog is not None else client, settings
+            root_window,
+            client_for_dialog if client_for_dialog is not None else client,
+            settings,
+            log=log,
         )
         dialog.start()  # 不等 __init__ 里那次 after：用例直接开跑
         created.append(dialog)
@@ -931,7 +934,7 @@ def test_the_dialog_keeps_working_after_the_http_path_fails(
         ),
     )
     assert _wait_for(
-        root_window, lambda: "服务端说" in dialog.hint_var.get(), timeout=10.0
+        root_window, lambda: "服务端说" in dialog.http_var.get(), timeout=10.0
     ), "HTTP 那条路说了什么，界面上一句都没有"
     reads = len(session.cookie_reads)
     assert _wait_for(
@@ -1034,6 +1037,74 @@ def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
     ) == "浏览器里的饼干：userhash（里面有 userhash）。"
 
 
+def test_the_jar_summary_points_out_cookies_with_empty_values() -> None:
+    """空值的饼干要点名（v0.13.26）。
+
+    为什么：真机上站点把 ``memberUserspapapa`` 写成了空值，罐子看着「登录过了」、其实
+    一个真会话都没有；用户看名单分不出「有会话」和「只有空壳」，而程序原来还会据此
+    判断「算不算登录着」（m32057 那张截图里报的正是「PHPSESSID、memberUserspapapa」）。
+    """
+
+    class _Backend:
+        def read_site_cookies(self, session):
+            return [
+                {"name": "PHPSESSID", "value": "abc"},
+                {"name": "memberUserspapapa", "value": ""},
+            ]
+
+        summarize_cookies = staticmethod(browser_login.summarize_cookies)
+        userhash_from_cookies = staticmethod(browser_login.userhash_from_cookies)
+
+    text = gui.BrowserLoginDialog._jar_summary(_Backend(), object())
+    assert "其中有 1 块是空值：memberUserspapapa" in text, text
+    assert "还没有 userhash" in text, text
+
+
+def test_the_jar_summary_keeps_quiet_when_every_cookie_has_a_value() -> None:
+    """全都带值的罐子不该多那句「有几块是空值」—— 否则每份日志都多一句废话。"""
+
+    class _Backend:
+        def read_site_cookies(self, session):
+            return [{"name": "PHPSESSID", "value": "abc"}, {"name": "_uid", "value": "7"}]
+
+        summarize_cookies = staticmethod(browser_login.summarize_cookies)
+        userhash_from_cookies = staticmethod(browser_login.userhash_from_cookies)
+
+    text = gui.BrowserLoginDialog._jar_summary(_Backend(), object())
+    assert "空值" not in text, text
+
+
+def test_the_http_verdict_gets_its_own_line_and_the_log(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """「领饼干那条路」的结论要单独占一行，并当场写进运行日志（v0.13.26）。
+
+    为什么：m32057 那张截图里，对话框只有一行饼干名单、运行日志里只有「就绪」和
+    「已是最新版本」—— 整轮登录没留下任何可查的东西，连那条 HTTP 路跑没跑都说不清。
+    """
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+    verdict = "站点说：这个账号还没有可用的饼干"
+
+    def fake_http(cookies, **kwargs):
+        return browser_login.LeafCookie(None, verdict)
+
+    monkeypatch.setattr(browser_login, "apply_leaf_cookie_over_http", fake_http)
+
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    session.pages = {home: {"url": home, "login": False, "jump": "", "kind": "other", "ids": []}}
+    session.current_url_value = home
+
+    assert _wait_for(
+        root_window, lambda: verdict in dialog.http_var.get(), timeout=10.0
+    ), f"那条路的结论没进它自己那一行：{dialog.http_var.get()!r}"
+    assert dialog.http_var.get().startswith("领饼干那条路："), dialog.http_var.get()
+    assert any(verdict in line for line in logged), logged
+
+
 def test_try_leaf_cookie_hands_the_waiting_flag_to_the_library() -> None:
     """界面层要把「已经真应用过没有」告诉库（v0.13.21）。
 
@@ -1080,34 +1151,28 @@ class _HttpLeafBackend:
         return browser_login.looks_like_userhash(value)
 
 
-def test_try_leaf_cookie_http_leaves_a_bare_anonymous_jar_alone() -> None:
-    """用户可能还在输验证码：罐里只有一个匿名会话号时别去连站点。
+def test_try_leaf_cookie_http_tries_even_a_bare_anonymous_jar() -> None:
+    """罐里只有一个匿名会话号时**也要试**（v0.13.26）。
 
-    未登录时站点只给一个 ``PHPSESSID``；这时候抢先去跑 HTTP 只会白连站点，而且
-    它那句「没权限访问」会把更有用的「这个窗口里还没登录」从提示里顶掉。
-
-    跳过也要留一句书面记录（v0.13.24）：不然「跳过」与「跑了但站点没给值」在运行
-    日志里一个样，用户报「拿不到 userhash」时查不动（m31364 那份日志就是如此）。
+    v0.13.24/v0.13.25 在这里会跳过：判断依据是「罐里除了 PHPSESSID 还有没有别的非空
+    饼干」。真机上站点把 ``memberUserspapapa`` 写成空值时，罐子看着「登录过了」、其实
+    一个真会话都没有 —— 判错的代价是整轮一次都不试，界面上只剩「还没有 userhash」，
+    用户和我都看不出这条路到底跑没跑（m32057）。现在不猜了：照试，只是按时间节流，
+    试过什么一律留痕。
     """
-    backend = _HttpLeafBackend([{"name": "PHPSESSID", "value": "abc123"}])
-    assert gui.BrowserLoginDialog._try_leaf_cookie_http(
-        backend, object(), may_skip_for_typing=True
-    ) == (None, gui.BROWSER_HTTP_SKIP_ANON_NOTE)
-    assert backend.handed == [], "罐里只有匿名会话号，却照样去领了饼干"
+    backend = _HttpLeafBackend([{"name": "PHPSESSID", "value": "abc123"}], detail="没权限")
+    assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (None, "没权限")
+    assert backend.handed, "罐里只有匿名会话号，程序却一次都没试"
 
 
 def test_try_leaf_cookie_http_tries_anyway_when_the_jar_looks_logged_in() -> None:
-    """罐里有登录之后才有的饼干时，「可能还在打字」这个顾虑不成立：照试。
-
-    这条路不碰页面，所以它不会把正在输验证码的人从表单上拽走 —— 用户 m29953 就是
-    标签页被弹回登录页、罐里其实还登录着，程序一直在等他把表单再填一遍。
-    """
+    """罐里有登录之后才有的饼干时，照试（这条路不碰页面，不会把人从表单上拽走）。"""
     backend = _HttpLeafBackend(
         [{"name": "PHPSESSID", "value": "abc123"}, {"name": "_uid", "value": "9527"}],
         value=FAKE_USERHASH,
     )
     assert gui.BrowserLoginDialog._try_leaf_cookie_http(
-        backend, object(), may_skip_for_typing=True
+        backend, object()
     ) == (FAKE_USERHASH, "")
     assert backend.handed, "罐里登录着，却没去领饼干"
 
@@ -1328,15 +1393,17 @@ def test_http_leaf_cookie_detail_reaches_the_timeout_message(
     assert status.index(marker) > status.index("userhash"), status
 
 
-def test_the_http_path_is_not_repeated_while_the_jar_stays_the_same(
+def test_the_http_path_is_throttled_by_time_not_by_the_jar(
     root_window, browser_shim, open_dialog, monkeypatch
 ):
-    """罐头没变的那些轮次不该再连站点（v0.13.25）。
+    """这条路两条腿：隔 ``BROWSER_LEAF_HTTP_SECONDS`` 试一次；罐头一变**立刻**再试。
 
-    等用户登录的那几分钟里，站点那边什么都没变，可程序每 5 秒就调一次
-    ``apply_leaf_cookie_over_http`` —— 一趟登录最多两百来个请求全打在空气上。
-    罐头一变（用户登录完，站点开始给新饼干）就该立刻再试一次。
+    为什么不能只按「罐头变没变」：真机上出现过罐头一直没变 ⇒ 整轮一次都不试 ⇒ 界面上
+    只剩「还没有 userhash」、日志里一条登录记录都没有（m32057）。这里钉住那一半：
+    节流窗口之内不重复连站点。另一半（罐头一变就必须立刻试）由
+    ``test_login_finished_late_still_gets_a_chance_to_apply_the_cookie`` 钉住。
     """
+    monkeypatch.setattr(gui, "BROWSER_LEAF_HTTP_SECONDS", 30.0)
     dialog = open_dialog()
     home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
     calls: list[list] = []
@@ -1357,16 +1424,53 @@ def test_the_http_path_is_not_repeated_while_the_jar_stays_the_same(
     session.current_url_value = home
 
     assert _wait_for(root_window, lambda: bool(calls), timeout=10.0), "第一轮就没去试 HTTP"
-    # BROWSER_LEAF_SECONDS 被 fast_browser_polling 调成 0.15 秒：这一秒里够跑好几轮。
+    # BROWSER_LEAF_SECONDS 被 fast_browser_polling 调成 0.15 秒：这一秒里够跑好几轮，
+    # 而 30 秒的节流窗口还没到，罐头也没变 —— 只该试过那一次。
     _pump(root_window, 1.0)
-    assert len(calls) == 1, f"罐头一直是同一罐，却连了 {len(calls)} 次站点"
+    assert len(calls) == 1, f"节流窗口之内连了 {len(calls)} 次站点"
 
-    # 罐头一变（用户登录完，站点把会话饼干换了新值）就该立刻再试一次。
+    # 罐头一变（用户刚登录完，站点换了新值）就该立刻再试一次，不用等那 30 秒。
     session.cookies = [
         {"name": "PHPSESSID", "value": "abc123"},
         {"name": "memberUserspapapa", "value": "logged-in-for-real"},
     ]
     assert _wait_for(root_window, lambda: len(calls) >= 2, timeout=10.0), "罐头变了却没再试"
+
+
+def test_the_http_path_keeps_trying_even_when_nothing_changes(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """罐头一动不动，也要按时间一次次去试（v0.13.26 修的就是这个）。
+
+    v0.13.25 的闸门是「罐头变了才试」，而真机上罐头可以整轮都不变 —— 结果是界面上只
+    剩一行饼干名单、运行日志里连一条登录记录都没有（m32057）。这里把节流窗口调到
+    0.05 秒，罐头一个字都不改，看它会不会自己去第二次。
+    """
+    monkeypatch.setattr(gui, "BROWSER_LEAF_HTTP_SECONDS", 0.05)
+    dialog = open_dialog()
+    home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+    calls: list[list] = []
+
+    def fake_http(cookies, **kwargs):
+        calls.append(list(cookies))
+        return browser_login.LeafCookie(None, "站点说：这个账号还没有可用的饼干")
+
+    monkeypatch.setattr(browser_login, "apply_leaf_cookie_over_http", fake_http)
+
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "memberUserspapapa", "value": "logged-in"},
+    ]
+    session.pages = {home: {"url": home, "login": False, "jump": "", "kind": "other", "ids": []}}
+    session.current_url_value = home
+
+    assert _wait_for(root_window, lambda: len(calls) >= 3, timeout=10.0), (
+        f"罐头一直没变，只试了 {len(calls)} 次 —— 真机上这就是「什么都没留下」"
+    )
+    # 每次都拿的是同一罐饼干：试的是「这条路还通不通」，不是「换一罐再试」。
+    assert all(cookies == calls[0] for cookies in calls), calls
 
 
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:
@@ -1483,10 +1587,11 @@ def test_login_dialog_button_opens_the_browser_dialog_and_takes_the_result(
 class _StubBrowserLoginDialog(tk.Toplevel):
     """替身：一露面就算成功并自己关掉，用来验证接入点而不真开浏览器。"""
 
-    def __init__(self, master, client, settings=None) -> None:
+    def __init__(self, master, client, settings=None, log=None) -> None:
         super().__init__(master)
         self.client = client
         self.settings = settings
+        self.log = log  # v0.13.26：真对话框多了这个「写运行日志」的回调
         self.userhash: str | None = FAKE_USERHASH
         self.after(10, self.destroy)
 
