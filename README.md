@@ -445,11 +445,11 @@ xdao-export/
 │     ├─ markdown.py       Markdown
 │     ├─ pdf.py            PDF（走系统浏览器渲染：默认命令行，改过纸张/边距时走 CDP）
 │     └─ epub.py           EPUB 3（纯标准库实现）
-├─ tools/clean_scratch.py  清理测试残留目录
+├─ tools/clean_scratch.py  清理测试残留目录（危险目标先拦下，支持 --dry-run）
 ├─ tools/gui_shot.py       开发期界面截图（纯标准库，改界面后自查）
 ├─ 诊断写入.ps1            导出目录写不进去时用来定位（随免安装包一起发出）
 ├─ 诊断写入-双击运行.cmd   不会用命令行就双击它，跑完留下诊断结果报告
-└─ tests/                  1423 个离线单元测试（1416 通过，另 7 个真机用例默认跳过）
+└─ tests/                  1460 个离线单元测试（1453 通过，另 7 个真机用例默认跳过）
 ```
 
 ## 开发
