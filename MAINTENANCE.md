@@ -669,6 +669,33 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.21**（真机上报「自动切换饼干之后一直卡在那里」；同版把开发期的界面截图工具
+  `tools/gui_shot.py` 补上用例）：用户报的是 —— 在 0.13.20 里能正常登录、也自己跳到了
+  「饼干」页，程序自动切换饼干之后就再也没有下文。真机截图证据：浏览器停在
+  `…/Member/User/Cookie/switchTo/id/461037.html`，页面是站点自己的「跳转提示」页
+  （笑脸 +「饼干切换成功!」+「页面自动 跳转 等待时间： 1」），而界面常驻提示写着「这个窗口里
+  还没登录（页面停在登录页）：先在里面登录 X 岛。」，最后日志留下「浏览器登录没成：浏览器
+  窗口已经关掉了，还没取到饼干。」。根因是**站点那一跳得由站点自己走完**：`userhash` 是在
+  倒计时页自动跳到落地页的那一下由主站种下的，而老代码 `_follow_jumps()` 只在读到的**那一
+  瞬间**找 `a#href` / meta refresh —— 倒计时页上什么都找不到，于是「一跳都不跳」，紧接着只读
+  一眼饼干罐（当然还没有），**马上导航去 `export/id/<id>.html` 兜底，把标签页从倒计时页上
+  拽走**，站点自己的第二跳再也不会发生；那次 export 没有 token，被弹回登录页，下一次轮询
+  读到的页面状态就是「登录页」，老代码在这句「还没登录」上早退（当成用户还在打字），从此每
+  5 秒重复同一句，再也不去应用饼干；`BROWSER_LEAF_NAV_LIMIT = 2` 让这个状态不可逆。
+  改法：① `_FIND_APPLY_JS` 增报 `countdown`（正文里有「等待时间 / 自动跳转 / 跳转提示」），
+  `kind` 也认成 `jump`；② `_follow_jumps()` 改成**等站点自己跳完**
+  （`JUMP_WAIT_SECONDS = 8.0` 内每 `NAVIGATE_POLL` 重读页面状态，出现 `jump` 就跟着跳，
+  页面不再是跳转/倒计时页就收手，正在跳时读失败属正常）；③ 新增 `_wait_for_cookie()`
+  （`COOKIE_WAIT_SECONDS = 4.0`，每 `COOKIE_WAIT_POLL = 0.5` 看一眼饼干罐），应用之后不再
+  只读一眼；④ `fetch_leaf_cookie()` 多了 `waiting_for_login`，界面在**已经真应用过**
+  （`leaf_attempts > 0`）之后不再把「页面停在登录页」当成「用户正在打字」，仍然继续去领
+  饼干；⑤ `BROWSER_LEAF_NAV_LIMIT` 2 → 6，用满时把 `BROWSER_LEAF_CAP_HINT` 推到常驻提示
+  （旧写法静默退化成只读）。用例：`tests/test_browser_login.py` 202 → 207、
+  `tests/test_gui_browser_login.py` 24 → 28（`_SiteHoppingSession` / `_LateJarSession`
+  钉住「倒计时页跳走之后才种饼干」「饼干罐要等几次才出现」，界面上钉住「被弹回登录页之后
+  还会再去饼干页」与上限说明）；八处注入全部变红（倒计时不认、`_follow_jumps` 退回读一眼
+  就走、应用后只读一眼、两处 `waiting_for_login` 不生效、界面不转发该参数、上限提示不推、
+  上限改回 2）。本机全量 **1621 passed / 7 skipped**（收集 1628 项）。
 - **v0.13.20**（登录慢一点就再也领不到饼干 —— 0.13.18 真机上复现）：
   程序开浏览器时把标签页停在登录页，头两次「领饼干」在登录页上**什么都没碰**就返回了
   （结论「还没登录」），可导航次数照样被扣掉；等用户登进去，次数已经用满，之后每轮只重读
@@ -1265,6 +1292,27 @@ Edge / Chrome，所以「系统默认浏览器是 Firefox」的机器仍然能�
 `test_login_finished_late_still_gets_a_chance_to_apply_the_cookie` 钉住「在登录页上耗几轮 →
 登进去还能领到」。另外超时那句诊断改成 `leaf_hints[-3:]` 的有序列表：只留最后一条时，
 收尾的「还是没有 userhash」会把「还没登录」盖掉，真机截图上看不出卡在哪。
+
+**等站点自己跳完再读饼干罐（v0.13.21）**：站点的「应用饼干」是**跳转式**的 —— 点下去先落到
+它自己的「跳转提示」页（`…/Cookie/switchTo/id/<id>.html`，正文写着「饼干切换成功!」与
+「页面自动 跳转 等待时间： 1」），**userhash 是在那一跳落到真正页面时才被主站种下的**。
+`_follow_jumps()` 原来是「读一眼页面状态，有 `a#href` / meta refresh 就跟」：倒计时页上什么
+都没有，于是它一跳都不跳，调用方紧接着只读一眼饼干罐（还没有），再导航去 `export/id/<id>.html`
+兜底 —— 这一下把标签页从倒计时页上拽走，站点的第二跳永远没发生；那次 export 没有 token 会被
+弹回登录页，下一次轮询读到的页面状态就是登录页，老代码在「还没登录」上早退，界面于是每 5 秒
+重复「这个窗口里还没登录（页面停在登录页）」。现在：① `_FIND_APPLY_JS` 多报一个 `countdown`
+（正文里有「等待时间 / 自动跳转 / 跳转提示」），`kind` 也算 `jump`，倒计时页不再被当成
+「没有跳转」；② `_follow_jumps()` 在 `JUMP_WAIT_SECONDS = 8.0` 预算内每 `NAVIGATE_POLL`
+重读页面状态，等到 `jump` 就跟着跳、等到不再是跳转页就收手（正在跳的时候 `evaluate` 失败很
+正常，接着等）；③ 应用之后走新的 `_wait_for_cookie()`（`COOKIE_WAIT_SECONDS = 4.0` /
+`COOKIE_WAIT_POLL = 0.5`），不再只读一眼；④ `fetch_leaf_cookie(waiting_for_login=…)`：界面在
+已经真应用过（`leaf_attempts > 0`）之后不再把「停在登录页」当成「用户正在打字」，仍然继续领
+饼干；⑤ `BROWSER_LEAF_NAV_LIMIT` 2 → 6，用满时把 `BROWSER_LEAF_CAP_HINT` 推到常驻提示
+（旧写法只是静默退化成只读）。`tests/test_browser_login.py` 里的 `_SiteHoppingSession` /
+`_LateJarSession` 分别钉住「倒计时页跳走之后才种饼干」和「饼干罐要等几次才出现」，
+`tests/test_gui_browser_login.py` 的
+`test_leaf_cookie_keeps_trying_after_the_tab_is_bounced_back_to_login` 钉住「被弹回登录页之后
+还会再去饼干页」（老代码停在 1 次）。
 
 ## 敏感串扫描：提交信息扫了，文档容易漏（2026-10-01 发现）
 
