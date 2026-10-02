@@ -103,26 +103,26 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.13.28** 提供免安装包：
+最新版 **v0.13.29** 提供免安装包：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.13.28-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位）。 |
-| `xdao-export-v0.13.28-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
+| `xdao-export-v0.13.29-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位）。 |
+| `xdao-export-v0.13.29-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
 
 
 **下载后核对一下**（v0.13.28 起，每个 Release 都附一份 `.sha256`）：把 zip 和 `.sha256` 放同一个
 文件夹，在 PowerShell 里跑
 
 ```powershell
-Get-FileHash .\xdao-export-v0.13.28-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.13.28-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.13.29-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.13.29-win64.zip.sha256
 ```
 
 第一行输出的字符串应当和 .sha256 里那串一模一样。只想看结论就一条命令：
 
 ```powershell
-$f = 'xdao-export-v0.13.28-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
+$f = 'xdao-export-v0.13.29-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
 ```
 
 回 `True` 就是原件。（`certutil -hashfile $f SHA256` 也能算，只是它输出大写、还多一行说明。）
@@ -153,7 +153,7 @@ $f = 'xdao-export-v0.13.28-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash 
 >
 > **下载能对得上了：Release 多挂一份 `.sha256`**（v0.13.28）：以前附件只有一个 zip，想确认
 > 「下载到的是不是我发的那个」只能靠 HTTPS 和信任。现在每个 Release 都和 zip 一起挂一份
-> `xdao-export-v0.13.28-win64.zip.sha256`（里面就一行 `<摘要>  <文件名>`），上面给了两条核对
+> 同名的 `.sha256` 校验文件（里面就一行 `<摘要>  <文件名>`），上面给了两条核对
 > 命令。发版流程自己也两次自检：`tools/make_release.py` 在上传前先算一遍本地摘要 —— 校验文件和
 > zip 对不上就直接拒绝发版（「不配套的校验文件比没有更坏」）；`tools/repo_check.py` 之后会拿
 > GitHub 自己算的 `digest` 再比一次（体检从 14 项变成 15 项）。界面、导出格式、配置文件、
@@ -571,7 +571,7 @@ xdao-export/
 ├─ tools/build_zip.py      打免安装包 + 写 .sha256（本机与 CI 都用它）
 ├─ 诊断写入.ps1            导出目录写不进去时用来定位（随免安装包一起发出）
 ├─ 诊断写入-双击运行.cmd   不会用命令行就双击它，跑完留下诊断结果报告
-└─ tests/                  1722 个离线单元测试（1715 通过，另 7 个真机用例默认跳过）
+└─ tests/                  1728 个离线单元测试（1721 通过，另 7 个真机用例默认跳过）
 ```
 
 ## 开发

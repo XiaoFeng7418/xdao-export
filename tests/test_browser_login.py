@@ -2136,6 +2136,11 @@ class _ScriptedSession:
         self.navigations: list[str] = []
         self.cookie_reads: list[list[str] | None] = []
         self.evaluations: list[str] = []
+        # v0.13.29：整罐读（不问地址那一读）的替身答案，默认空罐 —— 老用例里
+        # 「按地址读」就是全部答案，行为不变。
+        self.all_cookies: list[dict] = []
+        self.read_all_error: Exception | None = None
+        self.all_cookie_reads: int = 0
 
     # ---- CDPSession 的那几面 ----
     def call(self, method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
@@ -2150,6 +2155,12 @@ class _ScriptedSession:
     def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
         self.cookie_reads.append(list(urls) if urls else None)
         return list(self.cookies)
+
+    def read_all_cookies(self) -> list[dict]:
+        self.all_cookie_reads += 1
+        if self.read_all_error is not None:
+            raise self.read_all_error
+        return list(self.all_cookies)
 
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
         self.evaluations.append(expression)
@@ -2568,6 +2579,70 @@ def test_read_site_cookies_keeps_an_empty_jar_as_an_empty_list() -> None:
     """罐里真的什么都没有：这是「没登录」，不是「读不到」，得能分开。"""
     session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
     assert bl.read_site_cookies(session) == []  # type: ignore[arg-type]
+
+
+def test_read_site_cookies_merges_what_the_address_filtered_read_missed() -> None:
+    """v0.13.29：按地址那读漏掉的 userhash，要靠整罐读补回来。
+
+    真机上的情形（2026-10-02 四张截图）：F12 的 Application 面板里 userhash
+    明明白白在罐里，``Network.getCookies`` 却怎么问都不回它 —— 对话框名单里
+    从头到尾没有 userhash，而用户拿同一块饼干发串发得出去。过滤维度定位不
+    出来，那就两读都问：按地址的照旧，整罐的补漏。
+    """
+    hidden = {
+        "name": "userhash",
+        "value": "D-9691%04%02abc",
+        "domain": "www.nmbxd1.com",
+        "path": "/",
+    }
+    session = _ScriptedSession(
+        cookies=[{"name": "memberUserspapapa", "value": "G%C8%8D", "domain": ".nmbxd1.com"}],
+        url=bl.LOGIN_URL,
+    )
+    session.all_cookies = [
+        dict(hidden),
+        {"name": "memberUserspapapa", "value": "G%C8%8D", "domain": ".nmbxd1.com"},
+        # 别家站点的饼干不许混进本站的罐子（整罐读回的是**所有**域）。
+        {"name": "sid", "value": "xyz", "domain": ".example.com"},
+    ]
+    cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
+    names = [item["name"] for item in cookies]
+    assert names == ["memberUserspapapa", "userhash"], names
+    assert bl.userhash_from_cookies(cookies) == "D-9691%04%02abc"
+    assert session.all_cookie_reads == 1, "整罐读该问一次"
+
+
+def test_read_site_cookies_survives_a_broken_whole_jar_read() -> None:
+    """整罐读失败不拖累主路（v0.13.29）：按地址那读的结果照旧交出去。"""
+    session = _ScriptedSession(
+        cookies=[{"name": "PHPSESSID", "value": "abc123", "domain": ".nmbxd1.com"}],
+        url=bl.LOGIN_URL,
+    )
+    session.read_all_error = bl.CdpError("浏览器不认 getAllCookies")
+    cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
+    assert [item["name"] for item in cookies] == ["PHPSESSID"]
+
+
+def test_read_userhash_cookie_finds_a_userhash_only_the_whole_jar_sees() -> None:
+    """只问「罐里有没有」的那条路（v0.13.17）也要吃到合并后的罐子。"""
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    session.all_cookies = [
+        {"name": "userhash", "value": "ABCDEF12", "domain": ".nmbxd1.com", "path": "/"}
+    ]
+    assert bl.read_userhash_cookie(session) == "ABCDEF12"  # type: ignore[arg-type]
+
+
+def test_named_userhash_entries_separates_present_from_plausible() -> None:
+    """「有 userhash 但值长得不对」和「根本没有」要能分开（v0.13.29）。
+
+    以前两者在界面上都写成「还没有 userhash」，名单里明明列着 userhash 却这么
+    报，用户截图里自相矛盾 yet 查不出程序看见了什么。
+    """
+    short = {"name": "userhash", "value": "ab", "domain": ".nmbxd1.com"}
+    cookies = [short, {"name": "userhash", "value": "别家的", "domain": ".example.com"}]
+    entries = bl.named_userhash_entries(cookies)
+    assert entries == [short], "只认名字对、域沾 nmbxd1 的那块"
+    assert bl.userhash_from_cookies(cookies) is None, "值太短，粗筛不认"
 
 
 def test_summarize_cookies_lists_names_only() -> None:

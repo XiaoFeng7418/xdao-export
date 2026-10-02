@@ -151,6 +151,10 @@ class _FakeSession:
         self.navigations: list[str] = []
         self.cookie_reads: list[list[str] | None] = []
         self.export_text = ""
+        # v0.13.29：整罐读（不过滤地址那一读）的替身答案，默认空罐 —— 老用例里
+        # 「按地址读」就是全部答案，行为不变。
+        self.all_cookies: list[dict] = []
+        self.read_all_error: Exception | None = None
         _FakeSession.instances.append(self)
 
     def __enter__(self) -> "_FakeSession":
@@ -183,6 +187,11 @@ class _FakeSession:
         if self.read_error is not None:
             raise self.read_error
         return list(self.cookies)
+
+    def read_all_cookies(self) -> list[dict]:
+        if self.read_all_error is not None:
+            raise self.read_all_error
+        return list(self.all_cookies)
 
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
         self.evaluate_calls.append(expression)
@@ -1072,6 +1081,81 @@ def test_the_jar_summary_keeps_quiet_when_every_cookie_has_a_value() -> None:
 
     text = gui.BrowserLoginDialog._jar_summary(_Backend(), object())
     assert "空值" not in text, text
+
+
+def test_the_jar_summary_says_when_userhash_is_present_but_implausible() -> None:
+    """「有 userhash 但值的形状不像」要和「根本没有」分开说（v0.13.29）。
+
+    以前两种都写成「还没有 userhash」：名单里明明列着 userhash 却这么报，用户截图
+    里自相矛盾 yet 查不出程序到底看见了什么。这里只写形状、不写值本身。
+    """
+
+    class _Backend:
+        def read_site_cookies(self, session):
+            return [{"name": "userhash", "value": "ab", "domain": ".nmbxd1.com"}]
+
+        summarize_cookies = staticmethod(browser_login.summarize_cookies)
+        userhash_from_cookies = staticmethod(browser_login.userhash_from_cookies)
+        named_userhash_entries = staticmethod(browser_login.named_userhash_entries)
+
+    text = gui.BrowserLoginDialog._jar_summary(_Backend(), object())
+    assert "有 userhash 但值的形状不像" in text, text
+    assert "2 个字符" in text, text
+    assert "还没有 userhash" not in text, text
+
+
+def test_read_userhash_falls_back_to_the_whole_jar_and_says_so() -> None:
+    """按地址那读漏了 userhash 时：整罐读补上，并把漏在哪说出来（v0.13.29）。
+
+    真机上的情形（2026-10-02 四张截图）：对话框名单里从头到尾没有 userhash，
+    同一个浏览器的 F12 Application 面板里却一直有 —— ``Network.getCookies``
+    的地址过滤把它滤掉了。补上之后界面要能说出「是整罐读补上的、藏在哪个域
+    哪条路径」，下次真机报告才有得查。
+    """
+
+    class _Session:
+        def __init__(self) -> None:
+            self.url_reads = 0
+            self.all_reads = 0
+
+        def current_url(self) -> str:
+            return browser_login.LOGIN_URL
+
+        def read_cookies(self, urls=None):
+            self.url_reads += 1
+            return [
+                {"name": "memberUserspapapa", "value": "G%C8%8D", "domain": ".nmbxd1.com"}
+            ]
+
+        def read_all_cookies(self):
+            self.all_reads += 1
+            return [
+                {"name": "memberUserspapapa", "value": "G%C8%8D", "domain": ".nmbxd1.com"},
+                {
+                    "name": "userhash",
+                    "value": "D-9691%04%02ab",
+                    "domain": "www.nmbxd1.com",
+                    "path": "/Member",
+                },
+            ]
+
+    session = _Session()
+    value, note = gui.BrowserLoginDialog._read_userhash(browser_login, session)
+    assert value == "D-9691%04%02ab"
+    assert "整罐读补上" in note and "www.nmbxd1.com" in note and "/Member" in note, note
+    assert session.all_reads >= 1, "漏了就该去问整罐"
+
+    # 按地址就能读到时：整罐读一次都不许碰，诊断也留空。
+    class _Direct(_Session):
+        def read_cookies(self, urls=None):
+            self.url_reads += 1
+            return [{"name": "userhash", "value": "ABCDEF12", "domain": ".nmbxd1.com"}]
+
+    direct = _Direct()
+    value, note = gui.BrowserLoginDialog._read_userhash(browser_login, direct)
+    assert value == "ABCDEF12"
+    assert note == ""
+    assert direct.all_reads == 0
 
 
 def test_the_http_verdict_gets_its_own_line_and_the_log(
