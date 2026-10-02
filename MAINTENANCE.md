@@ -400,6 +400,20 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    拦下并给结论（旧写法是 `FileNotFoundError` 的 traceback）；收尾改杀进程树（win 上
    `taskkill /T /F /PID`），杀不干净会提醒去看任务管理器。十二处都注入验过：退回旧写法，
    用例立刻红。
+   **GUI 截图这一步也有用例兜着**（2026-10-02 补上）：`tests/test_gui_shot.py` 48 条，
+   窗口、DC、位图、像素全是假的（`_FakeLibs` 把每次 GDI 调用记进 `calls`，用例断言该还的
+   句柄都还了）。它守的是「截图这步说自己成功时，图上真的得是界面」：**一片同色的图不算截好**
+   （`looks_blank()` 采样整幅像素，颜色种类 ≤ 4 就报失败并说明窗口还没画出来 —— 旧写法对着
+   一块白底照样说「已保存」）；`CreateCompatibleDC` / `CreateCompatibleBitmap` 建不出来、
+   `GetDIBits` 返回的行数不足、`GetWindowDC` 拿不到，都在**报结论之前**拦下并带上原话
+   （`WinError` 或退回去的 0）；`finally` 里按「先建的先还」释放 DC / 位图 / 窗口 DC
+   （旧写法只在成功路径上还，失败一次就漏一个句柄）；写出来的 PNG 会再读回来核对签名、
+   IHDR 里的宽高、位深 8、色型 2 与 IEND（`verify_png()` 连文件大小一起返回），对不上就报
+   「文件不完整」而不是「已保存」；`--width/--height` 只收 1..10000 的整数，写错的尺寸和
+   多余的位置参数都在**开窗之前**拦下（旧写法把 0 这类值静默忽略，用默认尺寸截一张还说成功）。
+   十六处都注入验过：退回旧写法，用例立刻红。真机跑过：
+   `python tools\gui_shot.py 图.png --width 1060 --height 760` 抓到的确实是界面
+   （1060x760、33809 字节，抽样 201 种颜色）。
 
 9. **界面用例只许调 `App.prepare_export_dir()`，不许调 `App.start()`**。
    `start()` 会走到 `persist_prefs()` → `AppSettings.save()`，而 `AppSettings.load`
@@ -627,6 +641,9 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - **改完界面怎么自查**：`python tools/gui_shot.py [输出.png] [--width N] [--height N]`
   （纯标准库 GDI 截图）。抓图必须用 `root.winfo_id()`，**不要 `GetParent`** ——
   那会把标题栏算进去，整张图内容上移 31px，看着像元素被截断。
+  它会等窗口真画出来（`grab_until_painted()` 轮询到整幅不再是同色，最长 6 秒），
+  写完之后把 PNG 读回来核对宽高与 IEND 才说「已保存」；尺寸只收 1..10000 的整数，
+  写错的值或多余的位置参数会在开窗之前报错退 1 —— 用例在 `tests/test_gui_shot.py`。
 - **回归用例**：`tests/test_theme.py`（配色/间距/样式/字体缓存）与 `tests/test_window.py`
   （两栏比例、底部进度条在默认与最小窗口下都完整可见、控件字体与主题同源）。
   四个坑：① `tk.Tcl()` 纯 Tcl 解释器里**没有 ttk 包**（报 `invalid command name "ttk::style"`），
