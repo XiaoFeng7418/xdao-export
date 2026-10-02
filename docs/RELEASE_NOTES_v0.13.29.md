@@ -47,6 +47,8 @@ Get-Content .\xdao-export-v0.13.29-win64.zip.sha256
 
 两行的字符串一样就是原件。
 
-**签名来源**：本项目的免费代码签名由 [SignPath.io](https://signpath.io/) 提供、证书由
-[SignPath Foundation](https://signpath.org/) 颁发（**正在申请中**）。获批之后，官方免安装包只由
-GitHub Actions 从本仓库构建后提交签名，本机打的包不会作为官方下载。
+**签名来源**：本项目目前**没有代码签名**。向 SignPath Foundation 申请的免费开源签名于
+2026-10-02 未获批准（对方理由：项目还缺少社区采用、外部引用等公开可见度信号），决定等项目
+有人用之后再去申请。所以官方免安装包在 Windows 上显示「未知发布者」，请照同页的 `.sha256`
+核对。签名流水线已备在仓库里，获批之后官方免安装包只由 GitHub Actions 从本仓库构建后提交
+签名，本机打的包不会作为官方下载。
