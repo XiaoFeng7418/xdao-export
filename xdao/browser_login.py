@@ -1534,8 +1534,11 @@ def fetch_leaf_cookie(
          这一步会让主站把 userhash 种进浏览器；
       5. 等饼干罐里出现 userhash；还是没有，就再导航一次导出页，从页面文字里找一遍。
 
-    ``navigate=False`` 时只重读一次饼干罐。这是给界面层的重试上限用的：
-    用户迟迟没登录成时，不能每几秒就把他的标签页拖到「饼干」页去一次。
+    ``navigate=False`` 时**只读页面状态和饼干罐**，一个标签页都不碰（v0.13.23 起界面层
+    固定走这一支）：站点那边「应用」是跳转式的，程序一导航，用户的标签页就会被留在
+    站点自己的「饼干切换成功!」倒计时页上原地重载 —— 用户看到的就是「一直无限跳转」
+    （m29953/m29954/m30629）。领饼干的正事交给 :func:`apply_leaf_cookie_over_http`
+    （走 HTTP，见 ``XdaoClient.apply_cookie``）。
 
     ``waiting_for_login=False``（界面层在**已经真去应用过**之后传，v0.13.21）表示
     「页面停在登录页」不再按「用户正在打字」处理：程序自己那一趟导出页导航会把还没种上
@@ -1548,6 +1551,21 @@ def fetch_leaf_cookie(
             value = read_userhash_cookie(session, urls)
             if value:
                 return LeafCookie(value, "")
+            # 不导航，但**要看一眼页面**（v0.13.23）：用户还在登录页打字时，界面层得
+            # 如实说「还没登录」，而不是一句笼统的「试过了」——那种话在真机上跟卡死
+            # 没区别（v0.13.17 的教训）。看一眼不算打扰：只读 DOM，不动标签页。
+            try:
+                state = _page_state(session)
+            except CdpError:
+                state = {}
+            if (state.get("kind") == "login" or state.get("login")) and waiting_for_login:
+                return LeafCookie(None, "这个窗口里还没登录（页面停在登录页）：先在里面登录 X 岛。")
+            page_url = str(state.get("url") or "")
+            host = urllib.parse.urlsplit(page_url).hostname or ""
+            if host and "nmbxd1" not in host:
+                return LeafCookie(
+                    None, f"浏览器窗口里现在打开的不是 X 岛（{host}），先在里面对 X 岛登录。"
+                )
             return LeafCookie(None, "自动取饼干这条路试过了：浏览器里还是没有 userhash。")
         state = _page_state(session)
         if (state.get("kind") == "login" or state.get("login")) and waiting_for_login:
@@ -1617,14 +1635,30 @@ def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> l
     """把浏览器里属于本站点的饼干**整罐**读出来（不只是 userhash，v0.13.22）。
 
     界面层拿它去走 HTTP 那条熟路（:func:`apply_leaf_cookie_over_http`）：浏览器只负责
-    让用户把验证码认过去，剩下的协议交给 ``XdaoClient``。读失败返回空列表 —— 调用方按
-    「浏览器里还没有登录的痕迹」处理，不必区分「读不到」和「罐里是空的」。
+    让用户把验证码认过去，剩下的协议交给 ``XdaoClient``。
+
+    读不到就**抛**（v0.13.23）：以前这里把异常吞成空列表，界面层于是把「读不出来」和
+    「罐里没登录」当成同一件事 —— 真机上表现为 HTTP 那条路一声不响地被跳过，用户截图里
+    只剩 CDP 那句「还没登录」，查无可查（m30629）。现在调用方会把这句话原样说出来。
     """
-    try:
-        cookies = session.read_cookies(list(urls) if urls else cookie_urls_for(session))
-    except Exception:  # noqa: BLE001 —— 读不到就当罐里没有
-        return []
+    cookies = session.read_cookies(list(urls) if urls else cookie_urls_for(session))
     return [item for item in (cookies or []) if isinstance(item, dict)]
+
+
+def summarize_cookies(cookies: Iterable[dict]) -> str:
+    """罐子里有哪些饼干：只报**名字**（值一律不写，日志要能直接贴给人看）。
+
+    给界面层报诊断用（v0.13.23）：真机上「读不到饼干」和「只读了匿名会话号」看起来
+    一模一样，把名字写进提示行和运行日志，用户截图就能说清卡在哪。
+    """
+    names: list[str] = []
+    for item in cookies or ():
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return "、".join(names)
 
 
 def apply_leaf_cookie_over_http(

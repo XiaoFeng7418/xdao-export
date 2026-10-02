@@ -247,11 +247,9 @@ def fast_browser_polling(monkeypatch):
     """把对话框的轮询间隔调快，免得用例真的等几秒。"""
     monkeypatch.setattr(gui, "BROWSER_POLL_SECONDS", 0.05)
     monkeypatch.setattr(gui, "BROWSER_LEAF_SECONDS", 0.15)
-    # 「导航过一次就缓一缓」的间隔也调快：不然后面那句「不再导航」的用例要真空等 20 秒。
-    monkeypatch.setattr(gui, "BROWSER_LEAF_RETRY_SECONDS", 0.2)
     monkeypatch.setattr(gui, "BROWSER_UI_POLL_MS", 20)
-    # v0.13.21：领饼干现在要「等站点自己的倒计时页跳完」再「等饼干罐里出现 userhash」，
-    # 这两段等待也调小，免得每条走到「应用」的用例都真空等几秒。
+    # 领饼干那条 HTTP 路（v0.13.23）不再导航标签页，所以这里只剩「等站点自己的跳转」
+    # 那两段等待要调小。
     monkeypatch.setattr(browser_login, "NAVIGATE_POLL", 0.01)
     monkeypatch.setattr(browser_login, "JUMP_WAIT_SECONDS", 0.1)
     monkeypatch.setattr(browser_login, "COOKIE_WAIT_SECONDS", 0.1)
@@ -710,45 +708,37 @@ def test_user_closing_the_browser_window_offers_a_reopen(
     dialog._on_cancel()
 
 
-def test_leaf_cookie_fallback_is_used_when_the_cookie_is_not_there_yet(
-    root_window, browser_shim, open_dialog
+def test_leaf_cookie_comes_over_http_without_touching_the_users_tab(
+    root_window, browser_shim, open_dialog, monkeypatch
 ):
-    """登录了但读不到 userhash 时，走「领一块叶子饼干」那条兜底（导航版）。
+    """登录了但读不到 userhash 时走 HTTP 那条路领（v0.13.23），一个标签页都不碰。
 
-    v0.13.17 之前这条路是「在页面里 fetch 站点的两个接口」：fetch 走不完站点自己
-    那一跳（跳转提示页不执行、第二跳不发），饼干罐里始终没有 userhash，真机上就是
-    「用户明明登录好了，程序一路等到超时」。这里钉住新走法：程序自己导航到「饼干」
-    页 → 跟着站点跳到「应用」地址 → 再重读饼干罐。
+    v0.13.17~v0.13.22 是让程序自己导航用户那个标签页去站点「应用」：站点那一跳是页面
+    里的 JS 倒计时，程序一导航就把用户的页面留在「饼干切换成功!」那张**永远原地重载**
+    的页上（用户看到的就是「一直无限跳转」，m29953/m29954/m30629）。现在浏览器只负责
+    让用户把验证码认过去，领饼干交给 ``XdaoClient.apply_cookie`` 那条从 v0.6.1 起就在
+    线上跑通的 HTTP 协议。
     """
     dialog = open_dialog()
-    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
-    apply_url = f"{browser_login.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html"
-
-    def ready() -> bool:
-        for session in _dialog_sessions():
-            session.pages = {
-                list_url: {
-                    "url": list_url,
-                    "login": False,
-                    "jump": "",
-                    "kind": "list",
-                    "ids": ["aaa"],
-                    "href": apply_url,
-                }
-            }
-            # 主站的「应用」走完才 Set-Cookie —— 真机上正是落地那一跳把饼干种进罐里。
-            session.cookies = (
-                [{"name": "userhash", "value": FAKE_USERHASH}]
-                if apply_url in session.navigations
-                else []
-            )
-        return dialog.userhash is not None
-
-    assert _wait_for(root_window, ready), "兜底路径没能取到 userhash"
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
     session = _dialog_sessions()[0]
-    assert list_url in session.navigations, "没自己去「饼干」页（还想靠 fetch？）"
-    assert apply_url in session.navigations, "没跟着站点跳到「应用」地址"
-    assert dialog.userhash == FAKE_USERHASH
+    session.pages = {}
+    # 罐里有一个真会话（不是只有匿名会话号）：HTTP 那条路才会真的去试。
+    session.cookies = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "memberUserspapapa", "value": "logged-in"},
+    ]
+    monkeypatch.setattr(
+        browser_login,
+        "apply_leaf_cookie_over_http",
+        lambda cookies, **kwargs: browser_login.LeafCookie(FAKE_USERHASH, ""),
+    )
+    assert _wait_for(
+        root_window, lambda: dialog.userhash == FAKE_USERHASH, timeout=10.0
+    ), "HTTP 那条路领到的饼干没被采纳"
+    assert not [
+        url for url in session.navigations if "/Cookie/" in url
+    ], f"程序动了用户的标签页：{session.navigations}"
     assert _wait_for(root_window, lambda: not dialog.winfo_exists())
 
 
@@ -785,45 +775,29 @@ def test_leaf_cookie_does_not_steal_the_page_while_the_login_form_is_open(
     dialog._on_cancel()
 
 
-def test_leaf_cookie_stops_navigating_the_users_tab_after_the_limit(
-    root_window, browser_shim, open_dialog, monkeypatch
+def test_the_dialog_never_navigates_the_users_tab(
+    root_window, browser_shim, open_dialog
 ):
-    """迟迟登录不成时，不能每几秒就把用户的标签页拖到「饼干」页去一次。
+    """迟迟登录不成时也只读饼干罐，一个标签页都不动（v0.13.23）。
 
-    上限用完之后只许重读饼干罐（``navigate=False``）；诊断行要一直有话说，
-    这样真机上截个图就能看出卡在哪一步。
+    v0.13.21 起是「最多导航 6 次、用完只读罐」——可导航本身就是用户那次「一直无限
+    跳转」的来源（站点的倒计时页会把自己重载一遍又一遍，m29953/m29954/m30629），
+    所以现在一次都不导航。
     """
-    monkeypatch.setattr(gui, "BROWSER_LEAF_NAV_LIMIT", 1)
     dialog = open_dialog()
-    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
-
     assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
     session = _dialog_sessions()[0]
-    session.pages = {
-        list_url: {
-            "url": list_url,
-            "login": False,
-            "jump": "",
-            "kind": "empty",
-            "ids": [],
-            "rows": 0,
-        }
-    }
+    session.pages = {}
     session.cookies = []
 
-    assert _wait_for(
-        root_window, lambda: list_url in session.navigations
-    ), "第一次导航都没发生"
-    assert _wait_for(root_window, lambda: bool(dialog.hint_var.get())), "诊断行没有写出来"
-    navigations = len([url for url in session.navigations if url == list_url])
-    assert navigations == 1
-
-    # 再放它跑几轮：只许重读饼干罐，不许再导航。
     reads = len(session.cookie_reads)
     assert _wait_for(
         root_window, lambda: len(session.cookie_reads) > reads + 5, timeout=10.0
     ), "后面几轮连饼干罐都不读了"
-    assert len([url for url in session.navigations if url == list_url]) == navigations
+    assert not [
+        url for url in session.navigations if "/Cookie/" in url
+    ], f"程序动了用户的标签页：{session.navigations}"
+    assert dialog.hint_var.get(), "诊断行没有写出来"
     dialog._on_cancel()
 
 
@@ -832,17 +806,14 @@ def test_login_finished_late_still_gets_a_chance_to_apply_the_cookie(
 ):
     """用户登录得慢一点，程序不能把「真去领饼干」的机会提前用光。
 
-    0.13.18 的真机现场：程序开浏览器时把标签页停在登录页，头两次「领饼干」都在登录页
-    上什么都没碰就返回了（「还没登录」），可次数照样被扣掉 —— 等用户登进去，程序已经只
-    会重读饼干罐，而 userhash 只有真去「应用」才会被主站种下，于是界面一路等到超时。
-    这里钉住：**只有真动过用户的标签页才扣次数**，登录晚了几十秒也还领得到。
+    0.13.18 的真机现场：程序开浏览器时把标签页停在登录页，头几次「领饼干」都在登录页
+    上什么都没碰就返回了（「还没登录」）—— 等用户登进去，程序却已经不再去领了，而
+    userhash 只有真去「应用」才会被主站种下，于是界面一路等到超时。
+    v0.13.23 起程序干脆一次都不导航用户的标签页，登录晚了几十秒也照样领得到：领饼干
+    的正事走 HTTP（`XdaoClient.apply_cookie` 的老协议），浏览器只管让用户认验证码。
     """
-    monkeypatch.setattr(gui, "BROWSER_LEAF_NAV_LIMIT", 1)
     dialog = open_dialog()
     login_url = browser_login.LOGIN_URL
-    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
-    apply_url = f"{browser_login.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html"
-    home_url = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
     login_page = {
         "url": login_url,
         "login": True,
@@ -858,46 +829,38 @@ def test_login_finished_late_still_gets_a_chance_to_apply_the_cookie(
 
     # 用户在登录页上待「好几轮」——真机上这就是他打账号密码的那几十秒。
     assert _wait_for(
+        root_window, lambda: bool(dialog.hint_var.get()), timeout=10.0
+    ), "诊断行没写出来"
+    assert _wait_for(
         root_window, lambda: len(session.cookie_reads) > 6, timeout=10.0
     ), "轮询没跑起来"
     session = _dialog_sessions()[0]
-    assert list_url not in session.navigations, "用户还在登录页，程序却把页面拖走了"
+    assert not [
+        url for url in session.navigations if "/Cookie/" in url
+    ], "用户还在登录页，程序却把页面拖走了"
+    assert "还没登录" in dialog.hint_var.get()
 
-    # 用户登进去了：站点自己把人带到用户首页，标签页地址跟着变（只摆这一次 ——
-    # 每轮都去改替身的地址，会和程序自己的导航打架，那验的就不是真实行为了）。
+    # 用户登进去了：站点把会话饼干种进罐里（只摆这一次 —— 每轮都去改替身的地址，
+    # 会和程序自己的判断打架，那验的就不是真实行为了）。
     for item in _dialog_sessions():
-        item.pages = {
-            login_url: login_page,
-            home_url: {
-                "url": home_url,
-                "login": False,
-                "jump": "",
-                "kind": "other",
-                "ids": [],
-            },
-            list_url: {
-                "url": list_url,
-                "login": False,
-                "jump": "",
-                "kind": "list",
-                "ids": ["aaa"],
-                "href": apply_url,
-            },
-        }
-        item.current_url_value = home_url
+        item.pages = {login_url: login_page}
+        item.cookies = [
+            {"name": "PHPSESSID", "value": "abc123"},
+            {"name": "memberUserspapapa", "value": "logged-in"},
+        ]
+        item.current_url_value = login_url
+    monkeypatch.setattr(
+        browser_login,
+        "apply_leaf_cookie_over_http",
+        lambda cookies, **kwargs: browser_login.LeafCookie(FAKE_USERHASH, ""),
+    )
 
-    def gives_the_cookie() -> bool:
-        # 主站的「应用」走完才 Set-Cookie —— 真机上正是落地那一跳把饼干种进罐里。
-        for item in _dialog_sessions():
-            if apply_url in item.navigations:
-                item.cookies = [{"name": "userhash", "value": FAKE_USERHASH}]
-        return dialog.userhash is not None
-
-    assert _wait_for(root_window, gives_the_cookie, timeout=10.0), "登录晚了就领不到饼干了"
-    session = _dialog_sessions()[0]
-    assert list_url in session.navigations, "登录成功后没去「饼干」页"
-    assert apply_url in session.navigations, "没跟着站点跳到「应用」地址"
-    assert dialog.userhash == FAKE_USERHASH
+    assert _wait_for(
+        root_window, lambda: dialog.userhash == FAKE_USERHASH, timeout=10.0
+    ), "登录晚了就领不到饼干了"
+    assert not [
+        url for url in _dialog_sessions()[0].navigations if "/Cookie/" in url
+    ], "登录成功之后程序又去动用户的标签页了"
 
 
 def test_timeout_message_lists_the_steps_the_program_tried(
@@ -905,15 +868,13 @@ def test_timeout_message_lists_the_steps_the_program_tried(
 ):
     """超时那句话要按顺序留下试过的几步，不能只留最后一条。
 
-    收尾那条「自动取饼干这条路试过了：浏览器里还是没有 userhash」信息量最小，
-    只留它会把更有用的「这个窗口里还没登录」盖掉 —— 0.13.18 的截图上就是这样，
+    v0.13.23 起每轮会先说一句「罐子里有哪些饼干」（状态），再说 CDP 那句结论 ——
+    收尾的结论（「自动取饼干这条路试过了…」）信息量最小，只留它会把状态那一句盖掉，
     用户和我们都看不出卡在哪一步。
     """
     monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 1.5)
     dialog = open_dialog()
     login_url = browser_login.LOGIN_URL
-    list_url = browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH
-    home_url = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
 
     assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
     session = _dialog_sessions()[0]
@@ -926,167 +887,135 @@ def test_timeout_message_lists_the_steps_the_program_tried(
             "ids": [],
         }
     }
-    session.cookies = []
+    # 只有匿名会话号：HTTP 那条路会跳过（用户可能正在打验证码），于是留下的两步
+    # 正好是「罐子里有哪些饼干」和 CDP 那句「还没登录」。
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
     assert _wait_for(
         root_window, lambda: "还没登录" in dialog.hint_var.get(), timeout=5.0
     ), "第一句诊断没出来"
 
-    # 用户登进去了，但这个账号还没领过饼干：只摆这一次地址，别和程序的导航打架。
-    for item in _dialog_sessions():
-        item.pages = {
-            home_url: {
-                "url": home_url,
-                "login": False,
-                "jump": "",
-                "kind": "other",
-                "ids": [],
-            },
-            list_url: {
-                "url": list_url,
-                "login": False,
-                "jump": "",
-                "kind": "empty",
-                "ids": [],
-                "rows": 0,
-            },
-        }
-        item.current_url_value = home_url
-        item.cookies = []
-
-    assert _wait_for(
-        root_window,
-        lambda: "没有可以应用的饼干" in dialog.hint_var.get(),
-        timeout=5.0,
-    ), "第二句诊断没出来"
     assert _wait_for(
         root_window, lambda: "还没看到登录成功" in dialog.status_var.get(), timeout=10.0
     )
     status = dialog.status_var.get()
     assert "①" in status and "②" in status, status
-    assert status.index("还没登录") < status.index("没有可以应用的饼干"), status
+    # 先状态、后结论：程序每一轮就是这个顺序（先报罐子，再报 CDP 的结论）。
+    assert status.index("浏览器里的饼干") < status.index("还没登录"), status
     assert "程序最后试到的一步" not in status
 
 
-def _failed_apply_kit() -> tuple[dict[str, str], dict[str, dict]]:
-    """一套「登录没问题、但饼干就是领不到」的页面脚本。
-
-    真机上的顺序（用户 m29500 的两张截图）：程序走到「应用」→ 站点回自己的跳转页 →
-    程序抢在站点那一跳之前导航去导出页 → 导出页（此时还没有 userhash）把标签页弹回
-    登录页。这里就照这个顺序摆：**导出页和登录页共用同一份登录页状态**。
-    """
-    urls = {
-        "login": browser_login.LOGIN_URL,
-        "home": f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html",
-        "list": browser_login.COOKIE_SITE + browser_login.COOKIE_LIST_PATH,
-        "apply": f"{browser_login.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html",
-        "export": f"{browser_login.COOKIE_SITE}/Member/User/Cookie/export/id/aaa.html",
-    }
-    login_page = {
-        "url": urls["login"],
-        "login": True,
-        "jump": "",
-        "kind": "login",
-        "ids": [],
-    }
-    pages = {
-        urls["home"]: {
-            "url": urls["home"],
-            "login": False,
-            "jump": "",
-            "kind": "other",
-            "ids": [],
-        },
-        urls["list"]: {
-            "url": urls["list"],
-            "login": False,
-            "jump": "",
-            "kind": "list",
-            "ids": ["aaa"],
-            "href": urls["apply"],
-        },
-        urls["apply"]: {
-            "url": urls["apply"],
-            "login": False,
-            "jump": "",
-            "kind": "other",
-            "ids": [],
-        },
-        urls["export"]: login_page,
-        urls["login"]: login_page,
-    }
-    return urls, pages
-
-
-def _start_with_one_failed_apply(root_window, open_dialog):
-    """摆好上面那套脚本，等第一趟「应用」走完（值领不到）。返回 (dialog, session, urls)。"""
-    urls, pages = _failed_apply_kit()
+def test_the_dialog_keeps_working_after_the_http_path_fails(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """HTTP 那条路也没领到时程序还得继续试（v0.13.23）：读罐、报诊断、不碰页面。"""
     dialog = open_dialog()
     assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
     session = _dialog_sessions()[0]
-    session.cookies = []  # 领不到：真机那次是切换成功、但 userhash 没种上
-    session.pages = pages
-    session.current_url_value = urls["home"]
+    session.pages = {}
+    session.cookies = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "memberUserspapapa", "value": "logged-in"},
+    ]
+    monkeypatch.setattr(
+        browser_login,
+        "apply_leaf_cookie_over_http",
+        lambda cookies, **kwargs: browser_login.LeafCookie(
+            None, "服务端说：这块饼干已经过期了"
+        ),
+    )
     assert _wait_for(
-        root_window, lambda: urls["apply"] in session.navigations, timeout=10.0
-    ), "第一趟「应用」都没走到"
+        root_window, lambda: "服务端说" in dialog.hint_var.get(), timeout=10.0
+    ), "HTTP 那条路说了什么，界面上一句都没有"
+    reads = len(session.cookie_reads)
     assert _wait_for(
-        root_window, lambda: urls["export"] in session.navigations, timeout=10.0
-    ), "没等到导出页那一步"
-    return dialog, session, urls
-
-
-def test_leaf_cookie_keeps_trying_after_the_tab_is_bounced_back_to_login(
-    root_window, browser_shim, open_dialog
-):
-    """被弹回登录页之后还要接着去领饼干，不能就此停手（v0.13.21）。
-
-    0.13.20 的卡法：那一趟导出页导航把标签页弹到登录页，之后每次领饼干都在
-    「页面停在登录页」上早退 —— 标签页再也不动，界面上每两秒重复同一句
-    「这个窗口里还没登录（页面停在登录页）」，用户看到的就是「切换完饼干就卡住」。
-    """
-    dialog, session, urls = _start_with_one_failed_apply(root_window, open_dialog)
-    # 程序眼里标签页现在正停在登录页上（导出页被弹回登录页的那一份状态）。
-
-    def goes_back_to_the_list() -> bool:
-        return len([url for url in session.navigations if url == urls["list"]]) >= 2
-
-    assert _wait_for(
-        root_window, goes_back_to_the_list, timeout=10.0
-    ), "被弹回登录页之后就不再试着领饼干了"
+        root_window, lambda: len(session.cookie_reads) > reads + 3, timeout=10.0
+    ), "失败之后就不再试了"
+    assert not [
+        url for url in session.navigations if "/Cookie/" in url
+    ], f"程序动了用户的标签页：{session.navigations}"
     dialog._on_cancel()
 
 
-def test_leaf_cookie_says_so_when_the_apply_budget_is_used_up(
+def test_the_diagnosis_joins_what_the_program_learned() -> None:
+    """失败原因要带上「罐子里有哪些饼干」和「HTTP 那条路的原话」（v0.13.23）。
+
+    用户报问题贴的是运行日志，这两样是「到底卡在哪一步」唯一的书面依据：m30629 那次
+    日志里只有一句「浏览器窗口已经关掉了，还没取到饼干」，谁也没法查。
+    """
+    dialog = object.__new__(gui.BrowserLoginDialog)  # 只验拼句子，不开窗口
+    dialog._jar_note = ""  # `__init__` 里的初值；这条用例绕过了它，得自己摆上
+    dialog._http_note = ""
+    assert dialog._diagnosis() == ""
+    dialog._jar_note = "浏览器里的饼干：PHPSESSID（还没有 userhash）。"
+    assert dialog._diagnosis() == "（浏览器里的饼干：PHPSESSID（还没有 userhash）。）"
+    dialog._http_note = "服务端说：这块饼干已经过期了"
+    assert dialog._diagnosis() == (
+        "（浏览器里的饼干：PHPSESSID（还没有 userhash）。；"
+        "走 HTTP 领饼干：服务端说：这块饼干已经过期了）"
+    )
+
+
+def test_the_failure_reason_carries_the_diagnosis(
     root_window, browser_shim, open_dialog, monkeypatch
 ):
-    """次数用完、改成只读饼干罐时，界面上要明说（v0.13.21）。
+    """失败原因（`_open_browser_login` 进运行日志的那一句）要带上诊断（v0.13.23）。
 
-    以前是静默降级：用完就只剩每两秒重复一句「自动取饼干这条路试过了：浏览器里还是
-    没有 userhash。」，用户从界面上看不出程序已经不再动浏览器里的标签页了。
+    m30629 那次日志里只有「浏览器窗口已经关掉了，还没取到饼干」：罐子里有什么、HTTP
+    那条路说了什么，一个字都没有，远程根本查不动。这里钉住「日志那一句」的形状。
     """
-    monkeypatch.setattr(gui, "BROWSER_LEAF_NAV_LIMIT", 1)
-    dialog, _session, _urls = _start_with_one_failed_apply(root_window, open_dialog)
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "memberUserspapapa", "value": "logged-in"},
+    ]
+    monkeypatch.setattr(
+        browser_login,
+        "apply_leaf_cookie_over_http",
+        lambda cookies, **kwargs: browser_login.LeafCookie(
+            None, "服务端说：这块饼干已经过期了"
+        ),
+    )
     assert _wait_for(
-        root_window, lambda: "试满" in dialog.hint_var.get(), timeout=10.0
-    ), "次数用完了界面上没说"
-    hint = dialog.hint_var.get()
-    assert "1 次" in hint, hint
-    assert "只读饼干罐" in hint, hint
-    assert "不再动浏览器里的标签页" in hint, hint
-    dialog._on_cancel()
+        root_window, lambda: dialog._http_note != "", timeout=10.0
+    ), "HTTP 那条路还没留下说法"
+
+    # 现在让读饼干彻底断掉：收尾那句 failure 就是会被写进运行日志的那一句。
+    for item in _dialog_sessions():
+        item.read_error = browser_login.BrowserLoginError("调试连接断了")
+
+    assert _wait_for(root_window, lambda: bool(dialog.failure), timeout=10.0), "没写 failure"
+    failure = dialog.failure
+    assert "调试连接断了" in failure, failure
+    assert "浏览器里的饼干" in failure, failure
+    assert "走 HTTP 领饼干：服务端说：这块饼干已经过期了" in failure, failure
 
 
-def test_leaf_cookie_budget_is_high_enough_to_survive_a_slow_login() -> None:
-    """自动领饼干的名额不能太低（v0.13.21 从 2 提到 6）。
+def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
+    """罐子诊断三种情形都要有话说（v0.13.23）：读不到 / 空的 / 只有匿名会话号。"""
 
-    2 次在几十秒里就用完了，之后只剩「只读饼干罐」—— 用户看到的是「程序忽然再也不动
-    我的标签页了」。这条守卫防止有人又把它调小，也钉住那句降级说明的形状。
-    """
-    assert gui.BROWSER_LEAF_NAV_LIMIT >= 4
-    hint = gui.BROWSER_LEAF_CAP_HINT.format(limit=gui.BROWSER_LEAF_NAV_LIMIT)
-    assert str(gui.BROWSER_LEAF_NAV_LIMIT) in hint, hint
-    assert "只读饼干罐" in hint, hint
-    assert "不再动浏览器里的标签页" in hint, hint
+    class _Backend:
+        def __init__(self, cookies=None, error=None) -> None:
+            self.cookies = cookies or []
+            self.error = error
+
+        def read_site_cookies(self, session):
+            if self.error is not None:
+                raise self.error
+            return self.cookies
+
+        summarize_cookies = staticmethod(browser_login.summarize_cookies)
+
+    assert gui.BrowserLoginDialog._jar_summary(
+        _Backend(error=RuntimeError("连接断了")), object()
+    ) == "读不到浏览器里的饼干：连接断了"
+    assert gui.BrowserLoginDialog._jar_summary(_Backend(), object()) == (
+        "浏览器里现在没有任何属于 X 岛的饼干（还没登录过）。"
+    )
+    assert gui.BrowserLoginDialog._jar_summary(
+        _Backend([{"name": "PHPSESSID", "value": "x"}]), object()
+    ) == "浏览器里的饼干：PHPSESSID（还没有 userhash）。"
 
 
 def test_try_leaf_cookie_hands_the_waiting_flag_to_the_library() -> None:
@@ -1255,7 +1184,9 @@ def test_http_leaf_cookie_detail_reaches_the_timeout_message(
     """两条路都没成时，HTTP 那条路的原话也要进超时那句话（截图里唯一的线索）。"""
     monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 3.0)
     dialog = open_dialog()
-    urls, pages = _failed_apply_kit()
+    home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+    pages = {home: {"url": home, "login": False, "jump": "", "kind": "other", "ids": []}}
+    urls = {"home": home}
     marker = "服务端说：这块饼干已经过期了"
 
     monkeypatch.setattr(
@@ -1266,7 +1197,10 @@ def test_http_leaf_cookie_detail_reaches_the_timeout_message(
 
     assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
     session = _dialog_sessions()[0]
-    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    session.cookies = [
+        {"name": "PHPSESSID", "value": "abc123"},
+        {"name": "memberUserspapapa", "value": "logged-in"},
+    ]
     session.pages = pages
     session.current_url_value = urls["home"]
     assert _wait_for(

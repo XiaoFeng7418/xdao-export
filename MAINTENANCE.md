@@ -309,6 +309,14 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    `EF BB BF EF BB BF`，一路进了 zip）；②同一个文件里 CRLF 与裸 LF 不许混用；
    ③`packaging/使用说明.txt`、`诊断写入.ps1`、`诊断写入-双击运行.cmd` 必须**保留**开头那一个
    BOM（记事本认 BOM 中文才不乱码；PowerShell 5.1 读不带 BOM 的脚本会当 ANSI 解）。
+   ④一个**确实和库里不一样**的文件，工作区行尾不许与索引里是两种 —— 那提交上去就是「每一行都
+   变了」的假改动（真出过一次：一个改文档的本机脚本把 README/HANDOFF/MAINTENANCE 整份写成了 LF，
+   没有任何用例拦得住，只靠肉眼看 `git diff --stat` 才发现）。判据是 `git ls-files --eol` 的
+   `i/` 与 `w/`：只有「内容确实变了」时才要求两者同款，所以 git 自己归一化得掉的情形（索引 LF、
+   工作区 CRLF 的 `.py`）不报；`attr` 里带 `eol=crlf` 的那两个 Windows 文件反过来要求工作区必须是
+   CRLF。四个早年进库的历史文件（`README.md`/`HANDOFF.md`/`MAINTENANCE.md`/
+   `docs/RELEASE_NOTES_v0.4.0.md`）索引里就是 CRLF，在 `LEGACY_CRLF_IN_INDEX` 里单列，
+   **名单不许变长**（新内容按 `.gitattributes` 一律以 LF 入库）。
    **体检工具自己也有用例兜着**（2026-10-02 补上）：`tests/test_repo_check.py` 给
    `tools/repo_check.py` 喂一份假 API（`gh_token` / `request_json` / `local_commits` / `local_tree` /
    `worktree_changes` 全换成测试自己的），专盯「读不到东西时照样印没问题」这一类 —— 读不到
@@ -668,6 +676,29 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
     还不如让用户自己点一下浏览器窗口。
 
 ## 已完成
+
+- **v0.13.23**（接 v0.13.22：把「导航用户的标签页」整个停掉，并把失败原因写进日志）：0.13.22
+  发出去之后复验仍不通行，报「0.13.22还是无法登录，一直无限跳转」（截图里浏览器停在
+  `…/Member/User/Cookie/switchTo/id/461037.html`，页面是站点自己的「饼干切换成功!」+
+  「页面自动 跳转 等待时间： 1」，界面常驻提示写着「这个窗口里还没登录（页面停在登录页）：
+  先在里面登录 X 岛。」，已经等了 110 秒）。判明两件事：① 那张跳转页的落点是页面里那个
+  `<a id="href" href="…">`，成功时它是**空的**，`location.href = href` 于是把当前地址再载一次
+  —— **页面自己原地重载**，这就是用户看到的「一直无限跳转」；程序那边 `_FIND_APPLY_JS` 用
+  `new URL(raw, location.href).href` 解析空 href 也会得到当前页自己，`_follow_jumps()` 于是
+  跟着自己跳满 `MAX_COOKIE_JUMPS`。⇒ 只要程序还导航用户的标签页去「应用」饼干，就必然把人留在
+  那张页上，userhash 也始终种不上。② 失败时不出声：界面层 `_try_leaf_cookie_http()` 有两条
+  **静默**出路（`read_site_cookies()` 读失败被吞成 `[]`、`may_skip_for_typing and not
+  _jar_holds_a_session(cookies)`），两条都不产生任何提示，日志里只剩 CDP 那句「还没登录」，
+  看不出 HTTP 那条路到底跑没跑。改法：**界面层固定 `navigate=False`**（只读页面状态与饼干罐，
+  一个标签页都不碰），三条导航护栏（`BROWSER_LEAF_NAV_LIMIT` / `BROWSER_LEAF_RETRY_SECONDS` /
+  `BROWSER_LEAF_CAP_HINT`）连同 `leaf_attempts` 那套计数一起删除；每轮先报一句饼干罐
+  （`BrowserLoginDialog._jar_summary()` → `browser_login.summarize_cookies()`，只报名字、去重、
+  `、` 分隔）；`read_site_cookies()` 读不到就**抛**（不再吞成空列表），调用方把原话写进提示；
+  失败原因（窗口关闭 / 超时 / 出错）一律拼上 `_diagnosis()` ——「（<饼干罐诊断>；走 HTTP 领饼干：
+  <原话>）」，它会跟着 `app.log("浏览器登录没成：…")` 进运行日志。用例：
+  `tests/test_browser_login.py` 212 → 214、`tests/test_gui_browser_login.py` 36 → 37（删掉三条
+  导航期用例，补 `test_the_dialog_never_navigates_the_users_tab` 等不变量）；五处注入全部变红；
+  本机全量 **1646 passed / 7 skipped**（收集 1653 项）。
 
 - **v0.13.22**（接 v0.13.21：把「领饼干」从浏览器跳转改成走 HTTP）：0.13.21 发出去之后用户复验，
   报「仍然是在切换饼干成功的界面一直跳」（截图里浏览器停在 `…/Cookie/switchTo/id/461037.html`，
@@ -1344,15 +1375,20 @@ Edge / Chrome，所以「系统默认浏览器是 Firefox」的机器仍然能�
 `test_leaf_cookie_keeps_trying_after_the_tab_is_bounced_back_to_login` 钉住「被弹回登录页之后
 还会再去饼干页」（老代码停在 1 次）。
 
-**浏览器只管验证码，领饼干走 HTTP（v0.13.22）**：`XdaoClient.apply_cookie()` 这条 HTTP 协议
+**浏览器只管验证码，领饼干走 HTTP（v0.13.22 起，v0.13.23 收口）**：`XdaoClient.apply_cookie()` 这条 HTTP 协议
 从 v0.6.1 起就在线上跑通了 —— 它会认「跳转提示」页（HTTP 200 也可能是跳转页）、跟着跳、从
 **导出页的响应体**里抠 userhash。浏览器那条路存在的唯一理由就是验证码（真人认一次），其余步骤
 在浏览器里做只是把一个已经解决的问题重新做一遍，还多出两个新的不确定性：站点那张跳转页是
 **页面自己的 JS 倒计时**（`setInterval` 到点 `location.href = href`），而成功页的 `a#href` 指回
 自己时会变成原地重载（用户看到的就是「一直跳转」）。所以现在的分工是：浏览器窗口负责把验证码
 认过去，程序读一次它的整罐饼干（`read_site_cookies()`），剩下的交回 HTTP
-（`apply_leaf_cookie_over_http()`）—— 也因此**不需要**再驱动用户的标签页，
-`BROWSER_LEAF_NAV_LIMIT` 用完也只是「不再动页面」，每轮照旧能领。
+（`apply_leaf_cookie_over_http()`）—— 也因此**不需要**再驱动用户的标签页。v0.13.23 把这条
+尾巴收干净了：界面层固定 `navigate=False`，而「最多导航几次」那套机制
+（`BROWSER_LEAF_NAV_LIMIT` / `BROWSER_LEAF_RETRY_SECONDS` / `BROWSER_LEAF_CAP_HINT`）
+连同「导航次数」这个概念一起删掉 —— 一次都不动用户的标签页，就不该留着一个会让人
+误以为程序还在导航的状态。拿不到饼干时，界面会把「窗口里有哪些饼干（只写名字）」和
+HTTP 那条路的原话拼进失败原因（`_jar_summary()` / `_diagnosis()`），它会跟着
+「浏览器登录没成：…」进运行日志。
 
 ## 逐级回退的构造函数：只钉「传了什么」看不出来（2026-10-02 发现）
 

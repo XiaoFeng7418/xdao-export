@@ -695,23 +695,17 @@ class LoginDialog(tk.Toplevel):
 BROWSER_POLL_SECONDS = 1.5
 # 没读到 userhash 时，隔这么久去饼干页领一次（用户登录成功那一刻正好用上）。
 BROWSER_LEAF_SECONDS = 5.0
-# 「领饼干」最多**导航**几次用户眼前那个标签页（v0.13.17 起这一步要走站点自己的跳转，
-# 只能靠导航）。
+# 「领饼干」**一次都不导航**用户眼前那个标签页（v0.13.23）。
 #
-# 为什么要设上限：站点那边「应用」要是反复不成（账号还没领过饼干、写法又变了），
-# 每 5 秒把用户的标签页弹到饼干页一次，比多等一会儿糟得多。用完这几次之后只重读
-# 饼干罐，剩下的时间留给用户自己登。
+# v0.13.17~v0.13.22 走过一段弯路：那几版让程序自己去站点「应用」饼干（navigate=True），
+# 因为站点那一跳是页面内的跳转，只能靠导航。结果是程序把用户的标签页留在站点自己的
+# 「饼干切换成功!」倒计时页上——那一页的 `a#href` 是空的，页面里的
+# `location.href = href` 于是**原地重载**，用户看到的就是「一直无限跳转」；而程序这边
+# 每轮都要等它跳完，userhash 始终没种上（m29953/m29954/m30629 三张截图都是它）。
 #
-# 2 → 6（v0.13.21）：一次「应用」现在要等站点自己的倒计时页跳完、再等饼干罐里出现
-# userhash，单次成功率高得多；上限太低的话，碰上站点那一跳慢半拍，两次机会会在几
-# 十秒里用完，然后就只剩「只读饼干罐」，界面一路等到超时（用户 m29500 的卡法）。
-BROWSER_LEAF_NAV_LIMIT = 6
-# 次数用完时挂在窗口上的那句话：降级这件事必须在界面上说出来，不能悄悄发生。
-BROWSER_LEAF_CAP_HINT = (
-    "已经把「自动领饼干」试满 {limit} 次，接下来只读饼干罐（不再动浏览器里的标签页）。"
-)
-# 导航过之后缓这么久再去下一次：站点「应用」是跳转式的，几秒一轮会把标签页弹成风箱。
-BROWSER_LEAF_RETRY_SECONDS = 20.0
+# 正路是 HTTP：`browser_login.apply_leaf_cookie_over_http` 拿整罐饼干去跑
+# `XdaoClient.apply_cookie`（v0.6.1 起就在线上的老协议：认「跳转提示」页、跟着跳、
+# 从导出页正文里抠 userhash）。浏览器只负责让用户把验证码认过去。
 # 隔这么久把状态换成「已经等了 N 秒」。
 #
 # 为什么要有这一句：用户可能在**自己平时的浏览器**里登录，程序看不到，界面又一直
@@ -840,6 +834,10 @@ class BrowserLoginDialog(tk.Toplevel):
         self._browser_note = ""
         # 最近一条「程序刚才试到哪一步」的结论（也进 self.failure，见 _poll）。
         self._hint = ""
+        # 诊断用（v0.13.23）：浏览器里有哪些饼干（只看名字）、HTTP 那条路最后一句原话。
+        # 这两个由后台线程写、_poll 读 —— 只是字符串引用，够用。
+        self._jar_note = ""
+        self._http_note = ""
         self._ui_job: str | None = None
         self._closing = False
 
@@ -982,6 +980,23 @@ class BrowserLoginDialog(tk.Toplevel):
         except tk.TclError:  # pragma: no cover - 窗口已经销毁
             pass
 
+    def _diagnosis(self) -> str:
+        """把「卡在哪一步」的书面线索拼成一句（v0.13.23）：它会跟着失败原因进运行日志。
+
+        用户报问题贴的是运行日志，所以这里必须带上两样：浏览器里有哪些饼干（只看名字）、
+        走 HTTP 那条路时站点/网络层的原话。少了它们，日志里只剩一句「还没取到饼干」，
+        跟「查不动」没区别（m30629 那次就是如此：截图里只有 CDP 那句「还没登录」，
+        连 HTTP 那条路到底跑没跑都看不出来）。
+        """
+        parts: list[str] = []
+        if self._jar_note:
+            parts.append(self._jar_note)
+        if self._http_note:
+            parts.append(f"走 HTTP 领饼干：{self._http_note}")
+        if not parts:
+            return ""
+        return "（" + "；".join(parts) + "）"
+
     def start(self) -> None:
         """打开浏览器并开始等饼干；已经在跑时重复调用没有副作用。"""
         if self._closing:
@@ -1038,13 +1053,13 @@ class BrowserLoginDialog(tk.Toplevel):
                 self._set_hint(str(payload))
                 continue
             if kind == "browser_closed":
-                self.failure = "浏览器窗口已经关掉了，还没取到饼干。"
+                self.failure = "浏览器窗口已经关掉了，还没取到饼干。" + self._diagnosis()
                 self._set_status(
                     "浏览器窗口已经关掉了，还没取到饼干。点「重新打开浏览器」重开一个，"
                     "或者点「直接粘贴饼干登录」。"
                 )
             else:  # 剩下的都是错误
-                self.failure = str(payload)
+                self.failure = str(payload) + self._diagnosis()
                 self._set_status(str(payload))
             self.retry_button.config(state="normal")
         if not self._closing:
@@ -1213,10 +1228,8 @@ class BrowserLoginDialog(tk.Toplevel):
         next_progress = started + BROWSER_PROGRESS_SECONDS
         verified: str | None = None  # 已经验过、当场就认的饼干：别每一轮都去问一遍
         said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
-        leaf_attempts = 0  # 已经**真去动过**用户标签页几次（见 BROWSER_LEAF_NAV_LIMIT）
         leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行
         leaf_hints: list[str] = []  # 领饼干试过的几步（按发生顺序、去重）：拼进超时那句话
-        cap_said = False  # 「次数用完、只读饼干罐了」只说一次，说完常驻那一行就留着它
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1226,49 +1239,33 @@ class BrowserLoginDialog(tk.Toplevel):
                 value = self._read_userhash(backend, session)
                 leaf_now = time.monotonic()
                 if not value and leaf_now >= next_leaf:
-                    navigate = leaf_attempts < BROWSER_LEAF_NAV_LIMIT
-                    if not navigate and leaf_attempts and not cap_said:
-                        # 降级这件事必须在界面上说出来（v0.13.21）：不然用户看到的只是
-                        # 「程序忽然不再去应用饼干了」，跟卡死没两样。
-                        cap_said = True
-                        cap_hint = BROWSER_LEAF_CAP_HINT.format(
-                            limit=BROWSER_LEAF_NAV_LIMIT
-                        )
-                        if cap_hint not in leaf_hints:
-                            leaf_hints.append(cap_hint)
-                        self._queue.put(("hint", cap_hint))
-                        leaf_hint = cap_hint
-                    value, detail, navigated = self._try_leaf_cookie(
+                    # 先报「浏览器里到底有哪些饼干」：真机上「读不出来」和「只有匿名会话号」
+                    # 在界面上长得一模一样（m30629 那张截图就分不出来），而这一行还会进
+                    # 运行日志，用户贴出来就能定位。
+                    jar_note = self._jar_summary(backend, session)
+                    if jar_note and jar_note != self._jar_note:
+                        self._jar_note = jar_note
+                        if jar_note not in leaf_hints:
+                            leaf_hints.append(jar_note)
+                        self._queue.put(("hint", jar_note))
+                    # v0.13.23：这一步**不导航**用户的标签页 —— 只读页面状态和饼干罐。
+                    # 站点那边「应用」是跳转式的，程序一导航，用户眼前那个标签页就会被
+                    # 留在站点自己的「饼干切换成功!」倒计时页上原地重载，看起来就是
+                    # 「一直无限跳转」（m29953/m29954/m30629 都是这个）。领饼干的正事
+                    # 交给下面那条 HTTP 路（`XdaoClient.apply_cookie` 的老协议）。
+                    value, detail, _navigated = self._try_leaf_cookie(
                         backend,
                         session,
-                        navigate=navigate,
-                        # 已经真去应用过之后（v0.13.21），页面停在登录页不再按「用户还在
-                        # 登录页打字」处理：那一趟导出页导航会把没种上 userhash 的标签页
-                        # 弹到登录页，照旧早退就再也不会去领饼干，只会一直重复那句
-                        # 「这个窗口里还没登录（页面停在登录页）」（用户 m29500 卡住的那支）。
-                        waiting_for_login=leaf_attempts == 0,
+                        navigate=False,
                     )
-                    # 只有**真动过**他的标签页才扣次数（v0.13.20）：用户还在登录页打字时，
-                    # 这一步什么都不碰就返回了（「还没登录」），要是照旧扣，两次机会会在开头
-                    # 十几秒里用光 —— 等他登进去，程序已经只会重读饼干罐，而 userhash 只有
-                    # 真去「应用」才会被种下，于是界面一路等到超时（0.13.18 真机上正是如此）。
-                    if navigate and navigated:
-                        leaf_attempts += 1
-                    # 导航过就缓一缓：站点那边「应用」是跳转式的，几秒一轮会把用户的
-                    # 标签页弹成风箱；只读饼干罐的那几次不打扰他，照旧 5 秒一轮。
-                    next_leaf = leaf_now + (
-                        BROWSER_LEAF_RETRY_SECONDS if navigated else BROWSER_LEAF_SECONDS
-                    )
+                    next_leaf = leaf_now + BROWSER_LEAF_SECONDS
                     if detail and detail != leaf_hint:
                         leaf_hint = detail
                         if detail not in leaf_hints:
                             # 有序留痕：只留最后一条的话，收尾那句「还是没看到 userhash」
                             # 会把前面有用的「还没登录」盖掉，截图上看不出卡在哪。
                             leaf_hints.append(detail)
-                        if not cap_said:
-                            # 次数用完之后常驻那一行就留着那句说明（比每 5 秒重复一遍
-                            # 「饼干罐里还是没有 userhash」有用），但这一步照旧进历史。
-                            self._queue.put(("hint", detail))
+                        self._queue.put(("hint", detail))
                     if not value:
                         # v0.13.22：浏览器那条路领不到时，拿**同一罐饼干**走 HTTP 再试一次。
                         # 站点给 userhash 的落点是导出页的响应体（`XdaoClient.apply_cookie`
@@ -1277,24 +1274,21 @@ class BrowserLoginDialog(tk.Toplevel):
                         http_value, http_detail = self._try_leaf_cookie_http(
                             backend,
                             session,
-                            # 「用户可能还在打验证码」只在这一轮没动过页面、也从来没应用过时
-                            # 成立（否则就是标签页被弹回登录页，而罐里其实还登录着）。真按
-                            # 「在打字」处理时也只跳过**匿名**的罐子：里面已经有真会话就直接
-                            # 走 HTTP —— 它不碰用户的页面，也就不会把人从表单上拽走。
-                            may_skip_for_typing=not navigated and leaf_attempts == 0,
+                            # 「用户可能还在打验证码」的场合只跳过**匿名**的罐子：里面已经有
+                            # 真会话就直接走 HTTP —— 它不碰用户的页面，也就不会把人从
+                            # 表单上拽走。
+                            may_skip_for_typing=True,
                         )
                         if http_value:
                             value = http_value
                             next_leaf = leaf_now + BROWSER_LEAF_SECONDS
-                        elif http_detail and http_detail != leaf_hint:
-                            # 它的原话要进「试过的几步」：这一段会进运行日志，是用户截图里
-                            # 最接近真相的一句。每次都挪到最后 —— 收尾只显示最后三条
-                            # （`leaf_hints[-3:]`），而这句话比「罐里还是没有」有用得多。
-                            leaf_hint = http_detail
-                            if http_detail in leaf_hints:
-                                leaf_hints.remove(http_detail)
-                            leaf_hints.append(http_detail)
-                            if not cap_said:
+                        elif http_detail:
+                            self._http_note = http_detail
+                            if http_detail != leaf_hint:
+                                leaf_hint = http_detail
+                                if http_detail in leaf_hints:
+                                    leaf_hints.remove(http_detail)
+                                leaf_hints.append(http_detail)
                                 self._queue.put(("hint", http_detail))
                 if value and value != verified:
                     # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
@@ -1393,6 +1387,22 @@ class BrowserLoginDialog(tk.Toplevel):
         if value and backend.looks_like_userhash(value):
             return value, detail, navigated
         return None, detail, navigated
+
+    @staticmethod
+    def _jar_summary(backend, session) -> str:
+        """浏览器里的饼干有哪些（只看名字）—— 一句话的诊断（v0.13.23）。
+
+        真机上「读不到饼干」和「只读到匿名会话号」在界面上长得一样，用户截图分不出来
+        （m30629）。这句话既进常驻提示、又进运行日志，是下次报告里最有用的一行。
+        """
+        try:
+            cookies = backend.read_site_cookies(session)
+        except Exception as exc:  # noqa: BLE001 —— 诊断用，失败本身就是要说的话
+            return f"读不到浏览器里的饼干：{exc}"
+        names = backend.summarize_cookies(cookies)
+        if not names:
+            return "浏览器里现在没有任何属于 X 岛的饼干（还没登录过）。"
+        return f"浏览器里的饼干：{names}（还没有 userhash）。"
 
     @staticmethod
     def _try_leaf_cookie_http(

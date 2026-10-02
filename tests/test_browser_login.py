@@ -2433,17 +2433,29 @@ def test_fetch_leaf_cookie_keeps_trying_after_the_page_was_bounced_to_login() ->
 
 
 def test_fetch_leaf_cookie_with_navigate_false_only_relooks_at_the_jar() -> None:
-    """界面层用完导航次数上限之后走这条路：只重读饼干罐，绝不动用户的页面。"""
-    empty = _ScriptedSession(url=bl.LOGIN_URL)
-    result = bl.fetch_leaf_cookie(empty, navigate=False)  # type: ignore[arg-type]
+    """界面层固定走这条路（v0.13.23）：只看页面和饼干罐，绝不动用户的标签页。"""
+    on_login = _ScriptedSession(
+        {bl.LOGIN_URL: _login_page_state()}, url=bl.LOGIN_URL
+    )
+    result = bl.fetch_leaf_cookie(on_login, navigate=False)  # type: ignore[arg-type]
     assert result.value is None
     assert result.navigated is False
-    assert empty.navigations == []
-    assert empty.cookie_reads, "没读饼干罐"
-    assert "userhash" in result.detail
+    assert on_login.navigations == []
+    assert on_login.cookie_reads, "没读饼干罐"
+    # 页面停在登录页时照旧如实说「还没登录」：不导航不等于不看页面。
+    assert "还没登录" in result.detail
+
+    elsewhere = "https://www.nmbxd1.com/Member/User/Index/index.html"
+    on_home = _ScriptedSession(
+        {elsewhere: {"url": elsewhere, "kind": "other", "ids": []}}, url=elsewhere
+    )
+    detail = bl.fetch_leaf_cookie(on_home, navigate=False).detail  # type: ignore[arg-type]
+    assert "userhash" in detail
+    assert on_home.navigations == []
 
     ready = _ScriptedSession(cookies=[{"name": "userhash", "value": "ABC12345"}], url=bl.LOGIN_URL)
     assert bl.fetch_leaf_cookie(ready, navigate=False).value == "ABC12345"  # type: ignore[arg-type]
+    assert ready.navigations == []
 
 
 def test_fetch_leaf_cookie_will_not_work_on_a_page_outside_the_site() -> None:
@@ -2503,8 +2515,12 @@ def test_read_site_cookies_hands_back_the_whole_jar() -> None:
     assert session.navigations == []
 
 
-def test_read_site_cookies_says_empty_instead_of_raising_on_a_broken_session() -> None:
-    """会话断了就当「罐里什么都没有」：调用方照旧回落浏览器那条路，不用分情况。"""
+def test_read_site_cookies_raises_so_the_caller_can_say_what_happened() -> None:
+    """会话断了就抛（v0.13.23）：界面层要把这句话原样写进提示和运行日志。
+
+    以前这里吞成空列表，界面层把「读不出来」和「罐里没登录」当成同一件事，
+    HTTP 那条路一声不响地被跳过 —— 用户截图里只剩 CDP 那句「还没登录」（m30629）。
+    """
 
     class Broken:
         def current_url(self) -> str:
@@ -2513,7 +2529,30 @@ def test_read_site_cookies_says_empty_instead_of_raising_on_a_broken_session() -
         def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
             raise bl.CdpError("连接断了")
 
-    assert bl.read_site_cookies(Broken()) == []  # type: ignore[arg-type]
+    with pytest.raises(bl.CdpError):
+        bl.read_site_cookies(Broken())  # type: ignore[arg-type]
+
+
+def test_read_site_cookies_keeps_an_empty_jar_as_an_empty_list() -> None:
+    """罐里真的什么都没有：这是「没登录」，不是「读不到」，得能分开。"""
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    assert bl.read_site_cookies(session) == []  # type: ignore[arg-type]
+
+
+def test_summarize_cookies_lists_names_only() -> None:
+    """诊断行只报名字（值和 cookie 名之外的东西一律不写，日志要能直接贴给人看）。"""
+    assert bl.summarize_cookies([]) == ""
+    made_up = [
+        {"name": "PHPSESSID", "value": "secret"},
+        {"name": "memberUserspapapa", "value": "secret2"},
+        {"name": "PHPSESSID", "value": "dup"},          # 重名只报一次
+        {"name": "  ", "value": "x"},                    # 空名字跳过
+        {"value": "no-name"},                            # 没名字跳过
+        "不是 dict",                                     # 脏数据不能把诊断打崩
+    ]
+    summary = bl.summarize_cookies(made_up)  # type: ignore[arg-type]
+    assert summary == "PHPSESSID、memberUserspapapa"
+    assert "secret" not in summary and "dup" not in summary
 
 
 class _HttpClient:
