@@ -34,7 +34,7 @@
 
 - 本机全量：`1562 passed / 7 skipped`（共 1569 项；比上一版多 3 个新用例）。
 - 文本卫生：`MAINTENANCE.md` CRLF 1361 / 裸 LF 0、`README.md` CRLF 476 / 裸 LF 0、
-  `packaging/使用说明.txt` BOM 1 / 裸 LF 515（这份说明一直是「带 BOM + 裸 LF」）。
+  `packaging/使用说明.txt` BOM 1 / 裸 LF 516（这份说明一直是「带 BOM + 裸 LF」）。
 - 打包版 `--version` → `X岛串导出工具 0.13.19`；`--selftest` 与上一版基线结论一致。
 - 免安装包里的 `使用说明.txt` 与仓库文件逐字节一致。
 - `tools/repo_check.py` 14 项全绿。
