@@ -392,6 +392,41 @@ def fresh_profile_dir() -> Path:
     )
 
 
+#: 浏览器自己那几句「为什么起不来」是写在 stderr 上的；v0.13.40 起把它留到临时
+#: 日志里，报「刚起来就退出了」时最多带上这么多行、这么多字符。
+STDERR_TAIL_LINES = 5
+STDERR_TAIL_CHARS = 600
+
+
+def _stderr_log_path() -> Path:
+    """这次启动给浏览器 stderr 用的临时日志文件（v0.13.40）。
+
+    名字故意不带 :data:`TEMP_DIR_PREFIXES` 里那两个前缀：它是个几 KB 的小文件，
+    不是资料目录，别让清扫函数把它当目录看。
+    """
+    return Path(tempfile.gettempdir()) / (
+        f"xdao-browser-stderr-{os.getpid()}-{time.time_ns()}.log"
+    )
+
+
+def _read_stderr_tail(
+    path: Path, *, lines: int = STDERR_TAIL_LINES, limit: int = STDERR_TAIL_CHARS
+) -> str:
+    """读浏览器自己最后那几行话；文件不在、读不动、是空文件都回空串。
+
+    行与行之间用 `` / `` 连成一行：这些话要嵌进一句错误文案里，单行比多行好读，
+    也免得一次往日志里塞进十几行。
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    rows = [row.strip() for row in text.splitlines() if row.strip()]
+    if not rows:
+        return ""
+    return " / ".join(rows[-lines:])[:limit]
+
+
 #: 我们建在系统临时目录下的目录名前缀：登录用的临时资料目录，以及 ``--check-browser``
 #: 自检时那一份（``browser_check`` 用 ``mkdtemp(prefix="xdao-browser-check-")`` 建的）。
 #: 两样都是临时的、都该在收尾时删掉，所以清理时要一起认。
@@ -963,6 +998,9 @@ class LoginBrowser:
         #: 这次会话**建过的每一个**临时资料目录（换浏览器时会各拿一个新的）。
         #: 收尾时按这张清单挨个删 —— 见 :meth:`cleanup_temp_profile`。
         self._temp_dirs: list[Path] = []
+        #: 这次启动给浏览器 stderr 留的临时日志（v0.13.40）；起好或报错之后都会删，
+        #: 见 :meth:`_stderr_tail_note` 与 :meth:`_discard_stderr_log`。
+        self._stderr_log: Path | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.port = 0
         self.ws_path = ""
@@ -1297,20 +1335,49 @@ class LoginBrowser:
             stale_mtime: float | None = port_file.stat().st_mtime
         except OSError:
             stale_text, stale_mtime = None, None
+        # v0.13.40：这次不再把浏览器的话一律丢进 DEVNULL —— 它「刚起来就退出」时，
+        # 真正的原因（资料目录被锁、被安全软件拦下、参数被拒绝）就写在 stderr 上，
+        # 丢掉等于把唯一的现场毁了，用户只能看到程序猜的那几句。改成写进一个临时
+        # 日志，报错时把最后几行带上，起好了就把日志删掉。
+        stderr_log: Path | None = _stderr_log_path()
+        stderr_handle = None
+        try:
+            stderr_handle = open(stderr_log, "wb")
+        except OSError:
+            # 打不开（临时目录写不进去、安全软件不让写）就照旧丢弃：宁可没有这几行
+            # 话，也不能因此让浏览器起不来。
+            stderr_handle, stderr_log = None, None
+        self._stderr_log = stderr_log
         try:
             self.process = subprocess.Popen(
                 build_args(self.info, chosen, self.proxy, self.start_url),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL if stderr_handle is None else stderr_handle,
                 # GUI 程序里启动浏览器时别弹一个黑框（这个常量只在 Windows 上有）。
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except OSError as exc:
             # 这一条**不经过 start() 的重试分支**（进程都没起来，换目录也白搭），
             # 所以刚才建出来的临时目录要当场收掉，否则失败一次就在 %TEMP% 留一个空壳。
+            if stderr_handle is not None:
+                # 先松手再删（Windows 上文件自己开着是删不掉的）；finally 里那次
+                # close() 重复关同一个句柄没关系。
+                try:
+                    stderr_handle.close()
+                except OSError:  # pragma: no cover
+                    pass
+            self._discard_stderr_log()
             self.cleanup_temp_profile()
             raise CdpError(f"启动 {self.info.name} 失败：{exc}") from exc
+        finally:
+            if stderr_handle is not None:
+                # 子进程已经拿到自己的那一份，父进程这份现在就该关：留着它，
+                # 稍后读这个文件时（Windows 上）可能被自己挡住。
+                try:
+                    stderr_handle.close()
+                except OSError:  # pragma: no cover —— 关不掉也拦不住什么
+                    pass
 
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
@@ -1338,6 +1405,11 @@ class LoginBrowser:
                         "（这份目录启动前就有一扇窗开着、留着端口文件；浏览器遇到这种"
                         "情况通常把要开的页面交给那一扇、自己就退出了，这一条多半如此。）"
                     )
+                tail = self._stderr_tail_note()
+                if tail:
+                    # v0.13.40：把浏览器自己的原话接在后面 —— 上面那几句是程序的推测，
+                    # 这一句是当事人说的，真机上「起不来」的谜底十次有九次在这里。
+                    message += f"（浏览器自己最后几行话：{tail}）"
                 self.stop()
                 raise CdpError(message)
             if port_file.exists():
@@ -1384,20 +1456,49 @@ class LoginBrowser:
                         )
                     else:
                         self._profile_note = f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
+                    # 起好了，浏览器 stderr 那几行就用不上了（v0.13.40）。
+                    self._discard_stderr_log()
                     return self
             time.sleep(_POLL_INTERVAL)
 
+        tail = self._stderr_tail_note()
         self.stop()
-        raise CdpError(
+        message = (
             f"等了 {self.timeout:g} 秒还没等到 {self.info.name} 的调试端口。"
             "请确认浏览器能正常打开；装了安全软件时也可能拦下调试端口。"
         )
+        if tail:
+            message += f"（浏览器自己最后几行话：{tail}）"
+        raise CdpError(message)
 
     def devtools_http(self, path: str) -> str:
         """拼出 CDP 的 HTTP 地址（``/json/list``、``/json/version`` 都在它下面）。"""
         if not self.port:
             raise CdpError("浏览器还没启动，调试端口未知。")
         return f"http://127.0.0.1:{self.port}/{path.lstrip('/')}"
+
+    def _discard_stderr_log(self) -> None:
+        """删掉这次启动给浏览器留的 stderr 日志（v0.13.40）。
+
+        读完了就不留垃圾；删不掉（浏览器还没松手）也不抛 —— 它只是 %TEMP% 里一个
+        几 KB 的小文件。
+        """
+        path, self._stderr_log = self._stderr_log, None
+        if path is None:
+            return
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+    def _stderr_tail_note(self) -> str:
+        """浏览器自己最后那几行话（读的同时就把日志删了）；读不到回空串。"""
+        path = self._stderr_log
+        if path is None:
+            return ""
+        note = _read_stderr_tail(path)
+        self._discard_stderr_log()
+        return note
 
     def stop(self) -> None:
         """关掉浏览器。已经关掉了、或者它不肯走，都不抛异常。"""
@@ -1417,6 +1518,7 @@ class LoginBrowser:
                     pass
         # 临时资料目录**建出来过就一定要收掉**（不管这次起没起来）：失败尝试也会在里面
         # 落下一二十个文件，真机上量到「一连失败几次，%TEMP% 里就攒一堆空壳」。
+        self._discard_stderr_log()
         self.cleanup_temp_profile()
 
     def cleanup_temp_profile(self) -> bool:
