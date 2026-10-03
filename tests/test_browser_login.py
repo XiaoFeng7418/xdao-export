@@ -839,6 +839,12 @@ _SITE_TAB = {
     "url": bl.LOGIN_URL,
     "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/SITE",
 }
+# v0.13.36：第二条站点标签 —— 用户登进去之后停着的「饼干列表」页。
+_COOKIE_TAB = {
+    "type": "page",
+    "url": bl.COOKIE_SITE + "/Member/User/Cookie/index.html",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/COOKIE",
+}
 
 
 def _retarget_session(
@@ -926,6 +932,63 @@ def test_retarget_reports_no_tabs_at_all(monkeypatch: pytest.MonkeyPatch) -> Non
     session = bl._new_session("http://127.0.0.1:9222/json/list")
     with pytest.raises(cdp.CdpError, match="没有可用的页面标签"):
         session.retarget()
+
+
+def test_retarget_settles_on_a_live_non_login_tab(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两页站点标签（没关掉的旧登录页 + 现在的饼干页）：已经挂在饼干页上就稳住。
+
+    v0.13.36（真机 m37565）：以前「挑列表里第一个站点页」，而 ``/json/list`` 的顺序
+    没有稳定定义 —— 两页会被轮着挑中，``挂=`` 在 login.html 和饼干页之间来回跳，
+    横幅跟着换、读数跟着换上下文，一屏日志自相矛盾，永远定不了案。
+    """
+    session, attached = _retarget_session(
+        monkeypatch,
+        [_SITE_TAB, _COOKIE_TAB],
+        attached_ws=_COOKIE_TAB["webSocketDebuggerUrl"],
+    )
+    assert session.retarget() is False
+    assert attached == [], "挂着的就是活着的非登录站点页：一克也不动"
+
+
+def test_retarget_steps_off_a_zombie_login_page_onto_the_live_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前挂着的是登录页、浏览器里另有一页非登录站点页：挪到那一页去。
+
+    m34935 的教训不能丢：用户早就登进去停在饼干页，程序死守僵尸登录页就会一路
+    报「页面停在登录页」。只挪这一次 —— 下一轮当前页已是非登录页，由上一条用例稳住。
+    """
+    session, attached = _retarget_session(
+        monkeypatch,
+        [_SITE_TAB, _COOKIE_TAB],
+        attached_ws=_SITE_TAB["webSocketDebuggerUrl"],
+    )
+    assert session.retarget() is True
+    assert attached == [_COOKIE_TAB["webSocketDebuggerUrl"]]
+
+
+def test_list_page_targets_only_keeps_attachable_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """「读罐对账」的 页= 段用的公开读法：只留 type=page 且带调试地址的标签。"""
+    pages = [
+        _STALE_TAB,
+        {
+            "type": "extension-host",
+            "url": "chrome-extension://abc/",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/EH",
+        },
+        {
+            "type": "page",
+            "url": "https://example.com/x",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/PLAIN",
+        },
+        {"type": "page", "url": "https://example.com/y"},  # 没地址挂不上，不算
+    ]
+    monkeypatch.setattr(bl, "_http_json", lambda url, timeout=5.0: pages)
+    session = bl._new_session("http://127.0.0.1:9222/json/list")
+    got = session.list_page_targets()
+    assert [str(p.get("url")) for p in got] == ["about:blank", "https://example.com/x"]
 
 
 class _FakePageSession:
@@ -2414,6 +2477,9 @@ class _ScriptedSession:
         # v0.13.34：页面自己的 document.cookie 那一路（第四读）的替身答案。
         self.document_cookie = ""
         self.document_cookie_error: Exception | None = None
+        # v0.13.36：「读罐对账」里 页= 那一段的替身答案。默认 None 表示
+        # 「就当前这一页」；用例想演出僵尸标签就自己填一张 target 表。
+        self.page_targets: list[dict] | None = None
 
     # ---- CDPSession 的那几面 ----
     def call(self, method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
@@ -2434,6 +2500,12 @@ class _ScriptedSession:
         if self.read_all_error is not None:
             raise self.read_all_error
         return list(self.all_cookies)
+
+    def list_page_targets(self) -> list[dict]:
+        # v0.13.36：默认「就现在这一页」；想看多标签的用例自己填 page_targets。
+        if self.page_targets is not None:
+            return [dict(item) for item in self.page_targets]
+        return [{"url": self.url, "type": "page"}]
 
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
         self.evaluations.append(expression)
@@ -3000,6 +3072,8 @@ def test_jar_forensics_lines_up_the_reads_and_never_leaks_values() -> None:
     session.document_cookie = "userhash=HASH-SECRET-3; PHPSESSID=SESS-SECRET-1"
     line = bl.jar_forensics(session)  # type: ignore[arg-type]
     assert "挂=https://www.nmbxd1.com/Member/User/Cookie/index.html" in line
+    assert "页=1（https://www.nmbxd1.com/Member/User/Cookie/index.html）" in line, \
+        "默认替身就一页，页= 段要把「此刻有几页、挂在哪」写出来（v0.13.36）"
     assert "｜罐=" not in line, "没传罐名不许凭空造一段"
     assert "按地址读=PHPSESSID" in line
     assert "整罐读=PHPSESSID、memberUserspapapa" in line
@@ -3048,6 +3122,38 @@ def test_jar_forensics_reports_broken_reads_instead_of_raising() -> None:
     line = bl.jar_forensics(session)  # type: ignore[arg-type]
     assert "整罐读=出错（CdpError）" in line
     assert "按地址读=空" in line
+
+
+def test_jar_forensics_shows_every_attachable_tab_right_now() -> None:
+    """页= 段（v0.13.36，真机 m37565）：此刻浏览器里有几页、各挂在哪个地址。
+
+    僵局正是「可见窗口显示已登录的饼干页、对账里 挂= 却一直是 login.html」——
+    光一个 挂= 分不出是双标签顺序翻转还是别的。把整页清单并排写进同一行，
+    一张截图就能定案；地址不是秘密，照旧不写任何饼干值。
+    """
+    session = _ScriptedSession(
+        cookies=[{"name": "PHPSESSID", "value": "SESS-VAL", "domain": ".nmbxd1.com"}],
+        url=bl.COOKIE_SITE + "/Member/User/Cookie/index.html",
+    )
+    session.page_targets = [
+        {"url": bl.LOGIN_URL, "type": "page"},
+        {"url": bl.COOKIE_SITE + "/Member/User/Cookie/index.html", "type": "page"},
+    ]
+    line = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert (
+        "页=2（https://www.nmbxd1.com/Member/User/Index/login.html｜"
+        "https://www.nmbxd1.com/Member/User/Cookie/index.html）"
+    ) in line, line
+    assert "SESS-VAL" not in line, "对账行永远不许带饼干值"
+
+
+def test_jar_forensics_says_so_when_the_tab_reader_is_missing() -> None:
+    """会话没有这个读法（旧替身/旧连接）：页= 明说读不到，别把对账带崩。"""
+    import types
+
+    session = types.SimpleNamespace(current_url=lambda: bl.LOGIN_URL)
+    line = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert "页=读不到（AttributeError）" in line, line
 
 
 def test_named_userhash_entries_separates_present_from_plausible() -> None:

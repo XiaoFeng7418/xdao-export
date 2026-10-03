@@ -206,6 +206,11 @@ class _FakeSession:
             raise self.read_all_error
         return list(self.all_cookies)
 
+    def list_page_targets(self) -> list[dict]:
+        # v0.13.36：「读罐对账」的 页= 段读这一面。替身没有真标签，
+        # 就按「此刻只有当前这一页」如实报，保持对账行的结构完整。
+        return [{"url": self.current_url_value, "type": "page"}]
+
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
         self.evaluate_calls.append(expression)
         # 读页面状态那条脚本按「当前地址」取登记好的状态；其余脚本给默认值，
@@ -2005,18 +2010,25 @@ def test_long_wait_keeps_telling_the_user_how_long_and_where_to_log_in(
 def test_a_two_minute_wait_points_at_the_paste_button(
     root_window, browser_shim, open_dialog, monkeypatch
 ):
-    """等够久还没登录：程序主动把「八成登错了窗口」说破一次，按钮换成显眼说法。
+    """等够久还没登录：程序主动把「罐里真没有饼干、多半是这次登录没成」说破一次，
+    按钮换成显眼说法。
 
     真机 m35456：用户在自己常用的浏览器里登录+应用了饼干，程序盯着一次性窗口
     干等 18 分钟 —— 粘贴按钮一直在，可没人会在干等时去翻一个没变过的按钮。
     等得够久就要自己开口指路；而且只说一次，反复刷反而像坏了。
+    v0.13.36（真机 m37565）把判断掰正：窗口号对上了、罐也一直在读，可整罐就是
+    没有 userhash —— 这句不能再引导「你登错了窗」，要说破「旧『饼干列表』可能
+    只是上次登录的缓存画面，请在这扇窗重新提交登录」。
     """
     monkeypatch.setattr(gui, "BROWSER_PASTE_NUDGE_SECONDS", 0.2)
     monkeypatch.setattr(gui, "BROWSER_PROGRESS_SECONDS", 0.05)
     dialog = open_dialog()
 
     assert _wait_for(root_window, lambda: dialog._paste_nudges >= 1, timeout=10.0)
-    assert "userhash" in dialog.hint_var.get()
+    hint = dialog.hint_var.get()
+    assert "userhash" in hint
+    assert "多半是这次登录没提交成功" in hint, "v0.13.36 掰正后的判断必须出现在这句里"
+    assert "缓存" in hint, "要说破旧『饼干列表』只是上次登录留下的缓存画面"
     assert str(dialog.paste_button.cget("text")) == gui.BROWSER_PASTE_BUTTON_TEXT
     # 再多等几轮也不许刷第二遍。
     _pump(root_window, 0.5)

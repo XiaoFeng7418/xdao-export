@@ -677,6 +677,23 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.36**（钉稳真正登录的那一页 + 对账行列出浏览器此刻有哪几页：v0.13.35 复验 m37565 定案）：
+  横幅【窗口号】与对话框对上、Alt+Tab 只一扇窗、未过滤整罐读确实只有 1 块 PHPSESSID —— 读错窗与
+  CHIPS 分区过滤两个嫌疑同场枪毙；罐子每 1.5 秒（BROWSER_POLL_SECONDS）全程在读、晚登录也会被当场
+  抓住 ⇒ 只剩一个真相：这次登录没把饼干提交进这扇窗的罐，屏幕上那页「饼干列表」是上次登录留下的
+  缓存画面（页内 fetch 问列表被弹回登录页 = 服务器也不认，佐证）。另一处新嫌疑：对账 `挂=` 曾在
+  僵尸登录页与可见饼干页之间来回跳 —— /json/list 顺序没有稳定定义，重挑规则会摇摆。① `cdp.py`
+  `retarget()` 挑页重写：当前挂着**活着的非登录站点页** → 不再挪（return False 钉稳）；挂的是登录页
+  且另有非登录站点页 → 才挪过去一次；② `_page_targets` 公开成 `list_page_targets()`，`jar_forensics`
+  加 `页=N（url1｜url2…，每条截 60、最多列 4）` 段（任何异常 → `页=读不到（异常名）`；只写地址、
+  照旧绝不写值）—— 僵尸标签一张截图定案；③ 话术掰正：leaf 兜底句与 `BROWSER_PASTE_NUDGE` 都改说
+  「罐一直在读、里面确实没有 userhash，多半是这次登录没提交成功；旧『饼干列表』只是缓存画面，请在
+  这扇窗回登录页重新提交」—— 上一版「多半登错窗口」的判断被证伪，不能再引导。替身同步：
+  `_ScriptedSession` 加 `page_targets` + `list_page_targets()`、`_FakeSession` 加 `list_page_targets()`
+  （守护用例 test_fake_session_covers_every_method… 静态收集库在会话上调过的全部方法，替身缺一即红）。
+  测试 260→265（browser_login）；全量 1782 项 = 1775 通过 + 7 跳过。本轮事故一条：重写 nudge 注释块
+  时 old_string 盖到了 `BROWSER_PASTE_NUDGE_SECONDS` 常量行、new_string 没带全，常量整行消失 —— 
+  改注释块时覆盖到代码行就要在替换里原样带回。
 - **v0.13.35**（给每扇窗发一个号：查「你登的是不是程序在看的那扇窗」）：v0.13.34 复验（m36897）
   F12 里 userhash 明明摆着、四路读+页内 fetch+HTTP 回放却全只见匿名饼干 —— 读法盲区基本排除，
   头号嫌疑是窗口错位（旧「只挂不改」的横幅在旧程序窗口上冻结冒充）。① `build_watch_banner_script(stamp)`

@@ -1687,7 +1687,15 @@ def fetch_leaf_cookie(
                 return LeafCookie(
                     None, f"浏览器窗口里现在打开的不是 X 岛（{host}），先在里面对 X 岛登录。"
                 )
-            return LeafCookie(None, "自动取饼干这条路试过了：浏览器里还是没有 userhash。")
+            return LeafCookie(
+                None,
+                # v0.13.36 补后半句（真机 m37565）：这一支正是「页面不是登录页、罐里却
+                # 没有 userhash」——用户看到的多半是上次登录留下的「饼干列表」缓存画面，
+                # 得说破，否则他会以为已经登进去了、剩下的是程序的锅。
+                "自动取饼干这条路试过了：浏览器里还是没有 userhash。"
+                "你现在看到的页面可能是上次登录留下的缓存——请在这个窗口里回登录页，"
+                "重新提交账号密码验证码。",
+            )
         state = _page_state(session)
         if (state.get("kind") == "login" or state.get("login")) and waiting_for_login:
             return LeafCookie(None, "这个窗口里还没登录（页面停在登录页）：先在里面登录 X 岛。")
@@ -1898,6 +1906,12 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "") -> str:
     「罐里真没有」和「被 nmbxd 过滤吃掉了」；``原始userhash=`` 直接在原始罐里按名字
     找，报它的域/路径/HttpOnly/是否分区（CHIPS 分区饼干是探针没测过的读法差异），
     照样绝不报值。``jar_tag`` 空就不写罐段。
+
+    v0.13.36 补一段 ``页=``（真机 m37565 的僵局：可见窗口显示已登录的饼干列表页，
+    可对账行里 ``挂=`` 一直是 login.html —— 一扇窗里到底是几页站点标签、程序每轮
+    重挑时看见的顺序是什么，光看 ``挂=`` 定不了案）：报**此刻**浏览器里能挂上的
+    页面标签条数与各自地址（每条截 60 字、最多列 4 条，地址不是秘密，可以进日志）。
+    僵尸标签、双标签顺序翻转，从此一张截图就能看出来。
     """
     parts: list[str] = []
     try:
@@ -1905,6 +1919,18 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "") -> str:
     except Exception as exc:  # noqa: BLE001
         url = f"<读不到（{type(exc).__name__}）>"
     parts.append(f"挂={url[:70]}")
+    try:
+        pages = session.list_page_targets()
+    except Exception as exc:  # noqa: BLE001 —— 替身没这个读法也走这里，明说读不到
+        parts.append(f"页=读不到（{type(exc).__name__}）")
+    else:
+        shown = "｜".join(
+            (str(item.get("url") or "").strip() or "空")[:60]
+            for item in (pages if isinstance(pages, list) else [])[:4]
+            if isinstance(item, dict)
+        )
+        total = len(pages) if isinstance(pages, list) else 0
+        parts.append(f"页={total}（{shown or '空'}）")
     tag = str(jar_tag or "").strip()
     if tag:
         parts.append(f"罐={tag[:40]}")

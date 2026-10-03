@@ -437,6 +437,17 @@ class CDPSession:
             and target.get("webSocketDebuggerUrl")
         ]
 
+    def list_page_targets(self) -> list[dict]:
+        """现在浏览器里能挂上的页面标签清单（v0.13.36，排查用）。
+
+        真机 m37565 的僵局：可见窗口显示已登录的「饼干列表」页，可对账行里的
+        ``挂=`` 一直是 login.html —— 分不出是浏览器里真有两页站点标签（旧登录页
+        没关掉、列表是上次留下的缓存画面），还是 ``/json/list`` 的顺序把附着
+        拽到了另一页。这一句把**有几页、各挂在哪**写进「读罐对账」，下次一张
+        截图就能定案。只做一次 ``/json/list`` 读取，失败照实抛给调用方去兜。
+        """
+        return self._page_targets()
+
     def _resolve_page_url(self) -> str:
         """等目标页面出现，再把它交给 connect()。
 
@@ -531,6 +542,14 @@ class CDPSession:
         - 没有站点页面 → 连接还活着就按兵不动（别把用户正停着的页面换来换去），
           连接已经断了才退而挂第一个页面标签。
 
+        v0.13.36 把第一条钉上**稳定性**（真机 m37565：``挂=`` 在 login.html 和别的
+        页面之间来回跳，横幅跟着刷、读数跟着换上下文，一屏日志自相矛盾 —— 两个站点
+        标签时 ``/json/list`` 的返回顺序没有稳定定义，「挑第一个」就在两页之间轮着
+        挑中）。现在改成三条：当前挂着的就是活着的站点页、且它**不是登录页** → 稳住
+        不动；当前挂着的是登录页、而浏览器里另有**非登录**的站点页（用户已经登进去
+        停在饼干页）→ 挪到那一页去；其余情形照旧。m34935 的教训仍然成立：旧标签一
+        关，当前页不在列表里，照样换挂到用户在的那页。
+
         读标签列表本身失败（浏览器进程没了）照抛，由调用方决定怎么收场。
         """
         pages = self._page_targets()
@@ -541,12 +560,31 @@ class CDPSession:
         # 当「站点页」，用户每开一个普通网页都会被程序当成目标追过去换挂，
         # 「别把用户正停着的页面换来换去」就成了空话。
         prefixes = tuple(self._site_urls or ())
-        site = next(
-            (page for page in pages if str(page.get("url", "")).startswith(prefixes)),
-            None,
-        )
-        candidate = str((site if site is not None else pick_page(pages))["webSocketDebuggerUrl"])
+        site_pages = [
+            page for page in pages if str(page.get("url", "")).startswith(prefixes)
+        ]
         alive = self._sock is not None and not self._failure
+        current_page = next(
+            (
+                page
+                for page in site_pages
+                if str(page.get("webSocketDebuggerUrl")) == str(self._ws_url)
+            ),
+            None,
+        ) if alive else None
+        # 「非登录页优先」：挂着活着但正是登录页时，若别处有已登进去的页面，挪过去；
+        # 没有别的非登录页、或当前页本就非登录 → 稳住（v0.13.36）。
+        prefer = [
+            page
+            for page in site_pages
+            if "login" not in str(page.get("url", "")).lower()
+        ]
+        if current_page is not None and (
+            "login" not in str(current_page.get("url", "")).lower() or not prefer
+        ):
+            return False
+        site = (prefer or site_pages)[0] if (prefer or site_pages) else None
+        candidate = str((site if site is not None else pick_page(pages))["webSocketDebuggerUrl"])
         if alive and (candidate == self._ws_url or site is None):
             return False
         self.close()
