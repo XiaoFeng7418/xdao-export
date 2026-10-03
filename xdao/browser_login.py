@@ -75,8 +75,10 @@ TEMP_PROFILE_WAIT = 3.0
 _KILL_PROFILE_PROCESSES = _IS_WINDOWS
 #: 普查要不要再问操作系统一遍「谁此刻用着我们家的资料目录」（见 :func:`program_profile_dirs`）。
 #: 端口普查只认「名字猜得到」的目录（:func:`live_browser_dirs`）：备用目录的名字带着
-#: **当时那个进程**的 PID 和时间戳，新进程猜不出；端口文件再被哪一轮 ``_launch`` 预删掉，
-#: 那扇窗就彻底从普查里消失 —— 真机 m38110 的「饼干窗硬刷新不弹回、对账却 页=1」就是这么来的。
+#: **当时那个进程**的 PID 和时间戳，新进程猜不出 —— 真机 m38110 的「饼干窗硬刷新不弹回、
+#: 对账却 页=1」就是这么来的。当时还有另一半原因：``_launch`` 会顺手把目标目录里那份
+#: ``DevToolsActivePort`` 删掉（怕读到上次崩溃留下的过期端口），而那一眼可能正删在
+#: **一扇还开着的窗**头上；v0.13.38 起不改别人的文件了，那份端口文件一律留着。
 #: 用例会把它换成 False（或直接换掉函数本身）：这一手要真起一个 powershell。
 _PROCESS_CENSUS = _IS_WINDOWS
 #: :func:`fresh_profile_dir` 的进程内序号：同一个毫秒里连叫两次也要拿到不同的名字。
@@ -86,6 +88,10 @@ _FRESH_PROFILE_SEQ = 0
 # （真机上还量到过 Edge 自带的 edge://sync-confirmation-dialog/）。连到那种页面上，
 # 页面里的 fetch 属于别的源，读饼干会一律读空，所以这里给它几秒把登录页开出来。
 _SITE_WAIT = 8.0
+# 多扇窗里挑一扇接手时（见 :meth:`LoginBrowser._order_by_login`），问一扇窗「罐里有没有
+# userhash」的预算：够连上、够读一次饼干，又不至于让「哪扇登录过」这个问题拖慢开窗。
+# 只连本地调试端口、只读饼干，不动用户正看着的那一页。
+WINDOW_PROBE_TIMEOUT = 3.0
 # 判断「裸粘贴」的字符集：整段的粘贴不会只由这些字符组成，因此能挡掉 HTML/JSON 残渣。
 _BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
 # 「浏览器刚起来就退出了」这句错误文案里的固定部分：启动失败与读调试接口失败的
@@ -763,6 +769,21 @@ def _parse_devtools_file(text: str) -> tuple[int, str]:
     return port, lines[1] if len(lines) > 1 else ""
 
 
+def _port_file_fresh(
+    text: str, mtime: float, stale_text: str | None, stale_mtime: float | None
+) -> bool:
+    """这份端口文件是不是我们这次启动**之后**写出来的（v0.13.38）。
+
+    ``stale_*`` 是启动前记下的旧内容与旧时间戳（原本没有这个文件时都是 ``None``）。
+    只要两者之一对不上（内容变了、或者时间戳变了），就说明浏览器新写了一份、可以认。
+    有了这个判据，就不必像以前那样先删文件 —— 那一删很可能删在**另一扇还开着的
+    窗**头上（见 :meth:`LoginBrowser._launch` 里那段说明）。
+    """
+    if stale_text is None or stale_mtime is None:
+        return True
+    return text != stale_text or mtime != stale_mtime
+
+
 def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
     """强杀，并且尽量连子进程一起收掉。
 
@@ -1037,6 +1058,14 @@ class LoginBrowser:
         于是普查瞎报「没探到」、又开一扇，世界上出现两个罐。现在问完端口再问进程
         （:meth:`_adopt_process_side_findings`）：端口失联的僵尸窗**先收掉**，
         名字猜不到但端口还答话的补进接手名单。
+
+        v0.13.38 两处补刀。一是 :meth:`_launch` 不再删别人的端口文件了，m38110 的
+        另一半成因就此消掉（那一手原本怕读到过期端口，代价是把还开着的窗弄瞎）。
+        二是**多扇窗时先问罐**：不再是「按端口文件时间戳挑第一扇」——那跟「哪扇窗
+        登录过」没有半点关系——而是挨个问一遍（:func:`window_userhash`），罐里真有
+        userhash 的那扇优先接手（见 :meth:`_order_by_login`），普查句里也点名
+        「几扇里几扇留着登录痕迹」。真机 m38110 那种「用户在 A 窗登录、程序接 B 窗
+        空罐」的错认，从这一版起要么不发生、要么在日志里一眼看得见。
         """
         live = live_browser_dirs(self.profile)
         reaped = self._adopt_process_side_findings(live)
@@ -1053,6 +1082,8 @@ class LoginBrowser:
                 f"{'、'.join(path.name for path in reaped[:5])}），已先收掉，"
                 "免得它和这一轮程序用的窗口混在一起。"
             )
+        # 端口文件读得动、里面真有端口的，才算能接上的候选（读不动＝探测和读之间它退了）。
+        attachable: list[tuple[Path, int, str]] = []
         for chosen in live:
             try:
                 port, ws_path = _parse_devtools_file(
@@ -1060,8 +1091,12 @@ class LoginBrowser:
                 )
             except (OSError, CdpError):  # pragma: no cover —— 探测和读之间它退了
                 continue
-            if not port:
-                continue
+            if port:
+                attachable.append((chosen, port, ws_path))
+        # v0.13.38：多扇窗时先问罐、把有登录痕迹的那扇排前面（见 :meth:`_order_by_login`）。
+        if len(attachable) > 1:
+            attachable = self._order_by_login(attachable)
+        for chosen, port, ws_path in attachable:
             self._profile = chosen
             self.port = port
             self.ws_path = ws_path
@@ -1075,6 +1110,32 @@ class LoginBrowser:
         if live:
             self._census_note += "挨个问了一遍都没接上，照常新开一扇。"
         return None
+
+    def _order_by_login(
+        self, candidates: list[tuple[Path, int, str]]
+    ) -> list[tuple[Path, int, str]]:
+        """多扇窗里把「罐里有 userhash」的排到前面（v0.13.38）。
+
+        为什么：真机 m38110 现场两扇窗 —— 用户眼前那扇罐里有 userhash，程序却接上了
+        另一扇空罐，于是「F12 里明明有饼干、程序说没有」，怎么点「应用」都对不上。
+        旧逻辑是「按端口文件时间戳挑第一扇」，可「谁最后开的」和「谁登录过」毫无关系。
+        现在直接问罐（:func:`window_userhash`），并在普查句里点名，一眼能看出接的是谁。
+
+        都没有登录痕迹时**保持原顺序**（端口文件时间倒序，最新那扇在前）：这时候没有
+        更好的判据，别自作主张重排 —— 每次开窗挑中另一扇会让横幅跟着乱跳。
+        """
+        scored: list[tuple[bool, tuple[Path, int, str]]] = []
+        for item in candidates:
+            port, ws_path = item[1], item[2]
+            scored.append((bool(window_userhash(f"ws://127.0.0.1:{port}{ws_path}")), item))
+        logged = [item for flag, item in scored if flag]
+        if not logged:
+            return [item for _flag, item in scored]
+        names = "、".join(item[0].name for item in logged[:5])
+        self._census_note += (
+            f"其中 {len(logged)} 扇的罐里留着登录痕迹（{names}），先接这一扇。"
+        )
+        return logged + [item for flag, item in scored if not flag]
 
     def _fresh_candidate(self) -> Path:
         """这次要用的新临时资料目录；建不出来就退回现场目录（让 start() 照常跑）。
@@ -1137,11 +1198,23 @@ class LoginBrowser:
             # 那是他的地盘。
             self._temp_dirs.append(chosen)
         port_file = chosen / "DevToolsActivePort"
-        # 上次崩溃可能留下过期端口：留着它会让等待立刻「成功」，然后连到一个死端口。
+        # v0.13.38：**不再**把端口文件删掉（v0.13.9 到 v0.13.37 是删的）。
+        #
+        # 当初的理由没错：上次崩溃留下的过期端口会让等待循环立刻「成功」，然后连到
+        # 一个死端口。代价却一直没人看清 —— 要删的这个目录**可能正有一扇窗开着**：
+        # ``self.profile``（配置目录那份持久资料目录）每一轮都在候选表里，哪一轮前面
+        # 的目录都起不来、落到它头上时，这一删就删在了**还活着的那扇窗**头上。真机
+        # m38110 现场正是如此：用户眼前那扇「饼干列表」窗硬刷新都还在登录态，可它
+        # 自己的端口文件没了 ⇒ 端口普查永远探不到它 ⇒ 程序又开一扇新窗 ⇒ 同一时刻
+        # 世上两个罐，用户在旧窗里登录、程序读新窗的空罐，怎么点「应用」都对不上。
+        #
+        # 现在的做法：先记下启动前的旧内容和旧时间戳，等待循环里只认「内容变了」或
+        # 「时间戳变了」的那一份 —— 既不会认那个死端口，也不动任何别人的文件。
         try:
-            port_file.unlink()
+            stale_text: str | None = port_file.read_text(encoding="utf-8", errors="replace")
+            stale_mtime: float | None = port_file.stat().st_mtime
         except OSError:
-            pass
+            stale_text, stale_mtime = None, None
         try:
             self.process = subprocess.Popen(
                 build_args(self.info, chosen, self.proxy, self.start_url),
@@ -1173,13 +1246,30 @@ class LoginBrowser:
                     # 真机上量到过的那个码：多半不是浏览器自己崩，而是它已经退出了
                     # 又被要求收尾（Windows ERROR_NOT_READY）。别让这句误导用户去猜。
                     message += "（这个码常常表示进程已经退出、收尾时才报出来，未必是崩溃原因。）"
+                if code == 0 and stale_text is not None:
+                    # v0.13.38 真机量到的另一种：目录启动前就有一扇窗开着（那份端口文件
+                    # 是它留下的），第二个实例会把参数交给它、自己干干净净地退出（退出码
+                    # 0，实测于 2026-10-04 的持久资料目录）。不点破的话，用户读到「刚起来
+                    # 就退出了」只会往「资料目录坏了」猜，而这里的原因恰好相反：这一份
+                    # **正被用着**。这一条也正好接上「地上两个罐」那个现场。
+                    message += (
+                        "（这份目录启动前就有一扇窗开着、留着端口文件；浏览器遇到这种"
+                        "情况通常把要开的页面交给那一扇、自己就退出了，这一条多半如此。）"
+                    )
                 self.stop()
                 raise CdpError(message)
             if port_file.exists():
                 try:
                     text = port_file.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    text = ""
+                    text_mtime = port_file.stat().st_mtime
+                except OSError:  # pragma: no cover —— 探测和读之间它被删了
+                    text, text_mtime = "", 0.0
+                # v0.13.38：只认这次启动**之后**写出来的那一份（见上面那段说明）。旧的
+                # 那份原样留在盘上 —— 它属于另一扇还开着的窗，该由 _try_attach_live 去接，
+                # 而不是拿它的端口号去连一个可能已经死掉的端口。
+                if not _port_file_fresh(text, text_mtime, stale_text, stale_mtime):
+                    time.sleep(_POLL_INTERVAL)
+                    continue
                 try:
                     # 文件刚建好时可能只写了一半，读到半截就当还没好，继续等。
                     self.port, self.ws_path = _parse_devtools_file(text)
@@ -1656,6 +1746,56 @@ def read_userhash_cookie(
     except Exception:  # noqa: BLE001 —— 这里只回答「罐里有没有」
         return None
     return userhash_from_cookies(cookies)
+
+
+def _probe_http_json(url: str, timeout: float = 5.0) -> object:
+    """读一次调试接口，**不重试** —— 多扇窗挑一扇时的「问一句就走」。
+
+    为什么不直接用会话默认那个 ``_http_json``：它带着 ``cdp._DEVTOOLS_READ_BUDGET``
+    （8 秒）的预算，那是留给「端口文件刚写出来、调试服务还没开始收连接」的时差的。
+    挑窗时那扇窗的端口刚被 :func:`_profile_in_use` 验过是活的（用的是同一个不重试的
+    读法），真读不通就不必替它等满预算 —— 否则「哪扇窗登录过」这一个问题能把开窗
+    拖慢十几秒。
+    """
+    from .cdp import _http_json_once
+
+    return _http_json_once(url, timeout)
+
+
+def window_userhash(ws_url: str, timeout: float = WINDOW_PROBE_TIMEOUT) -> str:
+    """问一扇**已经开着的**窗口：「你罐里有没有 userhash」（v0.13.38）。
+
+    真机 m38110：世界上有过两扇程序窗，用户在 A 窗里登录着（罐里有 userhash），
+    程序却接上了 B 窗（空罐）—— 于是「F12 里有饼干、程序说没有」，怎么点「应用」
+    都对不上。两扇窗谁先开的、谁最新，跟「谁登录过」没有半点关系，能回答这个问题
+    的只有罐本身。这里只跟那扇窗的调试端口说两句话：连上去、读一次饼干、断开；
+    不导航、不点按钮、不看页面，用户正停着的那一页连闪都不会闪。
+
+    读不到（连不上、罐是空的、超了预算）一律回空串，调用方按「这扇没有登录痕迹」处理。
+    """
+    names = globals()
+    try:
+        session = names["CDPSession"](
+            ws_url,
+            timeout=timeout,
+            site_urls=list(SITE_URLS),
+            http_json=_probe_http_json,
+        )
+    except Exception:  # noqa: BLE001 —— 连会话都建不起来，就当这扇问不出来
+        return ""
+    try:
+        session.connect()
+    except Exception:  # noqa: BLE001 —— 连不上、或者它一个页面标签都没有
+        return ""
+    try:
+        return read_userhash_cookie(session) or ""
+    except Exception:  # noqa: BLE001 —— 读的过程中那扇窗退了
+        return ""
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001 —— 关连接失败不值得往上抛
+            pass
 
 
 def _page_state(session: "CDPSession") -> dict:

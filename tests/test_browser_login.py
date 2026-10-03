@@ -1343,6 +1343,106 @@ def test_stop_leaves_a_reused_window_alone(tmp_path: Path, monkeypatch: pytest.M
     assert (live / "DevToolsActivePort").exists()
 
 
+def _live_dir(root: Path, name: str, port: int) -> Path:
+    """造一扇「还开着的窗」：目录里有端口文件（内容真假不重要，探测那一层会被替身拦下）。"""
+    live = root / name
+    live.mkdir()
+    (live / "DevToolsActivePort").write_text(
+        f"{port}\n/devtools/browser/{name}\n", encoding="utf-8"
+    )
+    return live
+
+
+def test_reuse_prefers_the_window_whose_jar_has_a_userhash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v0.13.38（真机 m38110）：两扇窗时接**罐里有饼干**的那扇，不再按谁先开的挑。
+
+    现场：用户在 A 窗里登录着（罐里有 userhash），程序却接上了 B 窗（空罐），
+    于是「F12 里明明有饼干、程序说没有」，怎么点「应用」都对不上。谁最后开的窗
+    跟「谁登录过」毫无关系，能回答这个问题的只有罐本身。
+    """
+    first = _live_dir(tmp_path, "xdao-export-browser-profile-1-1-0", 9333)
+    second = _live_dir(tmp_path, "xdao-export-browser-profile-2-2-0", 9444)
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [first, second])
+    asked: list[str] = []
+
+    def fake_probe(ws_url: str, timeout: float = 0.0) -> str:
+        asked.append(ws_url)
+        return "f0e1d2c3b4a5" if ws_url.endswith(f"/devtools/browser/{second.name}") else ""
+
+    monkeypatch.setattr(bl, "window_userhash", fake_probe)
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile", timeout=5.0
+    )
+    result = browser._try_attach_live()
+    assert result is not None
+    assert asked == [
+        f"ws://127.0.0.1:9333/devtools/browser/{first.name}",
+        f"ws://127.0.0.1:9444/devtools/browser/{second.name}",
+    ], "两扇都得问一遍才知道谁的罐里有东西"
+    assert result.used_profile == second, "罐里有 userhash 的那扇优先"
+    assert result.port == 9444
+    assert "其中 1 扇的罐里留着登录痕迹" in result.census_note
+    assert "探到 2 扇" in result.census_note
+    assert f"接手了「{second.name}」这一扇" in result.census_note
+
+
+def test_reuse_keeps_the_candidate_order_when_no_jar_has_a_userhash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """都没有登录痕迹就**不重排**：没有判据时别自作主张，免得每次接上另一扇、横幅乱跳。"""
+    first = _live_dir(tmp_path, "xdao-export-browser-profile-3-3-0", 9555)
+    second = _live_dir(tmp_path, "xdao-export-browser-profile-4-4-0", 9666)
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [first, second])
+    monkeypatch.setattr(bl, "window_userhash", lambda ws_url, timeout=0.0: "")
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile", timeout=5.0
+    )
+    result = browser._try_attach_live()
+    assert result is not None and result.used_profile == first
+    assert "登录痕迹" not in result.census_note, "都没登录过就没什么可点名的"
+    assert f"接手了「{first.name}」这一扇" in result.census_note
+
+
+def test_reuse_does_not_ask_about_the_jar_when_only_one_window_is_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """只有一扇窗时不问罐：那一问要连一次调试端口，最多的情形没必要为它加开销。"""
+    only = _live_dir(tmp_path, "xdao-export-browser-profile-5-5-0", 9777)
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [only])
+
+    def boom(ws_url: str, timeout: float = 0.0) -> str:
+        raise AssertionError("只有一扇窗就别去问罐了")
+
+    monkeypatch.setattr(bl, "window_userhash", boom)
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile", timeout=5.0
+    )
+    result = browser._try_attach_live()
+    assert result is not None and result.used_profile == only
+    assert result.port == 9777
+
+
+def test_window_userhash_returns_empty_when_the_window_cannot_be_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """问不到就回空串（调用方按「这扇没有登录痕迹」处理），绝不往外抛。"""
+
+    class _AliveButMute:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def connect(self) -> None:
+            raise bl.CdpError("连不上")
+
+        def close(self) -> None:  # pragma: no cover —— 没连上就不该有这一句
+            raise AssertionError("没连上就不该去关它")
+
+    monkeypatch.setattr(bl, "CDPSession", _AliveButMute)
+    assert bl.window_userhash("ws://127.0.0.1:1/devtools/browser/x") == ""
+
+
 def test_program_profile_lines_only_name_our_own_dirs(tmp_path: Path) -> None:
     """进程侧普查的认门规矩（v0.13.37）：自家两族全认，别人家的一个不沾。
 
@@ -1573,6 +1673,140 @@ class _PortWritingPopen:
 
     def kill(self) -> None:
         self.returncode = -1
+
+
+class _SilentPopen:
+    """假 Popen：进程活着，但永远不写 DevToolsActivePort。
+
+    真机上「目录里那份端口文件是上一扇窗留下的」就是这个样子：新进程起得来、
+    可它（或者安全软件）没写出自己的端口，于是文件只剩旧的那一份。
+    """
+
+    def __init__(self, args: list[str], **kwargs: object) -> None:
+        self.args = list(args)
+        self.kwargs = dict(kwargs)
+        self.pid = 4321
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode or 0
+
+    def kill(self) -> None:
+        self.returncode = -1
+
+
+def test_port_file_fresh_recognises_only_a_new_file() -> None:
+    """v0.13.38：认不认这份端口文件，只看它有没有在这次启动之后被动过。"""
+    assert bl._port_file_fresh("1\n/x\n", 10.0, None, None), "启动前没这个文件：写出来就是新的"
+    assert not bl._port_file_fresh(
+        "60105\n/old\n", 10.0, "60105\n/old\n", 10.0
+    ), "内容与时间戳都没变：这是上次留下的一份"
+    assert bl._port_file_fresh(
+        "60222\n/new\n", 10.0, "60105\n/old\n", 10.0
+    ), "内容变了：浏览器新写的一份"
+    assert bl._port_file_fresh(
+        "60105\n/old\n", 11.0, "60105\n/old\n", 10.0
+    ), "时间戳变了：浏览器又写了一遍"
+
+
+def test_launch_leaves_a_foreign_port_file_alone_and_never_trusts_it(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v0.13.38（真机 m38110 的直接病因）：**不删**别人那份端口文件，也不认它的端口。
+
+    以前的写法是启动前先 unlink 掉 ``DevToolsActivePort``。当候选落到配置目录那份
+    持久资料目录上、而那扇窗**还开着**时，这一删就删在了它头上：它从此读不到自己
+    的端口，端口普查永远探不到它，程序又开一扇新窗 ⇒ 同一时刻世上两个罐。
+    """
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    stale = profile / "DevToolsActivePort"
+    stale_text = "60105\n/devtools/browser/old-window\n"
+    stale.write_text(stale_text, encoding="utf-8")
+
+    monkeypatch.setattr(bl.subprocess, "Popen", _SilentPopen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=0.3)
+    with pytest.raises(bl.BrowserLoginError) as raised:
+        browser._launch(profile)
+    assert "还没等到" in str(raised.value), "旧端口不算数：要一直等到超时"
+    assert browser.port == 0
+    assert stale.read_text(encoding="utf-8") == stale_text, "别人那扇窗的文件一个字节都不许动"
+
+
+class _TakeoverPopen:
+    """假 Popen：第二个实例把参数交给已经在跑的那一扇，自己干净退出（退出码 0）。
+
+    2026-10-04 真机量到（_scratch/probe_v01338_persistent_profile.py）：在一个
+    **还开着**的持久资料目录上再走一次 ``_launch``，Edge 就是这么反应的 ——
+    退出码 0，不是 21，也不是崩溃。
+    """
+
+    def __init__(self, args: list[str], **kwargs: object) -> None:
+        self.args = list(args)
+        self.kwargs = dict(kwargs)
+        self.pid = 4321
+        self.returncode: int | None = 0
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode or 0
+
+    def kill(self) -> None:
+        self.returncode = -1
+
+
+def test_launch_explains_a_takeover_by_an_already_open_window(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """启动前就有一扇窗开着（端口文件是它留的）、第二个实例干净退出：要说清是被接管了。
+
+    这句提示不点破，用户读到「刚起来就退出了」只会往「资料目录坏了」猜，
+    而这里的原因恰好相反 —— 这一份**正被用着**。
+    """
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    stale_text = "49714\n/devtools/browser/live-window\n"
+    (profile / "DevToolsActivePort").write_text(stale_text, encoding="utf-8")
+
+    monkeypatch.setattr(bl.subprocess, "Popen", _TakeoverPopen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=1.0)
+    with pytest.raises(bl.BrowserLoginError) as raised:
+        browser._launch(profile)
+    message = str(raised.value)
+    assert "退出码 0" in message
+    assert "就有一扇窗开着" in message, "退出码 0 + 启动前有端口文件：是那一扇接管了，不是目录坏了"
+    assert (profile / "DevToolsActivePort").read_text(encoding="utf-8") == stale_text
+
+
+def test_launch_accepts_the_port_file_this_launch_wrote_over_the_old_one(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧端口文件还在盘上、浏览器新写了一份：认新那份（内容或时间戳变了就算新）。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "DevToolsActivePort").write_text(
+        "60105\n/devtools/browser/old-window\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(bl.subprocess, "Popen", _PortWritingPopen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=5.0)
+    browser._launch(profile)
+    assert browser.port == 9333
+    assert browser.browser_ws_url == "ws://127.0.0.1:9333/devtools/browser/abc"
 
 
 def test_start_reads_the_port_file_and_hides_the_console_window(

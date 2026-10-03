@@ -677,6 +677,39 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.38**（不再动别人的端口文件 + 多扇活窗先问罐：m38110 的第二处病根拔掉）：
+  v0.13.37 把「看不见的旧窗」变成「点名收掉」，但 ``_launch`` 每轮启动前仍会 ``unlink`` 目标目录里的
+  ``DevToolsActivePort``（v0.13.9 起的老手，理由是「上次崩溃留下的过期端口会让等待循环立刻成功」）。
+  候选落到程序自己那份持久目录、而它**正有一扇窗开着**时，这一删就删在了那扇窗头上：它从此读不到自己的
+  端口、普查永远探不到它 ⇒ 再开一扇，世上又多一个罐。这一版三件事：
+  ①``_launch`` 不再预删，改成「只认这次启动**之后**新写出来的那一份」：Popen 之前读一次
+  ``stale_text`` / ``stale_mtime``（OSError ⇒ None/None），等待循环里用 ``_port_file_fresh(text, mtime,
+  stale_text, stale_mtime)`` 判断 —— 压根没有旧文件算新、内容或时间戳变了算新，否则继续等。既不认死端口，
+  也不碰不属于本次运行的文件。**真机实测**（``_scratch/probe_v01338_persistent_profile.py``，非临时前缀的目录
+  ＋真 Edge，先开一扇）：对已开着一扇窗的同一目录再走一次 ``_launch`` ⇒ 抛「刚起来就退出了（退出码 0）」，
+  收尾时目录／端口文件／文件内容／``_profile_in_use`` 全部原样、Edge 进程仍活 ⇒ 旧 ``unlink`` 是弄瞎活窗的
+  **唯一作者**，浏览器自己被接管时并不删那扇活窗的端口文件。
+  ②退出码 0 补一句解释：``_launch`` 的死进程分支里 ``if code == 0 and stale_text is not None`` 追加
+  「（这份目录启动前就有一扇窗开着、留着端口文件；浏览器遇到这种情况通常把要开的页面交给那一扇、自己就退出
+  了，这一条多半如此。）」——以前只解释 21，会把人往「资料目录坏了」引。
+  ③多扇活窗先问罐：``window_userhash(ws_url, timeout=WINDOW_PROBE_TIMEOUT)``（``WINDOW_PROBE_TIMEOUT =
+  3.0``）用 ``globals()["CDPSession"]`` ＋ ``_probe_http_json``（内部 ``_http_json_once``，**不重试** ——
+  会话默认的 ``_http_json`` 带 8 秒预算，挑窗时会白等）连上去只读饼干，建会话／连接／读饼干任一步出错一律回
+  ``""``；``LoginBrowser._order_by_login`` 逐扇问一遍，都没痕迹就**保持原顺序**（没有判据不自作主张），有痕迹
+  则往 ``_census_note`` 追加「其中 N 扇的罐里留着登录痕迹（…），先接这一扇」并返回 logged + rest；
+  ``_try_attach_live`` 只在 ``len(attachable) > 1`` 时调用 ⇒ 最常走的单扇窗不多花时间。**真机实测**
+  （``_scratch/probe_v01338_two_windows.py``）：两个 ``fresh_profile_dir`` 各起一个真 Edge（端口
+  49355/49356），``Network.setCookie`` 只往第二扇种假 userhash ⇒ ``window_userhash`` 分别回 ``''`` 与那个值，
+  ``_try_attach_live()`` 接的正是第二扇（端口 49356），普查句「探到 2 扇还活着的程序窗口（…）。其中 1 扇的罐里
+  留着登录痕迹（…），先接这一扇。接手了「…-2」这一扇。」。
+  测试 270→278：``_port_file_fresh`` 四种组合；启动不删也不认旧端口文件（``_SilentPopen`` 永不写 ⇒ 超时抛错
+  且文件字节不动）；``_PortWritingPopen`` 覆写旧文件即被采纳；``_TakeoverPopen``（returncode=0）文案含「退出码
+  0」与「就有一扇窗开着」；复用路四条（两扇择优、无痕迹保序、单扇不问罐、连不上回空）。
+  本轮事故两条：编辑器把 ``_SilentPopen`` 的类头当 old_string 换成了测试函数头、留下孤立的 ``__init__``（插代码
+  时锚点要用完整唯一的一行，别拿类头当锚点）；``packaging\使用说明.txt`` 插新段时 old_string 只写了上一段的段头
+  ⇒ 吃掉了 v0.13.37 的段头（new_string 里必须把它原样抄回去）。另记一条验证教训：A 项首轮探针把两个目录建在
+  %TEMP% 且带自家前缀 ⇒ ``_is_temp_profile_dir`` 为真、``cleanup_temp_profile`` 按规矩 rmtree 掉，
+  「文件还在=False」是探针自己造的现场；m38110 碰的是配置目录那份持久目录（不带临时前缀），换目录命名复验才证实。
 - **v0.13.37**（僵尸窗收掉 + 对账报「接=」：两个进程各拿一个罐，当场拆穿；v0.13.36 复验 m38110 定案）：
   饼干窗 Ctrl+F5 硬刷新都不弹回登录页（那扇窗的进程罐里明明有有效 userhash），程序同一时刻的对账却写着
   页=1（只有登录页）、整罐只有 PHPSESSID——两边都是真的，因为它们是**两个浏览器进程**。旧那扇的

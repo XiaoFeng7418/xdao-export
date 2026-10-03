@@ -2,8 +2,9 @@
 
 真正的 ``xdao.browser_login`` 照常参与：只换掉两处会碰真实世界的边界 ——
 起进程（``subprocess.Popen``）和连 CDP（``CDPSession``）。所以被测的是真的
-``LoginBrowser``（真的会删过期端口文件、真的会解析 ``DevToolsActivePort``、
-真的会 terminate 进程）和真的对话框逻辑，唯独不会真弹浏览器、也不碰网络。
+``LoginBrowser``（真的会解析 ``DevToolsActivePort``、真的会认「这份端口是这次启动
+之后写的还是上次留下的」、真的会 terminate 进程）和真的对话框逻辑，唯独不会真弹
+浏览器、也不碰网络。
 
 界面部分要真 Tk 窗口，所以照 ``tests/test_window.py`` 的写法：拿不到显示环境就
 skip，测试用的配置一定指向产物目录，绝不碰用户真实的 ``config.json``。
