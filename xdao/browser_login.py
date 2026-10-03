@@ -494,6 +494,15 @@ SWEEP_MIN_AGE = 3600.0
 #: 扫的时候问一次调试端口的等待上限（秒）。只问一次 —— 这里不是在等浏览器起来。
 SWEEP_PROBE_TIMEOUT = 0.5
 
+#: 持久资料目录（``browser-profile``）连着几次「刚起来就退出」就判它没救了（v0.13.41）。
+#: 判据不是「失败过」而是「**连着**失败」：偶尔一次可能是安全软件正忙、或者用户手快
+#: 又点了一次，攒够两次才值得动用户自己的目录。
+DEAD_PROFILE_STRIKES = 2
+
+#: 把「连着几次刚起来就退出」记在持久资料目录里的文件名（v0.13.41）。
+#: 写在资料目录**里面**不是别处：目录一改名让位，这份账跟着一起走，天然清零。
+DEAD_PROFILE_MARKER = "login-failures.txt"
+
 
 def _profile_in_use(profile: Path) -> bool:
     """这一份临时资料目录是不是还有活着的浏览器在用？
@@ -517,6 +526,81 @@ def _profile_in_use(profile: Path) -> bool:
     except CdpError:
         return False
     return True
+
+
+def _dead_profile_strikes(profile: Path) -> int:
+    """读持久资料目录里记的「连着几次刚起来就退出」（v0.13.41）。
+
+    只认第一行那个整数；文件不在、读不动、内容不是数字，一律算 0 次
+    —— 宁可少记一笔，也不能凭一份读不懂的账去动用户的目录。
+    """
+    try:
+        text = (Path(profile) / DEAD_PROFILE_MARKER).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return max(0, int(line))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _note_dead_profile_strike(profile: Path, note: str = "") -> int:
+    """记一次「刚起来就退出」，返回连着的次数；写不进去就回 0（不拿它赌任何事）。
+
+    为什么要跨进程留一份账：真机上「这一份资料目录的旧状态坏了」是一票否决式的病
+    —— 只要那份目录不换掉，用户每次点「用浏览器登录」都是同一个下场，界面上看不出
+    任何变化。所以次数必须留在盘上，而放在**用户配置目录那份持久资料目录里面**正合适。
+    """
+    profile = Path(profile)
+    count = _dead_profile_strikes(profile) + 1
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        (profile / DEAD_PROFILE_MARKER).write_text(
+            f"{count}\n{stamp}{(' ' + note) if note else ''}\n", encoding="utf-8"
+        )
+    except OSError:
+        return 0
+    return count
+
+
+def _clear_dead_profile_strikes(profile: Path) -> None:
+    """这一份目录又顺利起来了，账就清了（v0.13.41）。"""
+    try:
+        (Path(profile) / DEAD_PROFILE_MARKER).unlink()
+    except OSError:  # pragma: no cover —— 本来就没有这份账是常态
+        pass
+
+
+def _quarantine_profile_dir(profile: Path, *, stamp: str | None = None) -> Path | None:
+    """把没救的资料目录改名让位，返回改名后的路径（v0.13.41；只改名，**绝不删**）。
+
+    名字取 ``browser-profile.damaged-<时间戳>``：既不符合备用目录那一族的严格命名
+    （``browser-profile-<数字>-<数字>``，见 :func:`_is_fallback_profile_dir`），也不在
+    临时目录前缀里，所以两个清扫函数都不会把它当垃圾顺手删掉 —— 里面存的是用户
+    以前的登录状态，留着他随时可以自己删、或者改名回来接着用。
+
+    ``stamp`` 只给用例用（好把名字钉死），正常调用留空。
+    """
+    profile = Path(profile)
+    stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
+    for index in range(1, 100):
+        suffix = "" if index == 1 else f"-{index}"
+        target = profile.with_name(f"{profile.name}.damaged-{stamp}{suffix}")
+        if target.exists():
+            continue
+        try:
+            profile.rename(target)
+        except OSError:
+            return None
+        return target
+    return None  # pragma: no cover —— 同一秒里攒出 99 个同名备份才会走到这儿
 
 
 def _sweep_one_profile_dir(entry: Path, min_age: float, keep_set: set[Path]) -> bool:
@@ -1058,6 +1142,12 @@ class LoginBrowser:
         下场，换个空目录就没事了。所以这一种也换目录重试（备用目录都是新建的），
         而且**当前浏览器试不出来就接着试下一个**（Edge → Chrome → …）：
         单独一个浏览器被拦下，不该让用户彻底用不了浏览器登录。
+
+        v0.13.41：这一种失败如果**连着**栽在配置目录里那份持久资料目录
+        （``browser-profile``）身上，程序不再只是绕过去 —— 换目录只是这一轮能登录，
+        用户下次点还是同一个下场、读同一句错。所以攒够
+        :data:`DEAD_PROFILE_STRIKES` 次就把它改名让位，见
+        :meth:`_quarantine_dead_persistent`。
         """
         if self.process is not None:
             return self
@@ -1077,6 +1167,10 @@ class LoginBrowser:
         )
         first_error: BaseException | None = None
         dead_on_startup = False
+        #: 这一次持久资料目录（配置目录里那份 ``browser-profile``）**自己**也是
+        #: 「刚起来就退出」。只有它中招才值得记账 / 让位 —— 临时目录是这一轮新建的，
+        #: 坏了删掉再建一份就是（见 v0.13.41 的 :meth:`_quarantine_dead_persistent`）。
+        dead_persistent = False
         for browser in browsers:
             if browser != self.info:
                 # 上一个浏览器起不来：换一个（用户机器上通常 Edge 与 Chrome 都有）。
@@ -1102,6 +1196,10 @@ class LoginBrowser:
                     if _dead_on_startup(exc):
                         # 这一种换目录 / 换浏览器都有可能救回来，别当场放弃。
                         dead_on_startup = True
+                        if chosen == self.profile:
+                            # 连用户配置目录里那份持久目录都栽了 —— 这份账要跨进程记
+                            # （见 :meth:`_quarantine_dead_persistent`）。
+                            dead_persistent = True
                     elif not (_profile_failure(exc) or _devtools_read_failure(exc)):
                         raise
                     if index == 0:
@@ -1117,13 +1215,49 @@ class LoginBrowser:
         if first_error is None:  # pragma: no cover —— browsers 至少有一个，走不到这儿
             raise CdpError(f"启动 {self.info.name} 失败：找不到可用的浏览器资料目录。")
         if dead_on_startup:
-            raise CdpError(
+            quarantined = self._quarantine_dead_persistent(dead_persistent)
+            message = (
                 f"{first_error}\n\n"
                 "试过的每个资料目录都是刚起来就退出（多半是目录里的旧状态坏了，"
                 "或者被安全软件拦下）。可以试着关掉安全软件的浏览器防护再点一次，"
                 "或者改用「直接粘贴饼干登录」。"
-            ) from first_error
+            )
+            if quarantined is not None:
+                # v0.13.41：这份持久目录连着栽了这么多次，留着它只会让下次还是同一个
+                # 下场。改名让位（一个字都不删）之后，下一次登录从一份干净目录开始。
+                message += (
+                    f"\n\n那份持久资料目录已经连着 {DEAD_PROFILE_STRIKES} 次没起来，"
+                    f"程序把它改名留在原地了：{quarantined}。"
+                    "里面的登录状态一点没动，想留就留着；下次登录会用一份全新的目录。"
+                )
+            raise CdpError(message) from first_error
         raise first_error
+
+    def _quarantine_dead_persistent(self, dead_persistent: bool) -> Path | None:
+        """持久资料目录一次次「刚起来就退出」时，把它改名让位（v0.13.41）。
+
+        为什么非做不可：真机上「这一份目录的旧状态坏了」是**每次**都同一个下场 ——
+        用户点一次「用浏览器登录」，程序照旧把它当候选、照旧失败，界面上看不出任何
+        变化，只能一遍遍读同一句错。可它又是用户自己的目录（存着他上次的登录状态），
+        程序没有权力替他删。
+
+        所以口径是两句话：**连着** :data:`DEAD_PROFILE_STRIKES` 次都栽在它身上，才认
+        定它没救了；确认之后只**改名**（:func:`_quarantine_profile_dir`），一个字都不删。
+
+        三条不许动手的底线：这一轮它自己没出过「刚起来就退出」（``dead_persistent``
+        为假）、它不属于我们该收尾删的那几族（``--check-browser`` 自建在 %TEMP% 里的
+        那份归 :meth:`cleanup_temp_profile` 管，改名反而会让它没人收）、以及
+        **端口还答话**（那说明有一扇窗正开着它 —— 那是「地上两个罐」的现场，不是
+        死目录，见 :meth:`_try_attach_live`）。
+        """
+        if not dead_persistent or _is_our_profile_dir(self.profile, self.profile):
+            return None
+        if not self.profile.exists() or _profile_in_use(self.profile):
+            return None
+        count = _note_dead_profile_strike(self.profile, f"{self.info.name} 刚起来就退出")
+        if count < DEAD_PROFILE_STRIKES:
+            return None
+        return _quarantine_profile_dir(self.profile)
 
     def _adopt_process_side_findings(self, live: list[Path]) -> list[Path]:
         """进程侧普查的补刀：端口普查只认「名字猜得到」的目录，这一手直接问操作系统（v0.13.37）。
@@ -1430,6 +1564,10 @@ class LoginBrowser:
                 except CdpError:
                     self.port, self.ws_path = 0, ""
                 if self.port:
+                    if chosen == self.profile:
+                        # v0.13.41：这份持久资料目录又起来了，之前记的「连着几次不行」
+                        # 一笔勾销 —— 账必须跟着**最近**的事实走，不能攒旧账。
+                        _clear_dead_profile_strikes(chosen)
                     self.browser_ws_url = f"ws://127.0.0.1:{self.port}{self.ws_path}"
                     if chosen == self.temp_profile:
                         # 登录这条路现在先试新建的临时目录（见 start()）。要在界面上
@@ -1533,6 +1671,10 @@ class LoginBrowser:
         直接删；删不掉（浏览器还没走干净、文件句柄没松）就每 0.25 秒再试，
         总共给 :data:`TEMP_PROFILE_WAIT` 秒，**删掉就立刻返回**，不白等。
 
+        动手之前**先问一次端口**：端口还答话的目录一律不动（v0.13.41 起）—— 那说明
+        里面那扇窗还活着，删它等于把用户正开着的那扇窗连同资料一起带走（m38110 那一类
+        事故）。这种目录会留在 :attr:`_temp_dirs` 里，下次收尾接着问。
+
         清的是 :attr:`_temp_dirs` 这张清单 —— 换浏览器时每个浏览器各拿一个新目录，
         所以可能不止一个。**清单只增不减**（删过的路径也留着）：真机上量到过
         「删掉之后那个路径又被下一次尝试重新建出来」，删一次就把路径忘掉的话，
@@ -1554,6 +1696,14 @@ class LoginBrowser:
         for profile in targets:
             if not profile.exists():
                 # 目录本来就不在（已经删干净了，或者还没被建出来）：跳过。
+                continue
+            if _profile_in_use(profile):
+                # 端口还答话：里面那扇窗**还活着**（不是我们这次没退干净，而是真有一扇窗
+                # 正用着它）。这种目录一个字节都不许动 —— 删它会把用户正开着的那扇窗连同
+                # 资料一起带走，正是 m38110 那一类「程序动了别人还在用的资料目录」的事故。
+                # 宁可漏一个目录在临时目录里（下次收尾还会问一次端口），也不能动还开着的窗。
+                if profile not in self._temp_dirs:
+                    self._temp_dirs.append(profile)
                 continue
             if _IS_WINDOWS:
                 # 浏览器可能还没走干净（或者上一次留下的实例还开着这个目录），

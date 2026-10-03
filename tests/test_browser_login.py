@@ -2761,6 +2761,125 @@ def test_start_reports_clearly_when_every_browser_dies_at_once(
     )
 
 
+def test_dead_persistent_profile_is_quarantined_after_two_strikes(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """持久资料目录连着两次「刚起来就退出」就改名让位（v0.13.41）。
+
+    真机上这一份目录的旧状态坏了就是**每次**同一个下场：绕过去用临时目录这一轮
+    能登录，用户下次点还是读同一句错。所以第二次要动它 —— 但只改名、一个字不删，
+    里面存的是他自己的登录状态。
+    """
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    profile = artifacts_dir / "browser-profile"
+    profile.mkdir()
+    (profile / "Cookies").write_text("用户的登录状态", encoding="utf-8")
+    monkeypatch.setattr(bl.subprocess, "Popen", lambda args, **kwargs: _DeadBrowserPopen(args))
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [edge])
+    monkeypatch.setattr(bl, "fresh_profile_dir", lambda: artifacts_dir / "fresh-profile")
+
+    first = bl.LoginBrowser(edge, profile, timeout=0.5)
+    with pytest.raises(bl.BrowserLoginError) as caught:
+        first.start()
+    assert bl._DEAD_ON_STARTUP_MARKER in str(caught.value)
+    assert profile.exists(), "第一次只是记一笔，不许动用户的目录"
+    assert "改名留在原地" not in str(caught.value)
+    assert bl._dead_profile_strikes(profile) == 1
+
+    second = bl.LoginBrowser(edge, profile, timeout=0.5)
+    with pytest.raises(bl.BrowserLoginError) as caught:
+        second.start()
+    message = str(caught.value)
+    assert f"连着 {bl.DEAD_PROFILE_STRIKES} 次没起来" in message
+    assert "改名留在原地" in message
+    assert not profile.exists(), "第二次该让位了"
+    backups = list(artifacts_dir.glob(f"{bl.USER_DATA_DIR_NAME}.damaged-*"))
+    assert len(backups) == 1, backups
+    assert backups[0].name in message, "要让用户知道东西被搬到哪个名字下面了"
+    assert (backups[0] / "Cookies").read_text(encoding="utf-8") == "用户的登录状态"
+
+
+def test_dead_persistent_profile_is_left_alone_while_a_window_still_uses_it(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口还答话 = 有一扇窗正开着它：那是「地上两个罐」的现场，不是死目录。"""
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    profile = artifacts_dir / "browser-profile"
+    profile.mkdir()
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: True)
+    browser = bl.LoginBrowser(edge, profile)
+    assert browser._quarantine_dead_persistent(True) is None
+    assert profile.exists()
+    assert not list(artifacts_dir.glob(f"{bl.USER_DATA_DIR_NAME}.damaged-*"))
+    assert not (profile / bl.DEAD_PROFILE_MARKER).exists(), "这份账也不许记"
+
+
+def test_our_own_disposable_profile_is_never_quarantined(tmp_path: Path) -> None:
+    """``--check-browser`` 自建在 %TEMP% 的那份归收尾删，改名反而没人收。"""
+    fresh = Path(tempfile.mkdtemp(prefix="xdao-browser-check-"))
+    try:
+        browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), fresh)
+        assert browser._quarantine_dead_persistent(True) is None
+        assert fresh.exists()
+    finally:
+        shutil.rmtree(fresh, ignore_errors=True)
+
+
+def test_a_good_start_clears_the_dead_profile_account(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """这份目录又起来了，账就清了 —— 老账不能留给下一次。"""
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    profile = artifacts_dir / "browser-profile"
+    profile.mkdir()
+    assert bl._note_dead_profile_strike(profile, "上一轮刚起来就退出") == 1
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(
+        bl.subprocess, "Popen", lambda args, **kwargs: _PortWritingPopen(args, **kwargs)
+    )
+    browser = bl.LoginBrowser(edge, profile, timeout=5.0)
+    assert browser._launch(profile).port == 9333
+    assert bl._dead_profile_strikes(profile) == 0
+    assert not (profile / bl.DEAD_PROFILE_MARKER).exists()
+
+
+def test_dead_profile_account_reads_writes_and_clears(tmp_path: Path) -> None:
+    """这份账本身：读不懂就当 0 次，记一次加一，清掉之后再清一次不许抛。"""
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    assert bl._dead_profile_strikes(profile) == 0, "没有账就是 0 次"
+    (profile / bl.DEAD_PROFILE_MARKER).write_text("读不懂的账\n", encoding="utf-8")
+    assert bl._dead_profile_strikes(profile) == 0
+    assert bl._note_dead_profile_strike(profile, "刚起来就退出") == 1
+    assert bl._dead_profile_strikes(profile) == 1
+    assert bl._note_dead_profile_strike(profile) == 2
+    bl._clear_dead_profile_strikes(profile)
+    assert bl._dead_profile_strikes(profile) == 0
+    bl._clear_dead_profile_strikes(profile)
+
+
+def test_quarantine_only_renames_and_never_overwrites_a_backup(tmp_path: Path) -> None:
+    """改名让位：名字撞上已存在的备份就换后缀，绝不许覆盖用户以前的目录。"""
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    (profile / "Cookies").write_text("新的", encoding="utf-8")
+    taken = tmp_path / "browser-profile.damaged-20261004-010101"
+    taken.mkdir()
+    (taken / "Cookies").write_text("旧的", encoding="utf-8")
+
+    moved = bl._quarantine_profile_dir(profile, stamp="20261004-010101")
+
+    assert moved == tmp_path / "browser-profile.damaged-20261004-010101-2"
+    assert (moved / "Cookies").read_text(encoding="utf-8") == "新的"
+    assert (taken / "Cookies").read_text(encoding="utf-8") == "旧的"
+    assert not profile.exists()
+    # 让位后的名字既不进备用目录那一族、也不是临时目录：两个清扫函数都不碰它。
+    assert not bl._is_fallback_profile_dir(moved, profile)
+    assert not bl._is_temp_profile_dir(moved)
+    assert not bl._is_our_profile_dir(moved, profile)
+
+
 class _StubbornProcess:
     """赖着不走的假进程：terminate 当耳旁风，wait 一直超时。"""
 
@@ -2806,6 +2925,35 @@ def test_stop_removes_the_temp_profile_it_used(
     assert not temp_profile.exists(), "关掉浏览器后临时目录要删掉"
     assert browser.temp_profile is None
     assert browser.cleanup_temp_profile() is False, "删过一次就不再是「用到了临时目录」"
+
+
+def test_cleanup_leaves_a_directory_whose_window_is_still_open(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口还答话 = 里面那扇窗还活着：这种目录一个字节都不许动（m38110 那一类事故）。
+
+    真机上量到过：在一份**已经开着窗**的临时资料目录上再启动一次，第二次启动会被
+    「已有实例接管」当场退出（退出码 0），随后收尾把那份目录连同还开着的那扇窗一起
+    带走。收尾前先问一次端口，就能把这一手挡住。
+    """
+    busy = artifacts_dir / "temp-profile"
+    busy.mkdir(parents=True, exist_ok=True)
+    (busy / "Cookies").write_bytes("用户的登录状态".encode("utf-8"))
+    (busy / "DevToolsActivePort").write_text("60105\n/devtools/browser/live\n", encoding="utf-8")
+
+    def _explode(profile: Path) -> None:
+        raise AssertionError(f"还开着的窗不许动：{profile}")
+
+    monkeypatch.setattr(bl, "_profile_in_use", lambda profile: Path(profile) == busy)
+    monkeypatch.setattr(bl, "_kill_processes_using_profile", _explode)
+
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), artifacts_dir / "profile")
+    browser.temp_profile = busy
+
+    assert browser.cleanup_temp_profile() is False, "有窗开着就别删"
+    assert busy.exists(), "目录要留在原地"
+    assert (busy / "Cookies").read_bytes() == "用户的登录状态".encode("utf-8"), "里面的登录状态不许丢"
+    assert busy in browser._temp_dirs, "留在清单里，下次收尾再问一次端口"
 
 
 def test_cleanup_temp_profile_gives_up_quietly_when_it_cannot_delete(

@@ -677,6 +677,39 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.41**（反复起不来的持久资料目录自己改名让位；收尾前先问端口，不再动还开着的窗）：
+  目标项②（goal round m39679）＋真机验证项③。两件事：
+  **一、死资料目录让位。** 用户那份持久的 ``browser-profile`` 里存着他的登录状态，所以一直是被保护对象 —— 但也因此，
+  一旦它坏掉（被别的进程锁着、安全软件拦下写不进去、上一次强杀留下坏文件），``start()`` 每次都还会拿它去试一次，
+  表现成「每回登录都先卡一下、日志里同一份目录一行行起不来」。新常量 ``DEAD_PROFILE_STRIKES = 2``（判据是**连着**失败，
+  偶尔一次可能是安全软件正忙）、``DEAD_PROFILE_MARKER = "login-failures.txt"``（**记在资料目录里面**，目录一改名让位
+  账就跟着走、天然清零）；新模块函数 ``_dead_profile_strikes``（读第一个非空行 ``int()``、``max(0, ...)``，读不懂算 0）、
+  ``_note_dead_profile_strike``（计数 +1 并把时间戳与 ``note`` 写回去，``OSError`` 回 0 —— 不拿记账赌任何事）、
+  ``_clear_dead_profile_strikes``（成功启动后清账）、``_quarantine_profile_dir(profile, *, stamp=None)``（改名成
+  ``browser-profile.damaged-<stamp>``，重名再加 ``-2``、``-3``…，``rename`` 失败回 ``None``）；``start()`` 里新增局部量
+  ``dead_persistent``（只有**持久目录自己**中招才值得记账），``dead_on_startup`` 分支改成先
+  ``_quarantine_dead_persistent(dead_persistent)``、命中就把「已经连着 2 次没起来、程序把它改名留在原地了：<新路径>。
+  里面的登录状态一点没动…」接在原文案后面。``_quarantine_dead_persistent`` 三条底线：``--check-browser`` 自建在 ``%TEMP%``
+  那一份不碰（它归收尾管，改名反而没人收）、目录不在或 ``_profile_in_use`` 还答话就不碰（那是「地上两个罐」的现场，
+  不是死目录）、记账不足 ``DEAD_PROFILE_STRIKES`` 就不动。名字 ``browser-profile.damaged-…`` **既不匹配**
+  ``_FALLBACK_DIR_RE`` 也不在 ``TEMP_DIR_PREFIXES`` 里 ⇒ 两个清扫函数都不会删它（用户自己删或改名回来）。
+  **二、收尾的座位带。** ``cleanup_temp_profile`` 删之前先问一次 ``_profile_in_use``：**端口还答话的目录一个字节都不动**，
+  并留在 ``_temp_dirs`` 里下次收尾再问。这条是被真机探针**当场撞出来**的 —— 在一份**还开着窗**的临时资料目录上再
+  ``_launch`` 一次（第二个实例把页面交给第一扇窗、自己以退出码 0 退出），失败路径 ``stop()`` → ``cleanup_temp_profile()``
+  会把那份目录连**用户正开着的那扇窗**一起带走（探针第一次跑就报 ``FileNotFoundError``：端口文件没了）。产品路径今天够不到
+  （``start()`` 只会 ``_launch`` 自己刚挑的目录），但它是 m38110「程序动了别人还在用的资料目录」那一类，留着当座位带；
+  代价是极端情况下漏一份目录在 ``%TEMP%``（`sweep_stale_temp_profiles` 下次还会问它端口）。
+  **真机验证（2026-10-04，无人值守，``_scratch/probe_v01341_real.py`` → ``probe_v01341_result.json``，9/9 通过）**：
+  ①真起一扇窗（端口 56563、端口文件在、进程活着）②``DevToolsActivePort`` 两行与 ``browser_ws_url`` 拼装一致
+  ③``program_profile_dirs`` 认得该目录 + ``_profile_in_use`` 真 + ``live_browser_dirs`` 列到 ④在一份**还开着**的持久目录上
+  再 ``_launch``：文案含「退出码 0」与「就有一扇窗开着」、端口文件字节未动、旧窗还活着 ⑤``_quarantine_profile_dir`` 在
+  配置目录风格的目录上真改名（``browser-profile.damaged-20261004-020618``，``Cookies`` 内容不丢）⑥把让位目录 ``os.utime``
+  做旧到超龄，真调两个清扫函数都不删它 ⑦``_kill_processes_using_profile`` 杀掉那一扇后端口立刻失联 ⑧座位带：在还开着窗的
+  临时目录上再启动，目录/端口文件/那扇窗全都完好。测试：``test_browser_login.py`` 289 → **296**（新增 6 条让位用例 +
+  1 条座位带用例），全量 **1807 → 1814 项**（本机 1807 通过、7 项真机用例跳过）。
+  教训：**验证「收尾会不会误伤」时必须看清目录归属** —— 第一次写的探针把两扇窗都建在 ``%TEMP%`` 且名字带自家前缀，
+  于是它们都算「我们的目录」，收尾自然把它们删了；m38110 现场是**配置目录那份持久目录**，名字不在清单里，才没被删。
+  「目录命名决定现象」这条在 v0.13.38 记过一次，这里又踩一次。
 - **v0.13.40**（浏览器「起来就退」时带出它自己的 stderr 尾巴；启动失败不再只剩程序的猜测）：
   ``_launch`` 起浏览器时一直把 ``stderr`` 丢进 ``subprocess.DEVNULL``，于是「刚起来就退出了（退出码 21／0）」这类
   消息只有程序自己猜的那几句，而真机上真正的原因（资料目录被另一个进程锁着、安全软件拦下远程调试端口、启动参数被
