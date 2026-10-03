@@ -300,6 +300,9 @@ def no_real_live_windows_for_dialog(monkeypatch):
     专门演普查的用例自己再覆盖一次。
     """
     monkeypatch.setattr(browser_login, "live_browser_dirs", lambda profile: [])
+    # v0.13.37 的进程侧普查当场 import 标准库 subprocess（躲上面的 Popen 替身），
+    # 替身拦不住它——不钉住的话，每个用例都会真起一个 powershell 问 CIM。
+    monkeypatch.setattr(browser_login, "program_profile_dirs", lambda profile: [])
 
 
 @pytest.fixture(autouse=True)
@@ -1058,8 +1061,8 @@ def test_a_leaf_round_without_userhash_writes_the_forensics_line(
     """
     calls: list[object] = []
 
-    def fake_forensics(session, jar_tag=""):
-        calls.append((session, jar_tag))
+    def fake_forensics(session, jar_tag="", link_tag=""):
+        calls.append((session, jar_tag, link_tag))
         return "挂=https://www.nmbxd1.com/x｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜页面JS=空｜合并=PHPSESSID"
 
     monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
@@ -1079,7 +1082,11 @@ def test_a_leaf_round_without_userhash_writes_the_forensics_line(
     line = next(text for text in logged if text.startswith("读罐对账："))
     assert "PHPSESSID" in line
     assert "abc123" not in line, "对账行漏了饼干值"
-    assert all(tag for _unused, tag in calls), "对账没拿到罐子（profile 目录名）标签"
+    assert all(tag for _unused, tag, _link in calls), "对账没拿到罐子（profile 目录名）标签"
+    # v0.13.37：对账还得报「程序接的是哪一扇」——端口号一亮出来，两扇窗两个罐当场可分。
+    assert all(link.startswith("端口") for _unused, _tag, link in calls), (
+        f"对账没拿到接=端口标签：{[c[2] for c in calls]}"
+    )
     assert "挂=" not in dialog.http_var.get(), "对账不该挤进 HTTP 那一行"
     # 名单没变就只写一次：十分钟的等待不该刷出二十行同样的话。
     _pump(root_window, 0.6)
