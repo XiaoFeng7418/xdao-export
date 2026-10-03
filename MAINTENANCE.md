@@ -677,6 +677,32 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.37**（僵尸窗收掉 + 对账报「接=」：两个进程各拿一个罐，当场拆穿；v0.13.36 复验 m38110 定案）：
+  饼干窗 Ctrl+F5 硬刷新都不弹回登录页（那扇窗的进程罐里明明有有效 userhash），程序同一时刻的对账却写着
+  页=1（只有登录页）、整罐只有 PHPSESSID——两边都是真的，因为它们是**两个浏览器进程**。旧那扇的
+  ``DevToolsActivePort`` 被后来哪一轮 ``_launch`` 预删了，备用目录的名字又带着当时进程的 PID+时间戳，新进程
+  猜不到 ⇒ :func:`live_browser_dirs` 彻底瞎、照常再开一扇，两扇窗各拿一个罐互相看不见。这一版三件事：
+  ①落在**持久资料目录**（``%APPDATA%\xdao-export\browser-profile``）时开口解释：``start()`` 里
+  ``chosen == self.profile`` 分支写 ``_profile_note``「这次用的是程序自己存的浏览器资料目录……旧的
+  『饼干列表』是它记得的上次开窗的页面，跟你平时上网的浏览器无关；关掉所有程序开的登录窗口后删掉这个
+  文件夹即可」——上一版用户就是被这份残留页误导的。
+  ②开窗前普查补**进程侧**一刀：``program_profile_dirs(profile)`` 直接问操作系统（powershell
+  ``Get-CimInstance Win32_Process`` 列 msedge/chrome 的命令行），``_parse_program_profile_lines`` 按白名单
+  三分支认自家目录——配置目录下名以 ``browser-profile`` 开头的、现场目录里的 ``_new``、%TEMP% 带
+  ``TEMP_DIR_PREFIXES`` 前缀的（比对全 ``lower()``、去重保序）；**用户自己浏览器的 ``User Data`` 两族都不沾，
+  这是铁律**。端口还在答话的（``_profile_in_use``）补进接手名单照常「接手了「××」这一扇」；端口失联的僵尸
+  直接 ``_kill_processes_using_profile`` 收掉并写进普查句「进程侧探到 N 扇端口失联的旧窗口（…），已先收掉」
+  （``_adopt_process_side_findings``）。powershell 被拦/超时/非 Windows 一律回空表——补刀不拦正路。
+  ③对账行加 ``接=`` 段：``jar_forensics(session, jar_tag, link_tag)`` 报「程序接的是哪一扇」——
+  CDPSession 自己不知道端口号，由 gui 传 ``f"端口{browser.port}"``；两扇窗的罐目录同名也一眼分开。
+  开关 ``_PROCESS_CENSUS = _IS_WINDOWS``（与 ``_KILL_PROFILE_PROCESSES`` 同一族，用例可关）。
+  测试 265→270：认门白名单/去重（用户自己的 User Data、别家父目录、无 flag 行全不进名单）、端口答话补接手、
+  僵尸窗先收+普查句点名、对账 ``接=``（缺标签不造段）；持久目录提示 +1。gui 替身两处：``fake_forensics``
+  签名加 ``link_tag`` 并断言每个调用都拿到「端口」开头的标签；autouse 钉 ``program_profile_dirs``→[]。
+  本轮事故一条：``program_profile_dirs`` 与 ``_kill_processes_using_profile`` 同款在**函数内** import 标准库
+  subprocess（躲用例的 Popen 替身）——模块属性替身拦不住它，gui 用例起初每个都真起 powershell、套件从 76s
+  涨到 153s 还随机器状态变；autouse 必须钉住函数名本身，不是钉 subprocess。另：``_adopt_process_side_findings``
+  曾因同锚点二次插入而类内重复定义——同一锚点插入前先 grep 计数。全量 1787 项 = 1780 通过 + 7 跳过。
 - **v0.13.36**（钉稳真正登录的那一页 + 对账行列出浏览器此刻有哪几页：v0.13.35 复验 m37565 定案）：
   横幅【窗口号】与对话框对上、Alt+Tab 只一扇窗、未过滤整罐读确实只有 1 块 PHPSESSID —— 读错窗与
   CHIPS 分区过滤两个嫌疑同场枪毙；罐子每 1.5 秒（BROWSER_POLL_SECONDS）全程在读、晚登录也会被当场

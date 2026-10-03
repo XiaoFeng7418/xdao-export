@@ -1427,6 +1427,10 @@ class BrowserLoginDialog(tk.Toplevel):
         # 对账行里标的「罐」= 这次真正在用的资料目录名（v0.13.35）：接了旧窗就写旧窗的
         # 目录，新开就写临时目录 —— 「F12 有、程序没有」到底是两扇窗还是一扇窗，靠它对上。
         jar_tag = Path(str(getattr(browser, "used_profile", "") or "")).name
+        # 对账行里的「接」= 程序此刻对话的是哪一扇（v0.13.37）：真机 m38110 的僵局
+        # ——用户那扇窗硬刷新都不弹回（窗里有真饼干），程序却只看见登录页一签。
+        # 端口号一亮出来，「两扇窗、两个罐」当场定案，不用再猜程序读没读瞎。
+        link_tag = f"端口{browser.port}" if getattr(browser, "port", None) else ""
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1519,7 +1523,7 @@ class BrowserLoginDialog(tk.Toplevel):
                         forensics = getattr(backend, "jar_forensics", None)
                         if callable(forensics):
                             try:
-                                line = str(forensics(session, jar_tag=jar_tag) or "")
+                                line = str(forensics(session, jar_tag=jar_tag, link_tag=link_tag) or "")
                             except Exception:  # noqa: BLE001 —— 对账不许带崩登录
                                 line = ""
                             if line and line != forensics_line:

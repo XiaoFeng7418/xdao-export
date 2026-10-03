@@ -73,6 +73,12 @@ TEMP_PROFILE_WAIT = 3.0
 #: :func:`_kill_processes_using_profile`）。用例会把它改成 False —— 那一手要真起
 #: 一个 powershell，不该在每个用例里跑一遍。
 _KILL_PROFILE_PROCESSES = _IS_WINDOWS
+#: 普查要不要再问操作系统一遍「谁此刻用着我们家的资料目录」（见 :func:`program_profile_dirs`）。
+#: 端口普查只认「名字猜得到」的目录（:func:`live_browser_dirs`）：备用目录的名字带着
+#: **当时那个进程**的 PID 和时间戳，新进程猜不出；端口文件再被哪一轮 ``_launch`` 预删掉，
+#: 那扇窗就彻底从普查里消失 —— 真机 m38110 的「饼干窗硬刷新不弹回、对账却 页=1」就是这么来的。
+#: 用例会把它换成 False（或直接换掉函数本身）：这一手要真起一个 powershell。
+_PROCESS_CENSUS = _IS_WINDOWS
 #: :func:`fresh_profile_dir` 的进程内序号：同一个毫秒里连叫两次也要拿到不同的名字。
 _FRESH_PROFILE_SEQ = 0
 # 连调试端口时，等站点页面出现的最长时间。
@@ -509,6 +515,91 @@ def live_browser_dirs(profile: Path) -> list[Path]:
     return [candidate for _, candidate in live]
 
 
+def _parse_program_profile_lines(text: str, profile: Path) -> list[Path]:
+    """从进程侧普查的输出里认出自家资料目录（v0.13.37）。
+
+    每行形如 ``PID<TAB>整条命令行``；抠出所有 ``--user-data-dir=``（路径带空格时
+    会被整体加引号，先剥掉）再筛「程序自己的」两族，口径和
+    :func:`_is_temp_profile_dir` / :func:`fallback_profile_dirs` 一致：
+
+    - 配置目录下名字以 ``browser-profile`` 开头的（现场目录和它的全部备用目录），
+      外加现场目录里那个 ``_new`` 候选；
+    - %TEMP% 下带我们前缀的（登录临时目录与 ``--check-browser`` 自检目录）。
+
+    用户自己浏览器的 ``User Data`` 两族都不沾 —— 这是铁律：**普查永远不许碰他
+    自己的窗**。比对不分大小写（Windows 路径本来就不分）。返回去重后的目录表。
+    """
+    own_parent = str(profile.parent).lower()
+    prefix = USER_DATA_DIR_NAME.lower()
+    temp_prefixes = tuple(item.lower() for item in TEMP_DIR_PREFIXES)
+    try:
+        temp_root = str(Path(tempfile.gettempdir())).lower()
+    except OSError:  # pragma: no cover —— 拿不到临时目录就只认配置目录那族
+        temp_root = ""
+    found: list[Path] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        _, _, command_line = line.partition("\t")
+        if not command_line:
+            continue
+        for raw in re.findall(r"--user-data-dir=(\"[^\"]*\"|\S+)", command_line, flags=re.IGNORECASE):
+            raw = raw.strip('"').rstrip("\\/")
+            if not raw:
+                continue
+            path = Path(raw)
+            name = path.name.lower()
+            parent = str(path.parent).lower()
+            ours = (parent == own_parent and name.startswith(prefix)) or (
+                parent == str(profile).lower() and name == "_new"
+            ) or (bool(temp_root) and parent == temp_root and name.startswith(temp_prefixes))
+            key = raw.lower()
+            if ours and key not in seen:
+                seen.add(key)
+                found.append(path)
+    return found
+
+
+def program_profile_dirs(profile: Path) -> list[Path]:
+    """进程侧普查：此刻有哪些**活进程**正用着我们家的资料目录（v0.13.37）。
+
+    为什么端口普查不够（真机 m38110 的定案）：饼干窗硬刷新都不弹回登录页 ——
+    那扇窗的进程罐里明明有一张有效 userhash；程序的对账却写着 页=1（只有登录页）、
+    整罐只有 PHPSESSID。两边都是真的，因为它们是**两个浏览器进程**：旧那扇的
+    ``DevToolsActivePort`` 被后来哪一轮 ``_launch`` 预删了（:meth:`_launch` 里那手
+    unlink），端口普查（:func:`live_browser_dirs`）只能问「名字猜得到的目录」，
+    备用目录的名字带着当时进程的 PID 和时间戳，新进程猜不出 —— 于是旧窗彻底隐形。
+
+    这一手不看端口文件，直接问操作系统：列出所有 msedge/chrome 进程的命令行，
+    认出自家目录（:func:`_parse_program_profile_lines`）。查不到、非 Windows、
+    powershell 被拦，一律回空表 —— 它是普查的补刀，不该拦下登录的正路。
+    """
+    if not _PROCESS_CENSUS:  # 用例把它关掉：这一手要真起一个 powershell
+        return []
+    # 和 :func:`_kill_processes_using_profile` 同一个理由：当场 import 标准库，
+    # 不走本模块顶部那个名字 —— 用例会把 subprocess.Popen 换成假浏览器。
+    import subprocess as _subprocess
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" |"
+        " ForEach-Object { if ($_.CommandLine -match '--user-data-dir') {"
+        " \"$($_.ProcessId)`t$($_.CommandLine)\" } }"
+    )
+    try:
+        done = _subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20.0,
+            creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
+        return []
+    return _parse_program_profile_lines(done.stdout or "", profile)
+
+
 def _profile_failure(exc: BaseException) -> bool:
     """这次失败是不是「这个 profile 用不了」造成的（权限 / 占用）。
 
@@ -896,6 +987,34 @@ class LoginBrowser:
             ) from first_error
         raise first_error
 
+    def _adopt_process_side_findings(self, live: list[Path]) -> list[Path]:
+        """进程侧普查的补刀：端口普查只认「名字猜得到」的目录，这一手直接问操作系统（v0.13.37）。
+
+        真机 m38110 的现场：用户硬刷新都不弹回的饼干窗，端口普查却报「没探到」——
+        那扇窗的 DevToolsActivePort 早被哪一轮 ``_launch`` 预删了，备用目录的名字
+        又带着**当时进程**的 PID，新进程猜不出。凡是进程侧探到的自家目录：
+        端口还答话的（只是名字猜不到）补进接手名单；端口已经失联的僵尸窗**先收掉**
+        ——留着它，用户在那扇窗里登录、点「应用」，程序这一轮的新罐永远看不见，
+        两边又对不上。收掉之后照常开新窗，世界上重新只有一扇程序窗口、一个罐。
+
+        返回真正被点去收掉的僵尸目录（活目录就地追加进 ``live``）。只读不改端口
+        逻辑；杀进程复用 :func:`_kill_processes_using_profile`（受它的开关保护，
+        测试里两个都能替身）。
+        """
+        known = {str(path).lower() for path in live}
+        reaped: list[Path] = []
+        for found in program_profile_dirs(self.profile):
+            key = str(found).lower()
+            if key in known:
+                continue
+            known.add(key)
+            if _profile_in_use(found):
+                live.append(found)  # 端口还答话：只是名字猜不到，补进接手名单
+                continue
+            _kill_processes_using_profile(found)
+            reaped.append(found)
+        return reaped
+
     def _try_attach_live(self) -> "LoginBrowser | None":
         """上次程序开的浏览器窗口还开着，就直接接上它（v0.13.33）。
 
@@ -912,8 +1031,15 @@ class LoginBrowser:
         目录叫什么、接的是哪扇）。真机 m36897 的教训：「程序读空罐、用户 F12 却有
         饼干」只要发生在两扇窗之间就永远解释不通，而旧窗口的横幅会**冻**在原地装
         成活的 —— 光看横幅分不清。日志里有了这句，配上「读罐对账」的罐名，一眼定案。
+
+        v0.13.37 补刀：端口普查只认「名字猜得到」的目录，真机 m38110 现场那扇
+        硬刷新都不弹回的饼干窗偏偏猜不到 —— 端口文件早被哪轮 ``_launch`` 预删了。
+        于是普查瞎报「没探到」、又开一扇，世界上出现两个罐。现在问完端口再问进程
+        （:meth:`_adopt_process_side_findings`）：端口失联的僵尸窗**先收掉**，
+        名字猜不到但端口还答话的补进接手名单。
         """
         live = live_browser_dirs(self.profile)
+        reaped = self._adopt_process_side_findings(live)
         if live:
             names = "、".join(path.name for path in live[:5])
             self._census_note = (
@@ -921,6 +1047,12 @@ class LoginBrowser:
             )
         else:
             self._census_note = "开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。"
+        if reaped:
+            self._census_note += (
+                f"进程侧探到 {len(reaped)} 扇端口失联的旧窗口（"
+                f"{'、'.join(path.name for path in reaped[:5])}），已先收掉，"
+                "免得它和这一轮程序用的窗口混在一起。"
+            )
         for chosen in live:
             try:
                 port, ws_path = _parse_devtools_file(
@@ -1062,12 +1194,24 @@ class LoginBrowser:
                             f"这次用的是临时资料目录（{chosen}），"
                             "关掉登录窗口后会自动清掉，不影响你自己的浏览器。"
                         )
-                    else:
+                    elif chosen == self.profile:
+                        # v0.13.37：落到配置目录那份**持久**资料目录时不能一声不吭。
+                        # 真机案例（2026-10-03 深夜）：临时目录在这台机器上起不来
+                        # （Edge 退出码 21 一族），每次都悄悄退到 browser-profile；
+                        # Edge 用同一份目录会把**上一次登录窗口那一页**原样恢复出来，
+                        # 用户看到的「已经登录的饼干列表」其实是上回留下的画面，
+                        # 罐里这时候只剩 PHPSESSID（见 MAINTENANCE.md 同日条目）。
+                        # 不说清这一句，用户只会更困惑：「不是说每次都开全新目录吗？」
                         self._profile_note = (
-                            ""
-                            if chosen == self.profile
-                            else f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
+                            f"这次用的是程序自己存的浏览器资料目录（{chosen}），"
+                            "它留着我们以前用这扇窗登录时打开过的页面——你在窗口里"
+                            "看到旧的『饼干列表』就是这么来的，跟你自己平时上网的"
+                            "浏览器无关。这一份的饼干会跨窗口留着，登录成功一次之后"
+                            "再开一般不用重登；要让这扇窗回到全新状态，关掉所有程序"
+                            "开的登录窗口后删掉这个文件夹即可（只动程序自己这份）。"
                         )
+                    else:
+                        self._profile_note = f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
                     return self
             time.sleep(_POLL_INTERVAL)
 
@@ -1891,7 +2035,7 @@ def summarize_cookies(cookies: Iterable[dict]) -> str:
     return "、".join(names)
 
 
-def jar_forensics(session: "CDPSession", jar_tag: str = "") -> str:
+def jar_forensics(session: "CDPSession", jar_tag: str = "", link_tag: str = "") -> str:
     """「读罐对账」一行：挂着哪页、读的是哪份罐、四路各自看见哪些**名字**（v0.13.34）。
 
     为什么：真机 m36307 里 F12 看得见 userhash、程序四路合并读却报没有，而对话框
@@ -1912,6 +2056,11 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "") -> str:
     重挑时看见的顺序是什么，光看 ``挂=`` 定不了案）：报**此刻**浏览器里能挂上的
     页面标签条数与各自地址（每条截 60 字、最多列 4 条，地址不是秘密，可以进日志）。
     僵尸标签、双标签顺序翻转，从此一张截图就能看出来。
+
+    v0.13.37 补一段 ``接=``（真机 m38110 的定案：饼干窗硬刷新都不弹回、程序对账
+    却写 页=1 只有登录页 —— 用户和程序各看着一扇窗，两个罐永远对不上）：报程序
+    此刻**接的是哪一扇**（调试端口）。端口号是 CDPSession 自己不知道的（它只知道
+    WebSocket 地址），所以由调用方传：``link_tag`` 空就不写这段。
     """
     parts: list[str] = []
     try:
@@ -1931,6 +2080,9 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "") -> str:
         )
         total = len(pages) if isinstance(pages, list) else 0
         parts.append(f"页={total}（{shown or '空'}）")
+    link = str(link_tag or "").strip()
+    if link:
+        parts.append(f"接={link[:40]}")
     tag = str(jar_tag or "").strip()
     if tag:
         parts.append(f"罐={tag[:40]}")

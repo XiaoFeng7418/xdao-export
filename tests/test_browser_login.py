@@ -1343,6 +1343,85 @@ def test_stop_leaves_a_reused_window_alone(tmp_path: Path, monkeypatch: pytest.M
     assert (live / "DevToolsActivePort").exists()
 
 
+def test_program_profile_lines_only_name_our_own_dirs(tmp_path: Path) -> None:
+    """进程侧普查的认门规矩（v0.13.37）：自家两族全认，别人家的一个不沾。
+
+    铁律写在 :func:`_parse_program_profile_lines` 的 docstring 里——用户自己浏览器的
+    ``User Data`` 目录永远不进名单。这一条用例就是给那条铁律上的锁。
+    """
+    profile = tmp_path / "browser-profile"
+    own = str(profile)
+    alt = str(tmp_path / "browser-profile-4321-1727000000")
+    new = str(profile / "_new")
+    temp = str(Path(tempfile.gettempdir()) / "xdao-export-browser-profile-9-9-0")
+    stranger = "C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\User Data"
+    other_parent = str(tmp_path.parent / "browser-profile")
+    text = "\n".join(
+        [
+            f"111\tmsedge.exe --user-data-dir={own}",
+            f'222\tchrome.exe --user-data-dir="{alt}"',
+            f"333\tmsedge.exe --user-data-dir={new} --x=1",
+            f"444\tmsedge.exe --user-data-dir={temp}",
+            f"555\tmsedge.exe --user-data-dir={stranger}",
+            f"666\tapp.exe --user-data-dir={other_parent}",
+            f"777\tmsedge.exe --user-data-dir={own}",
+            "888\tmsedge.exe --no-profile-flag-at-all",
+        ]
+    )
+    found = bl._parse_program_profile_lines(text, profile)
+    # 去重保序：777 的 own 与 111 重复，只剩一份；用户浏览器、别人家的目录都不在。
+    assert [str(p) for p in found] == [own, alt, new, temp], found
+
+
+def test_process_side_census_adopts_a_live_window_the_port_census_missed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口文件被删但进程还活着且端口答话：进程侧把它补回接手名单（v0.13.37）。
+
+    备用目录的名字带着当时进程的 PID 和时间戳，新一轮进程猜不到——
+    ``live_browser_dirs`` 因此瞎掉（真机 m38110 的一半）。补回来的窗照常接手，
+    绝不许再开第二扇。
+    """
+    live = tmp_path / "browser-profile-4321-1727000000"
+    live.mkdir()
+    (live / "DevToolsActivePort").write_text("9666\n/devtools/browser/guid-p\n", encoding="utf-8")
+    monkeypatch.setattr(bl, "program_profile_dirs", lambda profile: [live])
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: True)
+    killed: list = []
+    monkeypatch.setattr(bl, "_kill_processes_using_profile", lambda path: killed.append(path))
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile", timeout=5.0
+    )
+    result = browser._try_attach_live()
+    assert result is not None and result.used_profile == live
+    assert result.port == 9666
+    assert killed == [], "端口还在答话的窗不是僵尸，不许收"
+    assert f"接手了「{live.name}」这一扇" in result.census_note
+    assert "探到 1 扇" in result.census_note
+
+
+def test_process_side_census_reaps_zombie_windows_before_opening_a_new_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口失联的僵尸窗：先收掉、写进普查句，再照常新开（v0.13.37）。
+
+    真机 m38110 的另一半：饼干窗硬刷新都不弹回登录页（进程罐里有效 userhash），
+    程序对账却只见登录页与 PHPSESSID —— 两个进程各拿一个罐。收掉端口失联的旧进程，
+    世界上重新只有一扇程序窗口、一个罐；普查句把收掉的目录名字点名写出来。
+    """
+    zombie = tmp_path / "browser-profile-9-9"
+    zombie.mkdir()  # 没有 DevToolsActivePort：真 _profile_in_use 读到文件缺失即 False
+    monkeypatch.setattr(bl, "program_profile_dirs", lambda profile: [zombie])
+    killed: list = []
+    monkeypatch.setattr(bl, "_kill_processes_using_profile", lambda path: killed.append(path))
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
+    assert browser._try_attach_live() is None
+    assert killed == [zombie], "端口都失联了还不收，留着它继续串门？"
+    assert "进程侧探到 1 扇" in browser.census_note
+    assert zombie.name in browser.census_note and "已先收掉" in browser.census_note
+    assert "没探到活着的程序窗口" in browser.census_note
+
+
 def test_live_browser_dirs_lists_only_live_windows_newest_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1435,10 +1514,13 @@ def _no_reuse_of_live_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 
     真去探测会读开发机真实的 %TEMP%：恰好留着一扇没关的程序登录窗时，
     下面所有「启动」用例都会变成「接上它」，结果不再确定。
+    v0.13.37 起进程侧普查（问操作系统谁在用自家目录）也要钉住——它在
+    Windows 开发机上默认是真起 powershell 的，不钉就等于每个用例跑一遍 CIM。
     专测复用路的用例在自己的函数体里重新 monkeypatch —— fixture 先跑、
     函数体后跑，后写的赢。
     """
     monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [])
+    monkeypatch.setattr(bl, "program_profile_dirs", lambda profile: [])
 
 
 def test_start_reports_a_browser_that_cannot_run(artifacts_dir: Path) -> None:
@@ -1674,6 +1756,40 @@ def test_start_switches_profile_when_the_config_one_is_not_writable(
         assert created[2] not in (profile, created[0]), "被拒之后要换一个目录"
         assert browser.profile_note, "换了目录得留下话，好让界面说清楚"
         assert str(created[2]) in browser.profile_note
+
+
+def test_start_tells_the_user_when_it_lands_on_the_persistent_profile(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v0.13.37：退到配置目录那份**持久**资料时不能再一声不吭。
+
+    真机（2026-10-03 深夜）：这台机器上新临时目录一起来就退，每次都悄悄落到
+    ``browser-profile``；Edge 用同一份目录会把上次登录窗口那一页原样恢复，用户
+    看到「已经登录的饼干列表」却读不到饼干，又因为文档说「每次都是全新临时目录」
+    而认定窗里有「自己平时保存的饼干」。这句提示要把「窗里的旧页面从哪来、跟你
+    自己的浏览器无关、怎么恢复成全新」一次说清。
+    """
+    profile = artifacts_dir / "browser-profile"
+
+    def fake_popen(args: list[str], **kwargs: object) -> _PortWritingPopen:
+        chosen = Path(
+            next(a.split("=", 1)[1] for a in args if a.startswith("--user-data-dir="))
+        )
+        if chosen != profile:
+            # 临时目录那一次：真机上「一起来就退」正是这个样子。
+            return _DeadBrowserPopen(args)
+        return _PortWritingPopen(args, **kwargs)
+
+    monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    info = bl.BrowserInfo("Edge", "msedge.exe")
+    with bl.LoginBrowser(info, profile, timeout=5.0) as browser:
+        note = browser.profile_note
+        assert note, "落到持久目录不能一声不吭"
+        assert str(profile) in note, "得把用的是哪份目录点名"
+        assert "程序自己存的" in note, "先卸下「碰了我自己浏览器」的担心"
+        assert "饼干列表" in note, "窗里旧画面的来历要说破"
+        assert "删掉这个文件夹" in note, "得给一条回到全新状态的路"
 
 
 def test_a_launch_error_that_never_retries_still_deletes_the_temp_profile(
@@ -3154,6 +3270,19 @@ def test_jar_forensics_says_so_when_the_tab_reader_is_missing() -> None:
     session = types.SimpleNamespace(current_url=lambda: bl.LOGIN_URL)
     line = bl.jar_forensics(session)  # type: ignore[arg-type]
     assert "页=读不到（AttributeError）" in line, line
+
+
+def test_jar_forensics_says_which_window_the_program_is_talking_to() -> None:
+    """接= 段（v0.13.37）：对账行点名程序接的是哪一扇——端口一亮，两罐立分。
+
+    真机 m38110：肉眼那扇窗和对账那扇窗是两个进程，光看罐名（都叫 browser-profile）
+    分不出在读谁。连接标签由界面层从 browser.port 拿来传入——CDPSession 自己不知道。
+    """
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    line = bl.jar_forensics(session, jar_tag="browser-profile", link_tag="端口53124")  # type: ignore[arg-type]
+    assert "｜接=端口53124｜罐=browser-profile｜" in line, line
+    plain = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert "接=" not in plain, "没传连接标签就不许凭空造一段"
 
 
 def test_named_userhash_entries_separates_present_from_plausible() -> None:
