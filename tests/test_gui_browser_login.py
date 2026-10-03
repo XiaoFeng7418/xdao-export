@@ -993,6 +993,32 @@ def test_every_round_reselects_the_tab_before_reading_it(
     dialog._on_cancel()
 
 
+def test_every_round_pins_the_banner_to_the_watched_tab(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """每一轮都往被盯的标签插「程序正在看这个窗口」的横幅（v0.13.33）。
+
+    真机 m35762/m35800：用户在自己看的窗口里登录、点应用，程序却看着另一个
+    窗口的罐 —— 两个窗口长得一模一样，光靠文字说不清谁是谁。从这一版起横幅
+    每轮重插一次（导航会把页面整个换掉），插的就是这一轮 retarget 后真正在读
+    的那个 session，指哪看哪。
+    """
+    banners: list[object] = []
+    monkeypatch.setattr(
+        browser_login,
+        "ensure_watch_banner",
+        lambda session: banners.append(session) or "added",
+    )
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    assert _wait_for(root_window, lambda: len(banners) >= 3, timeout=10.0), (
+        "横幅没有每轮都插"
+    )
+    assert all(item is session for item in banners), "横幅没钉在这一轮真正在读的标签上"
+    dialog._on_cancel()
+
+
 def test_one_flaky_read_retries_instead_of_killing_the_wait(
     root_window, browser_shim, open_dialog
 ):
@@ -1808,12 +1834,20 @@ def test_waiting_status_says_how_long_and_which_window_counts() -> None:
     v0.13.32 改了口径：老断言是「还没到超时，先别急着让人换法子」，真机 m35456 却
     证明等的人根本分不清两个 Edge 窗口 —— 在自己常用的浏览器里登录完就干等，
     左下角的粘贴按钮没人去翻。等待那句必须自己把退路说出来。
+
+    v0.13.33 又补了两件事（m35762/m35800）：等的人分不清两个长得一样的窗口，
+    句里给出棕色横幅这个肉眼判据；以及「登录≠拿得到饼干」，要点一行『应用』。
     """
     text = gui._waiting_status(42)
     assert "42" in text
     assert "这个窗口打开的那个浏览器" in text
     assert "自己平时用的浏览器里登录，程序看不到" in text
     assert "直接粘贴饼干登录" in text
+    # v0.13.33（m35762/m35800）：光登录不算完 —— 那句话还得教会人「点应用」，
+    # 并给出「哪个窗口才是被看的」肉眼判据（棕色横幅）。
+    assert "棕色横条" in text
+    assert "『应用』" in text
+    assert "饼干切换成功" in text
 
 
 def test_long_wait_keeps_telling_the_user_how_long_and_where_to_log_in(

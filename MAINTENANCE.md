@@ -677,6 +677,31 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.33**（修「程序到底在看哪个窗口」—— 用户在被盯窗口登录并点应用仍抓不到饼干的冤案，程序侧三管齐下）：
+  0.13.32 复验 m35762/m35800（截图+口头确认）：**手动点应用从未被程序抓到，贯穿历史** ——
+  排除「用户漏步骤」，主因在程序侧。诊断（remote 到极限后的推断）：jar 读的是被盯实例的整罐，
+  若用户真在被盯窗口点了应用，1.5 秒轮询必抓到 ⇒ 程序盯的罐≠用户操作的窗口（M1：fresh-first
+  每次新 profile 新窗口，历史旧程序窗口长相相同且已登录，用户自然在旧窗口操作），或站点顶号（M2）。
+  修法：① **复用活着的旧程序窗口**：`live_browser_dirs(profile)`（候选=self.profile+fallback dirs+
+  %TEMP% 里 `xdao-export-browser-profile-*` 前缀目录，按 DevToolsActivePort 的 mtime 倒序、
+  `_profile_in_use` 答话才算活）；`LoginBrowser._try_attach_live()` 读端口文件拼
+  `browser_ws_url`、process 保持 None（worker 的 `process is None` 分支天然兼容，stop() 对复用
+  窗口只断连接不杀进程不删目录）；`start()` 在 `fallback_profiles=True` 时先探活再接手，**探测必须
+  赶在 _launch 删旧端口文件之前**（--check-browser 走 fallback_profiles=False，不蹭窗）——
+  保证世界上程序窗口只有一个罐，根治 M1；② **盯窗横幅**：`build_watch_banner_script()` 往被盯
+  site 标签注入 fixed 顶栏「串导出程序正在看这个窗口 —— 请在这里登录 X 岛；登录后到「我的饼干」
+  列表里点一行『应用』」（z-index 顶格、pointer-events:none、getElementById 幂等、非站内页不注、
+  `ensure_watch_banner(session)` 吞尽异常回 ""），worker 每轮 retarget 后重注一次（页面跳了也不掉）；
+  ③ **话术全线补「点应用」**：`_waiting_status`、`_timeout_message`、ready 文案、对话框引言、
+  `BROWSER_PASTE_NUDGE`、`BROWSER_STALE_COOKIE_MESSAGE`、使用说明的登录步骤 —— 登录只种
+  `memberUserspapapa`/`PHPSESSID`，**userhash 只在点『应用』（switchTo）之后才出现**，这句以前
+  从没写给用户，是误会的一半；④ 顺手修 `apply_leaf_cookie_in_browser` 的空 host 直通：
+  about:blank 等无 host 页面以前会直通 fetch 并被弹回登录页、谎报「这个窗口里的登录没成」，
+  现在诚实报「程序挂的这个标签现在不在 X 岛页面」。用例：`test_browser_login.py` 242→248
+  （复用窗口 2 + live_browser_dirs 1 + 横幅 3，并给全部 start() 用例加了 autouse 的
+  `live_browser_dirs→[]` 守卫，防开发机真实 %TEMP% 活窗捣乱；专测用例在函数体里再 patch 回原件）；
+  `test_gui_browser_login.py` 60→61（每轮重注横幅钉到真正在读的 session；`_waiting_status` 用例
+  加钉「棕色横条/『应用』/饼干切换成功」三个词）。本机全量 **1755 passed / 7 skipped**（收集 1762 项）。
 - **v0.13.32**（修「在自己浏览器里登录了，程序干等」这个真机误会 —— 是话术，不是读漏）：
   0.13.31 复验截图 m35456：用户在**自己平时的 Edge** 里登录+应用（F12 里 userhash 摆着），
   程序盯着一次性窗口干等 1112 秒报「还没有 userhash」。确诊：两罐饼干互不可见是**设计使然**

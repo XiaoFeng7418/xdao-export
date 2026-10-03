@@ -37,6 +37,9 @@ import pytest
 from xdao import browser_login as bl
 from xdao import cdp as cdp
 
+# 抓一份**还没被下面 autouse fixture 换掉的**原实现，给「专测探测本身」的用例还原用。
+_REAL_LIVE_BROWSER_DIRS = bl.live_browser_dirs
+
 # 测试自己写一遍握手魔术串，不引用实现里的常量：两边一起写错就测不出来了。
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -1212,6 +1215,109 @@ def test_login_browser_tolerates_being_stopped_before_start() -> None:
     browser.stop()
     with pytest.raises(bl.BrowserLoginError):
         browser.devtools_http("/json/list")
+
+
+def test_start_reuses_a_window_the_program_left_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """正是要修的那个现场（v0.13.33）：上次程序开的窗口还开着 —— 直接接上它。
+
+    真机 m35800：「每次我自己都去手动点了应用，但是仍然抓不到饼干」。要是每回
+    启动都开一扇新窗、一个新罐，用户操作着的永远是登录过的那扇旧窗，程序盯着的
+    永远是本轮的空罐，两边永远对不上。复用之后同一时刻只有一个罐。
+    接上的窗不是我们生的：``process`` 为 None，收尾不碰它（见下一条）。
+    """
+    live = tmp_path / "xdao-export-browser-profile-4321-1727000000123-0"
+    live.mkdir()
+    (live / "DevToolsActivePort").write_text("9333\n/devtools/browser/guid-old\n", encoding="utf-8")
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [live])
+    popped: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: popped.append(args))
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile", timeout=5.0)
+    result = browser.start()
+    assert popped == [], "还开着的窗口，绝不能再开一扇"
+    assert result.process is None
+    assert result.port == 9333
+    assert result.browser_ws_url == "ws://127.0.0.1:9333/devtools/browser/guid-old"
+    assert "接到之前开着的程序窗口" in result.profile_note
+
+
+def test_stop_leaves_a_reused_window_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """接上的窗不归我杀、目录也不归我删：stop() 得原样留下它。"""
+    live = tmp_path / "xdao-export-browser-profile-1-2-0"
+    live.mkdir()
+    (live / "DevToolsActivePort").write_text("9444\n/devtools/browser/guid-b\n", encoding="utf-8")
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [live])
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile", timeout=5.0)
+    browser.start()
+    browser.stop()
+    assert live.exists()
+    assert (live / "DevToolsActivePort").exists()
+
+
+def test_live_browser_dirs_lists_only_live_windows_newest_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """从 %TEMP% 与已知目录里列出活的：端口不答话的不算，端口文件写得最晚的排前面。"""
+    root = tmp_path / "temp"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(root))
+    dirs = {}
+    for name, age in (("old", 100.0), ("new", 10.0), ("dead", 5.0)):
+        d = root / f"xdao-export-browser-profile-{name}"
+        d.mkdir()
+        port_file = d / "DevToolsActivePort"
+        port_file.write_text("9000\n/devtools/browser/x\n", encoding="utf-8")
+        stamp = time.time() - age
+        os.utime(port_file, (stamp, stamp))
+        dirs[name] = d
+    unrelated = root / "unrelated-dir"
+    unrelated.mkdir()
+    monkeypatch.setattr(bl, "_profile_in_use", lambda p: p != dirs["dead"])
+    monkeypatch.setattr(bl, "live_browser_dirs", _REAL_LIVE_BROWSER_DIRS)
+    got = bl.live_browser_dirs(tmp_path / "profile")
+    assert got == [dirs["new"], dirs["old"]]
+    assert unrelated not in got
+
+
+def test_watch_banner_script_carries_the_identity_line() -> None:
+    """横幅脚本要点齐三件事：id 幂等、只在站内出现、把「点应用」写进句子。"""
+    script = bl.build_watch_banner_script()
+    assert bl.WATCH_BANNER_ID in script
+    assert "程序正在看这个窗口" in script and "『应用』" in script
+    assert "nmbxd1" in script, "站外的页面不该出现横幅"
+    assert "getElementById" in script, "同一轮里反复注入要能认出『已经有了』"
+
+
+def test_ensure_watch_banner_swallows_every_failure() -> None:
+    """横幅是辅助说明：注入失败不许把登录带崩，也不许不试就跳过。"""
+    calls: list[str] = []
+
+    class _Session:
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            calls.append(expression)
+            raise bl.CdpError("目标没了")
+
+    assert bl.ensure_watch_banner(_Session()) == ""  # type: ignore[arg-type]
+    assert calls, "至少真试过一次，坏在注入里面也要咽下"
+
+
+def test_ensure_watch_banner_reports_what_the_page_said() -> None:
+    class _Session:
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            return "present"
+
+    assert bl.ensure_watch_banner(_Session()) == "present"  # type: ignore[arg-type]
+
+
+@pytest.fixture(autouse=True)
+def _no_reuse_of_live_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认让「接上之前开着的程序窗口」这一探（v0.13.33）永远扑空。
+
+    真去探测会读开发机真实的 %TEMP%：恰好留着一扇没关的程序登录窗时，
+    下面所有「启动」用例都会变成「接上它」，结果不再确定。
+    专测复用路的用例在自己的函数体里重新 monkeypatch —— fixture 先跑、
+    函数体后跑，后写的赢。
+    """
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [])
 
 
 def test_start_reports_a_browser_that_cannot_run(artifacts_dir: Path) -> None:
@@ -3043,8 +3149,17 @@ def test_apply_leaf_cookie_in_browser_refuses_pages_it_cannot_use() -> None:
     session.url = "https://example.com/some/page"
     result = bl.apply_leaf_cookie_in_browser(session)  # type: ignore[arg-type]
     assert result.value is None
-    assert "不是 X 岛" in result.detail and "example.com" in result.detail
+    assert "不在 X 岛页面" in result.detail and "example.com" in result.detail
     assert session.evaluations == [], "不该往别人家的页面里发 fetch"
+
+    # v0.13.33：地址读得到、host 却是空的（about:blank 这类）以前会直通 ——
+    # fetch 落在非站内文档里一块饼干也不发，站点必然弹回登录页，界面反过来
+    # 谎报「这个窗口里的登录没成」。这一支现在也当场拦下、如实说是标签不对。
+    session.url = "about:blank"
+    result = bl.apply_leaf_cookie_in_browser(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert "不在 X 岛页面" in result.detail and "about:blank" in result.detail
+    assert session.evaluations == [], "不该往空白页里发 fetch，更不该反咬「登录没成」"
 
 
 def test_apply_leaf_cookie_in_browser_reports_a_fetch_it_could_not_even_send() -> None:

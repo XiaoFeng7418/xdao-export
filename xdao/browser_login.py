@@ -477,6 +477,38 @@ def sweep_stale_temp_profiles(
 
 
 
+def live_browser_dirs(profile: Path) -> list[Path]:
+    """把「浏览器还开着的」资料目录列出来，新的排前面（v0.13.33）。
+
+    要问的地方：现场目录、备用目录，还有 %TEMP% 里带我们前缀的那些临时目录 ——
+    fresh 目录的名字里带着**上一个进程**的 PID，新进程猜不出名字，只能列出来挨个问。
+    每个目录按 ``DevToolsActivePort`` 的端口答不答话判死活（见 :func:`_profile_in_use`）：
+    答话的就是还开着的窗口。按端口文件的修改时间倒序 —— 最晚开的那个才是用户
+    眼前看着的那扇窗。
+    """
+    candidates: list[Path] = [profile, *fallback_profile_dirs(profile)]
+    try:
+        root = Path(tempfile.gettempdir())
+        candidates.extend(entry for entry in root.iterdir() if _is_temp_profile_dir(entry))
+    except OSError:  # pragma: no cover —— 临时目录列不出来就只问已知的几个
+        pass
+    live: list[tuple[float, Path]] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            mtime = (candidate / "DevToolsActivePort").stat().st_mtime
+        except OSError:
+            continue
+        if not _profile_in_use(candidate):
+            continue
+        live.append((mtime, candidate))
+    live.sort(key=lambda item: item[0], reverse=True)
+    return [candidate for _, candidate in live]
+
+
 def _profile_failure(exc: BaseException) -> bool:
     """这次失败是不是「这个 profile 用不了」造成的（权限 / 占用）。
 
@@ -782,6 +814,14 @@ class LoginBrowser:
         """
         if self.process is not None:
             return self
+        # 先找「还开着的程序窗口」直接接上（v0.13.33，见 :meth:`_try_attach_live`）。
+        # 只有登录这条路有「多扇窗互相错认」的问题；``--check-browser`` 那种
+        # （fallback_profiles 为假）要如实回答现场目录行不行，不能去蹭别人的窗。
+        # 探测必须赶在 :meth:`_launch` 里删旧端口文件之前 —— 删了就没处问死活。
+        if self.fallback_profiles:
+            attached = self._try_attach_live()
+            if attached is not None:
+                return attached
         # 登录这条路（``fallback_profiles`` 为真）：新的临时目录排在最前，
         # 然后是用户配置目录里那个，最后是别的备用目录。
         # ``fallback_profiles`` 关掉时只试现场目录（供 --check-browser 如实回答）。
@@ -837,6 +877,38 @@ class LoginBrowser:
                 "或者改用「直接粘贴饼干登录」。"
             ) from first_error
         raise first_error
+
+    def _try_attach_live(self) -> "LoginBrowser | None":
+        """上次程序开的浏览器窗口还开着，就直接接上它（v0.13.33）。
+
+        为什么非做不可：v0.13.9 起每次尝试都换一份新临时目录、开一扇新窗口。
+        上一次那扇要是还开着（程序被强杀、或收尾没杀掉浏览器的场景），用户在
+        眼前那扇里登录、点「应用」，程序盯的却是这一轮的新罐 —— 两边永远对不上，
+        「每次都手动点了应用还是抓不到饼干」（真机 m35800）就是这个样子。
+        复用之后世界上同一时刻只有一扇程序窗口、一个罐。
+        接法跟 :meth:`_launch` 拿到端口后一模一样：端口和 WebSocket 路径都从
+        那扇窗自己的 ``DevToolsActivePort`` 里读。接不上（中途退了、文件读不动）
+        就回 None，照常新开。
+        """
+        for chosen in live_browser_dirs(self.profile):
+            try:
+                port, ws_path = _parse_devtools_file(
+                    (chosen / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace")
+                )
+            except (OSError, CdpError):  # pragma: no cover —— 探测和读之间它退了
+                continue
+            if not port:
+                continue
+            self._profile = chosen
+            self.port = port
+            self.ws_path = ws_path
+            self.browser_ws_url = f"ws://127.0.0.1:{port}{ws_path}"
+            self._profile_note = (
+                f"接到之前开着的程序窗口上了（资料目录 {chosen}）。"
+                "那个窗口里登录过就接着用；要重新登录也请在【这个】窗口里做。"
+            )
+            return self
+        return None
 
     def _fresh_candidate(self) -> Path:
         """这次要用的新临时资料目录；建不出来就退回现场目录（让 start() 照常跑）。
@@ -1818,6 +1890,52 @@ def _fetch_in_page(session: "CDPSession", url: str) -> dict | None:
     return data
 
 
+WATCH_BANNER_ID = "__xdaoWatchBanner"
+
+
+def build_watch_banner_script() -> str:
+    """给被盯的窗口钉一条「程序正在看这个窗口」的顶部横条（v0.13.33）。
+
+    为什么：登录这条路历史上一直分不清「用户在操作哪扇窗」—— 程序读的是它挂着
+    的那个实例的饼干罐，用户在另一扇长得一模一样的窗口里登录、点「应用」，程序
+    这边就永远「取不到饼干」（真机 m35762/m35800）。横幅只出现在**程序正在读的那扇
+    窗**里：窗口顶上有条棕色横条 = 对；没有 = 你正站在别的窗口里，别看这里了。
+
+    规矩两条：**只在 X 岛站内的页面上出现**（横幅是给登录流程看的，别跑到别的
+    网站顶上碍事），**幂等** —— 同一个 id 已经在就不重复钉（登录过程会刷好几页，
+    worker 每一轮都注一次，绝不能越叠越厚）。全程吞异常：横幅是辅助说明，
+    它出什么问题都不许把登录带崩。
+    """
+    return (
+        "(() => {\n"
+        f"  const id = {json.dumps(WATCH_BANNER_ID)};\n"
+        "  try {\n"
+        "    if (!document.documentElement) return 'skip';\n"
+        "    if (location.protocol.indexOf('http') !== 0) return 'skip';\n"
+        "    if (location.hostname.indexOf('nmbxd1') < 0) return 'off-site';\n"
+        "    if (document.getElementById(id)) return 'present';\n"
+        "    const bar = document.createElement('div');\n"
+        "    bar.id = id;\n"
+        "    bar.textContent = '串导出程序正在看这个窗口 —— 请在这里登录 X 岛；"
+        "登录后到「我的饼干」列表里点一行『应用』，看到「饼干切换成功」才算数。';\n"
+        "    bar.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:2147483647;"
+        "background:#b45309;color:#ffffff;font:13px/1.6 sans-serif;padding:6px 12px;"
+        "text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.35);pointer-events:none;');\n"
+        "    document.documentElement.appendChild(bar);\n"
+        "    return 'added';\n"
+        "  } catch (e) { return 'err'; }\n"
+        "})()"
+    )
+
+
+def ensure_watch_banner(session: "CDPSession") -> str:
+    """往被盯的标签注入横幅；一切失败都咽掉，回一句状态码给测试用。"""
+    try:
+        return str(session.evaluate(build_watch_banner_script()))
+    except Exception:  # noqa: BLE001 —— 横幅不许把登录带崩
+        return ""
+
+
 def apply_leaf_cookie_in_browser(
     session: "CDPSession", urls: list[str] | None = None
 ) -> LeafCookie:
@@ -1840,9 +1958,14 @@ def apply_leaf_cookie_in_browser(
     if not current:
         return LeafCookie(None, "浏览器窗口里现在没有可读的页面，页面内领饼干这条路走不了。")
     host = urllib.parse.urlsplit(current).hostname or ""
-    if host and "nmbxd1" not in host:
+    if "nmbxd1" not in host:
+        # v0.13.33：地址读得到、可 host 为空（about:blank、data: 这类）以前会**直通** ——
+        # fetch 落在非站内的文档里，`credentials:'same-origin'` 一块饼干也不发，
+        # 站点必然把它当陌生人弹回登录页，界面就谎报「这个窗口里的登录没成」
+        # （真机 m35762 排查时发现的口径漏洞：那句话得留着说真弹回的场景）。
         return LeafCookie(
-            None, f"浏览器窗口里现在打开的不是 X 岛（{host}），页面内领饼干这条路走不了。"
+            None,
+            f"程序挂的这个标签现在不在 X 岛页面（{current[:120]}），先等它回到站内再领。",
         )
 
     index_url = f"{_cookie_action_base()}index.html"
