@@ -1803,11 +1803,17 @@ def test_the_http_path_keeps_trying_even_when_nothing_changes(
 
 
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:
-    """「还在等」那句话：带秒数，并且点明是哪个浏览器窗口里的登录。"""
+    """「还在等」那句话：带秒数，点明是哪个浏览器窗口里的登录，并当场给出退路。
+
+    v0.13.32 改了口径：老断言是「还没到超时，先别急着让人换法子」，真机 m35456 却
+    证明等的人根本分不清两个 Edge 窗口 —— 在自己常用的浏览器里登录完就干等，
+    左下角的粘贴按钮没人去翻。等待那句必须自己把退路说出来。
+    """
     text = gui._waiting_status(42)
     assert "42" in text
     assert "这个窗口打开的那个浏览器" in text
-    assert "直接粘贴饼干登录" not in text  # 还没到超时，先别急着让人换法子
+    assert "自己平时用的浏览器里登录，程序看不到" in text
+    assert "直接粘贴饼干登录" in text
 
 
 def test_long_wait_keeps_telling_the_user_how_long_and_where_to_log_in(
@@ -1827,6 +1833,28 @@ def test_long_wait_keeps_telling_the_user_how_long_and_where_to_log_in(
     status = dialog.status_var.get()
     assert status.startswith("已经等了"), status
     assert "这个窗口打开的那个浏览器" in status
+    dialog._on_cancel()
+
+
+def test_a_two_minute_wait_points_at_the_paste_button(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """等够久还没登录：程序主动把「八成登错了窗口」说破一次，按钮换成显眼说法。
+
+    真机 m35456：用户在自己常用的浏览器里登录+应用了饼干，程序盯着一次性窗口
+    干等 18 分钟 —— 粘贴按钮一直在，可没人会在干等时去翻一个没变过的按钮。
+    等得够久就要自己开口指路；而且只说一次，反复刷反而像坏了。
+    """
+    monkeypatch.setattr(gui, "BROWSER_PASTE_NUDGE_SECONDS", 0.2)
+    monkeypatch.setattr(gui, "BROWSER_PROGRESS_SECONDS", 0.05)
+    dialog = open_dialog()
+
+    assert _wait_for(root_window, lambda: dialog._paste_nudges >= 1, timeout=10.0)
+    assert "userhash" in dialog.hint_var.get()
+    assert str(dialog.paste_button.cget("text")) == gui.BROWSER_PASTE_BUTTON_TEXT
+    # 再多等几轮也不许刷第二遍。
+    _pump(root_window, 0.5)
+    assert dialog._paste_nudges == 1, "这句提醒只该说一次"
     dialog._on_cancel()
 
 

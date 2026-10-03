@@ -732,6 +732,21 @@ BROWSER_LOGIN_EXTRA_ROUNDS = 3
 # （用户关一个标签、CDP 报一句「目标没了」就全丢），现在每轮先重挑标签再读，
 # 读挂了也先重连，连着好几轮都救不回来才认输。
 BROWSER_READ_RETRY_LIMIT = 4
+# 等了这么久还没登录，就主动把「你可能登错了窗口」说破一次（v0.13.32）。
+#
+# 真机 m35456：用户在自己**平时用的** Edge 里登录、应用了饼干（F12 里 userhash 摆着），
+# 程序盯着自己弹出的那个一次性窗口干等了 18 分钟。左下角其实一直有「直接粘贴饼干登录」
+# 这个按钮，可没人会在等的时候去翻它 —— 等得够久必须主动指路，而且只说一次。
+BROWSER_PASTE_NUDGE_SECONDS = 120.0
+#: 说破那一句（走常驻那一行，不会被 15 秒一次的状态替换刷掉）。
+BROWSER_PASTE_NUDGE = (
+    "等了两分多钟还没看到登录：多半是你登录的窗口不是程序看的这个 —— "
+    "在你自己平时用的浏览器里登录，程序看不到。"
+    "已经登好了就别等了：点「直接粘贴饼干登录」，"
+    "把你自己浏览器 F12 里的 userhash 抄过来就行。"
+)
+#: 提醒出现时把粘贴按钮换成的说法（按钮一直在，只是要更显眼）。
+BROWSER_PASTE_BUTTON_TEXT = "抄 userhash 过来登（更快）"
 # 等浏览器把调试端口写出来的上限（冷启动 + 首次建 profile 会偏慢）。
 BROWSER_START_TIMEOUT = 30.0
 # 主线程消费消息队列的间隔（毫秒），跟本文件其它对话框保持一致。
@@ -794,11 +809,16 @@ def _waiting_status(waited: int) -> str:
 
     分开写成一个函数是为了让「等哪儿的登录」这句话只有一份：界面上的状态、
     超时提示、测试断言引的都是这里，改口径不会漏掉某处。
+
+    v0.13.32 起这句里就带上粘贴这条路：真机 m35456 证明，光说「要在这个窗口登录」
+    不够 —— 用户分不清两个 Edge 窗口（本来就是同一个程序），会在自己常用的浏览器里
+    登录完就干等。老决定是「还没到超时，先别急着让人换法子」，结果就是那 18 分钟。
     """
     return (
         f"已经等了 {waited} 秒，还没在浏览器里看到登录。"
         "要在这个窗口打开的那个浏览器里登录，程序才看得到；"
-        "登录成功后这里会自己关掉。"
+        "在自己平时用的浏览器里登录，程序看不到 —— "
+        "已经登好了就点「直接粘贴饼干登录」，把 userhash 抄过来。"
     )
 
 
@@ -886,6 +906,9 @@ class BrowserLoginDialog(tk.Toplevel):
         # 浏览器自报的 UA（读一次就缓存，v0.13.31）：领饼干、验饼干、之后导出都改用
         # 这张嘴说话 —— 饼干是浏览器挣来的，站点认不认常常就看请求像不像它。
         self._browser_ua: str | None = None
+        # 「抄 userhash」那句提醒消费了几次（v0.13.32）：后台线程只发一次，
+        # 这个数钉住「界面上也只该变一次」。
+        self._paste_nudges = 0
         self._ui_job: str | None = None
         self._closing = False
 
@@ -997,12 +1020,14 @@ class BrowserLoginDialog(tk.Toplevel):
 
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
-        ttk.Button(
+        #: 留着引用是为了等太久时把话改得更显眼（v0.13.32，见 BROWSER_PASTE_NUDGE）。
+        self.paste_button = ttk.Button(
             buttons,
             text="直接粘贴饼干登录",
             style="Ghost.TButton",
             command=self._manual_userhash,
-        ).pack(side="left")
+        )
+        self.paste_button.pack(side="left")
         ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self._on_cancel).pack(
             side="right", padx=(theme.gap(1), 0)
         )
@@ -1145,6 +1170,14 @@ class BrowserLoginDialog(tk.Toplevel):
                 continue
             if kind == "http":  # 「拿这罐饼干去问站点，站点回了什么」：单独一行（v0.13.26）
                 self._set_http_note(str(payload))
+                continue
+            if kind == "paste_nudge":  # 等太久：说破「八成登错了窗口」，并把按钮换显眼（v0.13.32）
+                self._paste_nudges += 1
+                self._set_hint(BROWSER_PASTE_NUDGE)
+                try:
+                    self.paste_button.config(text=BROWSER_PASTE_BUTTON_TEXT)
+                except tk.TclError:  # pragma: no cover - 窗口已经销毁
+                    pass
                 continue
             if kind == "browser_closed":
                 self.failure = "浏览器窗口已经关掉了，还没取到饼干。" + self._diagnosis()
@@ -1322,6 +1355,7 @@ class BrowserLoginDialog(tk.Toplevel):
         next_leaf = started + BROWSER_LEAF_SECONDS
         next_progress = started + BROWSER_PROGRESS_SECONDS
         read_failures = 0  # 连着几轮「读」都抛异常才认输（v0.13.31）
+        nudged = False  # 「八成登错了窗口」那句提醒只说一次（v0.13.32）
         verified: str | None = None  # 已经验过、当场就认的饼干：别每一轮都去问一遍
         said_dead = False  # 「这块饼干不认」只说一次，别每 1.5 秒刷一遍
         leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行
@@ -1452,6 +1486,11 @@ class BrowserLoginDialog(tk.Toplevel):
             if now >= next_progress:
                 next_progress = now + BROWSER_PROGRESS_SECONDS
                 self._queue.put(("status", _waiting_status(int(now - started))))
+            if not nudged and now - started >= BROWSER_PASTE_NUDGE_SECONDS:
+                # 等了两分多钟还没登录：把「八成登错了窗口」说破一次（v0.13.32）。
+                # 只发一次 —— 常驻那一行和按钮文案被反复刷反而像坏了。
+                nudged = True
+                self._queue.put(("paste_nudge", None))
             if now >= deadline:
                 # 到点了、可浏览器窗口还开着：多半是用户还在慢慢登录，别撒手（v0.13.31）。
                 # 真机 m34935 的抱怨就是「我登录了它已经不看了」。续到上限为止，

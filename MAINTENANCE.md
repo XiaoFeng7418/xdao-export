@@ -677,6 +677,21 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.32**（修「在自己浏览器里登录了，程序干等」这个真机误会 —— 是话术，不是读漏）：
+  0.13.31 复验截图 m35456：用户在**自己平时的 Edge** 里登录+应用（F12 里 userhash 摆着），
+  程序盯着一次性窗口干等 1112 秒报「还没有 userhash」。确诊：两罐饼干互不可见是**设计使然**
+  —— 一次性窗口才是程序能看的罐子。探针实测关掉「直接读用户浏览器」这条路（本机）：
+  Edge 运行时 Cookies 库独占锁死（CreateFileW 全共享位都开不了，WinError 32）；Chrome 库能
+  复制但饼干是 **v20 应用绑定加密**（DPAPI+AES-GCM 只认 v10/v11），且绕开=窃密软件行为，不做。
+  改法全在 gui.py 等待对话框：① `_waiting_status` 从「登录成功后会自己关掉」改为直接写明
+  「在自己平时用的浏览器里登录，程序看不到 —— 已经登好了就点「直接粘贴饼干登录」」
+  （推翻老断言「还没到超时先别急着让人换法子」，m35456 证明干等的人不会自己翻按钮）；
+  ② worker 等满 `BROWSER_PASTE_NUDGE_SECONDS`(120) 发一次 `("paste_nudge", None)`
+  （`nudged` 位保证只说一次），`_poll` 消费：`_set_hint(BROWSER_PASTE_NUDGE)` 说破 +
+  `paste_button` 文案换成「抄 userhash 过来登（更快）」（按钮引用从匿名改为 `self.paste_button`）。
+  用例：`tests/test_gui_browser_login.py` 59 → 60（`test_a_two_minute_wait_points_at_the_paste_button`
+  钉「只说一次+按钮换话」，改 `_waiting_status` 口径用例）。本机全量
+  **1748 passed / 7 skipped**（收集 1755 项）。
 - **v0.13.31**（修「用浏览器登录」真机复验暴露的四处基础毛病）：0.13.30 复验仍失败（用户截图
   m34935：在程序窗口里登录**并点了「应用」**，对话框却报页面内 fetch 被弹回登录页 + HTTP 重放
   TLS 超时，还写着「这个窗口里的登录没成」；状态行里带「多半是旧饼干」的冤案）。拆出四件事：
