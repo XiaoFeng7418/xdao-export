@@ -2354,6 +2354,143 @@ def test_is_temp_profile_dir_recognises_both_kinds_and_nothing_else(
     ), "系统临时目录**里面**的子目录不算 —— 收尾收的是那一份资料目录本身"
 
 
+def test_is_fallback_profile_dir_only_accepts_the_strict_name(artifacts_dir: Path) -> None:
+    """配置目录下那族备用目录：名字认到「两段都是纯数字」为止（v0.13.39）。
+
+    认松一点就会误收用户的持久目录、或者他自己起的名字 —— 那不是我们的地盘。
+    """
+    config_dir = artifacts_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    profile = config_dir / bl.USER_DATA_DIR_NAME
+    spare = config_dir / f"{bl.USER_DATA_DIR_NAME}-12268-1790850954"
+
+    assert bl._is_fallback_profile_dir(spare, profile)
+    assert not bl._is_fallback_profile_dir(profile, profile), "持久目录本体不是备用目录"
+    assert not bl._is_fallback_profile_dir(profile / "_new", profile), "_new 在 profile 里面"
+    assert not bl._is_fallback_profile_dir(config_dir / f"{bl.USER_DATA_DIR_NAME}-backup", profile)
+    assert not bl._is_fallback_profile_dir(
+        config_dir / f"{bl.USER_DATA_DIR_NAME}-12268-1790850954-1", profile
+    ), "多一段就不像我们建的名字了"
+    assert not bl._is_fallback_profile_dir(config_dir / f"{bl.USER_DATA_DIR_NAME}-abc-def", profile)
+    assert not bl._is_fallback_profile_dir(config_dir / "some-other-tool-1-2", profile)
+    assert not bl._is_fallback_profile_dir(
+        artifacts_dir / f"{bl.USER_DATA_DIR_NAME}-12268-1790850954", profile
+    ), "不在同一个父目录里，长得再像也不算"
+
+
+def test_is_our_profile_dir_keeps_the_persistent_one_out(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """哪些目录算「我们建的、该由我们收尾删掉」：临时族、配置目录备用族、_new。"""
+    root = artifacts_dir / "temp-root"
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
+    config_dir = artifacts_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    profile = config_dir / bl.USER_DATA_DIR_NAME
+
+    assert bl._is_our_profile_dir(config_dir / f"{bl.USER_DATA_DIR_NAME}-7-1000", profile)
+    assert bl._is_our_profile_dir(profile / "_new", profile)
+    assert bl._is_our_profile_dir(root / f"xdao-export-{bl.USER_DATA_DIR_NAME}-7-1000-1", profile)
+    assert not bl._is_our_profile_dir(profile, profile), "用户那份持久的永远不记、也不删"
+    assert not bl._is_our_profile_dir(config_dir / "some-other-tool", profile)
+
+
+def test_sweep_removes_old_fallback_profiles_but_never_the_persistent_one(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """配置目录里遗留的备用资料目录要收掉；用户那份持久的 ``browser-profile`` 绝不碰。
+
+    真机 2026-10-01 量到过两个没人收的空壳：
+    ``browser-profile-12268-1790850954``（96 个文件 / 5.6MB）与
+    ``browser-profile-12268-1790850956``（66 个文件 / 6.3MB）—— 名字带着当时进程的
+    PID，下一个进程猜不出来，v0.13.39 之前也没人收。
+    """
+    config_dir = artifacts_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    profile = config_dir / bl.USER_DATA_DIR_NAME
+    _temp_profile(config_dir, bl.USER_DATA_DIR_NAME)
+    _backdate(profile, 2 * bl.SWEEP_MIN_AGE)
+    old_one = _temp_profile(
+        config_dir, f"{bl.USER_DATA_DIR_NAME}-12268-1790850954", age=2 * bl.SWEEP_MIN_AGE
+    )
+    old_two = _temp_profile(
+        config_dir, f"{bl.USER_DATA_DIR_NAME}-12268-1790850956", age=2 * bl.SWEEP_MIN_AGE
+    )
+    fresh = _temp_profile(config_dir, f"{bl.USER_DATA_DIR_NAME}-999-1790850960")
+    stranger = _temp_profile(config_dir, "some-other-tool", age=2 * bl.SWEEP_MIN_AGE)
+    inner = _temp_profile(profile, "_new", age=2 * bl.SWEEP_MIN_AGE)
+
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: False)
+
+    assert bl.sweep_stale_fallback_profiles(profile) == 3
+    assert not old_one.exists()
+    assert not old_two.exists()
+    assert not inner.exists(), "profile/_new 是同一族的，也要收"
+    assert profile.exists(), "用户那份持久的资料目录永远不许删"
+    assert (profile / "Cookies").exists(), "里面的内容更不许动"
+    assert fresh.exists(), "刚建出来的多半是别的实例正在用，别碰"
+    assert stranger.exists(), "名字不是那副严格模样，一个都不许动"
+
+
+def test_sweep_fallback_skips_a_dir_still_in_use_and_the_ones_kept(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口还答话的（有浏览器在用）、以及点名要留的，都不许碰。"""
+    config_dir = artifacts_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    profile = config_dir / bl.USER_DATA_DIR_NAME
+    busy = _temp_profile(config_dir, f"{bl.USER_DATA_DIR_NAME}-7-1000", age=2 * bl.SWEEP_MIN_AGE)
+    mine = _temp_profile(config_dir, f"{bl.USER_DATA_DIR_NAME}-7-2000", age=2 * bl.SWEEP_MIN_AGE)
+    idle = _temp_profile(config_dir, f"{bl.USER_DATA_DIR_NAME}-7-3000", age=2 * bl.SWEEP_MIN_AGE)
+
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: path == busy)
+
+    assert bl.sweep_stale_fallback_profiles(profile, keep=[mine]) == 1
+    assert busy.exists(), "还有浏览器在用，删了等于把它脚下的目录抽走"
+    assert mine.exists(), "这次会话点名要留的不能被自己扫掉"
+    assert not idle.exists(), "没人用的那份照删"
+
+
+def test_sweep_fallback_returns_zero_when_it_cannot_even_look(artifacts_dir: Path) -> None:
+    """配置目录列不出来时安静地返回 0（它在启动线程里跑，不许炸）。"""
+    profile = artifacts_dir / "没有这个目录" / bl.USER_DATA_DIR_NAME
+    assert bl.sweep_stale_fallback_profiles(profile) == 0
+
+
+def test_a_config_dir_spare_profile_is_cleaned_up_and_the_persistent_one_is_not(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_launch`` 也要给配置目录那族备用目录记账 —— 失败时当场收掉，别留空壳。
+
+    v0.13.38 之前只记 ``%TEMP%`` 那一族（``_is_temp_profile_dir``），配置目录里
+    ``browser-profile-<PID>-<时间戳>`` 建了没人收，真机上就攒下了那两个。
+    """
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    config_dir = artifacts_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    profile = config_dir / bl.USER_DATA_DIR_NAME
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "Cookies").write_text("用户的登录状态", encoding="utf-8")
+    spare = config_dir / f"{bl.USER_DATA_DIR_NAME}-4242-1700000000"
+
+    def fake_popen(args: list[str], **kwargs: object):
+        raise _win_error(2, "系统找不到指定的文件。", args[0])
+
+    monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(edge, profile, timeout=0.5)
+
+    with pytest.raises(bl.BrowserLoginError):
+        browser._launch(spare)
+    assert not spare.exists(), "配置目录下的备用目录失败时要当场收掉，不再留空壳"
+
+    with pytest.raises(bl.BrowserLoginError):
+        browser._launch(profile)
+    assert profile.exists(), "用户那份持久资料目录不许记进清单、更不许删"
+    assert (profile / "Cookies").read_text(encoding="utf-8") == "用户的登录状态"
+
+
 def test_a_self_check_profile_is_cleaned_up_by_stop(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

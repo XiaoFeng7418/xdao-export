@@ -1368,6 +1368,39 @@ def test_startup_sweeps_the_old_temp_profiles(monkeypatch):
     app._sweep_temp_profiles()  # 不该往外抛
 
 
+def test_startup_sweeps_the_config_dir_spare_profiles_too(monkeypatch, tmp_path):
+    """启动清扫要连配置目录下那族备用目录一起扫（v0.13.39）。
+
+    真机 2026-10-01 在配置目录里量到过两个没人收的空壳
+    （``browser-profile-12268-1790850954`` 96 个文件 / 5.6MB、
+    ``browser-profile-12268-1790850956`` 66 个文件 / 6.3MB）。
+    """
+    from xdao import browser_login
+    from xdao.gui import App
+
+    config_dir = tmp_path / "xdao-export"
+    config_dir.mkdir()
+    calls: list[Path] = []
+    monkeypatch.setattr(browser_login, "sweep_stale_temp_profiles", lambda **kwargs: 0)
+    monkeypatch.setattr(
+        browser_login,
+        "sweep_stale_fallback_profiles",
+        lambda profile, **kwargs: (calls.append(Path(profile)), 0)[1],
+    )
+    app = App.__new__(App)
+    app.settings = SimpleNamespace(config_path=str(config_dir / "config.json"))
+    app._sweep_temp_profiles()
+    assert calls == [browser_login.user_data_dir(config_dir)], (
+        "要按配置目录算出持久资料目录，再用它去扫那族备用目录"
+    )
+
+    def boom(profile, **kwargs):
+        raise OSError("被安全软件拦下了")
+
+    monkeypatch.setattr(browser_login, "sweep_stale_fallback_profiles", boom)
+    app._sweep_temp_profiles()  # 不该往外抛
+
+
 # ---------- 一键升级（界面这条路） ----------
 
 

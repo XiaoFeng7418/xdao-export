@@ -414,6 +414,45 @@ def _is_temp_profile_dir(path: Path) -> bool:
     return path.parent == root and path.name.startswith(TEMP_DIR_PREFIXES)
 
 
+#: 配置目录下「备用资料目录」的名字：``browser-profile-<PID>-<时间戳>``
+#: （见 :func:`fallback_profile_dirs`）。两段都必须是纯数字 —— 认名字要认到这么死，
+#: 才不会把持久的 ``browser-profile``、或者用户自己起的名字误收掉。
+_FALLBACK_DIR_RE = re.compile(rf"^{re.escape(USER_DATA_DIR_NAME)}-(\d+)-(\d+)$")
+
+
+def _is_fallback_profile_dir(path: Path, profile: Path) -> bool:
+    """这个目录是不是我们建在**配置目录**里的备用资料目录（v0.13.39）。
+
+    这一族曾经是没人收的垃圾：:func:`fallback_profile_dirs` 在配置目录这一级建的名字
+    带着当时进程的 PID 和时间戳，下一个进程猜不出名字；而
+    :meth:`LoginBrowser.cleanup_temp_profile` 当时只记 ``%TEMP%`` 那一族
+    （:func:`_is_temp_profile_dir`）⇒ 程序被强杀（或者某次「起来就退」之后没走到收尾）
+    时，它们就留在用户自己的配置目录里。真机 2026-10-01 量到过两个：
+    ``browser-profile-12268-1790850954``（96 个文件 / 5.6MB）与
+    ``browser-profile-12268-1790850956``（66 个文件 / 6.3MB）。v0.13.39 起两边都认。
+    """
+    path = Path(path)
+    profile = Path(profile)
+    return path.parent == profile.parent and bool(_FALLBACK_DIR_RE.match(path.name))
+
+
+def _is_our_profile_dir(path: Path, profile: Path) -> bool:
+    """这个资料目录是不是我们**自己建出来、该由我们收尾删掉**的那种。
+
+    用户配置目录里那份持久的 ``browser-profile`` 靠名字/位置两道规则挡在外面
+    （它既不在系统临时目录下，名字也不符合 ``browser-profile-<数字>-<数字>``），
+    那是他下次还要用的登录状态，不能替他删。注意 ``--check-browser`` 那条路会把
+    自建在 ``%TEMP%`` 里的那份**当成** ``profile`` 传进来，那一份照样算我们的。
+    """
+    path = Path(path)
+    profile = Path(profile)
+    return (
+        _is_temp_profile_dir(path)
+        or _is_fallback_profile_dir(path, profile)
+        or path == profile / "_new"
+    )
+
+
 #: 启动时扫旧临时资料目录的年龄门槛（秒）：比这新的不碰（多半是别的实例正开着登录窗口）。
 SWEEP_MIN_AGE = 3600.0
 
@@ -445,6 +484,28 @@ def _profile_in_use(profile: Path) -> bool:
     return True
 
 
+def _sweep_one_profile_dir(entry: Path, min_age: float, keep_set: set[Path]) -> bool:
+    """试删一个「我们自己的」资料目录，真删掉了才回 True。
+
+    两个扫法（临时目录族、配置目录下的备用族）共用这一段判据，见
+    :func:`sweep_stale_temp_profiles` 里那三条。
+    """
+    if entry in keep_set:
+        return False
+    try:
+        if entry.is_symlink() or not entry.is_dir():
+            return False
+        age = time.time() - entry.stat().st_mtime
+    except OSError:  # pragma: no cover —— 刚被别人删掉了、或读不到属性
+        return False
+    if age < min_age:
+        return False
+    if _profile_in_use(entry):
+        return False
+    shutil.rmtree(entry, ignore_errors=True)
+    return not entry.exists()
+
+
 def sweep_stale_temp_profiles(
     *, min_age: float = SWEEP_MIN_AGE, keep: Iterable[Path] = ()
 ) -> int:
@@ -470,23 +531,41 @@ def sweep_stale_temp_profiles(
         return 0
     deleted = 0
     for entry in entries:
-        if entry in keep_set or not _is_temp_profile_dir(entry):
+        if not _is_temp_profile_dir(entry):
             continue
-        try:
-            if entry.is_symlink() or not entry.is_dir():
-                continue
-            age = time.time() - entry.stat().st_mtime
-        except OSError:  # pragma: no cover —— 刚被别人删掉了、或读不到属性
-            continue
-        if age < min_age:
-            continue
-        if _profile_in_use(entry):
-            continue
-        shutil.rmtree(entry, ignore_errors=True)
-        if not entry.exists():
+        if _sweep_one_profile_dir(entry, min_age, keep_set):
             deleted += 1
     return deleted
 
+
+def sweep_stale_fallback_profiles(
+    profile: Path, *, min_age: float = SWEEP_MIN_AGE, keep: Iterable[Path] = ()
+) -> int:
+    """把配置目录下遗留的备用资料目录扫掉，返回删掉几个（v0.13.39）。
+
+    扫的是 :func:`fallback_profile_dirs` 在配置目录这一级建的那一族
+    （``browser-profile-<PID>-<时间戳>``，认名字认到纯数字为止），外加
+    ``profile/_new``（同一族的「里面那份」）。判据与
+    :func:`sweep_stale_temp_profiles` 完全一样：**名字严格对得上**、目录比
+    ``min_age`` 秒还老、**调试端口没人答话**，三条全中才删。``keep`` 里的一律不碰。
+
+    绝不碰 ``profile`` 本体：那是用户下次还要用的资料目录（里面存着他的登录状态），
+    名字也不符合那条严格规则 —— 两道保险。
+    """
+    profile = Path(profile)
+    keep_set = {Path(item) for item in keep} | {profile}
+    try:
+        entries = list(profile.parent.iterdir())
+    except OSError:  # pragma: no cover —— 配置目录列不出来就算了
+        return 0
+    # profile/_new 不在 parent 那一层，单独算一个候选。
+    candidates = [entry for entry in entries if _is_fallback_profile_dir(entry, profile)]
+    candidates.append(profile / "_new")
+    deleted = 0
+    for entry in candidates:
+        if _sweep_one_profile_dir(entry, min_age, keep_set):
+            deleted += 1
+    return deleted
 
 
 def live_browser_dirs(profile: Path) -> list[Path]:
@@ -1191,11 +1270,14 @@ class LoginBrowser:
             # 连目录都建不出来（父目录也写不进去）也算「这个 profile 用不了」，
             # 交给 start() 去换下一个备用目录。
             raise CdpError(f"浏览器资料目录用不了：{exc}") from exc
-        if _is_temp_profile_dir(chosen) and chosen not in self._temp_dirs:
-            # 备用候选里也有一个建在系统临时目录下（见 :func:`fallback_profile_dirs`）：
-            # 那也是我们建出来的，收尾时一样要删 —— 真机上 %TEMP% 里的空壳有一半来自它
-            # （每次「起来就退」都会把那个候选新建一遍）。用户配置目录下的备用目录不记，
-            # 那是他的地盘。
+        if _is_our_profile_dir(chosen, self.profile) and chosen not in self._temp_dirs:
+            # 备用候选有两个是我们自己建的：建在系统临时目录下那个，以及建在配置目录下
+            # 的 browser-profile-<PID>-<时间戳>（见 :func:`fallback_profile_dirs`）。
+            # 两个都记进清单，收尾一起删 —— v0.13.38 之前只记 %TEMP% 那一族，配置目录
+            # 下这一族就成了没人收的垃圾（真机 2026-10-01 留下过两个，5.6MB + 6.3MB）。
+            # ``self.profile``（用户配置目录里那份持久的 browser-profile）永远不记：
+            # :func:`_is_our_profile_dir` 认位置 + 认名字，它两条都不符合。那是用户
+            # 下次还要用的登录状态，不能替他删。
             self._temp_dirs.append(chosen)
         port_file = chosen / "DevToolsActivePort"
         # v0.13.38：**不再**把端口文件删掉（v0.13.9 到 v0.13.37 是删的）。
@@ -1338,9 +1420,14 @@ class LoginBrowser:
         self.cleanup_temp_profile()
 
     def cleanup_temp_profile(self) -> bool:
-        """删掉这次启动时新建的临时资料目录（见 :func:`fresh_profile_dir`）。
+        """删掉这次启动时**我们自己建**的资料目录（见 :func:`fresh_profile_dir`）。
 
-        临时目录一次登录就是几十上百 MB，不能留着攒。正常关窗时浏览器已经退出，
+        清单见 :attr:`_temp_dirs`：``%TEMP%`` 下的临时目录，以及 v0.13.39 起一并记进来的
+        配置目录下那族备用目录（``browser-profile-<PID>-<时间戳>``，见
+        :func:`_is_our_profile_dir`）。用户自己那份持久的 ``browser-profile`` 永远不在
+        清单里 —— 那是他下次还要用的登录状态。
+
+        这些目录一次登录就是几十上百 MB，不能留着攒。正常关窗时浏览器已经退出，
         直接删；删不掉（浏览器还没走干净、文件句柄没松）就每 0.25 秒再试，
         总共给 :data:`TEMP_PROFILE_WAIT` 秒，**删掉就立刻返回**，不白等。
 
