@@ -677,6 +677,25 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.40**（浏览器「起来就退」时带出它自己的 stderr 尾巴；启动失败不再只剩程序的猜测）：
+  ``_launch`` 起浏览器时一直把 ``stderr`` 丢进 ``subprocess.DEVNULL``，于是「刚起来就退出了（退出码 21／0）」这类
+  消息只有程序自己猜的那几句，而真机上真正的原因（资料目录被另一个进程锁着、安全软件拦下远程调试端口、启动参数被
+  策略拒绝）就写在浏览器吐的那几行里，全被扔掉了。这一版：新常量 ``STDERR_TAIL_LINES = 5``／
+  ``STDERR_TAIL_CHARS = 600``；``_stderr_log_path()`` = ``%TEMP%/xdao-browser-stderr-<pid>-<time_ns>.log``（名字故意
+  不带 ``TEMP_DIR_PREFIXES`` 那两个前缀，免得被清扫函数当成资料目录）；``_read_stderr_tail(path, *, lines, limit)``
+  读 ``errors="replace"``、去掉空行、取最后 ``lines`` 行用 ``" / "`` 连接再 ``[:limit]``；``_launch`` 把 Popen 的
+  ``stderr`` 指向这个文件（``open`` 失败就退回 ``DEVNULL``，绝不因为少一份日志让浏览器起不来），失败分支（进程自己
+  退了、等待超时）与 ``stop()`` 都调 ``self._stderr_tail_note()`` 把尾巴接进错误文案（前缀「浏览器自己最后几行话：」）
+  并顺手删掉日志；起好了在 ``return self`` 前 ``self._discard_stderr_log()``；Popen 抛 ``OSError`` 那条路先关句柄
+  再删（Windows 上自己开着的文件删不掉）、然后才 ``cleanup_temp_profile()``。
+  **真机验证**（``_scratch/probe_v01340_stderr.py`` → ``probe_v01340_result.json``，2026-10-04）：用真 Edge 起一扇窗，
+  临时把 ``_discard_stderr_log`` 换成「只记路径、不删文件」的替身，事后读那份日志 ⇒ 里面正有 Chromium 自己写的
+  ``DevTools listening on ws://127.0.0.1:54815/devtools/browser/838e302b-…``（这一行以前是丢进 ``DEVNULL`` 的，等于
+  把浏览器唯一的自述毁了）；再在同一份**还开着**的资料目录上启动一次 ⇒ 报「退出码 0 + 就有一扇窗开着」那段，而这一次
+  浏览器没往 stderr 写东西，文案里也就**没有**多出一段空的「浏览器自己最后几行话」（空的不加，不加噪音）。
+  测试 1802→1807（``test_browser_login.py`` 284→289：尾巴截取四种情况、失败时带出原话且日志已删、起好了删日志、
+  日志建不出来照常起、Popen 抛错时临时目录与日志都收干净）。**教训**：把子进程的输出丢进 ``DEVNULL`` 等于把唯一的
+  现场毁掉 —— 出错路径上要么留证据，要么连「没留证据的代价」一起算清楚。
 - **v0.13.39**（配置目录里那族备用资料目录：收尾要删 + 开机清扫；真机收掉三个遗留空壳）：
   ``fallback_profile_dirs`` 会在配置目录**这一级**建 ``browser-profile-<PID>-<时间戳>`` 当备用资料目录，但
   ``_launch`` 当时的记账条件是 ``_is_temp_profile_dir(chosen)``（只认 %TEMP% 那一族）⇒ 这一族建了没人收，程序被

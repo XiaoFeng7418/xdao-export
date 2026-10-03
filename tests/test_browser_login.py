@@ -1809,6 +1809,125 @@ def test_launch_accepts_the_port_file_this_launch_wrote_over_the_old_one(
     assert browser.browser_ws_url == "ws://127.0.0.1:9333/devtools/browser/abc"
 
 
+class _LoudDeadPopen:
+    """假 Popen：起来就退（退出码 21），退之前往 stderr 上留下自己的原话。
+
+    v0.13.40 之前 ``_launch`` 把浏览器 stderr 一律丢进 DEVNULL，「刚起来就退出了」
+    只剩程序自己猜的那几句；真机上真正的原因（目录被锁、被安全软件拦下、参数被拒绝）
+    就在这几行里。
+    """
+
+    def __init__(self, args: list[str], **kwargs: object) -> None:
+        self.args = list(args)
+        self.kwargs = dict(kwargs)
+        self.pid = 4321
+        self.returncode: int | None = 21
+        stream = kwargs.get("stderr")
+        if stream is not None and hasattr(stream, "write"):
+            stream.write(b"ERROR: could not create the profile directory\n")  # type: ignore[union-attr]
+            stream.write(b"ERROR: profile is locked by another process\n")  # type: ignore[union-attr]
+            stream.flush()  # type: ignore[union-attr]
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode or 0
+
+    def kill(self) -> None:
+        self.returncode = -1
+
+
+def test_read_stderr_tail_keeps_only_the_last_few_lines(artifacts_dir: Path) -> None:
+    """只留最后几行、连成一行、按字符数封顶；文件不在就回空串。"""
+    log = artifacts_dir / "noisy.log"
+    log.write_text("\n".join(f"line {i}" for i in range(1, 10)) + "\n", encoding="utf-8")
+    assert bl.STDERR_TAIL_LINES == 5
+    assert bl._read_stderr_tail(log) == "line 5 / line 6 / line 7 / line 8 / line 9"
+    assert bl._read_stderr_tail(log, lines=2) == "line 8 / line 9"
+    assert bl._read_stderr_tail(log, limit=7) == "line 5 "
+    assert bl._read_stderr_tail(artifacts_dir / "missing.log") == ""
+    empty = artifacts_dir / "empty.log"
+    empty.write_text("\n\n", encoding="utf-8")
+    assert bl._read_stderr_tail(empty) == ""
+
+
+def test_launch_reports_the_browsers_own_last_words(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v0.13.40：浏览器「起来就退」时，把它自己写在 stderr 上的那几行带进错误里。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    log = artifacts_dir / "browser-stderr.log"
+    monkeypatch.setattr(bl, "_stderr_log_path", lambda: log)
+    monkeypatch.setattr(bl.subprocess, "Popen", _LoudDeadPopen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=3.0)
+    with pytest.raises(bl.BrowserLoginError) as raised:
+        browser._launch(profile)
+    message = str(raised.value)
+    assert "退出码 21" in message
+    assert "浏览器自己最后几行话" in message
+    assert "profile is locked by another process" in message, "原话要带出来，不能只留程序猜的"
+    assert not log.exists(), "读完了就把日志删掉，别给它攒垃圾"
+
+
+def test_launch_deletes_the_stderr_log_after_a_good_start(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """起好了，那份 stderr 日志就不该留在 %TEMP% 里。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    log = artifacts_dir / "browser-stderr.log"
+    monkeypatch.setattr(bl, "_stderr_log_path", lambda: log)
+    monkeypatch.setattr(bl.subprocess, "Popen", _PortWritingPopen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=5.0)
+    browser._launch(profile)
+    assert browser.port == 9333
+    assert not log.exists()
+
+
+def test_launch_still_starts_when_the_stderr_log_cannot_be_opened(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """临时目录写不进去（安全软件拦下）时照旧起浏览器：少几行话不是起不来的理由。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(bl, "_stderr_log_path", lambda: artifacts_dir / "no-such-dir" / "x.log")
+    monkeypatch.setattr(bl.subprocess, "Popen", _PortWritingPopen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=5.0)
+    browser._launch(profile)
+    assert browser.port == 9333
+    assert browser._stderr_log is None
+
+
+def test_launch_cleans_up_the_stderr_log_when_the_browser_cannot_even_start(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Popen 自己就抛（可执行文件不在 / 被拦）时，那份 stderr 日志也不许留在盘上。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    log = artifacts_dir / "browser-stderr.log"
+
+    def boom(args: list[str], **kwargs: object) -> object:
+        raise _win_error(2, "系统找不到指定的文件。")
+
+    monkeypatch.setattr(bl, "_stderr_log_path", lambda: log)
+    monkeypatch.setattr(bl.subprocess, "Popen", boom)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=3.0)
+    with pytest.raises(bl.BrowserLoginError) as raised:
+        browser._launch(profile)
+    assert "启动 Edge 失败" in str(raised.value)
+    assert browser._stderr_log is None
+    assert not log.exists(), "连浏览器都没起来，日志不该留着"
+
+
 def test_start_reads_the_port_file_and_hides_the_console_window(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
