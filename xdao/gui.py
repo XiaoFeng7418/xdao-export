@@ -3074,8 +3074,11 @@ class App:
             pass
 
     def _sweep_temp_profiles(self) -> None:
-        """扫掉以前留在 %TEMP% 里的临时资料目录（登录窗口、自检各一份）。
+        """扫掉以前留下的浏览器资料目录（登录窗口、自检各一份）。
 
+        两处：``%TEMP%`` 下的临时资料目录，以及配置目录下那族备用目录
+        （``browser-profile-<PID>-<时间戳>``，v0.13.39 起 —— 以前它只记 %TEMP% 那一族，
+        配置目录这一族就成了没人收的垃圾，真机上留下过两个 5.6MB / 6.3MB 的空壳）。
         程序被强杀时没人收尾，那些目录会一直留着；正常路径由
         ``LoginBrowser.cleanup_temp_profile()`` 当场删掉。放后台线程里做：
         要列目录，还要挨个问一次调试端口。
@@ -3084,6 +3087,8 @@ class App:
             from . import browser_login
 
             browser_login.sweep_stale_temp_profiles()
+            profile = browser_login.user_data_dir(Path(self.settings.config_path).parent)
+            browser_login.sweep_stale_fallback_profiles(profile)
         except Exception:  # noqa: BLE001 —— 清不干净也不该影响启动
             pass
 

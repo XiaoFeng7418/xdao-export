@@ -677,6 +677,31 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.39**（配置目录里那族备用资料目录：收尾要删 + 开机清扫；真机收掉三个遗留空壳）：
+  ``fallback_profile_dirs`` 会在配置目录**这一级**建 ``browser-profile-<PID>-<时间戳>`` 当备用资料目录，但
+  ``_launch`` 当时的记账条件是 ``_is_temp_profile_dir(chosen)``（只认 %TEMP% 那一族）⇒ 这一族建了没人收，程序被
+  强杀后一直躺在用户的配置目录里。真机 2026-10-04 复查量到三个：``browser-profile-12268-1790850954``（96 文件 /
+  5,895,826 B）、``browser-profile-12268-1790850956``（66 文件 / 6,574,750 B）、以及持久目录**里面**那份
+  ``browser-profile\_new``（121 文件 / 11,222,748 B）。这一版两件事：
+  ①**记账放开**：新助手 ``_is_fallback_profile_dir(path, profile)``（``_FALLBACK_DIR_RE`` 认
+  ``^browser-profile-\d+-\d+$`` 且 ``path.parent == profile.parent``）与 ``_is_our_profile_dir(path, profile)``
+  （临时族 or 备用族 or ``profile/"_new"``），``_launch`` 改成按后者记账 ⇒ 配置目录那族也进 ``_temp_dirs``、
+  ``cleanup_temp_profile`` 收尾一起删。**注意**：这里**不能**写 ``path == profile ⇒ False`` —— ``--check-browser``
+  那条路把自建在 %TEMP% 里那份**当成** profile 传进来，加这一条会让自检目录不再进清单（首跑就红了
+  ``test_a_self_check_profile_is_cleaned_up_by_stop``）；持久目录靠名字与位置两条规则挡住已经足够。
+  ②**开机清扫**：把 ``sweep_stale_temp_profiles`` 的判据抽成 ``_sweep_one_profile_dir(entry, min_age, keep_set)``
+  （keep／symlink／非目录／年龄＜``SWEEP_MIN_AGE``=3600／``_profile_in_use`` 为真都跳过，``rmtree`` 后按
+  ``not entry.exists()`` 计成功），两个扫法共用；新增 ``sweep_stale_fallback_profiles(profile, *, min_age, keep)``
+  （候选 = 同层严格命名那族 + ``profile/"_new"``，``keep_set`` 永久包含 ``profile``）；gui 的
+  ``App._sweep_temp_profiles()``（启动后台线程，gui.py:3062 起）在原来那次之外，再按
+  ``browser_login.user_data_dir(Path(self.settings.config_path).parent)`` 调一次，整段仍在同一个
+  ``except Exception`` 里（后台线程不碰 Tk、也不写日志）。
+  **真机验证**（``_scratch/probe_v01339_sweep.py`` → ``probe_v01339_result.json``）：对真配置目录跑一次
+  ``sweep_stale_fallback_profiles`` ⇒ ``deleted=3``，两个空壳与 ``_new`` 全没了；``browser-profile`` 本体仍在
+  （1205→1084 文件、99,271,601→88,048,853 B，差值正好是那份 ``_new`` 的 121 文件 / 11,222,748 B）。
+  测试 1795→1802（``test_browser_login.py`` 278→284：命名严格性、``_is_our_profile_dir``、三条扫法用例、配置目录
+  备用目录记账；``test_gui_entry.py`` 61→62：启动清扫两种目录）。**同类风险**：凡「我们建的目录」都要能被下一次启动
+  认出来并收掉，判据是「位置 + 严格名字」，别写成「别删 profile」这种会连自检一起挡掉的规则。
 - **v0.13.38**（不再动别人的端口文件 + 多扇活窗先问罐：m38110 的第二处病根拔掉）：
   v0.13.37 把「看不见的旧窗」变成「点名收掉」，但 ``_launch`` 每轮启动前仍会 ``unlink`` 目标目录里的
   ``DevToolsActivePort``（v0.13.9 起的老手，理由是「上次崩溃留下的过期端口会让等待循环立刻成功」）。
