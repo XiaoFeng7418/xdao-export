@@ -677,6 +677,26 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.34**（修「饼干明明在罐里、程序却读不到」+ 认错 v0.13.33 的话术前提）：
+  0.13.33 复验 m36303/m36307（四图）钉出铁证：棕色横条在场、程序窗口（--no-sandbox 黄条
+  可辨）里登录成功、F12→应用程序→Cookie 显示 `userhash` 就在那个窗口的罐里（域 www.nmbxd1.com、
+  路 /、长 70/68；点另一行『应用』后值改变），对话框却仍报「浏览器里还是没有 userhash」。
+  **两件事被证伪**：①「必须点应用才有 userhash」是错的 —— 站点登录即自动应用账号当前饼干、
+  当场种 userhash，点应用只是换值；②「领饼干权限已关闭」与故障无关（用户确认：权限关闭不影响
+  已有饼干）。本机探针（_scratch/probe_jar_read_v1334.py，匿名+注入各种 flag 假饼干）实测
+  document.cookie / Network.getCookies / Network.getAllCookies / Storage.getCookies 四路**全部
+  一致可见** ⇒ CDP 读管道结构无恙，真机差异只能靠现场对账定位。修法三件：
+  ① **第四读**：`parse_document_cookie(text, host)` + `read_page_document_cookies(session)`
+  （current_url 域含 nmbxd1 才 evaluate("document.cookie")，一切异常吞→[]），read_site_cookies
+  末尾按 (name,domain,path) 去重合并 —— F12 同源视角兜底；② **读罐对账**：`jar_forensics(session)`
+  一行并排「挂=URL｜按地址读=…｜整罐读=…｜页面JS=…｜合并=…」（只报名字，出错→「出错（异常类名）」），
+  worker 在 leaf 轮拿不到值时经 getattr 守卫调用、只走 ("forensics",…) 事件进运行日志
+  （不进对话框、不挤 HTTP 那行），下次真机截图即可定位哪路读漏；③ **话术改真实机制**：
+  横幅/ready/等待/超时/粘贴提醒/陈旧饼干文案/使用说明全部改为「登录成功站点就自动带上你当前的
+  饼干，程序自己会拿到；要换一块才到『我的饼干』点一行『应用』，看到『饼干切换成功』」——
+  钉词用例同步改（棕色横条/『应用』/饼干切换成功/自动带上，且 not in「光登录不算完」「才算数」）。
+  测试：test_browser_login.py 248→255（+7：parse/第四读三分支/去重/对账两则），
+  test_gui_browser_login.py 61→62（+对账进日志一则），全库 1762→1770（1763 通过、7 跳过）。
 - **v0.13.33**（修「程序到底在看哪个窗口」—— 用户在被盯窗口登录并点应用仍抓不到饼干的冤案，程序侧三管齐下）：
   0.13.32 复验 m35762/m35800（截图+口头确认）：**手动点应用从未被程序抓到，贯穿历史** ——
   排除「用户漏步骤」，主因在程序侧。诊断（remote 到极限后的推断）：jar 读的是被盯实例的整罐，

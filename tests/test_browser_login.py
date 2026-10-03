@@ -1279,10 +1279,16 @@ def test_live_browser_dirs_lists_only_live_windows_newest_first(
 
 
 def test_watch_banner_script_carries_the_identity_line() -> None:
-    """横幅脚本要点齐三件事：id 幂等、只在站内出现、把「点应用」写进句子。"""
+    """横幅脚本要点齐三件事：id 幂等、只在站内出现、说清「自动带上/换一块才点应用」。
+
+    v0.13.34（m36307）：口径改成「登录成功站点就自动带上当前饼干」，『应用』只留给
+    换饼干 —— 但这两个词仍要在句里，让人知道去哪换。
+    """
     script = bl.build_watch_banner_script()
     assert bl.WATCH_BANNER_ID in script
     assert "程序正在看这个窗口" in script and "『应用』" in script
+    assert "自动带上" in script, "别再吓人说光登录不算完（m36307 证伪）"
+    assert "光登录不算完" not in script and "才算数" not in script
     assert "nmbxd1" in script, "站外的页面不该出现横幅"
     assert "getElementById" in script, "同一轮里反复注入要能认出『已经有了』"
 
@@ -2353,6 +2359,9 @@ class _ScriptedSession:
         # 「这一页 fetch 根本没送出去」（CSP、换文档），让 _fetch_in_page 吞成 None。
         self.fetch_pages: dict[str, dict] = {}
         self.user_agent = ""
+        # v0.13.34：页面自己的 document.cookie 那一路（第四读）的替身答案。
+        self.document_cookie = ""
+        self.document_cookie_error: Exception | None = None
 
     # ---- CDPSession 的那几面 ----
     def call(self, method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
@@ -2394,6 +2403,11 @@ class _ScriptedSession:
             return self.url
         if expression.startswith("document.body"):
             return self.export_text
+        if expression == "document.cookie":
+            # v0.13.34 第四读：只在被盯页确实站在站内时才会问到这 script。
+            if self.document_cookie_error is not None:
+                raise self.document_cookie_error
+            return self.document_cookie
         raise AssertionError(f"意料之外的脚本：{expression[:60]}")
 
 
@@ -2852,6 +2866,104 @@ def test_read_userhash_cookie_finds_a_userhash_only_the_whole_jar_sees() -> None
         {"name": "userhash", "value": "ABCDEF12", "domain": ".nmbxd1.com", "path": "/"}
     ]
     assert bl.read_userhash_cookie(session) == "ABCDEF12"  # type: ignore[arg-type]
+
+
+def test_parse_document_cookie_keeps_equals_inside_values() -> None:
+    """v0.13.34：拆 ``名字=值`` 按**第一个**等号切，值里再出现等号不许被咬掉。"""
+    entries = bl.parse_document_cookie(
+        'userhash=D-abc==; PHPSESSID=s1 ; =novalue; noequals',
+        "www.nmbxd1.com",
+    )
+    assert entries == [
+        {"name": "userhash", "value": "D-abc==", "domain": "www.nmbxd1.com", "path": "/"},
+        {"name": "PHPSESSID", "value": "s1", "domain": "www.nmbxd1.com", "path": "/"},
+    ]
+
+
+def test_read_site_cookies_adds_the_page_js_view_when_cdp_reads_miss_it() -> None:
+    """第四读（v0.13.34）：三条 CDP 读法都漏了、可页面 JS 看得见 —— 照样进合并罐。
+
+    真机 m36307：用户在被盯窗口（棕色横条那扇）里 F12 看得见 userhash，
+    程序按地址/整罐两读却报「浏览器里还是没有 userhash」。本机探针
+    （_scratch/probe_jar_read_v1334.py）证明 CDP 管道对任何 flag 组合都读得到，
+    剩下的偏差只能出在存储上下文 —— document.cookie 是**页面自己的视角**，
+    也就是 F12 的视角，把它接进合并罐，那种偏差当场被兜住。
+    """
+    session = _ScriptedSession(cookies=[], url=bl.COOKIE_SITE + "/Member/User/Cookie/index.html")
+    session.document_cookie = "userhash=D-9691%04%02abc; PHPSESSID=sess1"
+    cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
+    assert [item["name"] for item in cookies] == ["userhash", "PHPSESSID"]
+    assert cookies[0]["domain"] == "www.nmbxd1.com"
+    assert bl.userhash_from_cookies(cookies) == "D-9691%04%02abc"
+    assert bl.read_userhash_cookie(session) == "D-9691%04%02abc"  # type: ignore[arg-type]
+
+
+def test_page_js_view_is_skipped_when_the_tab_is_off_site() -> None:
+    """被盯页不在站内：一行 JS 都不许替程序去读人家的 document.cookie（v0.13.34）。"""
+    session = _ScriptedSession(cookies=[], url="https://example.com/elsewhere")
+    session.document_cookie = "userhash=D-NOPE12345"
+    assert bl.read_site_cookies(session) == []  # type: ignore[arg-type]
+    assert "document.cookie" not in session.evaluations
+
+
+def test_page_js_view_never_breaks_the_main_reads() -> None:
+    """第四读自己出问题（页面在换文档、evaluate 报错）：前三读的结果照旧交出去。"""
+    session = _ScriptedSession(
+        cookies=[{"name": "PHPSESSID", "value": "abc123", "domain": ".nmbxd1.com"}],
+        url=bl.LOGIN_URL,
+    )
+    session.document_cookie_error = bl.CdpError("页面正在换文档")
+    cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
+    assert [item["name"] for item in cookies] == ["PHPSESSID"]
+
+
+def test_page_js_entries_dedup_against_the_cdp_ones() -> None:
+    """同一块饼干 CDP 读和页面读都看见：合并罐里只留一条，别把名单刷重（v0.13.34）。"""
+    session = _ScriptedSession(
+        cookies=[
+            {"name": "PHPSESSID", "value": "abc", "domain": "www.nmbxd1.com", "path": "/"}
+        ],
+        url=bl.LOGIN_URL,
+    )
+    session.document_cookie = "PHPSESSID=abc"
+    cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
+    assert [item["name"] for item in cookies] == ["PHPSESSID"]
+
+
+def test_jar_forensics_lines_up_the_reads_and_never_leaks_values() -> None:
+    """「读罐对账」一行（v0.13.34）：四路各自看见哪些**名字**，值一个字符都不写。
+
+    这行要进运行日志、日志会被用户直接截图外发 —— userhash 就是通行证本身，
+    所以用例把值钉死在门外。
+    """
+    session = _ScriptedSession(
+        cookies=[{"name": "PHPSESSID", "value": "SESS-SECRET-1", "domain": ".nmbxd1.com"}],
+        url=bl.COOKIE_SITE + "/Member/User/Cookie/index.html",
+    )
+    session.all_cookies = [
+        {"name": "PHPSESSID", "value": "SESS-SECRET-1", "domain": ".nmbxd1.com"},
+        {"name": "memberUserspapapa", "value": "MEMBER-SECRET-2", "domain": ".nmbxd1.com"},
+        {"name": "unrelated", "value": "X", "domain": ".example.com"},
+    ]
+    session.document_cookie = "userhash=HASH-SECRET-3; PHPSESSID=SESS-SECRET-1"
+    line = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert "挂=https://www.nmbxd1.com/Member/User/Cookie/index.html" in line
+    assert "按地址读=PHPSESSID" in line
+    assert "整罐读=PHPSESSID、memberUserspapapa" in line
+    assert "unrelated" not in line, "别家域名的饼干不许进对账"
+    assert "页面JS=userhash、PHPSESSID" in line
+    assert "合并=" in line and "userhash" in line.split("合并=")[1]
+    for secret in ("HASH-SECRET-3", "SESS-SECRET-1", "MEMBER-SECRET-2"):
+        assert secret not in line, f"对账行漏了饼干值：{secret}"
+
+
+def test_jar_forensics_reports_broken_reads_instead_of_raising() -> None:
+    """哪一路读挂了就在对账行里点名（v0.13.34）：这行本身绝不能把登录带崩。"""
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    session.read_all_error = bl.CdpError("浏览器不认 getAllCookies")
+    line = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert "整罐读=出错（CdpError）" in line
+    assert "按地址读=空" in line
 
 
 def test_named_userhash_entries_separates_present_from_plausible() -> None:

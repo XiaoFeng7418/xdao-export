@@ -1775,7 +1775,62 @@ def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> l
             continue
         seen.add(key)
         merged.append(item)
+    # v0.13.34 第四读：页面自己的 document.cookie（F12 同源视角）。真机 m36307：
+    # 用户的 F12 面板里 userhash 明明躺着，程序三条 CDP 读法却都看不见 —— 本机探针
+    # （_scratch/probe_jar_read_v1334.py）证明管道对任何 flag 组合都读得到，剩下的
+    # 偏差只能出在「CDP 问的存储上下文 ≠ 页面所在的上下文」。页面 JS 看见的就是
+    # 用户看见的，这一读直接把那个视角接进合并罐；HttpOnly 的饼干它看不见，所以
+    # 只当补充源，不作废前三读。全程可失败：读不到就当没有，绝不打扰主路。
+    for item in read_page_document_cookies(session):
+        key = (str(item.get("name")), str(item.get("domain")), str(item.get("path")))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
     return merged
+
+
+def parse_document_cookie(text: str, host: str) -> list[dict]:
+    """把 ``document.cookie`` 那串拆成和 CDP 读同形的条目（v0.13.34）。
+
+    只拆「名=值」；值里允许再出现 ``=``（按第一个等号切）。域记成当前页的 host、
+    路径记成 ``/`` —— JS 本来就不暴露这两样，这样合并去重时能对上 CDP 条目的键。
+    """
+    entries: list[dict] = []
+    for chunk in str(text or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        name, _, value = chunk.partition("=")
+        name = name.strip()
+        if not name:
+            continue
+        entries.append(
+            {"name": name, "value": value.strip(), "domain": host, "path": "/"}
+        )
+    return entries
+
+
+def read_page_document_cookies(session: "CDPSession") -> list[dict]:
+    """读被盯页面自己的 ``document.cookie``（v0.13.34）。
+
+    只在页面确实站在 X 岛站内时才读（别的域的 JS 罐与本程序无关），并且**一切
+    异常都咽掉回空列表**：这是第四视角的补充源，它出任何问题都不许影响前三读。
+    """
+    try:
+        current = str(session.current_url() or "")
+    except Exception:  # noqa: BLE001
+        return []
+    host = urllib.parse.urlsplit(current).hostname or ""
+    if "nmbxd1" not in host:
+        return []
+    try:
+        raw = session.evaluate("document.cookie")
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(raw, str) or not raw:
+        return []
+    return parse_document_cookie(raw, host)
 
 
 def summarize_cookies(cookies: Iterable[dict]) -> str:
@@ -1792,6 +1847,50 @@ def summarize_cookies(cookies: Iterable[dict]) -> str:
         if name and name not in names:
             names.append(name)
     return "、".join(names)
+
+
+def jar_forensics(session: "CDPSession") -> str:
+    """「读罐对账」一行：挂着哪页、四路各自看见哪些**名字**（v0.13.34）。
+
+    为什么：真机 m36307 里 F12 看得见 userhash、程序四路合并读却报没有，而对话框
+    只说合并结果 —— 分不出漏在哪一读。这一行把每一路的名单并排写进运行日志，
+    下次一张截图就能定位（漏在按地址读？整罐读？还是挂错了上下文）。
+    规矩与 :func:`summarize_cookies` 相同：**只报名字，值一个字符都不写** ——
+    日志要能直接贴给人看，userhash 就是通行证本身。
+    """
+    parts: list[str] = []
+    try:
+        url = str(session.current_url() or "")
+    except Exception as exc:  # noqa: BLE001
+        url = f"<读不到（{type(exc).__name__}）>"
+    parts.append(f"挂={url[:70]}")
+    try:
+        names = summarize_cookies(session.read_cookies(cookie_urls_for(session)))
+        parts.append(f"按地址读={names or '空'}")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"按地址读=出错（{type(exc).__name__}）")
+    try:
+        whole = [
+            item
+            for item in (session.read_all_cookies() or [])
+            if isinstance(item, dict)
+            and (
+                "nmbxd" in str(item.get("domain") or "").strip().lower()
+                or not str(item.get("domain") or "").strip()
+            )
+        ]
+        parts.append(f"整罐读={summarize_cookies(whole) or '空'}")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"整罐读=出错（{type(exc).__name__}）")
+    try:
+        parts.append(f"页面JS={summarize_cookies(read_page_document_cookies(session)) or '空'}")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"页面JS=出错（{type(exc).__name__}）")
+    try:
+        parts.append(f"合并={summarize_cookies(read_site_cookies(session)) or '空'}")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"合并=出错（{type(exc).__name__}）")
+    return "｜".join(parts)
 
 
 def apply_leaf_cookie_over_http(
@@ -1917,7 +2016,7 @@ def build_watch_banner_script() -> str:
         "    const bar = document.createElement('div');\n"
         "    bar.id = id;\n"
         "    bar.textContent = '串导出程序正在看这个窗口 —— 请在这里登录 X 岛；"
-        "登录后到「我的饼干」列表里点一行『应用』，看到「饼干切换成功」才算数。';\n"
+        "登录成功站点就自动带上你当前的饼干，程序自己会拿到；要换一块才到「我的饼干」点『应用』。';\n"
         "    bar.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:2147483647;"
         "background:#b45309;color:#ffffff;font:13px/1.6 sans-serif;padding:6px 12px;"
         "text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.35);pointer-events:none;');\n"

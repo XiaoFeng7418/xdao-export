@@ -1019,6 +1019,44 @@ def test_every_round_pins_the_banner_to_the_watched_tab(
     dialog._on_cancel()
 
 
+def test_a_leaf_round_without_userhash_writes_the_forensics_line(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """每一轮领饼干领空了，就把「读罐对账」写进运行日志（v0.13.34）。
+
+    真机 m36307：F12 看得见 userhash、程序只报一句合并结果「浏览器里还是没有
+    userhash」，谁也分不出漏在哪一读。从这一版起，无果的领饼干轮会把四路读法
+    各自看见的名字清单并排写进日志（值绝不写）—— 下次一张日志截图就能定位。
+    通道是**只进日志**：对话框已经三行话了，不再给它添第四行。
+    """
+    calls: list[object] = []
+
+    def fake_forensics(session):
+        calls.append(session)
+        return "挂=https://www.nmbxd1.com/x｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜页面JS=空｜合并=PHPSESSID"
+
+    monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: any(line.startswith("读罐对账：") for line in logged),
+        timeout=10.0,
+    ), f"对账行没进运行日志：{logged}"
+    assert all(item is session for item in calls), "对账读的不是这一轮真正挂着的标签"
+    line = next(text for text in logged if text.startswith("读罐对账："))
+    assert "PHPSESSID" in line
+    assert "abc123" not in line, "对账行漏了饼干值"
+    assert "挂=" not in dialog.http_var.get(), "对账不该挤进 HTTP 那一行"
+    # 名单没变就只写一次：十分钟的等待不该刷出二十行同样的话。
+    _pump(root_window, 0.6)
+    assert sum(1 for text in logged if text.startswith("读罐对账：")) == 1, logged
+    dialog._on_cancel()
+
+
 def test_one_flaky_read_retries_instead_of_killing_the_wait(
     root_window, browser_shim, open_dialog
 ):
@@ -1836,18 +1874,23 @@ def test_waiting_status_says_how_long_and_which_window_counts() -> None:
     左下角的粘贴按钮没人去翻。等待那句必须自己把退路说出来。
 
     v0.13.33 又补了两件事（m35762/m35800）：等的人分不清两个长得一样的窗口，
-    句里给出棕色横幅这个肉眼判据；以及「登录≠拿得到饼干」，要点一行『应用』。
+    句里给出棕色横幅这个肉眼判据；以及「要点一行『应用』才拿得到」。
+    后半句在真机 m36307 被证伪：登录成功后 userhash 就在罐里（值=账号当前饼干），
+    『应用』只是**换一块**的动作。v0.13.34 起口径改回来，但横幅、『应用』、
+    「饼干切换成功」三个词照钉 —— 换饼干这条路还在教。
     """
     text = gui._waiting_status(42)
     assert "42" in text
     assert "这个窗口打开的那个浏览器" in text
     assert "自己平时用的浏览器里登录，程序看不到" in text
     assert "直接粘贴饼干登录" in text
-    # v0.13.33（m35762/m35800）：光登录不算完 —— 那句话还得教会人「点应用」，
-    # 并给出「哪个窗口才是被看的」肉眼判据（棕色横幅）。
+    # 哪个窗口才是被看的：肉眼判据（棕色横幅）。
     assert "棕色横条" in text
     assert "『应用』" in text
     assert "饼干切换成功" in text
+    # v0.13.34（m36307）：登录即自动带上当前饼干，别再吓人说「光登录不算完」。
+    assert "自动带上" in text
+    assert "光登录不算完" not in text
 
 
 def test_long_wait_keeps_telling_the_user_how_long_and_where_to_log_in(
