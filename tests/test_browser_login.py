@@ -1238,6 +1238,33 @@ def test_start_reuses_a_window_the_program_left_open(tmp_path: Path, monkeypatch
     assert result.port == 9333
     assert result.browser_ws_url == "ws://127.0.0.1:9333/devtools/browser/guid-old"
     assert "接到之前开着的程序窗口" in result.profile_note
+    # v0.13.35：接了谁也要写进普查句，并让「真正在用的目录」可查（对账行的罐名用它）。
+    assert f"接手了「{live.name}」这一扇" in result.census_note
+    assert "探到 1 扇" in result.census_note
+    assert result.used_profile == live
+
+
+def test_census_note_says_a_plain_new_window_was_all_there_was(tmp_path: Path) -> None:
+    """没探到任何活窗（autouse 把普查钉成空）：普查句要**明说**没探到（v0.13.35）。
+
+    这句和「探到了但没接上」必须分得开 —— 真机 m36897 若日志写着「探到 2 扇」，
+    用户登录的窗多半就是另一扇；写着「没探到」才轮到别的原因。
+    """
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
+    assert browser._try_attach_live() is None
+    assert browser.census_note == "开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。"
+    assert browser.used_profile == tmp_path / "profile"
+
+
+def test_census_note_records_windows_it_could_not_attach(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """探到了、挨个问却没接上：普查句要报数、也要认账「照常新开」（v0.13.35）。"""
+    dead = tmp_path / "xdao-export-browser-profile-9-9-0"
+    dead.mkdir()  # 没有 DevToolsActivePort —— 读文件就 OSError，逐个跳过
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda profile: [dead])
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
+    assert browser._try_attach_live() is None
+    assert "探到 1 扇" in browser.census_note
+    assert "都没接上" in browser.census_note and "照常新开" in browser.census_note
 
 
 def test_stop_leaves_a_reused_window_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1283,14 +1310,39 @@ def test_watch_banner_script_carries_the_identity_line() -> None:
 
     v0.13.34（m36307）：口径改成「登录成功站点就自动带上当前饼干」，『应用』只留给
     换饼干 —— 但这两个词仍要在句里，让人知道去哪换。
+    v0.13.35（m36897）：旧窗口上冻着的横幅会装死，所以文案补「十几秒没拿到就点
+    『应用』」这句保底，且**已存在的横幅也要刷新文案**（脚本里得有赋值那一手）。
     """
     script = bl.build_watch_banner_script()
     assert bl.WATCH_BANNER_ID in script
     assert "程序正在看这个窗口" in script and "『应用』" in script
     assert "自动带上" in script, "别再吓人说光登录不算完（m36307 证伪）"
     assert "光登录不算完" not in script and "才算数" not in script
+    assert "十几秒还没拿到" in script, "点应用这条保底路要留在句里"
+    assert "窗口号" not in script, "没传号不许凭空造一个"
     assert "nmbxd1" in script, "站外的页面不该出现横幅"
     assert "getElementById" in script, "同一轮里反复注入要能认出『已经有了』"
+    assert "existing.textContent = text" in script, "旧横幅不刷新文案就是假信号（m36897）"
+
+
+def test_watch_banner_script_carries_the_window_stamp() -> None:
+    """横幅末尾的【窗口号】（v0.13.35）：界面话术报同一个号，肉眼一比识破冻横幅。"""
+    script = bl.build_watch_banner_script("3F7A")
+    assert "【窗口号 3F7A】" in script
+    assert "【窗口号 】" not in script
+
+
+def test_ensure_watch_banner_passes_the_stamp_into_the_page() -> None:
+    """注入这手要把号原样带进 evaluate 的脚本里；吞异常的规矩不变。"""
+    seen: list[str] = []
+
+    class _Session:
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            seen.append(expression)
+            return "added"
+
+    assert bl.ensure_watch_banner(_Session(), "AB12") == "added"  # type: ignore[arg-type]
+    assert "AB12" in seen[0]
 
 
 def test_ensure_watch_banner_swallows_every_failure() -> None:
@@ -2948,13 +3000,45 @@ def test_jar_forensics_lines_up_the_reads_and_never_leaks_values() -> None:
     session.document_cookie = "userhash=HASH-SECRET-3; PHPSESSID=SESS-SECRET-1"
     line = bl.jar_forensics(session)  # type: ignore[arg-type]
     assert "挂=https://www.nmbxd1.com/Member/User/Cookie/index.html" in line
+    assert "｜罐=" not in line, "没传罐名不许凭空造一段"
     assert "按地址读=PHPSESSID" in line
     assert "整罐读=PHPSESSID、memberUserspapapa" in line
     assert "unrelated" not in line, "别家域名的饼干不许进对账"
+    assert "全罐=3" in line, "不滤域的原始条数（分清「真没有」和「被过滤吃掉」）"
+    assert "原始userhash=无" in line
     assert "页面JS=userhash、PHPSESSID" in line
     assert "合并=" in line and "userhash" in line.split("合并=")[1]
     for secret in ("HASH-SECRET-3", "SESS-SECRET-1", "MEMBER-SECRET-2"):
         assert secret not in line, f"对账行漏了饼干值：{secret}"
+
+
+def test_jar_forensics_names_the_jar_and_a_userhash_the_domain_filter_ate() -> None:
+    """v0.13.35 的三新段：罐名、全罐数、以及**没滤域**的原始 userhash 长相。
+
+    真机 m36897 定不了案的缺口：四路名单一致，可「读的是哪份罐」「域过滤有没有
+    把 userhash 吃掉」「饼干是不是 CHIPS 分区（探针没测过的读法差异）」都没记录。
+    这一段把三样都写进同一行 —— 照样只报属性，值一个字符都不写。
+    """
+    session = _ScriptedSession(
+        cookies=[{"name": "PHPSESSID", "value": "S1", "domain": ".nmbxd1.com"}],
+        url=bl.COOKIE_SITE + "/Member/User/Index/login.html",
+    )
+    session.all_cookies = [
+        {"name": "PHPSESSID", "value": "S1", "domain": ".nmbxd1.com"},
+        {
+            "name": "userhash", "value": "RAW-SECRET", "domain": ".other.example",
+            "path": "/forum", "httpOnly": True, "partitionKey": "https://nmbxd1.com",
+        },
+    ]
+    line = bl.jar_forensics(
+        session, jar_tag="xdao-export-browser-profile-4321-1727000000123-0"
+    )  # type: ignore[arg-type]
+    assert "罐=xdao-export-browser-profile-4321" in line
+    assert "全罐=2" in line
+    assert "整罐读=PHPSESSID" in line, "别家域照旧不进名单"
+    assert "原始userhash=1块（域=.other.example路=/forumHttpOnly分区）" in line
+    assert "userhash" not in line.split("合并=")[1], "合并读按域过滤，这块不吃"
+    assert "RAW-SECRET" not in line
 
 
 def test_jar_forensics_reports_broken_reads_instead_of_raising() -> None:

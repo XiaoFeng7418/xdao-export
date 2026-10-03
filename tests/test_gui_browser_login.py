@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import json
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -282,6 +283,18 @@ def clean_fake_sessions():
     _FakeSession.instances.clear()
     yield
     _FakeSession.instances.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_real_live_windows_for_dialog(monkeypatch):
+    """界面试点一律不许去接管机器上真活着的程序窗口（v0.13.35）。
+
+    替身只造得出假会话：机器上（比如探针实验后）真躺着带端口文件的资料目录时，
+    真 ``_try_attach_live`` 会把对话框挂到一个从没导航过的替身会话上 —— 页面状态
+    永远查不到、横幅插在虚空里，用例的行为就随机器上的临时目录而变了。
+    专门演普查的用例自己再覆盖一次。
+    """
+    monkeypatch.setattr(browser_login, "live_browser_dirs", lambda profile: [])
 
 
 @pytest.fixture(autouse=True)
@@ -862,9 +875,12 @@ def test_login_finished_late_still_gets_a_chance_to_apply_the_cookie(
     session.cookies = []
 
     # 用户在登录页上待「好几轮」——真机上这就是他打账号密码的那几十秒。
+    # v0.13.35：等的是**这句对的话**，不是「有句话」。替身的页面状态是测试线程
+    # 事后才摆上去的，替身刚出生的头一轮可能先抢跑一句「试过了」；满载时那轮之后
+    # 的登录页轮要慢半拍才泵到窗口上，只等「非空」就会把抢跑那句当成终局误报。
     assert _wait_for(
-        root_window, lambda: bool(dialog.hint_var.get()), timeout=10.0
-    ), "诊断行没写出来"
+        root_window, lambda: "页面停在登录页" in dialog.hint_var.get(), timeout=10.0
+    ), f"诊断行没写出「还没登录」：{dialog.hint_var.get()!r}"
     assert _wait_for(
         root_window, lambda: len(session.cookie_reads) > 6, timeout=10.0
     ), "轮询没跑起来"
@@ -1001,13 +1017,14 @@ def test_every_round_pins_the_banner_to_the_watched_tab(
     真机 m35762/m35800：用户在自己看的窗口里登录、点应用，程序却看着另一个
     窗口的罐 —— 两个窗口长得一模一样，光靠文字说不清谁是谁。从这一版起横幅
     每轮重插一次（导航会把页面整个换掉），插的就是这一轮 retarget 后真正在读
-    的那个 session，指哪看哪。
+    的那个 session，指哪看哪。v0.13.35 起每轮还带上这一趟的窗口号（旧窗口的
+    冻横幅装死，靠号识破 —— m36897）。
     """
-    banners: list[object] = []
+    banners: list[tuple[object, str]] = []
     monkeypatch.setattr(
         browser_login,
         "ensure_watch_banner",
-        lambda session: banners.append(session) or "added",
+        lambda session, stamp="": banners.append((session, stamp)) or "added",
     )
     dialog = open_dialog()
     assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
@@ -1015,7 +1032,12 @@ def test_every_round_pins_the_banner_to_the_watched_tab(
     assert _wait_for(root_window, lambda: len(banners) >= 3, timeout=10.0), (
         "横幅没有每轮都插"
     )
-    assert all(item is session for item in banners), "横幅没钉在这一轮真正在读的标签上"
+    assert all(item[0] is session for item in banners), (
+        "横幅没钉在这一轮真正在读的标签上"
+    )
+    stamps = {stamp for _unused, stamp in banners}
+    assert len(stamps) == 1, f"一趟尝试里窗口号换了：{stamps}"
+    assert re.fullmatch(r"[0-9A-F]{4}", stamps.pop()), f"窗口号不是 4 位十六进制：{stamps}"
     dialog._on_cancel()
 
 
@@ -1031,8 +1053,8 @@ def test_a_leaf_round_without_userhash_writes_the_forensics_line(
     """
     calls: list[object] = []
 
-    def fake_forensics(session):
-        calls.append(session)
+    def fake_forensics(session, jar_tag=""):
+        calls.append((session, jar_tag))
         return "挂=https://www.nmbxd1.com/x｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜页面JS=空｜合并=PHPSESSID"
 
     monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
@@ -1046,14 +1068,63 @@ def test_a_leaf_round_without_userhash_writes_the_forensics_line(
         lambda: any(line.startswith("读罐对账：") for line in logged),
         timeout=10.0,
     ), f"对账行没进运行日志：{logged}"
-    assert all(item is session for item in calls), "对账读的不是这一轮真正挂着的标签"
+    assert all(item[0] is session for item in calls), (
+        "对账读的不是这一轮真正挂着的标签"
+    )
     line = next(text for text in logged if text.startswith("读罐对账："))
     assert "PHPSESSID" in line
     assert "abc123" not in line, "对账行漏了饼干值"
+    assert all(tag for _unused, tag in calls), "对账没拿到罐子（profile 目录名）标签"
     assert "挂=" not in dialog.http_var.get(), "对账不该挤进 HTTP 那一行"
     # 名单没变就只写一次：十分钟的等待不该刷出二十行同样的话。
     _pump(root_window, 0.6)
     assert sum(1 for text in logged if text.startswith("读罐对账：")) == 1, logged
+    dialog._on_cancel()
+
+
+def test_the_census_note_lands_in_the_log_and_not_the_dialog(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """「开窗前普查」只进运行日志：哪几扇窗、接没接手，一句都不能少（v0.13.35）。
+
+    真机 m36897 的头号嫌疑是「用户登录的窗 ≠ 程序读的窗」，而普查那句
+    「探到 N 扇、接手了哪扇」正是当场定案的证据。它不进对话框（话已经够挤），
+    也不算失败 —— 只安静地躺在日志里等人截图。
+    """
+    monkeypatch.setattr(browser_login, "live_browser_dirs", lambda profile: [])
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    assert _wait_for(
+        root_window, lambda: any("开窗前普查" in line for line in logged), timeout=10.0
+    ), f"普查那句没进运行日志：{logged!r}"
+    assert not dialog.failure, dialog.failure
+    assert "开窗前普查" not in dialog.status_var.get()
+    assert "开窗前普查" not in dialog.hint_var.get()
+    dialog._on_cancel()
+
+
+def test_the_status_line_always_carries_the_window_number(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """界面从 ready 到等待提示，窗口号一路在场 —— 用户随时能拿横幅末尾对号（v0.13.35）。
+
+    ready 那句和每 15 秒换的「已经等了 N 秒」那句都带【窗口号 XXXX】；横幅测试
+    钉的是「插进页面的号」，这里钉的是「界面上说出口的号」，两边必须是同一个。
+    """
+    banners: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+        browser_login,
+        "ensure_watch_banner",
+        lambda session, stamp="": banners.append((session, stamp)) or "added",
+    )
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(banners), timeout=10.0), "横幅没插上"
+    stamp = banners[0][1]
+    assert re.fullmatch(r"[0-9A-F]{4}", stamp), stamp
+    assert _wait_for(
+        root_window, lambda: stamp in dialog.status_var.get(), timeout=10.0
+    ), f"界面上没报窗口号：{dialog.status_var.get()!r}"
     dialog._on_cancel()
 
 
@@ -1182,6 +1253,15 @@ def test_the_failure_reason_carries_the_diagnosis(
     assert _wait_for(
         root_window, lambda: dialog._http_note != "", timeout=10.0
     ), "HTTP 那条路还没留下说法"
+
+    # v0.13.35：把领饼干腿冻住再往下演。这个等待循环每圈都要几十毫秒，而快速轮询里
+    # 下一只领饼干轮每 0.15 秒就来一趟 —— 测试线程还没来得及设 read_error，那趟轮
+    # 就把「好罐子名单」的诊断覆盖成了别的写法，failure 断言跟着误报。冻住之后诊断
+    # 不再被重写，测的就是「收尾那一刻的诊断」本身。
+    monkeypatch.setattr(gui, "BROWSER_LEAF_SECONDS", 1e9)
+    assert _wait_for(
+        root_window, lambda: "浏览器里的饼干" in dialog._jar_note, timeout=10.0
+    ), f"诊断里没留下好罐子名单：{dialog._jar_note!r}"
 
     # 现在让读饼干彻底断掉：收尾那句 failure 就是会被写进运行日志的那一句。
     for item in _dialog_sessions():
@@ -1878,6 +1958,9 @@ def test_waiting_status_says_how_long_and_which_window_counts() -> None:
     后半句在真机 m36307 被证伪：登录成功后 userhash 就在罐里（值=账号当前饼干），
     『应用』只是**换一块**的动作。v0.13.34 起口径改回来，但横幅、『应用』、
     「饼干切换成功」三个词照钉 —— 换饼干这条路还在教。
+
+    v0.13.35（m36897）：旧窗口上**冻着的横幅**也会冒充「程序在看这里」，光看
+    棕色横条不够了 —— 传了窗口号时句里要报【窗口号】，让用户拿横幅末尾一比。
     """
     text = gui._waiting_status(42)
     assert "42" in text
@@ -1891,6 +1974,12 @@ def test_waiting_status_says_how_long_and_which_window_counts() -> None:
     # v0.13.34（m36307）：登录即自动带上当前饼干，别再吓人说「光登录不算完」。
     assert "自动带上" in text
     assert "光登录不算完" not in text
+    # v0.13.35：没传号不硬造号；传了号必须原样出现在横幅判据旁边。
+    assert "窗口号" not in text
+    stamped = gui._waiting_status(42, "3F7A")
+    assert "窗口号 3F7A" in stamped
+    # 保底动作也在：十几秒没拿到就点『应用』（不再断言「必须点」）。
+    assert "十几秒没拿到" in stamped
 
 
 def test_long_wait_keeps_telling_the_user_how_long_and_where_to_log_in(

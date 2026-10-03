@@ -677,6 +677,18 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.35**（给每扇窗发一个号：查「你登的是不是程序在看的那扇窗」）：v0.13.34 复验（m36897）
+  F12 里 userhash 明明摆着、四路读+页内 fetch+HTTP 回放却全只见匿名饼干 —— 读法盲区基本排除，
+  头号嫌疑是窗口错位（旧「只挂不改」的横幅在旧程序窗口上冻结冒充）。① `build_watch_banner_script(stamp)`
+  末尾带【窗口号 XXXX】且**会刷新已存在横幅的文字**（冻住的旧横幅被改号，不再冒充；json.dumps 要
+  ensure_ascii=False，否则中文变 \u 码点、测试断言不中）；worker 每次尝试生成随机 4-hex 号，
+  ready/_waiting_status 报同一个号 —— 号对上的窗才是程序的窗。② `LoginBrowser.census_note`：
+  开窗前普查（探到几扇活着的程序窗口/接手了哪一扇/全新开的一扇），走新事件 `("census", …)` 只进
+  运行日志；③ `jar_forensics(session, jar_tag)` 报「罐=目录名｜全罐=N｜原始userhash=…（域/路/HttpOnly/分区）」，
+  用**未过滤**的整罐读，域不对或被 CHIPS 挡掉的 userhash 也点名（只名不值）——一行定性「读错窗」还是「过滤掉了」。
+  `used_profile` 属性供 GUI 取罐名。测试 255→258（browser_login）+62→64（gui）；本轮顺手修掉两个
+  被 v0.13.35 耗时戳破的测试自身竞态（failure_reason 要先冻 BROWSER_LEAF_SECONDS 再设 read_error；
+  login_finished_late 要等「页面停在登录页」而非「hint 非空」——替身 pages 是测试事后摆的，第一轮会抢跑）。
 - **v0.13.34**（修「饼干明明在罐里、程序却读不到」+ 认错 v0.13.33 的话术前提）：
   0.13.33 复验 m36303/m36307（四图）钉出铁证：棕色横条在场、程序窗口（--no-sandbox 黄条
   可辨）里登录成功、F12→应用程序→Cookie 显示 `userhash` 就在那个窗口的罐里（域 www.nmbxd1.com、

@@ -758,6 +758,8 @@ class LoginBrowser:
         self._profile_note = ""
         #: 换了一个浏览器时留给用户看的一句话（见 :attr:`browser_note`）。
         self._browser_note = ""
+        #: 开窗前「活着的程序窗口普查」结果一句话（见 :attr:`census_note`）。
+        self._census_note = ""
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
@@ -784,6 +786,22 @@ class LoginBrowser:
     def browser_note(self) -> str:
         """启动时若换了一个浏览器，这里记着一句给用户看的话。"""
         return self._browser_note
+
+    @property
+    def census_note(self) -> str:
+        """开窗前探到几扇「还活着的程序窗口」、接没接手（v0.13.35）。
+
+        真机 m36897 的谜团只剩一种解释没被排除：用户登录的那扇窗和程序读罐的那扇
+        不是同一扇（旧窗口带着**冻住的横幅**幸存）。这一句把普查结果写进运行日志，
+        和「读罐对账」的罐名并排，一眼定案。没做普查（``fallback_profiles`` 关掉）
+        时是空串。
+        """
+        return self._census_note
+
+    @property
+    def used_profile(self) -> Path:
+        """这次**真正在用**的资料目录（复用/换目录后与 ``profile`` 可能不同）。"""
+        return self._profile
 
     def start(self) -> "LoginBrowser":
         """启动浏览器并等它把调试端口写出来。
@@ -889,8 +907,21 @@ class LoginBrowser:
         接法跟 :meth:`_launch` 拿到端口后一模一样：端口和 WebSocket 路径都从
         那扇窗自己的 ``DevToolsActivePort`` 里读。接不上（中途退了、文件读不动）
         就回 None，照常新开。
+
+        v0.13.35：无论接没接上，都把**普查结果**记进 :attr:`census_note`（探到几扇、
+        目录叫什么、接的是哪扇）。真机 m36897 的教训：「程序读空罐、用户 F12 却有
+        饼干」只要发生在两扇窗之间就永远解释不通，而旧窗口的横幅会**冻**在原地装
+        成活的 —— 光看横幅分不清。日志里有了这句，配上「读罐对账」的罐名，一眼定案。
         """
-        for chosen in live_browser_dirs(self.profile):
+        live = live_browser_dirs(self.profile)
+        if live:
+            names = "、".join(path.name for path in live[:5])
+            self._census_note = (
+                f"开窗前普查：探到 {len(live)} 扇还活着的程序窗口（{names}）。"
+            )
+        else:
+            self._census_note = "开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。"
+        for chosen in live:
             try:
                 port, ws_path = _parse_devtools_file(
                     (chosen / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace")
@@ -907,7 +938,10 @@ class LoginBrowser:
                 f"接到之前开着的程序窗口上了（资料目录 {chosen}）。"
                 "那个窗口里登录过就接着用；要重新登录也请在【这个】窗口里做。"
             )
+            self._census_note += f"接手了「{chosen.name}」这一扇。"
             return self
+        if live:
+            self._census_note += "挨个问了一遍都没接上，照常新开一扇。"
         return None
 
     def _fresh_candidate(self) -> Path:
@@ -1849,14 +1883,21 @@ def summarize_cookies(cookies: Iterable[dict]) -> str:
     return "、".join(names)
 
 
-def jar_forensics(session: "CDPSession") -> str:
-    """「读罐对账」一行：挂着哪页、四路各自看见哪些**名字**（v0.13.34）。
+def jar_forensics(session: "CDPSession", jar_tag: str = "") -> str:
+    """「读罐对账」一行：挂着哪页、读的是哪份罐、四路各自看见哪些**名字**（v0.13.34）。
 
     为什么：真机 m36307 里 F12 看得见 userhash、程序四路合并读却报没有，而对话框
     只说合并结果 —— 分不出漏在哪一读。这一行把每一路的名单并排写进运行日志，
     下次一张截图就能定位（漏在按地址读？整罐读？还是挂错了上下文）。
     规矩与 :func:`summarize_cookies` 相同：**只报名字，值一个字符都不写** ——
     日志要能直接贴给人看，userhash 就是通行证本身。
+
+    v0.13.35 补三段（真机 m36897 的教训：四路名单一致、却仍定不了案）：
+    ``罐=`` 是这份资料目录的目录名 —— 和日志里「开窗前普查」那句对得上，就能排除
+    「用户登录的窗口 ≠ 程序读的窗口」；``全罐=N`` 是**不滤域**的原始条数，用来分清
+    「罐里真没有」和「被 nmbxd 过滤吃掉了」；``原始userhash=`` 直接在原始罐里按名字
+    找，报它的域/路径/HttpOnly/是否分区（CHIPS 分区饼干是探针没测过的读法差异），
+    照样绝不报值。``jar_tag`` 空就不写罐段。
     """
     parts: list[str] = []
     try:
@@ -1864,24 +1905,48 @@ def jar_forensics(session: "CDPSession") -> str:
     except Exception as exc:  # noqa: BLE001
         url = f"<读不到（{type(exc).__name__}）>"
     parts.append(f"挂={url[:70]}")
+    tag = str(jar_tag or "").strip()
+    if tag:
+        parts.append(f"罐={tag[:40]}")
     try:
         names = summarize_cookies(session.read_cookies(cookie_urls_for(session)))
         parts.append(f"按地址读={names or '空'}")
     except Exception as exc:  # noqa: BLE001
         parts.append(f"按地址读=出错（{type(exc).__name__}）")
+    raw: list[dict] | None = None
     try:
-        whole = [
+        raw = [
             item
             for item in (session.read_all_cookies() or [])
             if isinstance(item, dict)
-            and (
-                "nmbxd" in str(item.get("domain") or "").strip().lower()
-                or not str(item.get("domain") or "").strip()
-            )
         ]
-        parts.append(f"整罐读={summarize_cookies(whole) or '空'}")
     except Exception as exc:  # noqa: BLE001
         parts.append(f"整罐读=出错（{type(exc).__name__}）")
+    if raw is not None:
+        whole = [
+            item
+            for item in raw
+            if "nmbxd" in str(item.get("domain") or "").strip().lower()
+            or not str(item.get("domain") or "").strip()
+        ]
+        parts.append(f"整罐读={summarize_cookies(whole) or '空'}")
+        parts.append(f"全罐={len(raw)}")
+        leaves = [
+            item for item in raw if str(item.get("name") or "") == "userhash"
+        ]
+        if not leaves:
+            parts.append("原始userhash=无")
+        else:
+            desc = "、".join(
+                "域={}路={}{}{}".format(
+                    item.get("domain") or "空",
+                    item.get("path") or "/",
+                    "HttpOnly" if item.get("httpOnly") else "",
+                    "分区" if item.get("partitionKey") else "",
+                )
+                for item in leaves[:3]
+            )
+            parts.append(f"原始userhash={len(leaves)}块（{desc}）")
     try:
         parts.append(f"页面JS={summarize_cookies(read_page_document_cookies(session)) or '空'}")
     except Exception as exc:  # noqa: BLE001
@@ -1992,7 +2057,7 @@ def _fetch_in_page(session: "CDPSession", url: str) -> dict | None:
 WATCH_BANNER_ID = "__xdaoWatchBanner"
 
 
-def build_watch_banner_script() -> str:
+def build_watch_banner_script(stamp: str = "") -> str:
     """给被盯的窗口钉一条「程序正在看这个窗口」的顶部横条（v0.13.33）。
 
     为什么：登录这条路历史上一直分不清「用户在操作哪扇窗」—— 程序读的是它挂着
@@ -2000,23 +2065,42 @@ def build_watch_banner_script() -> str:
     这边就永远「取不到饼干」（真机 m35762/m35800）。横幅只出现在**程序正在读的那扇
     窗**里：窗口顶上有条棕色横条 = 对；没有 = 你正站在别的窗口里，别看这里了。
 
+    v0.13.35 两处补强（真机 m36897：横幅在两扇窗里可能同时存在 —— 旧程序退出后
+    它注入的横幅会**冻**在那扇幸存的窗里，用户分不清哪扇是活的）：
+
+    * ``stamp`` 非空时文案尾带「【窗口号 XXXX】」，界面话术报同一个号 —— 肉眼一比
+      就知道眼前这扇是不是程序此刻在盯的；
+    * 已存在的横幅**也刷新文案**（旧横幅带着旧号/旧版话术，不刷就成了假信号）。
+
     规矩两条：**只在 X 岛站内的页面上出现**（横幅是给登录流程看的，别跑到别的
     网站顶上碍事），**幂等** —— 同一个 id 已经在就不重复钉（登录过程会刷好几页，
     worker 每一轮都注一次，绝不能越叠越厚）。全程吞异常：横幅是辅助说明，
     它出什么问题都不许把登录带崩。
     """
+    text = (
+        "串导出程序正在看这个窗口 —— 请在这里登录 X 岛；"
+        "登录成功站点就自动带上你当前的饼干，程序自己会拿到；"
+        "十几秒还没拿到就到「我的饼干」点一行『应用』。"
+    )
+    stamp = str(stamp or "").strip()
+    if stamp:
+        text = f"{text}【窗口号 {stamp}】"
     return (
         "(() => {\n"
         f"  const id = {json.dumps(WATCH_BANNER_ID)};\n"
+        f"  const text = {json.dumps(text, ensure_ascii=False)};\n"
         "  try {\n"
         "    if (!document.documentElement) return 'skip';\n"
         "    if (location.protocol.indexOf('http') !== 0) return 'skip';\n"
         "    if (location.hostname.indexOf('nmbxd1') < 0) return 'off-site';\n"
-        "    if (document.getElementById(id)) return 'present';\n"
+        "    const existing = document.getElementById(id);\n"
+        "    if (existing) {\n"
+        "      if (existing.textContent !== text) existing.textContent = text;\n"
+        "      return 'present';\n"
+        "    }\n"
         "    const bar = document.createElement('div');\n"
         "    bar.id = id;\n"
-        "    bar.textContent = '串导出程序正在看这个窗口 —— 请在这里登录 X 岛；"
-        "登录成功站点就自动带上你当前的饼干，程序自己会拿到；要换一块才到「我的饼干」点『应用』。';\n"
+        "    bar.textContent = text;\n"
         "    bar.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:2147483647;"
         "background:#b45309;color:#ffffff;font:13px/1.6 sans-serif;padding:6px 12px;"
         "text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.35);pointer-events:none;');\n"
@@ -2027,10 +2111,10 @@ def build_watch_banner_script() -> str:
     )
 
 
-def ensure_watch_banner(session: "CDPSession") -> str:
-    """往被盯的标签注入横幅；一切失败都咽掉，回一句状态码给测试用。"""
+def ensure_watch_banner(session: "CDPSession", stamp: str = "") -> str:
+    """往被盯的标签注入横幅（带窗口号）；一切失败都咽掉，回一句状态码给测试用。"""
     try:
-        return str(session.evaluate(build_watch_banner_script()))
+        return str(session.evaluate(build_watch_banner_script(stamp)))
     except Exception:  # noqa: BLE001 —— 横幅不许把登录带崩
         return ""
 

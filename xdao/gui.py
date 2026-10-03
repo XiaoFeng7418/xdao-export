@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import queue
+import random
 import subprocess
 import threading
 import time
@@ -741,7 +742,8 @@ BROWSER_PASTE_NUDGE_SECONDS = 120.0
 #: 说破那一句（走常驻那一行，不会被 15 秒一次的状态替换刷掉）。
 BROWSER_PASTE_NUDGE = (
     "等了两分多钟还没看到登录：多半是你登录的窗口不是程序看的这个 —— "
-    "程序看的窗口顶上有一条棕色横条写着『程序正在看这个窗口』，没有横条的窗口登了也白登。"
+    "程序看的窗口顶上有一条棕色横条写着『程序正在看这个窗口』、末尾带【窗口号】，"
+    "号对不上或没有横条的窗口登了也白登。"
     "已经在这个窗口登好了、程序却没拿到，就点「直接粘贴饼干登录」，"
     "把你自己浏览器 F12 里的 userhash 抄过来就行。"
 )
@@ -805,7 +807,7 @@ def _find_login_browser(settings: AppSettings | None = None) -> object:
     return backend.find_browser(explicit or None)
 
 
-def _waiting_status(waited: int) -> str:
+def _waiting_status(waited: int, stamp: str = "") -> str:
     """「还在等」那句话（``waited`` 是已经等了多少秒）。
 
     分开写成一个函数是为了让「等哪儿的登录」这句话只有一份：界面上的状态、
@@ -815,17 +817,25 @@ def _waiting_status(waited: int) -> str:
     不够 —— 用户分不清两个 Edge 窗口（本来就是同一个程序），会在自己常用的浏览器里
     登录完就干等。老决定是「还没到超时，先别急着让人换法子」，结果就是那 18 分钟。
 
-    v0.13.33 起补上「点应用」这一步并指认横幅：真机 m35762/m35800 说明分不清窗口
+    v0.13.33 起这句里就带上粘贴这条路：真机 m35762/m35800 说明分不清窗口
     是老根因，横幅当场把它分出来。但「光登录不算完」那句在真机 m36307 被证伪：
     用户登录成功后 F12 里 userhash 就在罐里（值等于账号当前饼干），站点在登录这步
     就自动应用了 —— 『应用』只是**换一块饼干**的动作。v0.13.34 起口径改回来。
+
+    v0.13.35 起横幅话术再补两点（真机 m36897）：旧程序窗口上**冻着的横幅**也会
+    冒充「程序在看这里」，所以 ``stamp`` 非空时把窗口号报进这句 —— 用户拿横幅
+    末尾的号和这里一比就知道真假；另外「自动带上」保留为主口径，但补一句
+    「十几秒没拿到就点一行『应用』」作保底：万一站点哪天又不带了，用户有得做。
     """
+    window_hint = "顶上有条棕色横条写着『程序正在看这个窗口』"
+    stamp = str(stamp or "").strip()
+    if stamp:
+        window_hint += f"、末尾带【窗口号 {stamp}】"
     return (
         f"已经等了 {waited} 秒，还没在浏览器里看到登录。"
-        "要在这个窗口打开的那个浏览器里登录（顶上有条棕色横条写着『程序正在看这个窗口』"
-        "才是对的窗口），程序才看得到；"
+        f"要在这个窗口打开的那个浏览器里登录（{window_hint}才是对的窗口），程序才看得到；"
         "登录成功站点就自动带上你当前的饼干，程序自己会拿到 —— "
-        "要换一块才到「我的饼干」列表点一行『应用』，看到「饼干切换成功」；"
+        "十几秒没拿到就到「我的饼干」列表点一行『应用』（站点会显示「饼干切换成功」）；"
         "在自己平时用的浏览器里登录，程序看不到 —— "
         "已经登好了程序却没拿到，就点「直接粘贴饼干登录」，把 userhash 抄过来。"
     )
@@ -950,8 +960,9 @@ class BrowserLoginDialog(tk.Toplevel):
                 "Firefox 内核的浏览器不行，两者不是同一套内核。\n"
                 "请在里面用 X岛账号登录一次（跟微软账号无关，别输微软密码）。\n"
                 "登录成功，站点就自动带上你当前的饼干，程序自己会拿到；\n"
-                "要换一块饼干才到「我的饼干」列表点『应用』，看到「饼干切换成功」。\n"
-                "程序看的那个窗口，顶上会有一条棕色横条写着『程序正在看这个窗口』。\n"
+                "十几秒没拿到就到「我的饼干」列表点一行『应用』，看到「饼干切换成功」。\n"
+                "程序看的那个窗口，顶上会有一条棕色横条写着『程序正在看这个窗口』，\n"
+                "横条末尾带【窗口号】—— 号对不上或没有横条的窗口登了也白登。\n"
                 "程序只取一个 X岛的登录饼干；关掉窗口后临时资料就删掉了，\n"
                 "你自己的浏览器一点也不受影响。\n"
                 "不想重输：关掉它，点「直接粘贴饼干登录」，\n"
@@ -1192,6 +1203,15 @@ class BrowserLoginDialog(tk.Toplevel):
                     except Exception:  # noqa: BLE001 —— 日志挂了也不该影响登录
                         pass
                 continue
+            if kind == "census":  # 「开窗前普查」：只写运行日志（v0.13.35）
+                # 这句是给排查用的：探到几扇活着的程序窗口、接没接手哪扇 ——
+                # 「用户登录的窗 ≠ 程序读的窗」当场定案，不必再让用户数窗口。
+                if self._log is not None:
+                    try:
+                        self._log(str(payload))
+                    except Exception:  # noqa: BLE001 —— 日志挂了也不该影响登录
+                        pass
+                continue
             if kind == "paste_nudge":  # 等太久：说破「八成登错了窗口」，并把按钮换显眼（v0.13.32）
                 self._paste_nudges += 1
                 self._set_hint(BROWSER_PASTE_NUDGE)
@@ -1315,6 +1335,9 @@ class BrowserLoginDialog(tk.Toplevel):
             )
             return
         self._queue.put(("browser", f"这次用 {info.name} 打开（{info.path}）。"))
+        # 这一趟的窗口号：钉进横幅末尾、等待话术与就绪文案里。旧程序窗口上冻着的
+        # 横幅也会冒充「程序在看这里」（真机 m36897）—— 号对得上才算数。
+        stamp = f"{random.randrange(0x10000):04X}"
         if self._stop.is_set():  # 找浏览器的功夫里用户已经取消了，别再多开一个进程
             return
         try:
@@ -1325,6 +1348,12 @@ class BrowserLoginDialog(tk.Toplevel):
             )
             self._browser = browser
             browser.start()
+            # v0.13.35：开窗前普查只写进运行日志（不占对话框）——探到几扇活着的
+            # 程序窗口、接没接手哪扇。「用户登录的窗口≠程序读的窗口」这个谜，
+            # 配上「读罐对账」的罐名，靠这句一眼定案。
+            census = str(getattr(browser, "census_note", "") or "")
+            if census:
+                self._queue.put(("census", census))
             # 配置目录里的浏览器资料要是用不了，库会自己换一个临时目录再试；
             # 默认那个浏览器起不来，库还会换一个浏览器再试。这两件事都得让用户看见，
             # 不然他会以为登录态还落在老地方、或者纳闷「我明明用的是 Chrome」。
@@ -1369,8 +1398,9 @@ class BrowserLoginDialog(tk.Toplevel):
         self._queue.put(
             (
                 "ready",
-                "浏览器已经打开了：请在里面登录 X 岛用户系统。登录成功站点就自动带上"
-                "你当前的饼干，程序自己会拿到、这里自动关掉；要换一块才去「我的饼干」点『应用』。",
+                f"浏览器已经打开了：请在里面登录 X 岛用户系统。登录成功站点就自动带上"
+                f"你当前的饼干，程序自己会拿到、这里自动关掉；十几秒没拿到就到「我的饼干」"
+                f"点一行『应用』。窗口横幅末尾带【窗口号 {stamp}】，号对上的那扇窗才是程序的窗。",
             )
         )
 
@@ -1388,6 +1418,9 @@ class BrowserLoginDialog(tk.Toplevel):
         next_http = started  # 下一次「走 HTTP 领饼干」最早什么时候（v0.13.26）
         last_http_jar = ""  # 上一次试 HTTP 时罐头长什么样（变了就立刻再试一次）
         forensics_line = ""  # 最近一次「读罐对账」已写进日志的那行（v0.13.34，变了才再写）
+        # 对账行里标的「罐」= 这次真正在用的资料目录名（v0.13.35）：接了旧窗就写旧窗的
+        # 目录，新开就写临时目录 —— 「F12 有、程序没有」到底是两扇窗还是一扇窗，靠它对上。
+        jar_tag = Path(str(getattr(browser, "used_profile", "") or "")).name
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1402,9 +1435,11 @@ class BrowserLoginDialog(tk.Toplevel):
                 # 每轮把「程序正在看这个窗口」的横条钉回被盯的那扇窗（v0.13.33）：
                 # 幂等、只在站内页面出现、失败全咽 —— 历史上「用户在另一扇一模一样的
                 # 窗口里点应用、程序干瞪空罐」（m35762/m35800），得让用户一眼认出哪扇对。
+                # v0.13.35 起横幅末尾带窗口号、旧横幅也会被刷成新文案：冻住的旧横幅
+                # 从此装不了死（m36897 的「F12 有饼干、程序读空罐」只剩两窗一种解释）。
                 banner = getattr(backend, "ensure_watch_banner", None)
                 if callable(banner):
-                    banner(session)
+                    banner(session, stamp)
                 value, fill_note = self._read_userhash(backend, session)
                 if fill_note and fill_note not in leaf_hints:
                     # 「按地址那读漏了、整罐读补上」要留痕（v0.13.29）：这句话是下次
@@ -1478,7 +1513,7 @@ class BrowserLoginDialog(tk.Toplevel):
                         forensics = getattr(backend, "jar_forensics", None)
                         if callable(forensics):
                             try:
-                                line = str(forensics(session) or "")
+                                line = str(forensics(session, jar_tag=jar_tag) or "")
                             except Exception:  # noqa: BLE001 —— 对账不许带崩登录
                                 line = ""
                             if line and line != forensics_line:
@@ -1532,7 +1567,7 @@ class BrowserLoginDialog(tk.Toplevel):
             now = time.monotonic()
             if now >= next_progress:
                 next_progress = now + BROWSER_PROGRESS_SECONDS
-                self._queue.put(("status", _waiting_status(int(now - started))))
+                self._queue.put(("status", _waiting_status(int(now - started), stamp)))
             if not nudged and now - started >= BROWSER_PASTE_NUDGE_SECONDS:
                 # 等了两分多钟还没登录：把「八成登错了窗口」说破一次（v0.13.32）。
                 # 只发一次 —— 常驻那一行和按钮文案被反复刷反而像坏了。
