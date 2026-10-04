@@ -1467,6 +1467,32 @@ class BrowserLoginDialog(tk.Toplevel):
                         if jar_note not in leaf_hints:
                             leaf_hints.append(jar_note)
                         self._queue.put(("hint", jar_note))
+                    # v0.13.45：这一罐里没有 userhash 时，挨个问**别的**活窗口（真机 m40502
+                    # 的僵局：同一扇挂着本程序横幅、F12 里有三条饼干含 70 字节 userhash 的
+                    # 窗，对账行一路只报 PHPSESSID）。本机三版探针（分区饼干、跨标签、
+                    # 浏览器端点）已排除「某一条读法漏了」，剩下的解释只有「程序接的那一扇
+                    # ≠ 用户登录的那一扇」——那就把每一扇活窗口的罐都问一遍，谁的罐里有
+                    # userhash 就用谁的，并把每扇窗的名单写进对账行的「逐窗=」段。
+                    windows_tag = ""
+                    look_around = getattr(backend, "userhash_across_windows", None)
+                    jar_profile = getattr(browser, "profile", None)
+                    if not value and callable(look_around) and jar_profile is not None:
+                        try:
+                            found_value, notes = look_around(
+                                jar_profile, skip_port=getattr(browser, "port", None)
+                            )
+                        except Exception:  # noqa: BLE001 —— 逐窗只是补刀，不许带崩登录
+                            found_value, notes = "", []
+                        windows_tag = "；".join(str(note) for note in notes)
+                        if found_value:
+                            value = found_value
+                            note = (
+                                f"在另一扇窗口的罐里找到了 userhash（{windows_tag}）——"
+                                "用它接着往下走。以后请固定在这扇窗里登录，程序就省得多问一遍。"
+                            )
+                            if note not in leaf_hints:
+                                leaf_hints.append(note)
+                            self._queue.put(("hint", note))
                     # v0.13.23：这一步**不导航**用户的标签页 —— 只读页面状态和饼干罐。
                     # 站点那边「应用」是跳转式的，程序一导航，用户眼前那个标签页就会被
                     # 留在站点自己的「饼干切换成功!」倒计时页上原地重载，看起来就是
@@ -1523,7 +1549,21 @@ class BrowserLoginDialog(tk.Toplevel):
                         forensics = getattr(backend, "jar_forensics", None)
                         if callable(forensics):
                             try:
-                                line = str(forensics(session, jar_tag=jar_tag, link_tag=link_tag) or "")
+                                line = str(
+                                    forensics(
+                                        session,
+                                        jar_tag=jar_tag,
+                                        link_tag=link_tag,
+                                        windows_tag=windows_tag,
+                                    )
+                                    or ""
+                                )
+                            except TypeError:
+                                # backend 是旧模块（`jar_forensics` 还不收 `windows_tag`）：
+                                # 退回来只报原来那几段，别让对账把登录带崩。
+                                line = str(
+                                    forensics(session, jar_tag=jar_tag, link_tag=link_tag) or ""
+                                )
                             except Exception:  # noqa: BLE001 —— 对账不许带崩登录
                                 line = ""
                             if line and line != forensics_line:
@@ -1569,6 +1609,17 @@ class BrowserLoginDialog(tk.Toplevel):
                 # 下一轮开头的 retarget 会把连接挪到正确的标签上重连。连着好几轮都
                 # 救不回来才认输 —— 认输那句话保持原样，老用例钉的就是它。
                 read_failures += 1
+                if read_failures == 1:
+                    # v0.13.45：第一轮读挂了就说一句。真机 m40502 的日志在
+                    # 13:16:41 之后就静了 —— 读异常这条路此前一声不响地
+                    # `continue`，用户看到的是「程序还在等」，日志里却什么都没有。
+                    self._queue.put(
+                        (
+                            "hint",
+                            f"读浏览器饼干时出了一次错（{exc}），正在下一轮重试；"
+                            "一直这样就把这段日志发出来。",
+                        )
+                    )
                 if read_failures >= BROWSER_READ_RETRY_LIMIT:
                     self._queue.put(("error", f"读取浏览器饼干失败：{exc}"))
                     return

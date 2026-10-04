@@ -1103,6 +1103,40 @@ def test_a_leaf_round_without_userhash_writes_the_forensics_line(
     dialog._on_cancel()
 
 
+def test_a_userhash_found_in_another_window_is_used_and_named(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """这一罐里没有、别的活窗口罐里有：就用那一块，并点名是哪一扇（v0.13.45）。
+
+    真机 m40502：同一扇挂着本程序横幅的窗、F12 里三条饼干含 70 字节的 userhash，
+    对账行一路只报 PHPSESSID。逐窗读是冲它去的 —— 挨个问、找到就用，并在对话框里
+    把「是哪一扇」说清楚（用户下次固定在那扇窗登录，程序就省得多问一遍）。
+    """
+    asked: list[int | None] = []
+
+    def fake_across(profile, *, skip_port=None, timeout=0.0):  # noqa: ANN001
+        asked.append(skip_port)
+        return (
+            "D-9691%04%02abc",
+            ["端口7002 browser-profile-8-9：PHPSESSID、userhash（userhash 在这一扇）"],
+        )
+
+    monkeypatch.setattr(browser_login, "userhash_across_windows", fake_across)
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: "在另一扇窗口的罐里找到了 userhash" in dialog.hint_var.get(),
+        timeout=15.0,
+    ), f"逐窗找到的 userhash 没被认下来：{dialog.hint_var.get()!r}"
+    assert asked, "逐窗读一次都没被问过"
+    assert "端口7002" in dialog.hint_var.get(), "没点名 userhash 在哪一扇窗里"
+    assert "D-9691%04%02abc" not in dialog.hint_var.get(), "对话框里漏了饼干值"
+    dialog._on_cancel()
+
+
 def test_the_census_note_lands_in_the_log_and_not_the_dialog(
     root_window, browser_shim, open_dialog, monkeypatch
 ):

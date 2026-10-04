@@ -1443,6 +1443,160 @@ def test_window_userhash_returns_empty_when_the_window_cannot_be_reached(
     assert bl.window_userhash("ws://127.0.0.1:1/devtools/browser/x") == ""
 
 
+class _JarWindow:
+    """假窗口会话（v0.13.45）：按 WebSocket 地址回一份罐，够演 ``window_jar`` 那一族。"""
+
+    jars: dict[str, list[dict]] = {}
+    mute: set[str] = set()
+
+    def __init__(self, ws_url: str, **kwargs: object) -> None:
+        self.ws_url = ws_url
+        self.closed = False
+
+    def connect(self) -> None:
+        if self.ws_url in type(self).mute:
+            raise bl.CdpError("连不上")
+
+    def read_all_cookies(self) -> list[dict]:
+        return [dict(item) for item in type(self).jars.get(self.ws_url, [])]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _live_window(
+    tmp_path: Path, name: str, port: int, ws_path: str = "/devtools/page/AB"
+) -> Path:
+    """在 tmp_path 下摆一份「像是还活着」的窗口目录（端口文件就是唯一的证据）。"""
+    window = tmp_path / name
+    window.mkdir(parents=True, exist_ok=True)
+    (window / "DevToolsActivePort").write_text(f"{port}\n{ws_path}\n", encoding="utf-8")
+    return window
+
+
+def _site_cookies(*names: str) -> list[dict]:
+    """一份「域沾 nmbxd1」的假罐：名字给全，值无所谓。"""
+    return [
+        {"name": name, "value": f"v-{name}", "domain": ".nmbxd1.com", "path": "/"}
+        for name in names
+    ]
+
+
+def test_window_jar_keeps_only_the_site_cookies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """别家的饼干一律不进程序的手（v0.13.45）：逐窗读也守着这条老规矩。"""
+    ws = "ws://127.0.0.1:7001/devtools/page/AB"
+    _JarWindow.mute = set()
+    _JarWindow.jars = {
+        ws: _site_cookies("PHPSESSID")
+        + [{"name": "cookie", "value": "x", "domain": ".example.com", "path": "/"}]
+    }
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    assert [item["name"] for item in bl.window_jar(ws)] == ["PHPSESSID"]
+
+
+def test_window_jar_returns_empty_when_the_window_cannot_be_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连不上就回空表（调用方按「这一扇里没有」处理），绝不往外抛。"""
+    ws = "ws://127.0.0.1:7002/devtools/page/AB"
+    _JarWindow.mute = {ws}
+    _JarWindow.jars = {ws: _site_cookies("PHPSESSID")}
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    assert bl.window_jar(ws) == []
+
+
+def test_live_window_jars_skips_the_window_we_are_already_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已经把着的那一扇不再问第二遍（v0.13.45）：逐窗是补刀，不是重读自己。"""
+    profile = tmp_path / "browser-profile"
+    first = _live_window(tmp_path, "browser-profile", 7001)
+    second = _live_window(tmp_path, "browser-profile-8-9", 7002)
+    _JarWindow.mute = set()
+    _JarWindow.jars = {
+        "ws://127.0.0.1:7001/devtools/page/AB": _site_cookies("PHPSESSID"),
+        "ws://127.0.0.1:7002/devtools/page/AB": _site_cookies("PHPSESSID", "userhash"),
+    }
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda wanted: [first, second])
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    found = bl.live_window_jars(profile, skip_port=7001)
+    assert [(name, port) for name, port, _jar in found] == [("browser-profile-8-9", 7002)]
+
+
+def test_userhash_across_windows_finds_the_cookie_in_another_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真机 m40502 的形状（v0.13.45）：这一罐只有匿名会话号，userhash 在隔壁那扇窗的罐里。
+
+    这就是「同一扇挂着程序横幅的窗、F12 里有三条饼干，程序却一路只报 PHPSESSID」的
+    唯一剩余解释，逐窗读是冲它去的：谁的罐里有就用谁的，并点名是哪一扇。
+    """
+    profile = tmp_path / "browser-profile"
+    other = _live_window(tmp_path, "browser-profile-8-9", 7002)
+    _JarWindow.mute = set()
+    _JarWindow.jars = {
+        "ws://127.0.0.1:7002/devtools/page/AB": _site_cookies("PHPSESSID")
+        + [
+            {
+                "name": "userhash",
+                "value": "D-9691%04%02abc",
+                "domain": ".nmbxd1.com",
+                "path": "/",
+            }
+        ]
+    }
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda wanted: [other])
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    value, notes = bl.userhash_across_windows(profile, skip_port=7001)
+    assert value == "D-9691%04%02abc"
+    assert notes == [
+        "端口7002 browser-profile-8-9：PHPSESSID、userhash（userhash 在这一扇）"
+    ]
+
+
+def test_userhash_across_windows_keeps_going_when_one_window_is_mute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """问不动的那一扇不影响别的扇，名单里也老实写「空」（v0.13.45）。"""
+    profile = tmp_path / "browser-profile"
+    mute = _live_window(tmp_path, "browser-profile-8-9", 7002)
+    good = _live_window(tmp_path, "browser-profile-8-10", 7003)
+    _JarWindow.mute = {"ws://127.0.0.1:7002/devtools/page/AB"}
+    _JarWindow.jars = {
+        "ws://127.0.0.1:7003/devtools/page/AB": [
+            {
+                "name": "userhash",
+                "value": "D-9691%04%02abc",
+                "domain": ".nmbxd1.com",
+                "path": "/",
+            }
+        ]
+    }
+    monkeypatch.setattr(bl, "live_browser_dirs", lambda wanted: [mute, good])
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    value, notes = bl.userhash_across_windows(profile)
+    assert value == "D-9691%04%02abc"
+    assert notes == [
+        "端口7002 browser-profile-8-9：空",
+        "端口7003 browser-profile-8-10：userhash（userhash 在这一扇）",
+    ]
+
+
+def test_userhash_across_windows_stays_quiet_when_the_census_blows_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """普查自己出问题也只是回「没探到」，绝不把异常甩给界面层（v0.13.45）。"""
+
+    def boom(_profile: Path) -> list[Path]:
+        raise bl.CdpError("普查炸了")
+
+    monkeypatch.setattr(bl, "live_browser_dirs", boom)
+    assert bl.userhash_across_windows(tmp_path / "browser-profile") == ("", [])
+
+
+
 def test_program_profile_lines_only_name_our_own_dirs(tmp_path: Path) -> None:
     """进程侧普查的认门规矩（v0.13.37）：自家两族全认，别人家的一个不沾。
 
@@ -4085,6 +4239,25 @@ def test_jar_forensics_says_which_window_the_program_is_talking_to() -> None:
     assert "｜接=端口53124｜罐=browser-profile｜" in line, line
     plain = bl.jar_forensics(session)  # type: ignore[arg-type]
     assert "接=" not in plain, "没传连接标签就不许凭空造一段"
+
+
+def test_jar_forensics_names_every_other_window_when_asked() -> None:
+    """逐窗= 段（v0.13.45）：把**每一扇**活窗口里看见了什么名字并排写进对账行。
+
+    真机 m40502：同一扇挂着程序横幅的窗，F12 有 三条饼干含 userhash，对账行却一路
+    只报 PHPSESSID。这一行把别的窗口的名单也摆出来，「同一只罐读漏了」和
+    「本来就两只罐」从此一张截图分得清；没传就不写这段（老截图不长尾巴）。
+    """
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    line = bl.jar_forensics(
+        session,  # type: ignore[arg-type]
+        jar_tag="browser-profile",
+        windows_tag="端口7002 browser-profile-8-9：PHPSESSID、userhash（userhash 在这一扇）",
+    )
+    assert "｜逐窗=端口7002 browser-profile-8-9：PHPSESSID、userhash（userhash 在这一扇）" in line
+    assert "逐窗=" not in bl.jar_forensics(session)  # type: ignore[arg-type]
+    long_tag = "端口1 罐：" + "名" * 400
+    assert len(bl.jar_forensics(session, windows_tag=long_tag)) < 1000  # type: ignore[arg-type]
 
 
 def test_named_userhash_entries_separates_present_from_plausible() -> None:

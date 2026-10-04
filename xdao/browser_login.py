@@ -2137,6 +2137,125 @@ def window_userhash(ws_url: str, timeout: float = WINDOW_PROBE_TIMEOUT) -> str:
             pass
 
 
+def _open_window_session(ws_url: str, timeout: float) -> "CDPSession | None":
+    """连上一扇**已经开着的**窗口；连不上回 ``None``（调用方按「问不出来」处理）。
+
+    抽出来是因为 v0.13.45 起这同一手要连两次（问有没有登录痕迹、读整罐），
+    超时、替身与关连接的写法必须完全一致。
+    """
+    names = globals()
+    try:
+        session = names["CDPSession"](
+            ws_url,
+            timeout=timeout,
+            site_urls=list(SITE_URLS),
+            http_json=_probe_http_json,
+        )
+    except Exception:  # noqa: BLE001 —— 连会话都建不起来，就当这扇问不出来
+        return None
+    try:
+        session.connect()
+    except Exception:  # noqa: BLE001 —— 连不上、或者它一个页面标签都没有
+        return None
+    return session
+
+
+def _close_window_session(session: "CDPSession") -> None:
+    """关掉问完的那扇连接；关连接失败不值得往上抛。"""
+    try:
+        session.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def window_jar(ws_url: str, timeout: float = WINDOW_PROBE_TIMEOUT) -> list[dict]:
+    """读一扇**已经开着的**窗口的整罐，只留域沾 ``nmbxd`` 的（v0.13.45）。
+
+    跟 :func:`window_userhash` 是同一手：连上去、读一次、断开；不导航、不点按钮，
+    用户正停着的那一页连闪都不会闪。读不到（连不上、超预算、那扇刚好退了）一律
+    回空表 —— 调用方按「这一扇里没有」处理。
+    """
+    session = _open_window_session(ws_url, timeout)
+    if session is None:
+        return []
+    try:
+        raw = session.read_all_cookies()
+    except Exception:  # noqa: BLE001 —— 读的过程中那扇窗退了
+        return []
+    finally:
+        _close_window_session(session)
+    return [
+        item
+        for item in (raw or [])
+        if isinstance(item, dict)
+        and "nmbxd" in str(item.get("domain") or "").strip().lower()
+    ]
+
+
+def live_window_jars(
+    profile: Path,
+    *,
+    skip_port: int | None = None,
+    timeout: float = WINDOW_PROBE_TIMEOUT,
+) -> list[tuple[str, int, list[dict]]]:
+    """把**每一扇活着的程序窗**都问一遍：目录名、端口、那一罐里有哪些饼干（v0.13.45）。
+
+    为什么（真机 m40502 的定案）：同一时刻世界上可能不止一扇程序窗 —— 程序此刻接的
+    那一扇罐里只有匿名会话号，用户登录的那一扇罐里有 userhash，两扇窗的 F12 长得
+    一模一样。此前对账行只报「程序接的那一扇」看见了什么，于是「F12 里有三条、
+    程序只报两条」从日志里永远分辨不出：是同一只罐读漏了，还是本来就两只罐。
+    这里挨个端口问一次，名单并排进对账行的 ``逐窗=`` 段 —— 两只罐的现场一张截图定案。
+
+    ``skip_port`` 那扇跳过（调用方自己刚读过，别问第二遍）。普查本身出问题就回空表。
+    """
+    found: list[tuple[str, int, list[dict]]] = []
+    try:
+        candidates = live_browser_dirs(profile)
+    except Exception:  # noqa: BLE001 —— 普查出问题不该带崩对账
+        return found
+    for candidate in candidates:
+        try:
+            port, ws_path = _parse_devtools_file(
+                (candidate / "DevToolsActivePort").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+        except (OSError, CdpError):  # pragma: no cover —— 探测和读之间它退了
+            continue
+        if not port or (skip_port is not None and int(port) == int(skip_port)):
+            continue
+        jar = window_jar(f"ws://127.0.0.1:{port}{ws_path}", timeout=timeout)
+        found.append((candidate.name, int(port), jar))
+    return found
+
+
+def userhash_across_windows(
+    profile: Path,
+    *,
+    skip_port: int | None = None,
+    timeout: float = WINDOW_PROBE_TIMEOUT,
+) -> tuple[str, list[str]]:
+    """挨个问每一扇活着的程序窗「你罐里有没有 userhash」（v0.13.45）。
+
+    返回 ``(认出来的第一块 userhash 或空串, 每扇窗一句话的名单)``；名单的形如
+    ``端口64231 browser-profile：PHPSESSID``，认出来那一扇会带上「← userhash 在这一扇」。
+    第一块认出来的饼干值交给界面层照常走 ``verify_userhash_live`` 验一遍 ——
+    饼干在别人的罐里不等于它还有效。
+    """
+    value = ""
+    notes: list[str] = []
+    for name, port, jar in live_window_jars(profile, skip_port=skip_port, timeout=timeout):
+        names = summarize_cookies(jar)
+        note = f"端口{port} {name}：{names or '空'}"
+        if not value:
+            found = userhash_from_cookies(jar)
+            if found:
+                value = found
+                note += "（userhash 在这一扇）"
+        notes.append(note)
+    return value, notes
+
+
 def _page_state(session: "CDPSession") -> dict:
     """读当前页面的状态；读不到就给空字典（调用方按「认不出来」处理）。"""
     raw = session.evaluate(build_find_apply_script())
@@ -2521,7 +2640,12 @@ def summarize_cookies(cookies: Iterable[dict]) -> str:
     return "、".join(names)
 
 
-def jar_forensics(session: "CDPSession", jar_tag: str = "", link_tag: str = "") -> str:
+def jar_forensics(
+    session: "CDPSession",
+    jar_tag: str = "",
+    link_tag: str = "",
+    windows_tag: str = "",
+) -> str:
     """「读罐对账」一行：挂着哪页、读的是哪份罐、四路各自看见哪些**名字**（v0.13.34）。
 
     为什么：真机 m36307 里 F12 看得见 userhash、程序四路合并读却报没有，而对话框
@@ -2556,6 +2680,14 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "", link_tag: str = "") 
     下一张截图就能分清「Storage 有、别的没有」还是「两边都没有」（后者 = 读错了罐）。
     v0.13.44 真机复验：并集存在的理由是两条路名单可能不一致（本机复验里按地址读就是
     会漏分区饼干），不是「``Network`` 那条一定看不见分区饼干」。
+
+    v0.13.45 补一段 ``逐窗=``（真机 m40502 的僵局：同一扇被程序盯着、还挂着本程序
+    横幅的窗口，F12 里躺着三条饼干含 70 字节的 ``userh…``，对账行却一路写
+    ``全罐=1``/``合并=PHPSESSID``）。本机三版探针（分区饼干、跨标签、浏览器端点）
+    已排除「读法漏了」这条路，剩下的解释只有「程序读的那一扇 ≠ 用户登录的那一扇」——
+    所以这一行现在把**每一扇活着的程序窗**各报一句：端口、罐名、那一罐里的名字清单
+    （``windows_tag`` 由调用方用 :func:`userhash_across_windows` 取，空就不写这段）。
+    同一只罐读漏了还是两只罐，从此一张截图分得清。
     """
     parts: list[str] = []
     try:
@@ -2637,6 +2769,9 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "", link_tag: str = "") 
         parts.append(f"合并={summarize_cookies(read_site_cookies(session)) or '空'}")
     except Exception as exc:  # noqa: BLE001
         parts.append(f"合并=出错（{type(exc).__name__}）")
+    windows = str(windows_tag or "").strip()
+    if windows:
+        parts.append(f"逐窗={windows[:200]}")
     return "｜".join(parts)
 
 
