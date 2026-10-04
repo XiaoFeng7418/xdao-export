@@ -1062,6 +1062,36 @@ def test_cdp_session_connect_resolves_an_http_address_first(
     assert calls == ["http://127.0.0.1:9222/json/list"]
 
 
+def test_browser_level_session_keeps_the_browser_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``browser_level=True`` 时 connect 不许把浏览器端点换成页面标签（v0.13.47）。
+
+    换了的后果是实测过的（探针 ``probe_context_jars.py``）：页面级连接问
+    ``Target.getBrowserContexts`` 当场被拒，于是「同一只浏览器里的别的罐」永远读空 ——
+    功能不报错、只是静默失效，真机上看不出来。
+    """
+    attached: list[str] = []
+
+    def fake_attach(self: object, url: str) -> None:
+        attached.append(url)
+
+    def refuse(self: object) -> str:
+        raise AssertionError("browser_level=True 时不该去挑页面标签")
+
+    monkeypatch.setattr(bl.CDPSession, "_attach", fake_attach)
+    monkeypatch.setattr(bl.CDPSession, "_resolve_page_url", refuse)
+    ws = "ws://127.0.0.1:1/devtools/browser/XY"
+    session = bl.CDPSession(ws, timeout=2.0, browser_level=True)
+    session.connect()
+    assert attached == [ws]
+    # 换挂到页面标签上也等于把这一问废掉：这条连接一动不动。
+    assert session.retarget() is False
+    # 默认那条路照旧：给浏览器端点还是去挑页面标签（页面级才有 Runtime.evaluate）。
+    plain = bl.CDPSession(ws, timeout=2.0)
+    assert plain._browser_level is False
+
+
 # ------------------------------------------------- 调试接口：端口在、口还不通
 
 #: 真机上那条报错：端口文件已经出现，调试服务却还没开始收连接。
@@ -1444,13 +1474,27 @@ def test_window_userhash_returns_empty_when_the_window_cannot_be_reached(
 
 
 class _JarWindow:
-    """假窗口会话（v0.13.45）：按 WebSocket 地址回一份罐，够演 ``window_jar`` 那一族。"""
+    """假窗口会话（v0.13.45）：按 WebSocket 地址回一份罐，够演 ``window_jar`` 那一族。
+
+    v0.13.47 起还兼职**浏览器级**那份活：``browser_context_ids`` /
+    ``read_storage_cookies(browser_context_id)`` —— 同一只浏览器内部也会分出好几份罐
+    （无痕窗、Edge 的「工作区」各一份），真机 m41248/m41249 的死结就卡在这里。
+    """
 
     jars: dict[str, list[dict]] = {}
     mute: set[str] = set()
+    # v0.13.47：浏览器级那一问回什么
+    default_jar: list[dict] = []
+    contexts: list[str] = []
+    context_jars: dict[str, list[dict]] = {}
+    no_contexts: bool = False  # True = 页面级连接，问上下文就被拒
+    # v0.13.47：记下每次开连接时带的构造参数（``browser_level`` 是这次的命门：
+    # 会话默认会把 ``/devtools/browser/…`` 换成页面标签，页面级问上下文必被拒）。
+    opened: list[dict] = []
 
     def __init__(self, ws_url: str, **kwargs: object) -> None:
         self.ws_url = ws_url
+        type(self).opened.append({"ws_url": ws_url, **kwargs})
         self.closed = False
 
     def connect(self) -> None:
@@ -1459,6 +1503,19 @@ class _JarWindow:
 
     def read_all_cookies(self) -> list[dict]:
         return [dict(item) for item in type(self).jars.get(self.ws_url, [])]
+
+    def browser_context_ids(self) -> list[str]:
+        if type(self).no_contexts:
+            raise bl.CdpError("只有浏览器级连接才问得到上下文")
+        return list(type(self).contexts)
+
+    def read_storage_cookies(self, browser_context_id: str = "") -> list[dict]:
+        if browser_context_id:
+            return [
+                dict(item)
+                for item in type(self).context_jars.get(browser_context_id, [])
+            ]
+        return [dict(item) for item in type(self).default_jar]
 
     def close(self) -> None:
         self.closed = True
@@ -1488,12 +1545,16 @@ def test_window_jar_keeps_only_the_site_cookies(
     """别家的饼干一律不进程序的手（v0.13.45）：逐窗读也守着这条老规矩。"""
     ws = "ws://127.0.0.1:7001/devtools/page/AB"
     _JarWindow.mute = set()
+    _JarWindow.opened = []
     _JarWindow.jars = {
         ws: _site_cookies("PHPSESSID")
         + [{"name": "cookie", "value": "x", "domain": ".example.com", "path": "/"}]
     }
     monkeypatch.setattr(bl, "CDPSession", _JarWindow)
     assert [item["name"] for item in bl.window_jar(ws)] == ["PHPSESSID"]
+    # 读某一扇窗走的是**页面级**连接（要 Runtime.evaluate / Network.getCookies）：
+    # browser_level 只给「问同一只浏览器里的别的罐」用，别顺手带上。
+    assert [item.get("browser_level") for item in _JarWindow.opened] == [False]
 
 
 def test_window_jar_returns_empty_when_the_window_cannot_be_reached(
@@ -1594,6 +1655,207 @@ def test_userhash_across_windows_stays_quiet_when_the_census_blows_up(
 
     monkeypatch.setattr(bl, "live_browser_dirs", boom)
     assert bl.userhash_across_windows(tmp_path / "browser-profile") == ("", [])
+
+
+def test_browser_level_jars_reads_the_default_and_every_extra_jar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """浏览器级那一问（v0.13.47）：默认那份 + 每一个额外的罐，各读一遍。
+
+    真机 m41248/m41249 的死结是「同一扇窗、同一个端口，F12 有 userhash、程序四条读法
+    一条都没有」，而四路读法与 F12 同源同全已被两轮探针钉死 ⇒ 只剩「读的不是同一份罐」。
+    这一手就是去问同一只浏览器里**别的罐**。
+    """
+    ws = "ws://127.0.0.1:53051/devtools/browser/XY"
+    _JarWindow.mute = set()
+    _JarWindow.no_contexts = False
+    _JarWindow.opened = []
+    _JarWindow.default_jar = _site_cookies("PHPSESSID")
+    _JarWindow.contexts = ["3f2a1b77"]
+    _JarWindow.context_jars = {"3f2a1b77": _site_cookies("userhash")}
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    jars = bl.browser_level_jars(ws)
+    assert [(label, [item["name"] for item in jar]) for label, jar in jars] == [
+        ("默认", ["PHPSESSID"]),
+        ("上下文3f2a1b", ["userhash"]),
+    ]
+    # 命门：这一问必须**挂在浏览器端点上**（browser_level=True）。少了这个开关，
+    # connect() 会把 /devtools/browser/… 换成页面标签，Target.getBrowserContexts
+    # 当场被拒、额外那份罐永远读空 —— 功能静默失效（真机探针 probe_context_jars.py
+    # 就是这么抓出来的）。
+    assert [item.get("browser_level") for item in _JarWindow.opened] == [True]
+
+
+def test_browser_level_jars_finds_the_browser_endpoint_from_a_page_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """界面层给过来的常常是**页面**地址，这一问要自己去问出浏览器端点（v0.13.47）。
+
+    真机上 ``LoginBrowser.browser_ws_url`` 是从 ``DevToolsActivePort`` 第二行拼的，
+    那是**页面**的调试路径；拿它直接当浏览器端点连，``Target.getBrowserContexts``
+    会被拒 —— 功能不报错，只是永远读不到别的罐。探针 ``probe_context_jars.py``
+    把这条坑实测钉死过。
+    """
+    asked: list[str] = []
+
+    def fake_version(url: str, timeout: float = 5.0) -> object:
+        asked.append(url)
+        return {"webSocketDebuggerUrl": "ws://127.0.0.1:53051/devtools/browser/REAL"}
+
+    _JarWindow.mute = set()
+    _JarWindow.no_contexts = False
+    _JarWindow.opened = []
+    _JarWindow.default_jar = _site_cookies("PHPSESSID")
+    _JarWindow.contexts = ["3f2a1b77"]
+    _JarWindow.context_jars = {"3f2a1b77": _site_cookies("userhash")}
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    monkeypatch.setattr(bl, "_probe_http_json", fake_version)
+
+    jars = bl.browser_level_jars("ws://127.0.0.1:53051/devtools/page/AB")
+    assert asked == ["http://127.0.0.1:53051/json/version"]
+    assert [label for label, _jar in jars] == ["默认", "上下文3f2a1b"]
+    assert [(item.get("ws_url"), item.get("browser_level")) for item in _JarWindow.opened] == [
+        ("ws://127.0.0.1:53051/devtools/browser/REAL", True)
+    ]
+
+
+def test_browser_level_jars_gives_up_when_the_endpoint_cannot_be_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """页面地址换不出浏览器端点（端口不答话 / 答的东西没这一项）就当问不出来，绝不往外抛。"""
+
+    def refuse(url: str, timeout: float = 5.0) -> object:
+        raise bl.CdpError("端口不答话")
+
+    _JarWindow.opened = []
+    _JarWindow.default_jar = _site_cookies("PHPSESSID")
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    monkeypatch.setattr(bl, "_probe_http_json", refuse)
+    assert bl.browser_level_jars("ws://127.0.0.1:53051/devtools/page/AB") == []
+    # 连都没连：问不出来就别去打扰那只浏览器
+    assert _JarWindow.opened == []
+
+
+def test_browser_level_jars_gives_up_when_no_context_list_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """问不到上下文名单（页面级连接、老浏览器）就只报默认那份，绝不往外抛。"""
+    ws = "ws://127.0.0.1:53051/devtools/browser/XY"
+    _JarWindow.mute = set()
+    _JarWindow.no_contexts = True
+    _JarWindow.default_jar = _site_cookies("PHPSESSID")
+    _JarWindow.contexts = ["3f2a1b77"]
+    _JarWindow.context_jars = {"3f2a1b77": _site_cookies("userhash")}
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    jars = bl.browser_level_jars(ws)
+    assert [label for label, _jar in jars] == ["默认"]
+    # 空地址直接回空表：连都不必连
+    assert bl.browser_level_jars("") == []
+
+
+def test_userhash_across_contexts_names_only_the_extra_jars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """「别路=」只写默认之外的罐（v0.13.47）：默认那份调用方自己刚读过，重复只是噪音。"""
+    ws = "ws://127.0.0.1:53051/devtools/browser/XY"
+    _JarWindow.mute = set()
+    _JarWindow.no_contexts = False
+    _JarWindow.default_jar = _site_cookies("PHPSESSID")
+    _JarWindow.contexts = ["3f2a1b77", "9c0d5e11"]
+    _JarWindow.context_jars = {
+        "3f2a1b77": _site_cookies("PHPSESSID", "userhash"),
+        "9c0d5e11": [],
+    }
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    value, notes = bl.userhash_across_contexts(ws)
+    assert value == "v-userhash"
+    assert notes == [
+        "上下文3f2a1b：PHPSESSID、userhash（userhash 在这一份里）",
+        "上下文9c0d5e：空",
+    ]
+    # 一份额外的罐都没有 ⇒ 名单是空的（对账行里「别路=」整段不写）
+    _JarWindow.contexts = []
+    assert bl.userhash_across_contexts(ws) == ("", [])
+
+
+def test_jar_forensics_names_the_other_jars() -> None:
+    """对账行的「别路=」段（v0.13.47）：有额外的罐才写，没写就是不写。"""
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    line = bl.jar_forensics(
+        session,  # type: ignore[arg-type]
+        jar_tag="browser-profile",
+        contexts_tag="上下文3f2a1b：PHPSESSID、userhash（userhash 在这一份里）",
+    )
+    assert "｜别路=上下文3f2a1b：PHPSESSID、userhash（userhash 在这一份里）" in line
+    without = bl.jar_forensics(session, jar_tag="browser-profile")  # type: ignore[arg-type]
+    assert "别路=" not in without
+    long_tag = "上下文3f2a1b：" + "名" * 400
+    assert len(bl.jar_forensics(session, contexts_tag=long_tag)) < 1000  # type: ignore[arg-type]
+
+
+def test_jar_dump_records_every_read_path_and_its_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """读罐详单（v0.13.47）：四条读法的**原始返回**都抄下来，含浏览器级每一份额外的罐。
+
+    日志里只有名字，对不出「域、路径、分区键、哪一份罐」差在哪 —— 这份数据是唯一能
+    逐字段比对的东西（真机 m41248/m41249：F12 有 70 字节 userhash、程序四条读法全无）。
+    """
+    ws = "ws://127.0.0.1:53051/devtools/browser/XY"
+    _JarWindow.mute = set()
+    _JarWindow.no_contexts = False
+    _JarWindow.default_jar = _site_cookies("PHPSESSID")
+    _JarWindow.contexts = ["3f2a1b77"]
+    _JarWindow.context_jars = {"3f2a1b77": _site_cookies("userhash")}
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    session = _ScriptedSession(cookies=[_site_cookies("PHPSESSID")[0]], url=COOKIE_LIST_URL)
+    session.all_cookies = list(session.cookies)
+    session.document_cookie = "PHPSESSID=1; userhash=2"
+    data = bl.jar_dump(session, page_urls=[COOKIE_LIST_URL], browser_ws_url=ws)  # type: ignore[arg-type]
+    assert data["按地址读"] == [{"name": "PHPSESSID", "value": "v-PHPSESSID", "domain": ".nmbxd1.com", "path": "/"}]
+    assert data["整罐读"] == data["按地址读"]
+    assert data["页面JS"] == "PHPSESSID=1; userhash=2"
+    assert data["页面地址"] == [COOKIE_LIST_URL]
+    assert [
+        (row["罐"], [item["name"] for item in row["饼干"]]) for row in data["浏览器级"]  # type: ignore[union-attr]
+    ] == [("默认", ["PHPSESSID"]), ("上下文3f2a1b", ["userhash"])]
+
+
+def test_jar_dump_says_which_read_path_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """读挂了要**写下来**（不是吞掉）：详单里那一格写着出错类型，别的几路照旧有值。"""
+    ws = "ws://127.0.0.1:53051/devtools/browser/XY"
+    _JarWindow.mute = set()
+    _JarWindow.no_contexts = False
+    _JarWindow.default_jar = []
+    _JarWindow.contexts = []
+    _JarWindow.context_jars = {}
+    monkeypatch.setattr(bl, "CDPSession", _JarWindow)
+    session = _ScriptedSession(cookies=[{"name": "PHPSESSID"}], url=bl.LOGIN_URL)
+    session.read_all_error = bl.CdpError("整罐读挂了")
+    data = bl.jar_dump(session, page_urls=[bl.LOGIN_URL], browser_ws_url=ws)  # type: ignore[arg-type]
+    assert str(data["整罐读"]).startswith("出错（CdpError）：整罐读挂了")
+    assert data["按地址读"] == [{"name": "PHPSESSID"}]
+    assert data["浏览器级"] == [{"罐": "默认", "饼干": []}]
+
+
+def test_write_jar_dump_writes_a_readable_file() -> None:
+    """落盘那一步（v0.13.47）：写在临时目录、文件名带窗口号、内容是能读的 JSON。"""
+    path = bl.write_jar_dump(
+        {"时间": "2026-10-04 15:00:00", "别路": "上下文3f2a1b"}, stamp="AB2A"
+    )
+    try:
+        assert path.parent == Path(tempfile.gettempdir())
+        assert path.name == "xdao-读罐详单-AB2A.json"
+        assert json.loads(path.read_text(encoding="utf-8"))["别路"] == "上下文3f2a1b"
+    finally:
+        path.unlink(missing_ok=True)
+    # 窗口号里有奇怪字符也不会跑出临时目录（只留字母数字和 -_）
+    odd = bl.write_jar_dump({}, stamp="../etc/passwd")
+    try:
+        assert odd.parent == Path(tempfile.gettempdir())
+        assert odd.name == "xdao-读罐详单-etcpasswd.json"
+    finally:
+        odd.unlink(missing_ok=True)
 
 
 
@@ -3490,6 +3752,10 @@ class _ScriptedSession:
         self.storage_cookies: list[dict] = []
         self.read_storage_error: Exception | None = None
         self.storage_cookie_reads: int = 0
+        # v0.13.47：同一只浏览器里**别的罐**（浏览器上下文的 id → 那一份的饼干表）。
+        # cookie 按 BrowserContext 分开存（无痕窗、Edge 的「工作区」），默认那位不是
+        # 全部 —— 真机 m41248/m41249 的死结就卡在「F12 有、程序没有」上。
+        self.context_cookies: dict[str, list[dict]] = {}
         # v0.13.30：页面内 fetch 与浏览器自报 UA 的替身答案。
         # ``fetch_pages`` 是「地址 → fetch 响应」；没登记的地址 raise —— 真机上对应
         # 「这一页 fetch 根本没送出去」（CSP、换文档），让 _fetch_in_page 吞成 None。
@@ -3545,11 +3811,20 @@ class _ScriptedSession:
             merged.append(item)
         return merged
 
-    def read_storage_cookies(self) -> list[dict]:
+    def read_storage_cookies(self, browser_context_id: str = "") -> list[dict]:
         self.storage_cookie_reads += 1
         if self.read_storage_error is not None:
             raise self.read_storage_error
+        if browser_context_id:
+            # v0.13.47：浏览器级那一读问的是**别的罐**（浏览器上下文）。替身默认一份
+            # 额外的罐都没有 —— 想演真机 m41248/m41249 那种「F12 有、程序没有」的
+            # 形状，就自己往 context_cookies 里塞一份。
+            return [dict(item) for item in self.context_cookies.get(browser_context_id, [])]
         return list(self.storage_cookies)
+
+    def browser_context_ids(self) -> list[str]:
+        """替身里「有哪几份额外的罐」由 context_cookies 的键决定（v0.13.47）。"""
+        return list(self.context_cookies)
 
     def list_page_targets(self) -> list[dict]:
         # v0.13.36：默认「就现在这一页」；想看多标签的用例自己填 page_targets。

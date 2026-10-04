@@ -677,6 +677,45 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.47**（去问同一只浏览器里**别的罐**：连浏览器端点按浏览器上下文逐份读；对账行多一段「别路=」；超时那一刻落盘一份「读罐详单」）：
+  **一、为什么换方向。** v0.13.42～v0.13.46 五版都卡在同一张现场（2026-10-04 m41248/m41249）：同一扇挂着程序横条
+  （【窗口号 486A · 端口59715】）、**同一个端口**的窗，F12 里 159 秒时出现了 70 字节的 ``userh…``
+  （``D-9%91%04%02%12%F8%8E%9F%3B%25%A4%B0%D6pk%8Fa%E9%C5%C9%2B%16%D8``），而程序四条读法（按地址读／整罐读／存储读／页面JS）从头到尾没有它；
+  日志在 ``15:12:25`` 之后再无新行（对账行只在文本变化时才写）⇒ 每一轮读到的名单都没变，稳定地「看不见」。
+  四路读法与 F12 同源同全这一条已在两轮本机探针里钉死（``probe_partition_read.py``：分区饼干四路都看得见；
+  ``probe_userhash_origin.py``：不登录时站点 100 秒里根本不种 userhash，而四条读法的名单整段一字不差）
+  ⇒ 只剩一种解释：**程序读的那份罐不是 F12 显示的那份** —— Chromium 的 cookie 按 ``BrowserContext`` 分开存
+  （无痕窗口一份、Edge 的「工作区」一份，互相看不见），而 v0.13.45 的 ``逐窗=`` 只覆盖**别的浏览器进程**（别的端口）。
+  **二、怎么证实的（``_scratch/probe_context_jars.py``，11 项全过）。** 本机 headless Edge + 一次性资料目录：
+  ①浏览器端点答得出 ``Target.getBrowserContexts``，而**页面级连接问同一句会被拒**（``CdpError``）；
+  ②``Target.createBrowserContext`` 造出第二份罐，``Storage.setCookies`` 往里放一块域沾 ``nmbxd1`` 的 userhash；
+  ③**默认上下文的页面连接看不见那一块**（隔离成立）—— 这正是真机症状的形状；
+  ④``browser_level_jars()`` 把两份罐都读了出来；⑤``userhash_across_contexts()`` 认出了那个值；
+  ⑥拿**页面地址**去问也照样能用（自己换成浏览器端点）。
+  **三、改法。** ``xdao/cdp.py``：``CDPSession.__init__`` 新增 ``browser_level: bool = False``；``connect()`` 在这个开关下
+  **原地**挂在浏览器端点（不再把 ``/devtools/browser/…`` 换成页面标签）；``retarget()`` 对它一动不动（换挂等于把这一问废掉）；
+  ``read_storage_cookies(browser_context_id="")`` 带上下文那一问、新增 ``browser_context_ids()``（``Target.getBrowserContexts``）。
+  ``xdao/browser_login.py``：``_open_window_session(..., browser_level=False)`` 透传；新增 ``_looks_like_browser_endpoint()`` /
+  ``_browser_endpoint()``（拿地址里的主机端口问一句 ``/json/version``，取它的 ``webSocketDebuggerUrl``）、``browser_level_jars()``、
+  ``userhash_across_contexts()``（只报默认之外的罐，形如 ``上下文3f2a1b：PHPSESSID、userhash（userhash 在这一份里）``）、
+  ``jar_dump()`` / ``write_jar_dump()``（写 ``%TEMP%\xdao-读罐详单-<窗口号>.json``）；``jar_forensics()`` 多一个 ``contexts_tag``，
+  末尾追加 ``别路=…``（没有额外那份罐就不写）。``xdao/gui.py``：等待循环里「逐窗」之后加「别路」补刀（认出就接着往下走，
+  并提醒「以后固定在程序盯着的那扇窗里登录」），``forensics(...)`` 加 ``contexts_tag``；超时收尾处把 ``jar_dump`` 写盘，
+  只在运行日志里报一句路径（**故意不进 ``leaf_hints``**）。
+  **四、四条机械教训。** ①``CDPSession.connect()`` 会把 ``/devtools/browser/…`` **自动换成页面标签** —— 不做真机探针，
+  这个功能会「静默失效」（页面级问上下文被拒 → 被吞成空表、不报错）；``browser_level`` 这个开关是必须的。
+  ②界面层手里的 ``browser_ws_url`` 真机上是**页面**地址（``DevToolsActivePort`` 第二行给的就是页面的调试路径），
+  所以 ``browser_level_jars`` 必须先自己换端点 —— 探针第 ⑥ 项就是为这条加的。
+  ③「读罐详单」那句提示不能塞进 ``leaf_hints``：那条列表是超时那句「试过的几步」，多一段会把真步骤挤出去
+  （``test_timeout_message_lists_the_steps_the_program_tried`` 当场变红）。
+  ④``CDPSession.__init__`` 加形参后，GUI 替身 ``_FakeSession`` 与 ``_JarWindow`` 都要跟上（``browser_level`` 收下并记下来，
+  用例才好断言「这一问确实挂在浏览器端点上」）。另外顺手修掉一个潜伏 bug：``stale_tag`` / ``procs_tag`` / ``windows_tag``
+  原先只在 ``jar_profile is not None`` 的分支里赋值，路径一变就会在 ``forensics(...)`` 处 ``NameError``，现在统一先给初值。
+  **五、测试。** ``tests/test_browser_login.py`` 加 10 条（7 条上下文与详单：``browser_level_jars`` 读默认+额外罐、问不到上下文名单、
+  ``userhash_across_contexts`` 只报额外的罐、``jar_forensics`` 的 ``别路=``、``jar_dump`` 记下每条读法与失败原因、``write_jar_dump`` 落盘可读；
+  另 3 条：``test_browser_level_session_keeps_the_browser_endpoint``、``test_browser_level_jars_finds_the_browser_endpoint_from_a_page_address``、
+  ``test_browser_level_jars_gives_up_when_the_endpoint_cannot_be_asked``），``tests/test_gui_browser_login.py`` 加 3 条
+  （别的罐里找到 userhash 就用它并点名、对账行带上 ``别路=``、超时写出读罐详单）。收集 **1847 项**、本机 **1840 passed / 7 skipped**。
 - **v0.13.46**（盯窗横条挪到窗口底部并可收起、拿到饼干后自己摘掉；横条与对话框写明「程序不替你点『应用』」；对账行补上「哑窗=」与「同罐进程=N」）：
   **一、为什么要改（岛友原话）。** 现场（2026-10-04 m40811）：「0.13.45还是无法登录，还有一点是最上方的提示条会遮挡选择饼干的ui
   看你怎么改一下 是自动帮用户随便选一个饼干应用还是告诉用户需要自己应用饼干 如果不需要应用饼干就能抓到userhash就不用这么提醒了」。

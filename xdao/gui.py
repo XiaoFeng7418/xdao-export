@@ -1437,6 +1437,13 @@ class BrowserLoginDialog(tk.Toplevel):
         next_procs = started  # 下一次问「几个进程拿着这只罐」（v0.13.46，隔 30 秒问一次）
         last_http_jar = ""  # 上一次试 HTTP 时罐头长什么样（变了就立刻再试一次）
         forensics_line = ""  # 最近一次「读罐对账」已写进日志的那行（v0.13.34，变了才再写）
+        # 对账行里那三段「补刀」证据（v0.13.46/v0.13.47）：每轮在领饼干那一块里刷新，
+        # 但**必须在这里给初值** —— 那一块的头一个条件里就有 `jar_profile is None`
+        # 这条岔路（替身、旧浏览器对象），不走那一块时它们不能被引用成空名。
+        windows_tag = ""  # 别的活窗口各自罐里的名字（v0.13.45）
+        stale_tag = ""  # 有端口文件却问不进去的自家目录名（v0.13.46）
+        procs_tag = ""  # 命令行里正拿着这只罐的浏览器进程数（v0.13.46）
+        contexts_tag = ""  # 同一只浏览器里**别的罐**（浏览器上下文）的名字（v0.13.47）
         # 对账行里标的「罐」= 这次真正在用的资料目录名（v0.13.35）：接了旧窗就写旧窗的
         # 目录，新开就写临时目录 —— 「F12 有、程序没有」到底是两扇窗还是一扇窗，靠它对上。
         jar_tag = Path(str(getattr(browser, "used_profile", "") or "")).name
@@ -1513,6 +1520,36 @@ class BrowserLoginDialog(tk.Toplevel):
                             if note not in leaf_hints:
                                 leaf_hints.append(note)
                             self._queue.put(("hint", note))
+                    # v0.13.47：同一只浏览器里还可能有**别的罐**。真机 m41248/m41249 的
+                    # 死结是「同一扇挂着本程序横幅、同一个端口的窗，F12 里 70 字节的
+                    # userh… 明明白白，程序四条读法从头到尾没有它」；四路读法与 F12
+                    # 同源同全这一点，本机两轮探针已经钉死 ⇒ 只剩「读的不是同一份罐」。
+                    # Chromium 的 cookie 按 BrowserContext 分开存（无痕窗、Edge 的
+                    # 「工作区」各一份，互相看不见），v0.13.45 的「逐窗=」只问**别的
+                    # 浏览器进程**，问不到同一只浏览器里的别的上下文 —— 这里补上，
+                    # 并把额外的罐写进对账行的「别路=」段（默认那份就是上面四路的读数，
+                    # 不重复写）。
+                    contexts_tag = ""
+                    if not value:
+                        look_aside = getattr(backend, "userhash_across_contexts", None)
+                        browser_ws = str(getattr(browser, "browser_ws_url", "") or "")
+                        if callable(look_aside) and browser_ws:
+                            try:
+                                found_value, notes = look_aside(browser_ws)
+                            except Exception:  # noqa: BLE001 —— 多问一份只是补刀
+                                found_value, notes = "", []
+                            contexts_tag = "；".join(str(note) for note in notes)
+                            if found_value:
+                                value = found_value
+                                note = (
+                                    f"在同一只浏览器的另一份罐里找到了 userhash"
+                                    f"（{contexts_tag}）——用它接着往下走。"
+                                    "那份罐多半来自无痕窗或 Edge 的「工作区」；"
+                                    "以后请固定在程序盯着的那扇窗里登录。"
+                                )
+                                if note not in leaf_hints:
+                                    leaf_hints.append(note)
+                                self._queue.put(("hint", note))
                     # v0.13.46：把「另一扇窗」剩下的两种形状也写进对账行 —— 真机 m40810
                     # 的僵局是「同一只罐一条也读不到」，而「逐窗=」一句都没有，看不出到底
                     # 是没别的窗、还是这一手没跑：
@@ -1604,13 +1641,14 @@ class BrowserLoginDialog(tk.Toplevel):
                                         windows_tag=windows_tag,
                                         stale_tag=stale_tag,
                                         procs_tag=procs_tag,
+                                        contexts_tag=contexts_tag,
                                     )
                                     or ""
                                 )
                             except TypeError:
                                 # backend 是旧模块（`jar_forensics` 还不收 `windows_tag` /
-                                # `stale_tag` / `procs_tag`）：退回来只报原来那几段，
-                                # 别让对账把登录带崩。
+                                # `stale_tag` / `procs_tag` / `contexts_tag`）：退回来只报
+                                # 原来那几段，别让对账把登录带崩。
                                 line = str(
                                     forensics(session, jar_tag=jar_tag, link_tag=link_tag) or ""
                                 )
@@ -1704,6 +1742,42 @@ class BrowserLoginDialog(tk.Toplevel):
                     break
             self._stop.wait(BROWSER_POLL_SECONDS)
         if not self._stop.is_set():
+            # v0.13.47：到点了还没读出来，就把**这一刻的原始返回**落一份盘。真机
+            # m41248/m41249 的死结是「F12 有 70 字节的 userhash、程序四条读法一条都
+            # 没有」，而已有的日志只报名字 —— 名字一样的两块饼干可以分属不同的罐
+            # （浏览器上下文），拿名字根本对不出来。这份「读罐详单」（JSON，含域、路径、
+            # partitionKey、browserContextId 与每条读法的成败原因）是唯一能逐字段
+            # 比对的东西。里面有饼干值（会话凭据），所以只写在本机临时目录、只在
+            # 等超时这一刻写一次，并在运行日志里把路径报给用户 —— 用户愿意就贴出来。
+            dump_jar = getattr(backend, "jar_dump", None)
+            write_dump = getattr(backend, "write_jar_dump", None)
+            if callable(dump_jar) and callable(write_dump):
+                dump_path = None
+                try:
+                    urls = backend.cookie_urls_for(session)
+                except Exception:  # noqa: BLE001 —— 地址列不出来就只报别的几路
+                    urls = []
+                try:
+                    data = dump_jar(
+                        session,
+                        page_urls=urls,
+                        browser_ws_url=str(
+                            getattr(browser, "browser_ws_url", "") or ""
+                        ),
+                    )
+                    dump_path = write_dump(data, stamp=stamp)
+                except Exception:  # noqa: BLE001 —— 落盘失败不许误事
+                    dump_path = None
+                if dump_path is not None:
+                    # 只报给对话框（这不是「程序试过的一步」，不进 leaf_hints —— 那条
+                    # 列表是超时那句话里「试过的几步」，多这一段会把真步骤挤出去）。
+                    self._queue.put(
+                        (
+                            "hint",
+                            f"读罐详单已写到：{dump_path}（含域、路径、分区键、哪一份罐，"
+                            "里面有饼干值，只在本机、贴出去前请自己掂量）",
+                        )
+                    )
             # 把领饼干试过的几步按顺序拼进这句话：它会进运行日志（窗口一关就找不到了），
             # 是「到底卡在哪一步」唯一的书面记录。只留最后一条不够用 —— 「饼干罐里还是没有
             # userhash」这种最没信息量的收尾会盖掉前面「用户还没登录」那条（v0.13.20）。

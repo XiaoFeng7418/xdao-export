@@ -17,6 +17,7 @@ import json
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -131,9 +132,13 @@ class _FakeSession:
         site_urls=None,
         http_json=None,
         failure_hint=None,
+        browser_level: bool = False,
     ) -> None:
         self.ws_url = ws_url
         self.timeout = timeout
+        # v0.13.47：库会带 ``browser_level=True`` 去连浏览器端点（问「别的罐」）。
+        # 替身照单全收，只是记下来给用例看。
+        self.browser_level = bool(browser_level)
         # 界面层建会话时会带上「本站点」前缀与「怎么读 /json/list」，替身照单全收。
         self.site_urls = list(site_urls or [])
         self.http_json = http_json
@@ -160,6 +165,9 @@ class _FakeSession:
         # v0.13.42：``Storage.getCookies``（F12「应用程序 → Cookie」面板那一族读法）的
         # 替身答案，默认空罐 —— 分区饼干只在那一读里出现，真会话会把两读并起来。
         self.storage_cookies: list[dict] = []
+        # v0.13.47：同一只浏览器里**别的罐**（浏览器上下文 id → 那一份的饼干表）。
+        # 默认一份额外的罐都没有；要演「F12 有、程序没有」那种形状的用例自己填。
+        self.context_cookies: dict[str, list[dict]] = {}
         # v0.13.31：界面层每轮先重挑标签。替身没有真标签，默认永远报「没换」；
         # 用例想让 retarget 抛异常（演「连接断了」），把它换成 raise 的函数即可。
         self.retarget_error: Exception | None = None
@@ -210,10 +218,18 @@ class _FakeSession:
             raise self.read_all_error
         return list(self.all_cookies)
 
-    def read_storage_cookies(self) -> list[dict]:
+    def read_storage_cookies(self, browser_context_id: str = "") -> list[dict]:
         # v0.13.42：``Storage.getCookies``（F12 面板那一族读法）。替身默认空罐 ——
         # 「只在 Storage 里出现的分区饼干」由 test_browser_login.py 那些用例去演。
+        # v0.13.47：带上 ``browser_context_id`` 那一问读的是**别的罐**，替身默认没有。
+        if browser_context_id:
+            return [dict(item) for item in self.context_cookies.get(browser_context_id, [])]
         return list(self.storage_cookies)
+
+    def browser_context_ids(self) -> list[str]:
+        # v0.13.47：同一只浏览器里**别的罐**（无痕窗、Edge 的「工作区」各一份）。
+        # 替身默认一份额外的罐都没有；要演真机那种形状的用例自己填 context_cookies。
+        return list(self.context_cookies)
 
     def list_page_targets(self) -> list[dict]:
         # v0.13.36：「读罐对账」的 页= 段读这一面。替身没有真标签，
@@ -317,6 +333,18 @@ def no_real_live_windows_for_dialog(monkeypatch):
     # 否则每一轮等待里挂上一次 powershell，超时那几个用例的秒数全乱。
     monkeypatch.setattr(browser_login, "stale_window_dirs", lambda profile: [])
     monkeypatch.setattr(browser_login, "profile_process_pids", lambda profile: [])
+    # v0.13.47 再添两处：对账行里的「别路=」（要真连一次浏览器级端点，替身那扇连不上、
+    # 只会白等一个超时）与等超时那一刻的「读罐详单」落盘（会往 %TEMP% 里写带饼干值的
+    # JSON）。两处都钉住 —— 用例既不问真连接，也不往磁盘上留东西；演这两条路的用例
+    # 自己再覆盖。
+    monkeypatch.setattr(
+        browser_login, "userhash_across_contexts", lambda browser_ws_url, **kwargs: ("", [])
+    )
+    monkeypatch.setattr(
+        browser_login,
+        "write_jar_dump",
+        lambda data, *, stamp: Path(tempfile.gettempdir()) / "xdao-读罐详单-测试占位.json",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -1193,6 +1221,113 @@ def test_the_forensics_line_gets_the_mute_and_shared_jar_hints(
     line = next(text for text in logged if text.startswith("读罐对账："))
     assert "哑窗=browser-profile-8-9" in line, line
     assert "同罐进程=2" in line, line
+    dialog._on_cancel()
+
+
+def test_a_userhash_found_in_another_jar_is_used_and_named(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """同一只浏览器里**别的罐**里有 userhash：就用那一块，并点名是哪一份（v0.13.47）。
+
+    真机 m41248/m41249：同一扇挂着本程序横幅、同一个端口的窗，F12 里 70 字节的
+    ``userh…`` 明明白白，程序四条读法从头到尾没有它；而四路读法与 F12 同源同全已被
+    两轮探针钉死 ⇒ 只剩「读的不是同一份罐」（无痕窗、Edge 的「工作区」各存一份）。
+    """
+    asked: list[str] = []
+
+    def fake_aside(browser_ws_url, *, timeout=0.0):  # noqa: ANN001
+        asked.append(str(browser_ws_url))
+        return (
+            "D-9691%04%02abc",
+            ["上下文3f2a1b：PHPSESSID、userhash（userhash 在这一份里）"],
+        )
+
+    monkeypatch.setattr(browser_login, "userhash_across_contexts", fake_aside)
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: "在同一只浏览器的另一份罐里找到了 userhash" in dialog.hint_var.get(),
+        timeout=15.0,
+    ), f"别路找到的 userhash 没被认下来：{dialog.hint_var.get()!r}"
+    assert asked, "浏览器级那一问一次都没被问过"
+    assert asked[0].startswith("ws://"), f"问的不是浏览器级端点：{asked[0]!r}"
+    assert "上下文3f2a1b" in dialog.hint_var.get(), "没点名 userhash 在哪一份罐里"
+    assert "D-9691%04%02abc" not in dialog.hint_var.get(), "对话框里漏了饼干值"
+    dialog._on_cancel()
+
+
+def test_the_forensics_line_names_the_other_jars(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """对账行还要带上「别路=」那一段（v0.13.47）：默认之外的罐各报一句名字。
+
+    真机 m41248/m41249 的死结：日志里只有名字，看不出「F12 那份」和「程序那份」是不是
+    同一份罐。这一段把额外的罐点名，配合超时那一刻落盘的「读罐详单」，就能逐字段比对。
+    """
+    seen: list[dict[str, object]] = []
+
+    def fake_forensics(session, jar_tag="", link_tag="", **kwargs):  # noqa: ANN001
+        seen.append(dict(kwargs))
+        return "挂=…｜别路=" + str(kwargs.get("contexts_tag", ""))
+
+    monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
+    monkeypatch.setattr(
+        browser_login,
+        "userhash_across_contexts",
+        lambda browser_ws_url, *, timeout=0.0: (
+            "",
+            ["上下文3f2a1b：PHPSESSID、userhash（userhash 在这一份里）"],
+        ),
+    )
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: any(line.startswith("读罐对账：") for line in logged),
+        timeout=15.0,
+    ), f"对账行没进运行日志：{logged}"
+    assert seen, "对账一次都没被叫过"
+    assert all("上下文3f2a1b" in str(item.get("contexts_tag", "")) for item in seen), (
+        f"别路那一段没传下去：{[item.get('contexts_tag') for item in seen]}"
+    )
+    line = next(text for text in logged if text.startswith("读罐对账："))
+    assert "别路=上下文3f2a1b" in line, line
+    dialog._on_cancel()
+
+
+def test_the_timeout_writes_a_readable_jar_dump(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """等超时那一刻落一份「读罐详单」（v0.13.47）：路径要报给用户，出错不许误事。"""
+    monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 0.3)
+    written: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+        browser_login,
+        "jar_dump",
+        lambda session, *, page_urls=None, browser_ws_url="", timeout=0.0: {
+            "按地址读": [],
+            "整罐读": [],
+        },
+    )
+    monkeypatch.setattr(
+        browser_login,
+        "write_jar_dump",
+        lambda data, *, stamp: written.append((data, stamp)) or Path("C:/tmp/xdao-读罐详单-X.json"),
+    )
+    dialog = open_dialog()
+    assert _wait_for(
+        root_window,
+        lambda: "读罐详单已写到" in dialog.hint_var.get() or "读罐详单已写到" in dialog.status_var.get(),
+        timeout=15.0,
+    ), f"详单路径没报出来：{dialog.hint_var.get()!r} / {dialog.status_var.get()!r}"
+    assert written, "详单一次都没落盘"
+    assert written[0][1], "落盘时没带窗口号"
     dialog._on_cancel()
 
 

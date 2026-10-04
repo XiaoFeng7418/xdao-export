@@ -368,9 +368,16 @@ class CDPSession:
         site_urls: list[str] | None = None,
         http_json: Callable[..., object] | None = None,
         failure_hint: Callable[[], str] | None = None,
+        browser_level: bool = False,
     ) -> None:
         self._ws_url = ws_url
         self._timeout = timeout
+        # v0.13.47：``browser_level=True`` 表示「**就要挂在浏览器端点本身上**」。
+        # 默认行为是相反的：``connect()`` 会把 ``/devtools/browser/…`` 换成某个页面标签
+        # （页面级才有 ``Runtime.evaluate``／``Network.getCookies``）。可 ``Target`` 与
+        # 「按浏览器上下文读饼干」这些只认浏览器端点 —— 登录流程要问「同一只浏览器里
+        # 还有没有别的罐」（无痕窗、Edge 的「工作区」各存一份），就得走这条路。
+        self._browser_level = bool(browser_level)
         # 站点地址前缀：``connect()`` 靠它挑对页面标签。不传就退化成「随便挑一个
         # 不是 edge:// 的页面」，对 PDF 渲染（本地 file:// 页面）正合适。
         self._site_urls = [url for url in (site_urls or []) if url]
@@ -492,10 +499,19 @@ class CDPSession:
         给的是浏览器端点、或者干脆是 ``/json/list`` 那种 HTTP 地址时，
         会自动换成页面标签 —— 调用方不必先想清楚该连哪个。
         换的时候会等目标页面开出来（见 ``_resolve_page_url``）。
+
+        例外是构造时给了 ``browser_level=True``（v0.13.47）：那就**原地**挂在浏览器
+        端点上，一个页面标签都不挑 —— ``Target.getBrowserContexts`` 与「按上下文读
+        饼干」只有浏览器端点答得出来。
         """
         if self._sock is not None:
             return
         url = self._ws_url
+        if self._browser_level:
+            # 就要挂在浏览器端点本身上（Target 与「按上下文读饼干」只认它）。
+            # 这里**不能**换成页面标签：换了以后 ``Target.getBrowserContexts`` 会被拒。
+            self._attach(url)
+            return
         if urllib.parse.urlsplit(url).scheme != "ws":
             url = self._resolve_page_url()
         elif _split_ws_url(url)[2].startswith("/devtools/browser"):
@@ -552,6 +568,10 @@ class CDPSession:
 
         读标签列表本身失败（浏览器进程没了）照抛，由调用方决定怎么收场。
         """
+        if self._browser_level:
+            # v0.13.47：这条连接是特意挂在**浏览器端点**上的（问「别的罐」用），
+            # 换挂到页面标签上就等于把这一问废掉 —— 一动不动。
+            return False
         pages = self._page_targets()
         if not pages:
             raise CdpError("浏览器里没有可用的页面标签，读不到登录状态。")
@@ -749,7 +769,24 @@ class CDPSession:
             return []
         return [cookie for cookie in cookies if isinstance(cookie, dict)]
 
-    def read_storage_cookies(self) -> list[dict]:
+    def browser_context_ids(self) -> list[str]:
+        """这只浏览器里除了默认上下文，还有哪几份「罐」（v0.13.47）。
+
+        ``Target.getBrowserContexts``：Chromium 把 cookie 存在 ``BrowserContext``
+        级别的 network context 里 —— 无痕窗、Edge 的「工作区」那种都会另起一份，
+        **彼此看不见对方的饼干**。真机 m41248/m41249 的形状是「同一扇挂着程序横条的窗，
+        F12 看得见 userhash，程序四条读法全无」，默认上下文之外还有没有别的罐，
+        必须问一句才知道。
+
+        只在浏览器级连接上有意义（页面级连接问这个命令会被拒），失败照抛。
+        """
+        result = self.call("Target.getBrowserContexts", {})
+        ids = result.get("browserContextIds")
+        if not isinstance(ids, list):
+            return []
+        return [str(item) for item in ids if str(item)]
+
+    def read_storage_cookies(self, browser_context_id: str = "") -> list[dict]:
         """``Storage.getCookies``：开发者工具「应用程序 → Cookie」面板走的那一族读法（v0.13.42）。
 
         为什么单开一条：真机 m39918 的截图里，F12 面板明明白白列着 ``userhash``，
@@ -762,8 +799,16 @@ class CDPSession:
         v0.13.44 把理由改准（真机复验见 :meth:`read_all_cookies`）：这一条**不是**
         「唯一读得到分区饼干的读法」—— 本机 Edge 上 ``Network.getAllCookies`` 也读
         得到，它只是另一条独立、可以互相补名单的问法。
+
+        v0.13.47：多收一个 ``browser_context_id``。不传就是**默认上下文**那一份罐
+        （老行为）；传了就问那一份。为什么需要：cookie 是按 ``BrowserContext``
+        分开存的，页面级读法只能看见自己那一份 —— 同一扇窗里 F12 看得见、程序看不见
+        的情形，剩下唯一的解释就是「读的不是同一份罐」。见 :meth:`browser_context_ids`。
         """
-        result = self.call("Storage.getCookies", {})
+        params: dict[str, object] = {}
+        if browser_context_id:
+            params["browserContextId"] = browser_context_id
+        result = self.call("Storage.getCookies", params)
         cookies = result.get("cookies")
         if not isinstance(cookies, list):
             return []

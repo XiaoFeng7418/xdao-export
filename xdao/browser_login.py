@@ -2238,11 +2238,17 @@ def window_userhash(ws_url: str, timeout: float = WINDOW_PROBE_TIMEOUT) -> str:
             pass
 
 
-def _open_window_session(ws_url: str, timeout: float) -> "CDPSession | None":
+def _open_window_session(
+    ws_url: str, timeout: float, *, browser_level: bool = False
+) -> "CDPSession | None":
     """连上一扇**已经开着的**窗口；连不上回 ``None``（调用方按「问不出来」处理）。
 
     抽出来是因为 v0.13.45 起这同一手要连两次（问有没有登录痕迹、读整罐），
     超时、替身与关连接的写法必须完全一致。
+
+    ``browser_level=True``（v0.13.47）表示「**就要挂在浏览器端点本身上**」：会话默认
+    会把 ``/devtools/browser/…`` 换成某个页面标签，而 ``Target.getBrowserContexts``
+    与「按上下文读饼干」只认浏览器端点。这条开关只有问「同一只浏览器里的别的罐」时用。
     """
     names = globals()
     try:
@@ -2251,6 +2257,7 @@ def _open_window_session(ws_url: str, timeout: float) -> "CDPSession | None":
             timeout=timeout,
             site_urls=list(SITE_URLS),
             http_json=_probe_http_json,
+            browser_level=browser_level,
         )
     except Exception:  # noqa: BLE001 —— 连会话都建不起来，就当这扇问不出来
         return None
@@ -2355,6 +2362,187 @@ def userhash_across_windows(
                 note += "（userhash 在这一扇）"
         notes.append(note)
     return value, notes
+
+
+def _looks_like_browser_endpoint(url: str) -> bool:
+    """给的地址是不是**浏览器端点**本身（``…/devtools/browser/<id>``）。"""
+    return "/devtools/browser" in str(url or "")
+
+
+def _browser_endpoint(ws_url: str, timeout: float) -> str:
+    """把「随便哪个调试地址」换成**浏览器端点**（v0.13.47）。
+
+    为什么需要这一步：界面层手里那个 ``browser_ws_url`` 真机上常常是**页面**地址
+    （``DevToolsActivePort`` 第二行给的就是页面的调试路径，见
+    :meth:`LoginBrowser.start`），而 ``Target.*`` 与「按浏览器上下文读饼干」只认
+    浏览器端点。这里拿地址里的主机端口去问一句 ``/json/version``，把它的
+    ``webSocketDebuggerUrl`` 拿回来；本来就已经是浏览器端点就直接用；问不到回空串
+    （调用方按「这一问问不出来」处理）。
+    """
+    text = str(ws_url or "").strip()
+    if not text:
+        return ""
+    if _looks_like_browser_endpoint(text):
+        return text
+    parts = urllib.parse.urlsplit(text)
+    host = parts.hostname or ""
+    port = parts.port
+    if not host or not port:
+        return ""
+    try:
+        info = _probe_http_json(f"http://{host}:{port}/json/version", timeout)
+    except Exception:  # noqa: BLE001 —— 端口不答话就是「问不出来」
+        return ""
+    if isinstance(info, dict):
+        got = str(info.get("webSocketDebuggerUrl") or "").strip()
+        if got:
+            return got
+    return ""
+
+
+def browser_level_jars(
+    browser_ws_url: str,
+    *,
+    timeout: float = WINDOW_PROBE_TIMEOUT,
+) -> list[tuple[str, list[dict]]]:
+    """从**浏览器级**端点把每一份罐都读一遍（v0.13.47）。
+
+    为什么还要多这一问：``v0.13.45`` 的 ``逐窗=`` 问的是**别的浏览器进程**（别的
+    端口），可真机 m41248/m41249 的形状是「**同一扇**挂着程序横条的窗、同一个端口，
+    F12 里明明白白有 userhash，程序四条读法一条都没看见」。同一只浏览器内部还能
+    分出好几份罐 —— cookie 是按 ``BrowserContext`` 分开存的（无痕窗、Edge 的
+    「工作区」那种各一份，互相看不见）。页面级连接只能看见自己那一份，浏览器级
+    才问得到别人的：这里先读默认那份，再按 :meth:`CDPSession.browser_context_ids`
+    把每一份额外的罐都读一遍。
+
+    返回 ``[(标签, 饼干表)]``，标签形如 ``默认`` / ``上下文3f2a1b``；连不上浏览器级
+    端点就回空表（调用方按「问不出来」处理）。读某一份失败只跳过那一份。
+
+    给的地址不必是浏览器端点：界面层手里那个 ``browser_ws_url`` 真机上常常是**页面**
+    地址，这里先用 :func:`_browser_endpoint` 换成浏览器端点（本来就是的就直接用）。
+    """
+    if not browser_ws_url:
+        return []
+    endpoint = _browser_endpoint(browser_ws_url, timeout)
+    if not endpoint:
+        return []
+    session = _open_window_session(endpoint, timeout, browser_level=True)
+    if session is None:
+        return []
+    jars: list[tuple[str, list[dict]]] = []
+    try:
+        try:
+            jars.append(("默认", session.read_storage_cookies()))
+        except Exception:  # noqa: BLE001 —— 默认那份读不到就往下问问别的
+            pass
+        try:
+            contexts = session.browser_context_ids()
+        except Exception:  # noqa: BLE001 —— 问不到上下文名单（老浏览器/页面级连接）
+            contexts = []
+        for context_id in contexts:
+            try:
+                cookies = session.read_storage_cookies(context_id)
+            except Exception:  # noqa: BLE001 —— 那一份刚好没了
+                continue
+            jars.append((f"上下文{context_id[:6]}", cookies))
+    finally:
+        _close_window_session(session)
+    return jars
+
+
+def userhash_across_contexts(
+    browser_ws_url: str,
+    *,
+    timeout: float = WINDOW_PROBE_TIMEOUT,
+) -> tuple[str, list[str]]:
+    """同一只浏览器里，别的「罐」（浏览器上下文）里有没有 userhash（v0.13.47）。
+
+    返回 ``(认出来的第一块 userhash 或空串, 名单)``。名单**只写默认那份之外的罐**
+    —— 默认那份调用方自己刚读过，重复一遍只是噪音；一份额外的罐都没有，名单就是空的
+    （``别路=`` 段不出现）。名单形如
+    ``上下文3f2a1b：PHPSESSID、userhash（userhash 在这一份里）``。
+    """
+    value = ""
+    notes: list[str] = []
+    for label, jar in browser_level_jars(browser_ws_url, timeout=timeout):
+        if label == "默认":
+            continue
+        names = summarize_cookies(jar)
+        note = f"{label}：{names or '空'}"
+        if not value:
+            found = userhash_from_cookies(jar)
+            if found:
+                value = found
+                note += "（userhash 在这一份里）"
+        notes.append(note)
+    return value, notes
+
+
+def jar_dump(
+    session: "CDPSession",
+    *,
+    page_urls: list[str] | None = None,
+    browser_ws_url: str = "",
+    timeout: float = WINDOW_PROBE_TIMEOUT,
+) -> dict:
+    """把「这一刻程序到底读到了什么」原样抄成一份可以拿去比对的数据（v0.13.47）。
+
+    为什么要动这一手：m41248/m41249 那两张截图里，同一扇窗、同一个端口，F12 有
+    ``userhash``、程序四条读法全无。日志里只有**名字**，对不出「域、路径、分区键、
+    哪一份罐、哪条读法」到底差在哪 —— 名字一样的两块饼干可以分属不同上下文，
+    F12 那份和程序那份都可能各自成立。这里把每条读法的**原始返回**（含域、路径、
+    ``partitionKey``、``browserContextId`` 等全部字段）都抄下来，读不出来的字段写
+    出错原因，然后由 :func:`write_jar_dump` 落盘。
+
+    里面**有饼干值**（会话凭据），只写在本机临时目录、只在等超时那一刻写一次，
+    内容仅用于诊断；函数本身只组装数据，不落盘。
+    """
+    dump: dict[str, object] = {
+        "时间": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "页面地址": [],
+        "按地址读": None,
+        "整罐读": None,
+        "页面JS": None,
+        "浏览器级": [],
+    }
+    urls = list(page_urls or [])
+    try:
+        dump["按地址读"] = session.read_cookies(urls) if urls else None
+    except Exception as exc:  # noqa: BLE001 —— 这条读挂了要写下来，不能吞
+        dump["按地址读"] = f"出错（{type(exc).__name__}）：{exc}"
+    try:
+        dump["整罐读"] = session.read_all_cookies()
+    except Exception as exc:  # noqa: BLE001
+        dump["整罐读"] = f"出错（{type(exc).__name__}）：{exc}"
+    try:
+        dump["页面JS"] = session.evaluate("document.cookie")
+        dump["页面地址"] = [session.evaluate("location.href")]
+    except Exception as exc:  # noqa: BLE001
+        dump["页面JS"] = f"出错（{type(exc).__name__}）：{exc}"
+    rows: list[dict] = []
+    for label, jar in browser_level_jars(browser_ws_url, timeout=timeout):
+        rows.append({"罐": label, "饼干": jar})
+    dump["浏览器级"] = rows
+    return dump
+
+
+def write_jar_dump(data: dict, *, stamp: str) -> Path:
+    """把 :func:`jar_dump` 的数据写进 ``%TEMP%``，返回落盘路径（v0.13.47）。
+
+    写在临时目录里、文件名带窗口号（``xdao-读罐详单-<窗口号>.json``）：诊断完就能删，
+    也不会混进用户的文档目录。写不进去不值得误事 —— 调用方自己吞异常。
+
+    人话：这份文件**有饼干值**。它只写在本机 ``%TEMP%``、只在等超时那一刻写一次，
+    用途是让「程序读到的」和「F12 里看到的」能逐字段对上；贴给别人之前请自己掂量，
+    用户看着实在没法自己解决时再贴。
+    """
+    safe = "".join(ch for ch in str(stamp or "no-stamp") if ch.isalnum() or ch in "-_")
+    path = Path(tempfile.gettempdir()) / f"xdao-读罐详单-{safe or 'no-stamp'}.json"
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _page_state(session: "CDPSession") -> dict:
@@ -2748,6 +2936,7 @@ def jar_forensics(
     windows_tag: str = "",
     stale_tag: str = "",
     procs_tag: str = "",
+    contexts_tag: str = "",
 ) -> str:
     """「读罐对账」一行：挂着哪页、读的是哪份罐、四路各自看见哪些**名字**（v0.13.34）。
 
@@ -2804,6 +2993,16 @@ def jar_forensics(
       进程数（见 :func:`profile_process_pids`）。多于 1 = 还有第二个实例在共用这只罐
       （目录名一样、内存罐各自独立 ⇒ CDP 读的那一只里当然没有用户登录挣来的饼干）。
       查不到就不写这段。
+
+    v0.13.47 补一段 ``别路=``（真机 m41248/m41249 的死结：同一扇挂着本程序横幅、
+    同一个端口的窗，F12 里 70 字节的 ``userh…`` 明明白白，程序四条读法
+    （``按地址读``/``整罐读``/``存储读``/``页面JS``）从头到尾没有它；四路读法与 F12
+    同源同全这一点，本机两轮探针已经钉死）。剩下的解释只有「读的不是同一份罐」——
+    Chromium 的 cookie 按 ``BrowserContext`` 分开存（无痕窗、Edge 的「工作区」各一份，
+    互相看不见），而 v0.13.45 的 ``逐窗=`` 只问**别的浏览器进程**，问不到同一只浏览器里
+    的别的上下文。``contexts_tag`` 由调用方用 :func:`userhash_across_contexts` 取：
+    只写**默认之外**的罐（默认那份就是上面四路的读数，重复一遍只是噪音），
+    一份额外的罐都没有就不写这段。
     """
     parts: list[str] = []
     try:
@@ -2893,6 +3092,9 @@ def jar_forensics(
     procs = str(procs_tag or "").strip()
     if procs:
         parts.append(f"同罐进程={procs[:24]}")
+    contexts = str(contexts_tag or "").strip()
+    if contexts:
+        parts.append(f"别路={contexts[:200]}")
     return "｜".join(parts)
 
 
