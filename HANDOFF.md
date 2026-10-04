@@ -29,7 +29,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 单元测试 1828 项（2026-10-04 数出来的一共这么多；本机 Windows 上 1821 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
-其中界面相关的 132 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
+其中界面相关的 133 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。下面那张测试表的数字由 `tests/test_docs_facts.py`
 对着真实收集数把关：加删测试文件、用例数量变了，它就会红，照报红的位置改表即可。
 
