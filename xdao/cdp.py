@@ -306,6 +306,32 @@ def _ws_handshake(sock: socket.socket, ws_url: str, timeout: float = 10.0) -> by
 
 # ---------------------------------------------------------------- 选页面标签
 
+def _context_ids_of(raw: object) -> list[str]:
+    """把 ``Target.getBrowserContexts`` 的 ``browserContextIds`` 洗成一串非空字符串。"""
+    if not isinstance(raw, list):
+        return []
+    return [item for item in (str(value) for value in raw) if item]
+
+
+def _context_ids_of_targets(raw: object) -> list[str]:
+    """从 ``Target.getTargets`` 的 ``targetInfos`` 里把挂着上下文的那些 id 捞出来（v0.13.48）。
+
+    为什么非得从目标身上捞：**用户自己开的无痕窗不在 ``Target.getBrowserContexts``
+    那份名单里**（本机探针 ``probe_incognito_contexts.py`` 实测它回 ``[]``），可那份
+    罐的 id 就明明白白挂在目标上。少了这一手，无痕窗里登录挣来的 userhash 读不到。
+    """
+    if not isinstance(raw, list):
+        return []
+    ids: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        context = str(item.get("browserContextId") or "")
+        if context:
+            ids.append(context)
+    return ids
+
+
 def pick_page(pages: list[dict]) -> dict:
     """从不带站点信息的页面列表里挑一个（一般是第一个）。"""
     for page in pages:
@@ -770,7 +796,7 @@ class CDPSession:
         return [cookie for cookie in cookies if isinstance(cookie, dict)]
 
     def browser_context_ids(self) -> list[str]:
-        """这只浏览器里除了默认上下文，还有哪几份「罐」（v0.13.47）。
+        """这只浏览器里除了默认上下文，还有哪几份「罐」（v0.13.47；v0.13.48 起从两处并起来）。
 
         ``Target.getBrowserContexts``：Chromium 把 cookie 存在 ``BrowserContext``
         级别的 network context 里 —— 无痕窗、Edge 的「工作区」那种都会另起一份，
@@ -778,13 +804,44 @@ class CDPSession:
         F12 看得见 userhash，程序四条读法全无」，默认上下文之外还有没有别的罐，
         必须问一句才知道。
 
-        只在浏览器级连接上有意义（页面级连接问这个命令会被拒），失败照抛。
+        v0.13.48 补的那一半：**用户自己开的无痕窗不在上面那份名单里**。本机探针
+        ``probe_incognito_contexts.py`` 实测（``msedge.exe --incognito`` 起浏览器）：
+        ``Target.getBrowserContexts`` 回的是 ``[]``，而那个页面的目标身上明明挂着
+        ``browserContextId=2199AF8D…``；``Storage.getCookies`` 带这个 id 也读得成。
+        所以名单要从**目标**里再捞一遍 —— 少了这一手，用户「在无痕窗里登录好了」
+        这一情形，程序一辈子看不到那份罐（v0.13.47 的「别路=」就是在这里空的）。
+
+        只在浏览器级连接上有意义（页面级连接问这个命令会被拒）。两问都失败才往外抛；
+        一问成一问败就按成的那一问报，读某一份罐失败由调用方处理。
         """
-        result = self.call("Target.getBrowserContexts", {})
-        ids = result.get("browserContextIds")
-        if not isinstance(ids, list):
-            return []
-        return [str(item) for item in ids if str(item)]
+        ids: list[str] = []
+        first_error: BaseException | None = None
+        worked = False
+        try:
+            result = self.call("Target.getBrowserContexts", {})
+            worked = True
+        except Exception as exc:  # noqa: BLE001 —— 这一问失败还有目标那一问兜着
+            result = {}
+            first_error = exc
+        ids.extend(_context_ids_of(result.get("browserContextIds")))
+        try:
+            targets = self.call("Target.getTargets", {})
+            worked = True
+        except Exception as exc:  # noqa: BLE001 —— 两问都败才认输（见下面 re-raise）
+            targets = {}
+            if first_error is None:
+                first_error = exc
+        ids.extend(_context_ids_of_targets(targets.get("targetInfos")))
+        if not worked and first_error is not None:
+            raise first_error
+        seen: set[str] = set()
+        unique: list[str] = []
+        for item in ids:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return unique
 
     def read_storage_cookies(self, browser_context_id: str = "") -> list[dict]:
         """``Storage.getCookies``：开发者工具「应用程序 → Cookie」面板走的那一族读法（v0.13.42）。
