@@ -157,6 +157,9 @@ class _FakeSession:
         # 「按地址读」就是全部答案，行为不变。
         self.all_cookies: list[dict] = []
         self.read_all_error: Exception | None = None
+        # v0.13.42：``Storage.getCookies``（F12「应用程序 → Cookie」面板那一族读法）的
+        # 替身答案，默认空罐 —— 分区饼干只在那一读里出现，真会话会把两读并起来。
+        self.storage_cookies: list[dict] = []
         # v0.13.31：界面层每轮先重挑标签。替身没有真标签，默认永远报「没换」；
         # 用例想让 retarget 抛异常（演「连接断了」），把它换成 raise 的函数即可。
         self.retarget_error: Exception | None = None
@@ -206,6 +209,11 @@ class _FakeSession:
         if self.read_all_error is not None:
             raise self.read_all_error
         return list(self.all_cookies)
+
+    def read_storage_cookies(self) -> list[dict]:
+        # v0.13.42：``Storage.getCookies``（F12 面板那一族读法）。替身默认空罐 ——
+        # 「只在 Storage 里出现的分区饼干」由 test_browser_login.py 那些用例去演。
+        return list(self.storage_cookies)
 
     def list_page_targets(self) -> list[dict]:
         # v0.13.36：「读罐对账」的 页= 段读这一面。替身没有真标签，
