@@ -677,6 +677,23 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.44**（把「分区饼干」这件事的说法改准；只改注释与文档，功能一点没动）：
+  **一、为什么要改。** v0.13.42 把「``Network.getAllCookies`` 已知不回首分区饼干（CHIPS）」当理由写进了
+  ``cdp.py``、``browser_login.py``、使用说明与那张发布说明 —— 那句话是传闻，当时**没有真机证据**。真机复验
+  （2026-10-04，headless Edge + ``%TEMP%`` 里一次性资料目录，跑完删；``Network.setCookie`` 种一块带
+  ``partitionKey`` 的饼干再读）推翻了它：**按地址读 ``Network.getCookies`` 看不见分区饼干，而
+  ``Network.getAllCookies`` 与 ``Storage.getCookies`` 两条都看得见**。并集本身没错（两条路名单本来就可能不一样），
+  但「另一条一定瞎」这个因果是错的，必须改准 —— 教训：技术断言要有真机证据，不能拿传闻当理由。
+  **二、复验怎么做的（可复查）。** 种两块饼干：``plain-control``（不分区）与 ``chips-b``（``partitionKey`` 必须
+  **同时**给 ``topLevelSite`` 与 ``hasCrossSiteAncestor``，只给前者会被拒 ``Invalid parameters`` —— 这条也是复验里
+  量到的）；再读回，只打印名字与「+分区」标记、不打印值。结果：按地址读只有 ``plain-control``，整罐读与 Storage 读
+  都是 ``['plain-control', 'chips-b+分区']``，并集同上。
+  **三、改了哪些字。** ``cdp.py``（``read_storage_cookies`` 与 ``read_all_cookies`` 两处 docstring，并集理由改成
+  「不赌版本差异」）、``browser_login.py``（``read_site_cookies`` 与 ``jar_forensics`` docstring）、
+  ``tests/test_browser_login.py``（两条用例文档字符串）、``packaging/使用说明.txt``（v0.13.42 段）、
+  ``docs/RELEASE_NOTES_v0.13.42.md``（加「v0.13.44 更正」一行）与本文件 v0.13.42 条目；线上 v0.13.42 那页 Release
+  正文随后用 ``gh release edit`` 重新同步，再用 ``_scratch/check_release_bodies.py`` 核对逐字一致。
+  **功能、界面、导出结果与 0.13.43 完全一样。** 收集仍 **1820 项**，本机 **1813 passed / 7 skipped**。
 - **v0.13.43**（最后一批「复述来源」的句子扫干净，只改文字）：按「## 注释与文档的写法」那条规矩
   （v0.10.2 定的，v0.13.14 / v0.13.16 各补过一轮）把后来几版新写进去的句子扫掉，共 31 处、13 个文件：
   `packaging/使用说明.txt` 4、`README.md` 2、本文件 9、`HANDOFF.md` 1、`xdao/gui.py` 3、
@@ -692,16 +709,19 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 - **v0.13.42**（读饼干罐多问一条路：``Storage.getCookies`` 从兜底升成必读并集；对账行新增「存储读=」；路线图删掉「无人值守登录」）：
   **一、并集。** 症状（现场截图 m39918）：同一扇窗的 F12「应用程序 → Cookie」里躺着一条 ``userhash``（大小 70、值
   ``D-9%1%04%0%2%02%12%…``），程序「读罐对账」却写 ``全罐=2``、``原始userhash=无``。根因：F12 那个面板读的是
-  ``Storage.getCookies``，而浏览器对带 ``Partitioned``（CHIPS）标记的饼干**只交给这一条** —— ``Network.getAllCookies``
-  对它装看不见（已知盲区），``Network.getCookies`` 受地址过滤也看不见，``document.cookie`` 又看不见 HttpOnly 的它，
-  于是三个老读法一起瞎。``cdp.py`` 新增 ``read_storage_cookies()``（``Storage.getCookies``）；``read_all_cookies()``
+  ``Storage.getCookies``；按地址那条 ``Network.getCookies`` 受域/路径过滤，真机上正是它看不见这类饼干，
+  ``document.cookie`` 又看不见 HttpOnly 的它 —— 这就是「F12 有、四读合并却说没有」的形状。
+  **v0.13.44 更正**：本段最初写「``Network.getAllCookies`` 对它装看不见（已知盲区）」，真机复验
+  （2026-10-04，headless Edge 种一块带 ``partitionKey`` 的饼干再读）表明它**读得到**；并集留着的理由是
+  「不赌浏览器版本与实现差异」，不是「另一条一定瞎」。``cdp.py`` 新增 ``read_storage_cookies()``（``Storage.getCookies``）；``read_all_cookies()``
   改成 ``Network.getAllCookies`` + ``Storage.getCookies`` 的**并集**，去重键
   ``(name, domain, path, json.dumps(partitionKey or "", sort_keys=True))``（**分区键必须进键**，否则同名同域同路的两块
   分区饼干会被合成一块），只有两条都失败才 ``raise first_error``、一条成一条败就用成功那条。``looks_like_userhash``
   对截图那种百分号编码值本来就放行（只挡长度 <6、空白、``;``、``<>``、成句中文）⇒ 拦路的一直是「读不到」，不是「认不出」。
   **二、对账段的诊断价值。** ``jar_forensics`` 在 ``原始userhash=`` 之后、``页面JS=`` 之前固定插一段 ``存储读=``
-  （``session.read_storage_cookies()``，失败写 ``存储读=出错（{类型}）``）：「存储读= 有、整罐读= 没有」= 分区饼干那条
-  盲区（本版已补）；两边都没有 = 读错了罐，该去查同一行的 ``接=端口…`` 与窗口横幅末尾的【窗口号】。仍然只报名字与属性，
+  （``session.read_storage_cookies()``，失败写 ``存储读=出错（{类型}）``）：两条读法名单不一致 = 按域/路径过滤或浏览器
+  版本差异（v0.13.44 复验：按地址读就是会漏掉分区饼干）；两边都没有 = 读错了罐，该去查同一行的 ``接=端口…`` 与窗口横幅
+  末尾的【窗口号】。仍然只报名字与属性，
   值一个字符都不写进日志。
   **三、路线图。** 2026-10-04 定案：把「无人值守登录」从 ``HANDOFF.md`` 第八节与本文件「路线图（尚未实现）」里
   **删掉**，只留一句「已定论不做、别再提议」的备注（验证码必须真人认一次；视觉模型识别率太低），不再列成待办。

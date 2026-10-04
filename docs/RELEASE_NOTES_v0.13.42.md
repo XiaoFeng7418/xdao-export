@@ -18,11 +18,15 @@ Python）。同一页还挂着一份 `xdao-export-v0.13.42-win64.zip.sha256` —
 2. 整罐读 —— `Network.getAllCookies`；
 3. 页面脚本读 —— `document.cookie`。
 
-浏览器对带 `Partitioned`（分区）标记的饼干（CHIPS）**只交给第四种问法** ——
-`Storage.getCookies`，也就是 F12 里「应用程序 → Cookie」那个面板用的那条路。前两条
-`Network` 读法对这类饼干一律装看不见，`document.cookie` 又看不见 HttpOnly 的它。
-结果就是你看到的样子：同一扇窗的 F12 里躺着一条 `userhash`，程序的对账行却写
-「全罐=2、原始userhash=无」。
+带 `Partitioned`（分区）标记的饼干（CHIPS），**按地址读**（`Network.getCookies`）在
+真机上就是看不见 —— 它按域、路径、Secure 逐个过滤；`document.cookie` 又看不见
+HttpOnly 的它。结果就是你看到的样子：同一扇窗的 F12 里躺着一条 `userhash`，程序的
+对账行却写「全罐=2、原始userhash=无」。
+
+> **v0.13.44 更正**：本节最初写「前两条 `Network` 读法一律装看不见分区饼干」。
+> 真机复验（2026-10-04，headless Edge 种一块带 `partitionKey` 的饼干再读）表明
+> `Network.getAllCookies` 也读得到这类饼干，只有按地址读读不到；并集保留，理由改成
+> 「不赌浏览器版本与实现差异」。
 
 这一版起，**整罐读改成两条路的并集**（`Network.getAllCookies` + `Storage.getCookies`）：
 
@@ -34,7 +38,8 @@ Python）。同一页还挂着一份 `xdao-export-v0.13.42-win64.zip.sha256` —
 `读罐对账` 那一行现在会把 `Storage.getCookies` 看见的名单**单独列一段**。于是下一张
 截图就能分清两种完全不同的毛病：
 
-- **「存储读=」有、「整罐读=」没有** → 分区饼干那条已知盲区（这一版已经补上）；
+- **「存储读=」有、「整罐读=」没有** → 两条读法的名单不一致（按地址读漏掉分区
+  饼干就是这种形状）；
 - **两边都没有** → 是**读错了罐**，该去查「程序接的是哪扇窗」（配合同行早就有的
   `罐=…`、`接=端口…`、以及窗口横幅末尾【窗口号】）。
 

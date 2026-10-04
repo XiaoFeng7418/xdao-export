@@ -104,26 +104,26 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.13.43** 提供免安装包：
+最新版 **v0.13.44** 提供免安装包：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.13.43-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位）。 |
-| `xdao-export-v0.13.43-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
+| `xdao-export-v0.13.44-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位）。 |
+| `xdao-export-v0.13.44-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
 
 
 **下载后核对一下**（v0.13.28 起，每个 Release 都附一份 `.sha256`）：把 zip 和 `.sha256` 放同一个
 文件夹，在 PowerShell 里跑
 
 ```powershell
-Get-FileHash .\xdao-export-v0.13.43-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.13.43-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.13.44-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.13.44-win64.zip.sha256
 ```
 
 第一行输出的字符串应当和 .sha256 里那串一模一样。只想看结论就一条命令：
 
 ```powershell
-$f = 'xdao-export-v0.13.43-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
+$f = 'xdao-export-v0.13.44-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
 ```
 
 回 `True` 就是原件。（`certutil -hashfile $f SHA256` 也能算，只是它输出大写、还多一行说明。）

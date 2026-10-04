@@ -3801,12 +3801,12 @@ def _partitioned_userhash(value: str = "D-9691%04%02abc", top: str = "https://ww
 
 
 def test_read_all_cookies_merges_the_storage_read_for_partitioned_cookies() -> None:
-    """v0.13.42：``Network.getAllCookies`` 不回首分区饼干，``Storage`` 那一读是 F12 的路。
+    """v0.13.42：``Storage.getCookies`` 是 F12 那一族的读法，与整罐读各问一次再并起来。
 
     真机 m39918：同一扇窗的 F12「应用程序 → Cookie」里躺着 ``userh…``（70 字节），
-    对账行却写 ``全罐=2``、``原始userhash=无``。F12 面板读的是 ``Storage.getCookies``，
-    而 ``Network.getAllCookies`` 对带 ``Partitioned``（CHIPS）的饼干历来不回首 ——
-    两条 ``Network`` 读法一起瞎，第四读 ``document.cookie`` 也看不见 HttpOnly 的它。
+    对账行却写 ``全罐=2``、``原始userhash=无`` —— 某一条读法漏了（真机复验里，按地址
+    读就是会漏掉带 ``Partitioned`` 的饼干；v0.13.44 复核：``Network.getAllCookies``
+    在本机 Edge 上读得到，并集留着的理由是不赌浏览器版本与实现差异）。
     现在两读并起来，去重键带上分区键。
     """
     shared = {"name": "PHPSESSID", "value": "S", "domain": ".nmbxd1.com", "path": "/"}
@@ -3880,8 +3880,9 @@ def test_read_site_cookies_takes_a_userhash_only_the_storage_read_sees() -> None
 def test_jar_forensics_names_the_storage_read_apart_from_the_network_one() -> None:
     """对账行的 ``存储读=`` 段（v0.13.42）：下一张截图就能分清漏在哪条路。
 
-    ``Storage`` 有、``Network`` 没有 = 分区饼干那条已知盲区；两边都没有 = 读错了罐，
-    该去查「程序接的是哪扇窗」。照样只报名字与属性，值一个字符都不写。
+    ``Storage`` 有、``Network`` 没有 = 两条读法名单不一致（按地址读会漏掉分区饼干
+    就是这种形状）；两边都没有 = 读错了罐，该去查「程序接的是哪扇窗」。照样只报名字
+    与属性，值一个字符都不写。
     """
     session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
     session.all_cookies = [

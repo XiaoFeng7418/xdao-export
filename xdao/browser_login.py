@@ -2416,8 +2416,10 @@ def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> l
 
     v0.13.42 起整罐那一读本身是 ``Network.getAllCookies`` 与 ``Storage.getCookies``
     的并集（:meth:`CDPSession.read_all_cookies`）：F12「应用程序 → Cookie」面板读的
-    是 ``Storage`` 那一族，而 ``Network.getAllCookies`` 已知不回首分区饼干（CHIPS）
-    —— 真机 m39918 里「F12 有 ``userhash``、四读合并却说没有」正是这个形状。
+    是 ``Storage`` 那一族，两条路各问一次、谁的名单更全用谁的 —— 真机 m39918 里
+    「F12 有 ``userhash``、四读合并却说没有」就是这种「某一条读法漏了」的形状
+    （v0.13.44 真机复验后改准：本机 Edge 上 ``Network.getAllCookies`` 也读得到分区
+    饼干，并集留着的理由是「不赌浏览器版本」，不是「另一条一定瞎」）。
 
     按地址那一读读不到就**抛**（v0.13.23）：以前这里把异常吞成空列表，界面层于是把
     「读不出来」和「罐里没登录」当成同一件事 —— 真机上表现为 HTTP 那条路一声不响地
@@ -2548,11 +2550,12 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "", link_tag: str = "") 
 
     v0.13.42 补一段 ``存储读=``（真机 m39918 的僵局：同一扇窗的 F12「应用程序 →
     Cookie」里躺着一条 ``userh…``（70 字节），对账行却写 全罐=2、原始userhash=无）。
-    F12 面板读的是 ``Storage.getCookies``，而 ``Network.getAllCookies`` 已知**不回首
-    分区饼干（CHIPS）**；此前 ``Storage`` 那条只在 ``Network`` 报错时才当兜底问一次，
-    于是「两条 Network 读法一起瞎」的现场无迹可查。现在 ``整罐读=`` 与 ``全罐=`` 报的
-    是两条路的并集，``存储读=`` 单列 ``Storage`` 自己看见的名单 —— 下一张截图就能分清
-    「Storage 有、Network 没有」（分区饼干）还是「两边都没有」（读错了罐）。
+    F12 面板读的是 ``Storage.getCookies``；此前 ``Storage`` 那条只在 ``Network`` 报错
+    时才当兜底问一次，于是「两条读法名单不一致」的现场无迹可查。现在 ``整罐读=`` 与
+    ``全罐=`` 报的是两条路的并集，``存储读=`` 单列 ``Storage`` 自己看见的名单 ——
+    下一张截图就能分清「Storage 有、别的没有」还是「两边都没有」（后者 = 读错了罐）。
+    v0.13.44 真机复验：并集存在的理由是两条路名单可能不一致（本机复验里按地址读就是
+    会漏分区饼干），不是「``Network`` 那条一定看不见分区饼干」。
     """
     parts: list[str] = []
     try:

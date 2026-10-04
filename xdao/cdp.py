@@ -755,10 +755,13 @@ class CDPSession:
         为什么单开一条：真机 m39918 的截图里，F12 面板明明白白列着 ``userhash``，
         程序的三条读法（按地址 ``Network.getCookies``、整罐 ``Network.getAllCookies``、
         页面 ``document.cookie``）却一条都没看见。F12 走的就是 ``Storage`` 这一族，
-        而 ``Network.getAllCookies`` 是**已知不回首分区饼干（CHIPS）**的那条老路：
-        站点给 ``userhash`` 加上 ``Partitioned`` 之后，两条 ``Network`` 读法会一起
-        瞎掉，只有这里问得出来（回的是带 ``partitionKey`` 的那一条）。读失败照抛，
-        容不容忍由调用方决定。
+        而按地址那条 ``Network.getCookies`` 受域/路径过滤 —— 真机上正是它把带
+        ``Partitioned`` 的 ``userhash`` 漏掉的；``document.cookie`` 又看不见 HttpOnly
+        的它。读失败照抛，容不容忍由调用方决定。
+
+        v0.13.44 把理由改准（真机复验见 :meth:`read_all_cookies`）：这一条**不是**
+        「唯一读得到分区饼干的读法」—— 本机 Edge 上 ``Network.getAllCookies`` 也读
+        得到，它只是另一条独立、可以互相补名单的问法。
         """
         result = self.call("Storage.getCookies", {})
         cookies = result.get("cookies")
@@ -781,6 +784,15 @@ class CDPSession:
         「不分区」和「某个顶层站点下分区」的两块饼干会被误当成一块丢掉。
         只有**两条都失败**才照抛；一条成一条败就用成功那条的名单（老规矩：
         读失败由调用方决定容不容忍）。
+
+        v0.13.44 把并集的理由改准（真机复验，2026-10-04，本机 Edge，headless 起一份
+        一次性资料目录）：往罐里种一块带 ``partitionKey`` 的饼干再读 —— **按地址读**
+        ``Network.getCookies`` 看不见它，而 ``Network.getAllCookies`` 与
+        ``Storage.getCookies`` **两条都看得见**（都回带 ``partitionKey`` 的那一块）。
+        「``Network.getAllCookies`` 不回首分区饼干」这条传闻在本机**没有被证实**；
+        并集留着是因为两条路的名单本来就可能不一样（按地址读受域/路径/Secure 过滤，
+        不同 Chromium 版本对分区饼干的处理也不一致），合起来再加上对账行里的
+        ``存储读=`` 段，下一张截图就能直接看出是哪条路漏。
         """
         merged: list[dict] = []
         seen: set[tuple[str, str, str, str]] = set()
