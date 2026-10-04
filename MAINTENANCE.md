@@ -677,6 +677,25 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.45**（不只看自己接的那一扇窗：自己这只罐里没有 userhash 时挨个问每一扇活窗口的罐；对账行新增「逐窗=」；读饼干出错不再静默）：
+  **一、为什么要改。** 现场（2026-10-04）用 v0.13.44 复现：日志写 ``开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。``，
+  对账行写 ``罐=browser-profile｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜全罐=1｜原始userhash=无｜存储读=PHPSESSID｜合并=PHPSESSID``；
+  而同一张图上带程序横幅（【窗口号 C597】）的那扇窗，F12「应用程序 → Cookie」里躺着三条饼干，其中一条正是 70 字节的 ``userhash``。
+  **二、先把读法这条路排干净（三个探针）。** ①``_scratch/probe_chips_headful.py``（有头 Edge + 一次性资料目录，``Network.setCookie``
+  种一块带 ``partitionKey`` 的饼干再读）：按地址读看不见，而整罐读、存储读、并集**都看得见**；②``_scratch/probe_cross_target.py``
+  （同一个浏览器开两条标签互读）：两条标签读到的名单**完全一致**（``hasCrossSiteAncestor=True`` 的也看得见）；③``_scratch/probe_browser_endpoint.py``
+  （用 ``/json/version`` 的 ``webSocketDebuggerUrl``，即 F12 走的那条浏览器端点）：名单与页面会话**完全相同**。
+  ⇒ 分区饼干 / 标签与上下文 / 只有浏览器端点看得见，这三条假设全部排除；剩下唯一解释是**程序读的那只罐与看着并登录的那扇窗不是同一只**。
+  **教训**：与其继续猜浏览器行为，不如把自己这条路的每种读法逐一证伪 —— 三个探针一共跑了不到十分钟。
+  **三、改法。** ``browser_login.py`` 新增 ``_open_window_session()`` / ``_close_window_session()`` / ``window_jar()`` /
+  ``live_window_jars(profile, *, skip_port, timeout)`` / ``userhash_across_windows(profile, *, skip_port, timeout)``：自己这只罐里没有
+  ``userhash`` 时，按 ``live_browser_dirs`` 找到的每一扇活窗口（读它目录里的 ``DevToolsActivePort``）挨个连上读整罐、只留域含 ``nmbxd`` 的，
+  找到就用；``jar_forensics()`` 多一个 ``windows_tag`` 参数，末尾追加 ``逐窗=``（每扇写端口 + 罐名 + 那一罐的名单）。``gui.py`` 的等待循环
+  在每轮 ``leaf`` 那一刻调入逐窗读，命中的 hint 会点名是哪一扇窗（「在另一扇窗口的罐里找到了 userhash（端口 7002 …）」并提示固定在那扇登录）；
+  读饼干出错第一次就写一行（此前是静默 ``continue``，日志会突然停在某一秒）。
+  **四、测试。** ``tests/test_browser_login.py`` 加 7 条（``_JarWindow`` / ``_live_window`` / ``_site_cookies`` 三个助手，两组 ``window_jar``、
+  ``live_window_jars`` 跳过自己正在读的那扇、三组 ``across_windows``、``jar_forensics`` 的 ``逐窗=``），``tests/test_gui_browser_login.py``
+  加 1 条（另一扇窗找到的 userhash 被认下来并点名）。三套件 **434 passed / 2 skipped**；收集 **1828 项**、本机 **1821 passed / 7 skipped**。
 - **v0.13.44**（把「分区饼干」这件事的说法改准；只改注释与文档，功能一点没动）：
   **一、为什么要改。** v0.13.42 把「``Network.getAllCookies`` 已知不回首分区饼干（CHIPS）」当理由写进了
   ``cdp.py``、``browser_login.py``、使用说明与那张发布说明 —— 那句话是传闻，当时**没有真机证据**。真机复验
