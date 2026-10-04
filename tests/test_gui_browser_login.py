@@ -1233,7 +1233,7 @@ def test_the_wait_extends_itself_while_the_browser_is_still_open(
 def test_the_diagnosis_joins_what_the_program_learned() -> None:
     """失败原因要带上「罐子里有哪些饼干」和「HTTP 那条路的原话」（v0.13.23）。
 
-    用户报问题贴的是运行日志，这两样是「到底卡在哪一步」唯一的书面依据：m30629 那次
+    遇到问题贴的是运行日志，这两样是「到底卡在哪一步」唯一的书面依据：m30629 那次
     日志里只有一句「浏览器窗口已经关掉了，还没取到饼干」，谁也没法查。
     """
     dialog = object.__new__(gui.BrowserLoginDialog)  # 只验拼句子，不开窗口
@@ -1559,7 +1559,7 @@ def test_try_leaf_cookie_http_does_not_connect_while_the_jar_is_empty() -> None:
     """罐里还没有会话饼干（用户一个字都没填）时，一个请求都不该发。
 
     没得试也要留一句书面记录（v0.13.25）：以前这里返回空字符串，于是「这条路没跑」
-    在日志里一个字都不留，用户报「拿不到 userhash」时看不出程序试没试。
+    在日志里一个字都不留，事后看不出程序试没试。
     """
     backend = _HttpLeafBackend([])
     assert gui.BrowserLoginDialog._try_leaf_cookie_http(backend, object()) == (
@@ -1774,7 +1774,7 @@ def test_joined_leaf_notes_only_joins_when_both_have_something_to_say() -> None:
 def test_the_timeout_message_carries_the_diagnosis_too() -> None:
     """等超时那句话要同时带上「试过的几步」和书面诊断（v0.13.24）。
 
-    用户报问题时贴的是运行日志。只写「试过的几步」的话，饼干名单和「走 HTTP 领饼干」
+    遇到问题时贴的是运行日志。只写「试过的几步」的话，饼干名单和「走 HTTP 领饼干」
     那条路的原话就永远进不了日志 —— m31364 那份日志里一条 HTTP 记录都没有，
     看不出那条路到底跑没跑。
     """

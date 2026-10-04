@@ -105,7 +105,7 @@ def test_request_following_jumps_lands_on_the_target_page():
 def test_request_following_jumps_stops_on_a_success_page_whose_href_is_empty():
     """「饼干切换成功!」那页的 ``<a id="href" href="">`` 是空的：跟跳必须就地停住。
 
-    用户报的那张页面（停在「饼干切换成功!」一直跳）就是这条：空 href 一旦被当成
+    出问题的那张页面（停在「饼干切换成功!」一直跳）就是这条：空 href 一旦被当成
     「再去一趟当前地址」，浏览器会原地重载、程序会自己跟着自己转。HTTP 这条路
     必须钉住「空 href = 到头了」。
     """
