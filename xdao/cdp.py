@@ -749,6 +749,23 @@ class CDPSession:
             return []
         return [cookie for cookie in cookies if isinstance(cookie, dict)]
 
+    def read_storage_cookies(self) -> list[dict]:
+        """``Storage.getCookies``：开发者工具「应用程序 → Cookie」面板走的那一族读法（v0.13.42）。
+
+        为什么单开一条：真机 m39918 的截图里，F12 面板明明白白列着 ``userhash``，
+        程序的三条读法（按地址 ``Network.getCookies``、整罐 ``Network.getAllCookies``、
+        页面 ``document.cookie``）却一条都没看见。F12 走的就是 ``Storage`` 这一族，
+        而 ``Network.getAllCookies`` 是**已知不回首分区饼干（CHIPS）**的那条老路：
+        站点给 ``userhash`` 加上 ``Partitioned`` 之后，两条 ``Network`` 读法会一起
+        瞎掉，只有这里问得出来（回的是带 ``partitionKey`` 的那一条）。读失败照抛，
+        容不容忍由调用方决定。
+        """
+        result = self.call("Storage.getCookies", {})
+        cookies = result.get("cookies")
+        if not isinstance(cookies, list):
+            return []
+        return [cookie for cookie in cookies if isinstance(cookie, dict)]
+
     def read_all_cookies(self) -> list[dict]:
         """不按地址过滤，读浏览器 cookie 罐里的全部饼干（v0.13.29 的兜底路）。
 
@@ -756,18 +773,50 @@ class CDPSession:
         Secure 逐个过滤。真机上出现过 F12 的 Application 面板明明列着
         userhash、``getCookies`` 却怎么都不回它的情形（2026-10-02 的四张
         截图：对话框名单里始终没有 userhash，同一个浏览器存储里却有），
-        过滤维度没法定位，所以补这条不过滤的读法：先 ``Network.getAllCookies``，
-        浏览器不认这个命令就退 ``Storage.getCookies``（F12 面板走的就是
-        Storage 这一族）。读失败照抛，容不容忍由调用方决定。
+        过滤维度没法定位，所以补这条不过滤的读法。
+
+        v0.13.42 起这一读是**两条老路的并集**：``Network.getAllCookies`` 加上
+        :meth:`read_storage_cookies`（``Storage.getCookies``）。去重键是
+        （名字、域、路径、**分区键**）—— 分区键必须算进去，否则同一个名字在
+        「不分区」和「某个顶层站点下分区」的两块饼干会被误当成一块丢掉。
+        只有**两条都失败**才照抛；一条成一条败就用成功那条的名单（老规矩：
+        读失败由调用方决定容不容忍）。
         """
-        try:
-            result = self.call("Network.getAllCookies")
-        except CdpError:
-            result = self.call("Storage.getCookies", {})
-        cookies = result.get("cookies")
-        if not isinstance(cookies, list):
-            return []
-        return [cookie for cookie in cookies if isinstance(cookie, dict)]
+        merged: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        first_error: Exception | None = None
+        succeeded = False
+        for method in ("Network.getAllCookies", "Storage.getCookies"):
+            try:
+                if method == "Storage.getCookies":
+                    found = self.read_storage_cookies()
+                else:
+                    result = self.call(method)
+                    cookies = result.get("cookies")
+                    found = (
+                        [cookie for cookie in cookies if isinstance(cookie, dict)]
+                        if isinstance(cookies, list)
+                        else []
+                    )
+                succeeded = True
+            except Exception as exc:  # noqa: BLE001 —— 一条路失败不代表罐读不出来
+                if first_error is None:
+                    first_error = exc
+                continue
+            for cookie in found:
+                key = (
+                    str(cookie.get("name")),
+                    str(cookie.get("domain")),
+                    str(cookie.get("path")),
+                    json.dumps(cookie.get("partitionKey") or "", sort_keys=True),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(cookie)
+        if not succeeded and first_error is not None:
+            raise first_error
+        return merged
 
     def evaluate(self, expression: str, await_promise: bool = False) -> str:
         """在页面里跑一段脚本，把结果当字符串拿回来。

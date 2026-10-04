@@ -669,14 +669,41 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 路线图（尚未实现）
 
-- 无人值守登录（浏览器登录已把这一步缩到只剩验证码）—— **已定论不做**：验证码必须
-  真人认一次，没有可靠的自动化办法（详见下面的备注）。
-  - 备注：实测视觉模型对 X 岛的验证码识别率太低（三张只对一张半），
-    **不要**把基于 OCR / 视觉模型的自动登录写进产品 —— 认错一次就得从头再来，
-    还不如让用户自己点一下浏览器窗口。
+- 目前**没有**排期中的功能。「无人值守登录」已按用户 2026-10-04 的定案**从路线图删掉**：
+  那是定论不做的事，别再列成待办、也别再提议。
+  - 备注（只留这一句，免得后来人重新提议）：验证码必须真人认一次；实测视觉模型对 X 岛的
+    验证码识别率太低（三张只对一张半），**不要**把基于 OCR / 视觉模型的自动登录写进产品 ——
+    认错一次就得从头再来，还不如让用户自己点一下浏览器窗口。
 
 ## 已完成
 
+- **v0.13.42**（读饼干罐多问一条路：``Storage.getCookies`` 从兜底升成必读并集；对账行新增「存储读=」；路线图删掉「无人值守登录」）：
+  **一、并集。** 症状（用户截图 m39918）：同一扇窗的 F12「应用程序 → Cookie」里躺着一条 ``userhash``（大小 70、值
+  ``D-9%1%04%0%2%02%12%…``），程序「读罐对账」却写 ``全罐=2``、``原始userhash=无``。根因：F12 那个面板读的是
+  ``Storage.getCookies``，而浏览器对带 ``Partitioned``（CHIPS）标记的饼干**只交给这一条** —— ``Network.getAllCookies``
+  对它装看不见（已知盲区），``Network.getCookies`` 受地址过滤也看不见，``document.cookie`` 又看不见 HttpOnly 的它，
+  于是三个老读法一起瞎。``cdp.py`` 新增 ``read_storage_cookies()``（``Storage.getCookies``）；``read_all_cookies()``
+  改成 ``Network.getAllCookies`` + ``Storage.getCookies`` 的**并集**，去重键
+  ``(name, domain, path, json.dumps(partitionKey or "", sort_keys=True))``（**分区键必须进键**，否则同名同域同路的两块
+  分区饼干会被合成一块），只有两条都失败才 ``raise first_error``、一条成一条败就用成功那条。``looks_like_userhash``
+  对截图那种百分号编码值本来就放行（只挡长度 <6、空白、``;``、``<>``、成句中文）⇒ 拦路的一直是「读不到」，不是「认不出」。
+  **二、对账段的诊断价值。** ``jar_forensics`` 在 ``原始userhash=`` 之后、``页面JS=`` 之前固定插一段 ``存储读=``
+  （``session.read_storage_cookies()``，失败写 ``存储读=出错（{类型}）``）：「存储读= 有、整罐读= 没有」= 分区饼干那条
+  盲区（本版已补）；两边都没有 = 读错了罐，该去查同一行的 ``接=端口…`` 与窗口横幅末尾的【窗口号】。仍然只报名字与属性，
+  值一个字符都不写进日志。
+  **三、路线图。** 按用户 2026-10-04 的定案，把「无人值守登录」从 ``HANDOFF.md`` 第八节与本文件「路线图（尚未实现）」里
+  **删掉**，只留一句「已定论不做、别再提议」的备注（验证码必须真人认一次；视觉模型识别率太低），不再列成待办。
+  **实测与测试**：``_scratch/probe_cookie_contexts.py``（只读探针，结果 ``probe_cookie_contexts_result.json``）跑的时候
+  没有活窗（``DevToolsActivePort`` 停在 60105、``_profile_in_use=False``），自家持久罐
+  ``%APPDATA%\xdao-export\browser-profile\Default\Network\Cookies`` **0 行**、``nmbxd名单=[]`` ⇒ 那扇窗的饼干全是
+  内存里的会话饼干，盘上没有可比对的物证；所以**本版以单元测试与对账行结构为准**，等用户下次登录后那张截图确认。
+  测试：``test_browser_login.py`` 296 → **302**（新增 6 条：并集、单边失败、两边都失败、两块分区饼干不合并、
+  只在 ``Storage`` 里的 userhash 能被认出来、对账行的 ``存储读=`` 段），全量 1814 → **1820 项**（本机 1813 通过、7 项跳过）。
+  教训：①``tests/test_gui_browser_login.py`` 有一条**替身契约**用例
+  （``test_fake_session_covers_every_method_the_library_calls_on_a_session``）—— 库里往会话上多调一个方法它就会红，
+  给 ``_FakeSession`` 补 ``read_storage_cookies()`` 与 ``storage_cookies`` 即可；②别给替身的 ``read_all_cookies`` 起
+  「并集」之后再断言 ``storage_cookie_reads`` 之类的计数（替身内部就并了，只有真会话会分两次调用）；
+  ③探针拼盘库路径别漏循环变量（要写 ``root/sub/Network/Cookies``，漏了 sub 就只看自家罐）。
 - **v0.13.41**（反复起不来的持久资料目录自己改名让位；收尾前先问端口，不再动还开着的窗）：
   目标项②（goal round m39679）＋真机验证项③。两件事：
   **一、死资料目录让位。** 用户那份持久的 ``browser-profile`` 里存着他的登录状态，所以一直是被保护对象 —— 但也因此，

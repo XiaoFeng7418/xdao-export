@@ -2414,6 +2414,11 @@ def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> l
     一个浏览器的 F12 Application 面板里却一直有），过滤维度定位不出来，那就干脆把
     不过滤的那一读也问一遍。整罐读失败不拖累主路，只用按地址那一读的结果。
 
+    v0.13.42 起整罐那一读本身是 ``Network.getAllCookies`` 与 ``Storage.getCookies``
+    的并集（:meth:`CDPSession.read_all_cookies`）：F12「应用程序 → Cookie」面板读的
+    是 ``Storage`` 那一族，而 ``Network.getAllCookies`` 已知不回首分区饼干（CHIPS）
+    —— 真机 m39918 里「F12 有 ``userhash``、四读合并却说没有」正是这个形状。
+
     按地址那一读读不到就**抛**（v0.13.23）：以前这里把异常吞成空列表，界面层于是把
     「读不出来」和「罐里没登录」当成同一件事 —— 真机上表现为 HTTP 那条路一声不响地
     被跳过，用户截图里只剩 CDP 那句「还没登录」，查无可查（m30629）。现在调用方会把
@@ -2540,6 +2545,14 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "", link_tag: str = "") 
     却写 页=1 只有登录页 —— 用户和程序各看着一扇窗，两个罐永远对不上）：报程序
     此刻**接的是哪一扇**（调试端口）。端口号是 CDPSession 自己不知道的（它只知道
     WebSocket 地址），所以由调用方传：``link_tag`` 空就不写这段。
+
+    v0.13.42 补一段 ``存储读=``（真机 m39918 的僵局：同一扇窗的 F12「应用程序 →
+    Cookie」里躺着一条 ``userh…``（70 字节），对账行却写 全罐=2、原始userhash=无）。
+    F12 面板读的是 ``Storage.getCookies``，而 ``Network.getAllCookies`` 已知**不回首
+    分区饼干（CHIPS）**；此前 ``Storage`` 那条只在 ``Network`` 报错时才当兜底问一次，
+    于是「两条 Network 读法一起瞎」的现场无迹可查。现在 ``整罐读=`` 与 ``全罐=`` 报的
+    是两条路的并集，``存储读=`` 单列 ``Storage`` 自己看见的名单 —— 下一张截图就能分清
+    「Storage 有、Network 没有」（分区饼干）还是「两边都没有」（读错了罐）。
     """
     parts: list[str] = []
     try:
@@ -2604,6 +2617,15 @@ def jar_forensics(session: "CDPSession", jar_tag: str = "", link_tag: str = "") 
                 for item in leaves[:3]
             )
             parts.append(f"原始userhash={len(leaves)}块（{desc}）")
+    try:
+        stored = [
+            item
+            for item in (session.read_storage_cookies() or [])
+            if isinstance(item, dict)
+        ]
+        parts.append(f"存储读={summarize_cookies(stored) or '空'}")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"存储读=出错（{type(exc).__name__}）")
     try:
         parts.append(f"页面JS={summarize_cookies(read_page_document_cookies(session)) or '空'}")
     except Exception as exc:  # noqa: BLE001

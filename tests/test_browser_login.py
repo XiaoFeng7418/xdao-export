@@ -3223,6 +3223,13 @@ class _ScriptedSession:
         self.all_cookies: list[dict] = []
         self.read_all_error: Exception | None = None
         self.all_cookie_reads: int = 0
+        # v0.13.42：``Storage.getCookies``（F12 面板那一族读法）的替身答案。
+        # 真会话里 ``read_all_cookies`` 已经是它和 ``Network.getAllCookies`` 的并集，
+        # 替身也照办 —— 分区饼干（CHIPS）只在 ``Storage`` 那一读里出现，替身要是
+        # 不并，新用例就演不出真机的形状。
+        self.storage_cookies: list[dict] = []
+        self.read_storage_error: Exception | None = None
+        self.storage_cookie_reads: int = 0
         # v0.13.30：页面内 fetch 与浏览器自报 UA 的替身答案。
         # ``fetch_pages`` 是「地址 → fetch 响应」；没登记的地址 raise —— 真机上对应
         # 「这一页 fetch 根本没送出去」（CSP、换文档），让 _fetch_in_page 吞成 None。
@@ -3253,7 +3260,36 @@ class _ScriptedSession:
         self.all_cookie_reads += 1
         if self.read_all_error is not None:
             raise self.read_all_error
-        return list(self.all_cookies)
+        # v0.13.42：真会话这里是 Network 与 Storage 两条路的并集（分区键进去重键），
+        # 替身照办 —— 只想演「两条路都瞎」的用例就把 read_all_error 挂上。
+        merged = list(self.all_cookies)
+        seen = {
+            (
+                str(item.get("name")),
+                str(item.get("domain")),
+                str(item.get("path")),
+                json.dumps(item.get("partitionKey") or "", sort_keys=True),
+            )
+            for item in merged
+        }
+        for item in self.storage_cookies:
+            key = (
+                str(item.get("name")),
+                str(item.get("domain")),
+                str(item.get("path")),
+                json.dumps(item.get("partitionKey") or "", sort_keys=True),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
+
+    def read_storage_cookies(self) -> list[dict]:
+        self.storage_cookie_reads += 1
+        if self.read_storage_error is not None:
+            raise self.read_storage_error
+        return list(self.storage_cookies)
 
     def list_page_targets(self) -> list[dict]:
         # v0.13.36：默认「就现在这一页」；想看多标签的用例自己填 page_targets。
@@ -3735,6 +3771,133 @@ def test_read_site_cookies_survives_a_broken_whole_jar_read() -> None:
     session.read_all_error = bl.CdpError("浏览器不认 getAllCookies")
     cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
     assert [item["name"] for item in cookies] == ["PHPSESSID"]
+
+
+def _unconnected_session(answers: dict) -> tuple["cdp.CDPSession", list[str]]:
+    """造一条**没连过**的 CDPSession（构造函数只存参数），把 ``call`` 换成查表。"""
+    session = cdp.CDPSession("ws://127.0.0.1:1/devtools/page/probe")
+    asked: list[str] = []
+
+    def fake_call(method: str, params: dict | None = None, timeout: float = 15.0) -> dict:
+        asked.append(method)
+        answer = answers[method]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    session.call = fake_call  # type: ignore[method-assign]
+    return session, asked
+
+
+def _partitioned_userhash(value: str = "D-9691%04%02abc", top: str = "https://www.nmbxd1.com") -> dict:
+    return {
+        "name": "userhash",
+        "value": value,
+        "domain": ".nmbxd1.com",
+        "path": "/",
+        "secure": True,
+        "partitionKey": {"topLevelSite": top},
+    }
+
+
+def test_read_all_cookies_merges_the_storage_read_for_partitioned_cookies() -> None:
+    """v0.13.42：``Network.getAllCookies`` 不回首分区饼干，``Storage`` 那一读是 F12 的路。
+
+    真机 m39918：同一扇窗的 F12「应用程序 → Cookie」里躺着 ``userh…``（70 字节），
+    对账行却写 ``全罐=2``、``原始userhash=无``。F12 面板读的是 ``Storage.getCookies``，
+    而 ``Network.getAllCookies`` 对带 ``Partitioned``（CHIPS）的饼干历来不回首 ——
+    两条 ``Network`` 读法一起瞎，第四读 ``document.cookie`` 也看不见 HttpOnly 的它。
+    现在两读并起来，去重键带上分区键。
+    """
+    shared = {"name": "PHPSESSID", "value": "S", "domain": ".nmbxd1.com", "path": "/"}
+    member = {"name": "memberUserspapapa", "value": "M", "domain": ".nmbxd1.com", "path": "/"}
+    session, asked = _unconnected_session(
+        {
+            "Network.getAllCookies": {"cookies": [shared, member]},
+            "Storage.getCookies": {"cookies": [dict(shared), _partitioned_userhash()]},
+        }
+    )
+    merged = session.read_all_cookies()
+    assert asked == ["Network.getAllCookies", "Storage.getCookies"], "两条老路都要问"
+    assert [item["name"] for item in merged] == ["PHPSESSID", "memberUserspapapa", "userhash"]
+    assert bl.userhash_from_cookies(merged) == "D-9691%04%02abc"
+
+
+def test_read_all_cookies_keeps_the_surviving_read_when_one_side_fails() -> None:
+    """一条路报错、另一条有货：用有货那条（老规矩，容不容忍由调用方决定）。"""
+    session, asked = _unconnected_session(
+        {
+            "Network.getAllCookies": cdp.CdpError("浏览器不认 getAllCookies"),
+            "Storage.getCookies": {"cookies": [_partitioned_userhash("ABCDEF12")]},
+        }
+    )
+    assert [item["name"] for item in session.read_all_cookies()] == ["userhash"]
+    assert asked == ["Network.getAllCookies", "Storage.getCookies"]
+
+
+def test_read_all_cookies_raises_only_when_both_reads_fail() -> None:
+    """两条路都失败才照抛（第一条的错误原样带出来，调用方一眼看出是什么命令）。"""
+    session, _ = _unconnected_session(
+        {
+            "Network.getAllCookies": cdp.CdpError("认不得这个命令"),
+            "Storage.getCookies": cdp.CdpError("这条也认不得"),
+        }
+    )
+    with pytest.raises(cdp.CdpError, match="认不得这个命令"):
+        session.read_all_cookies()
+
+
+def test_read_all_cookies_keeps_two_partitions_of_one_name_apart() -> None:
+    """去重键必须带分区键：同名同域同路的两块分区饼干不能当成一块丢掉。"""
+    session, _ = _unconnected_session(
+        {
+            "Network.getAllCookies": {"cookies": []},
+            "Storage.getCookies": {
+                "cookies": [
+                    _partitioned_userhash("AAAA1111", "https://a.example"),
+                    _partitioned_userhash("BBBB2222", "https://b.example"),
+                ]
+            },
+        }
+    )
+    assert len(session.read_all_cookies()) == 2
+
+
+def test_read_site_cookies_takes_a_userhash_only_the_storage_read_sees() -> None:
+    """v0.13.42 的整条链：只在 ``Storage.getCookies`` 里的 userhash 照样进合并罐、被认出来。
+
+    真机 m39918 的形状就是「F12 有、三条老读法全无」——F12 走的就是 Storage 这一族。
+    """
+    session = _ScriptedSession(
+        cookies=[], url=bl.COOKIE_SITE + "/Member/User/Cookie/index.html"
+    )
+    session.storage_cookies = [_partitioned_userhash()]
+    cookies = bl.read_site_cookies(session)  # type: ignore[arg-type]
+    assert [item["name"] for item in cookies] == ["userhash"]
+    assert bl.read_userhash_cookie(session) == "D-9691%04%02abc"  # type: ignore[arg-type]
+
+
+def test_jar_forensics_names_the_storage_read_apart_from_the_network_one() -> None:
+    """对账行的 ``存储读=`` 段（v0.13.42）：下一张截图就能分清漏在哪条路。
+
+    ``Storage`` 有、``Network`` 没有 = 分区饼干那条已知盲区；两边都没有 = 读错了罐，
+    该去查「程序接的是哪扇窗」。照样只报名字与属性，值一个字符都不写。
+    """
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    session.all_cookies = [
+        {"name": "PHPSESSID", "value": "S1", "domain": ".nmbxd1.com", "path": "/"}
+    ]
+    session.storage_cookies = [
+        {"name": "PHPSESSID", "value": "S1", "domain": ".nmbxd1.com", "path": "/"},
+        _partitioned_userhash("STORAGE-SECRET"),
+    ]
+    line = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert "整罐读=PHPSESSID、userhash" in line, line
+    assert "存储读=PHPSESSID、userhash" in line, line
+    assert "全罐=2" in line, line
+    assert "原始userhash=1块（域=.nmbxd1.com路=/分区）" in line, line
+    assert "合并=" in line and "userhash" in line.split("合并=")[1], line
+    assert "STORAGE-SECRET" not in line
 
 
 def test_read_userhash_cookie_finds_a_userhash_only_the_whole_jar_sees() -> None:
