@@ -1444,9 +1444,13 @@ class BrowserLoginDialog(tk.Toplevel):
         stale_tag = ""  # 有端口文件却问不进去的自家目录名（v0.13.46）
         procs_tag = ""  # 命令行里正拿着这只罐的浏览器进程数（v0.13.46）
         contexts_tag = ""  # 同一只浏览器里**别的罐**（浏览器上下文）的名字（v0.13.47）
+        pages_tag = ""  # 同一只浏览器里每个页面标签各在哪份罐里（v0.13.48）
         # 对账行里标的「罐」= 这次真正在用的资料目录名（v0.13.35）：接了旧窗就写旧窗的
         # 目录，新开就写临时目录 —— 「F12 有、程序没有」到底是两扇窗还是一扇窗，靠它对上。
         jar_tag = Path(str(getattr(browser, "used_profile", "") or "")).name
+        # v0.13.48：光有目录名分不出「配置目录下的常驻罐」和「%TEMP% 里的一次性罐」
+        # （两个都可能叫 browser-profile），完整路径才是唯一对得上的证据。
+        jar_path = str(getattr(browser, "used_profile", "") or "")
         # 对账行里的「接」= 程序此刻对话的是哪一扇（v0.13.37）：真机 m38110 的僵局
         # ——用户那扇窗硬刷新都不弹回（窗里有真饼干），程序却只看见登录页一签。
         # 端口号一亮出来，「两扇窗、两个罐」当场定案，不用再猜程序读没读瞎。
@@ -1550,6 +1554,26 @@ class BrowserLoginDialog(tk.Toplevel):
                                 if note not in leaf_hints:
                                     leaf_hints.append(note)
                                 self._queue.put(("hint", note))
+                    # v0.13.48：``页=`` 只数得出「几扇」（读的是 HTTP 的标签清单），
+                    # 数不出「每扇挂在哪个浏览器上下文里」。真机 m41779 的形状正是
+                    # 「程序读的那扇（login.html、罐里只有 PHPSESSID）和用户眼前那扇
+                    # （已登录的 index.html）对不上，而 页=1」—— 目标表（含各自的
+                    # browserContextId）是唯一能把这件事摆出来的证据，写进「窗口=」段。
+                    pages_tag = ""
+                    if not value:
+                        list_pages = getattr(backend, "browser_page_targets", None)
+                        describe_pages = getattr(backend, "describe_page_targets", None)
+                        pages_ws = str(getattr(browser, "browser_ws_url", "") or "")
+                        if (
+                            callable(list_pages)
+                            and callable(describe_pages)
+                            and pages_ws
+                        ):
+                            try:
+                                rows = list_pages(pages_ws)
+                                pages_tag = "；".join(describe_pages(rows))
+                            except Exception:  # noqa: BLE001 —— 只是补一行证据
+                                pages_tag = ""
                     # v0.13.46：把「另一扇窗」剩下的两种形状也写进对账行 —— 真机 m40810
                     # 的僵局是「同一只罐一条也读不到」，而「逐窗=」一句都没有，看不出到底
                     # 是没别的窗、还是这一手没跑：
@@ -1561,6 +1585,8 @@ class BrowserLoginDialog(tk.Toplevel):
                     # 两问都要真去问系统（一个挨个探端口、一个起 powershell），所以和
                     # 「领饼干」那一步一样按时间节流：BROWSER_PROCS_SECONDS 刷新一次，
                     # 中间的轮次沿用上一次的结果 —— 别让它们拖着 1.5 秒一轮的等待循环。
+                    # v0.13.48：数出来是 0 也要写（``同罐进程=0``）—— 「这一段缺席」和
+                    # 「查了、就一只」过去长得一样，用户贴出来的日志里读不出差别。
                     if jar_profile is not None and leaf_now >= next_procs:
                         next_procs = leaf_now + BROWSER_PROCS_SECONDS
                         stale_probe = getattr(backend, "stale_window_dirs", None)
@@ -1576,7 +1602,7 @@ class BrowserLoginDialog(tk.Toplevel):
                                 pids = [int(pid) for pid in pids_probe(jar_profile)]
                             except Exception:  # noqa: BLE001 —— 只是补一行证据
                                 pids = []
-                            procs_tag = str(len(pids)) if pids else ""
+                            procs_tag = str(len(pids))
                     # v0.13.23：这一步**不导航**用户的标签页 —— 只读页面状态和饼干罐。
                     # 站点那边「应用」是跳转式的，程序一导航，用户眼前那个标签页就会被
                     # 留在站点自己的「饼干切换成功!」倒计时页上原地重载，看起来就是
@@ -1642,13 +1668,15 @@ class BrowserLoginDialog(tk.Toplevel):
                                         stale_tag=stale_tag,
                                         procs_tag=procs_tag,
                                         contexts_tag=contexts_tag,
+                                        pages_tag=pages_tag,
+                                        jar_path=jar_path,
                                     )
                                     or ""
                                 )
                             except TypeError:
                                 # backend 是旧模块（`jar_forensics` 还不收 `windows_tag` /
-                                # `stale_tag` / `procs_tag` / `contexts_tag`）：退回来只报
-                                # 原来那几段，别让对账把登录带崩。
+                                # `stale_tag` / `procs_tag` / `contexts_tag` / `pages_tag` /
+                                # `jar_path`）：退回来只报原来那几段，别让对账把登录带崩。
                                 line = str(
                                     forensics(session, jar_tag=jar_tag, link_tag=link_tag) or ""
                                 )
@@ -1758,13 +1786,27 @@ class BrowserLoginDialog(tk.Toplevel):
                 except Exception:  # noqa: BLE001 —— 地址列不出来就只报别的几路
                     urls = []
                 try:
-                    data = dump_jar(
-                        session,
-                        page_urls=urls,
-                        browser_ws_url=str(
-                            getattr(browser, "browser_ws_url", "") or ""
-                        ),
-                    )
+                    try:
+                        # v0.13.48：详单里还抄两样 —— 这次真正在用的资料目录**完整路径**
+                        # （光有目录名分不出常驻罐还是一次性罐），以及浏览器里每个目标的
+                        # 原始信息（含各自的 browserContextId）。旧 backend 不收这两个
+                        # 参数时退回来照旧落盘，别让一份诊断把登录带崩。
+                        data = dump_jar(
+                            session,
+                            page_urls=urls,
+                            browser_ws_url=str(
+                                getattr(browser, "browser_ws_url", "") or ""
+                            ),
+                            profile_path=jar_path,
+                        )
+                    except TypeError:
+                        data = dump_jar(
+                            session,
+                            page_urls=urls,
+                            browser_ws_url=str(
+                                getattr(browser, "browser_ws_url", "") or ""
+                            ),
+                        )
                     dump_path = write_dump(data, stamp=stamp)
                 except Exception:  # noqa: BLE001 —— 落盘失败不许误事
                     dump_path = None

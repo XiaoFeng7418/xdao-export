@@ -677,6 +677,50 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.48**（补齐「到底是哪一扇、哪一只罐」这两件事的证据：「窗口=」「罐路径=」两段新证据、「同罐进程=」数出 0 也照写、上下文名单改成两处并起来）：
+  **一、为什么还要再加一段。** v0.13.47 上线后用户第二次真机复验（2026-10-04 m41778/m41779）仍然读不到，
+  这一轮的日志精确内容是这样的：``读罐对账：挂=https://www.nmbxd1.com/Member/User/Index/login.html｜页=1
+  （https://www.nmbxd1.com/Member/User/Index/login.html）｜接=端口61823｜罐=browser-profile｜按地址读=PHPSESSID｜
+  整罐读=PHPSESSID｜全罐=1｜原始userhash=无｜存储读=PHPSESSID｜页面JS=PHPSESSID｜合并=PHPSESSID｜
+  逐窗=没有别的活窗口｜哑窗=browser-profile`` —— **既没有 ``别路=``，也没有 ``同罐进程=``**（后者只在 >1 时才写）。
+  而同一张截图里：挂着程序横条的窗（【窗口号 DC21 · 端口61823】，顶上还有冻结版才补的 ``--no-sandbox`` 警告条，
+  说明确实是程序起的）标签是「首页 - User System - X岛提示板」、地址是 ``…/Member/User/Index/index.html``
+  （**已登录**），F12 → 应用程序 → Cookie 里三条（``mem…``／``PHP…``／``userh…`` = 70 字节
+  ``D-%91%04%02%12%F8%8E%9F%3B%25%A4%B0%D6pk%8Fa%E9%C5%C9%2B%16%D8``）。
+  **矛盾点：同一个端口上，程序读的页面是 login.html（罐里只有 PHPSESSID），用户眼前那扇是已登录的 index.html，
+  而 ``页=1``。** 这一版不去猜，先把「怎么把这件事写清楚」做掉。
+  **二、三只新探针（都在 ``_scratch/``，结论都落成 json）。** ①``probe_incognito_contexts.py``：
+  ``msedge.exe --headless=new --incognito …`` 起浏览器后，``Target.getBrowserContexts`` 回的是 **``[]``**
+  —— 用户自己开的无痕窗**根本不在那份名单里**（v0.13.47 的 ``别路=`` 就是在这里空的），而页面目标身上明明挂着
+  ``browserContextId=2199AF8D…``；``Storage.getCookies`` 带这个 id 读得成。**上下文 id 只能从目标身上捞。**
+  同一只探针还钉下：浏览器级连接上 ``Network.getAllCookies`` 不可用（``CdpError: 'Network.getAllCookies' wasn't found``）。
+  ②``probe_json_list_contexts.py``：``Target.createBrowserContext`` 造出来的第二份罐里的页面，HTTP ``/json/list``
+  **列得出**（3 项全过）⇒ 「页=」这一手本身不瞎，瞎的是它数不出「各在哪份罐」。③沿用 ``probe_context_jars.py``（11 项全过）。
+  **三、改法。** ``xdao/cdp.py``：新增模块级 ``_context_ids_of()`` / ``_context_ids_of_targets()``；
+  ``CDPSession.browser_context_ids()`` 改成把 ``Target.getBrowserContexts`` 与 ``Target.getTargets`` 的
+  ``browserContextId`` **并起来**（各自 try/except，**两问都败才 re-raise 第一个异常**，按出现顺序去重）
+  —— 单靠前者会漏掉用户自己开的无痕窗。``xdao/browser_login.py``：新增 ``browser_page_targets(browser_ws_url, *, timeout=…)``
+  （``_browser_endpoint()`` 换端点 → 浏览器级会话 → ``Target.getTargets``，只留 ``type == "page"``，
+  返回 ``[{"url","context","targetId","ws"}]``；空地址／换不出端点／连不上／问不出来一律回 ``[]``，绝不抛）、
+  ``describe_page_targets(rows)``（写成 ``第1扇（默认）https://…`` / ``第2扇（上下文3f2a1b）https://…``，
+  上下文只取前 6 位、地址截 60 字）；``jar_forensics()`` 多收 ``pages_tag`` / ``jar_path``，末尾追加
+  ``窗口=…`` 与 ``罐路径=…``（都只在非空时写）；``jar_dump()`` 多收 ``profile_path``，字典多两键 ``罐路径`` 与 ``目标``。
+  ``xdao/gui.py``：``jar_path = str(getattr(browser, "used_profile", "") or "")``、``pages_tag`` 初值，
+  领饼干块里 ``别路=`` 之后补算 ``窗口=``；``procs_tag`` 由「空表就不写」改成 **``str(len(pids))``**（数出 0 也写）；
+  ``forensics(...)`` 追加两个新参数；超时落盘的 ``dump_jar(...)`` 先试 ``profile_path=``、``except TypeError`` 退回老调用
+  （与 ``forensics`` / ``write_jar_dump`` 同一套「旧 backend 兜底」写法）。
+  **四、三条机械教训。** ①``Target.getBrowserContexts`` **不是**「浏览器里所有上下文」的名单 —— 无痕窗不在里面，
+  名单必须从目标身上再捞一遍（探针实测，见上）；这条写进 ``browser_context_ids()`` 的 docstring，别再退回去。
+  ②测试替身要跟上：``tests/test_gui_browser_login.py`` 的 autouse fixture ``no_real_live_windows_for_dialog``
+  必须把 ``browser_page_targets`` 也钉成空表（与 ``userhash_across_contexts`` 同一个理由：替身那扇连不上，
+  只会白等一个超时；``describe_page_targets`` 是纯函数，留着真跑）；``tests/test_browser_login.py`` 的 ``_JarWindow``
+  没有 ``call``，所以 ``browser_page_targets`` 在它上面会 ``AttributeError`` → 被内部 ``except`` 吞成 ``[]``（符合预期）。
+  ③「数出 0 也写」这类改法要连带改用例的期望：老用例断言的是「查不到就不写这一段」，新语义下 0 必须出现
+  （``同罐进程=0``），而「真查不到」只由 backend 没有这个方法表达。
+  **五、测试。** ``tests/test_browser_login.py`` 加 7 条（``_ContextSession`` 假会话的两问；上下文名单并集与去重；
+  一问成一问败／两问都败；``browser_page_targets`` 取数与「问不出来一律回空表」；``describe_page_targets`` 的写法；
+  ``jar_forensics`` 的 ``窗口=``／``罐路径=``；``jar_dump`` 的 ``罐路径``／``目标``），``tests/test_gui_browser_login.py``
+  加 2 条（对账行带上窗口与罐路径、数出 0 也写）。收集 **1856 项**、本机 **1849 passed / 7 skipped**。
 - **v0.13.47**（去问同一只浏览器里**别的罐**：连浏览器端点按浏览器上下文逐份读；对账行多一段「别路=」；超时那一刻落盘一份「读罐详单」）：
   **一、为什么换方向。** v0.13.42～v0.13.46 五版都卡在同一张现场（2026-10-04 m41248/m41249）：同一扇挂着程序横条
   （【窗口号 486A · 端口59715】）、**同一个端口**的窗，F12 里 159 秒时出现了 70 字节的 ``userh…``

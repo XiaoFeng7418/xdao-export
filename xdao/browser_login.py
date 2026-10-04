@@ -2450,6 +2450,73 @@ def browser_level_jars(
     return jars
 
 
+def browser_page_targets(
+    browser_ws_url: str,
+    *,
+    timeout: float = WINDOW_PROBE_TIMEOUT,
+) -> list[dict]:
+    """同一只浏览器里有哪些**页面标签**、各在哪份罐里（v0.13.48）。
+
+    为什么单开这一手：``页=`` 只数得出「几扇」（那一手读的是 HTTP ``/json/list``），
+    数不出「每扇挂在哪个浏览器上下文里」。真机 m41779 的形状正是「程序读的那扇
+    （login.html、罐里只有 PHPSESSID）和用户眼前那扇（已登录的 index.html）对不上，
+    而且 ``页=1``」—— 页面**各有几份罐**这件事只有浏览器的 ``Target.getTargets``
+    答得出来（``Target.getBrowserContexts`` 连无痕窗都不列，见
+    :meth:`CDPSession.browser_context_ids`）。
+
+    返回 ``[{"url": …, "context": …, "targetId": …, "ws": …}]``；给的地址不必是浏览器
+    端点（:func:`_browser_endpoint` 会换）。问不出来回空表，绝不往外抛。
+    """
+    if not browser_ws_url:
+        return []
+    endpoint = _browser_endpoint(browser_ws_url, timeout)
+    if not endpoint:
+        return []
+    session = _open_window_session(endpoint, timeout, browser_level=True)
+    if session is None:
+        return []
+    rows: list[dict] = []
+    try:
+        try:
+            info = session.call("Target.getTargets", {})
+        except Exception:  # noqa: BLE001 —— 问不出来就当「这一手没跑」
+            return []
+        raw = info.get("targetInfos") if isinstance(info, dict) else None
+        for item in raw if isinstance(raw, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "") != "page":
+                continue
+            rows.append(
+                {
+                    "url": str(item.get("url") or ""),
+                    "context": str(item.get("browserContextId") or ""),
+                    "targetId": str(item.get("targetId") or ""),
+                    "ws": str(item.get("webSocketDebuggerUrl") or ""),
+                }
+            )
+    finally:
+        _close_window_session(session)
+    return rows
+
+
+def describe_page_targets(rows: list[dict]) -> list[str]:
+    """把 :func:`browser_page_targets` 的结果写成对账行 ``窗口=`` 那一段的一句句（v0.13.48）。
+
+    每条形如 ``第1扇（默认）https://…`` / ``第2扇（上下文3f2a1b）https://…``：地址截 60 字，
+    上下文只写前 6 位（和 ``别路=`` 的叫法一致，对得上号）。地址不是秘密，可以进日志。
+    """
+    notes: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        context = str(row.get("context") or "")
+        where = f"上下文{context[:6]}" if context else "默认"
+        url = str(row.get("url") or "").strip() or "空"
+        notes.append(f"第{index}扇（{where}）{url[:60]}")
+    return notes
+
+
 def userhash_across_contexts(
     browser_ws_url: str,
     *,
@@ -2483,6 +2550,7 @@ def jar_dump(
     *,
     page_urls: list[str] | None = None,
     browser_ws_url: str = "",
+    profile_path: str = "",
     timeout: float = WINDOW_PROBE_TIMEOUT,
 ) -> dict:
     """把「这一刻程序到底读到了什么」原样抄成一份可以拿去比对的数据（v0.13.47）。
@@ -2494,6 +2562,13 @@ def jar_dump(
     ``partitionKey``、``browserContextId`` 等全部字段）都抄下来，读不出来的字段写
     出错原因，然后由 :func:`write_jar_dump` 落盘。
 
+    v0.13.48 多抄两样（真机 m41779 的怀疑：程序读的那扇页面 ≠ 用户眼前那扇，而
+    目录名又分不出「常驻罐」还是「一次性罐」）：
+
+    * ``罐路径``（``profile_path``）：这次真正在用的资料目录**完整路径**；
+    * ``目标``：浏览器里每个目标的原始 ``targetInfos``（含 ``type`` / ``url`` /
+      ``browserContextId``）—— 「同一扇窗、两份罐、各自读得到什么」逐字段对账要靠它。
+
     里面**有饼干值**（会话凭据），只写在本机临时目录、只在等超时那一刻写一次，
     内容仅用于诊断；函数本身只组装数据，不落盘。
     """
@@ -2504,6 +2579,8 @@ def jar_dump(
         "整罐读": None,
         "页面JS": None,
         "浏览器级": [],
+        "罐路径": str(profile_path or ""),
+        "目标": [],
     }
     urls = list(page_urls or [])
     try:
@@ -2523,6 +2600,18 @@ def jar_dump(
     for label, jar in browser_level_jars(browser_ws_url, timeout=timeout):
         rows.append({"罐": label, "饼干": jar})
     dump["浏览器级"] = rows
+    # v0.13.48：浏览器里每个目标的原始信息（含 browserContextId）—— 「页=1 却有两扇
+    # 窗」这种矛盾，只有把目标表原样抄下来才定得了案（见 browser_page_targets）。
+    targets: list[dict] = []
+    for row in browser_page_targets(browser_ws_url, timeout=timeout):
+        targets.append(
+            {
+                "地址": row.get("url", ""),
+                "上下文": row.get("context", ""),
+                "目标": row.get("targetId", ""),
+            }
+        )
+    dump["目标"] = targets
     return dump
 
 
@@ -2937,6 +3026,8 @@ def jar_forensics(
     stale_tag: str = "",
     procs_tag: str = "",
     contexts_tag: str = "",
+    pages_tag: str = "",
+    jar_path: str = "",
 ) -> str:
     """「读罐对账」一行：挂着哪页、读的是哪份罐、四路各自看见哪些**名字**（v0.13.34）。
 
@@ -3003,6 +3094,17 @@ def jar_forensics(
     的别的上下文。``contexts_tag`` 由调用方用 :func:`userhash_across_contexts` 取：
     只写**默认之外**的罐（默认那份就是上面四路的读数，重复一遍只是噪音），
     一份额外的罐都没有就不写这段。
+
+    v0.13.48 补两段（真机 m41778/m41779：v0.13.47 那轮的对账行里既没有 ``别路=``
+    也没有 ``同罐进程=``，而用户截图里同一扇窗的 F12 明明有三条饼干含 userhash ——
+    「程序读的那一扇/那一份罐 ≠ 用户登录的那一扇/那一份罐」这个猜测还是定不了案）：
+
+    * ``窗口=``（``pages_tag``）：同一只浏览器里**每个页面标签**的地址与所属上下文
+      （由调用方用 :func:`browser_page_targets` 取）。``页=`` 只数得出「几扇」，
+      数不出「各在哪份罐里」—— 用户开着无痕窗时这两件事必须并排看；
+    * ``罐路径=``（``jar_path``）：这份资料目录的**完整路径**。只写目录名分不出
+      「配置目录下的常驻罐」与「%TEMP% 里的一次性罐」——而真机上这两个名字可能
+      长得一样（都叫 ``browser-profile``），文件系统里的位置才是唯一的证据。
     """
     parts: list[str] = []
     try:
@@ -3095,6 +3197,12 @@ def jar_forensics(
     contexts = str(contexts_tag or "").strip()
     if contexts:
         parts.append(f"别路={contexts[:200]}")
+    pages = str(pages_tag or "").strip()
+    if pages:
+        parts.append(f"窗口={pages[:200]}")
+    path = str(jar_path or "").strip()
+    if path:
+        parts.append(f"罐路径={path[:160]}")
     return "｜".join(parts)
 
 

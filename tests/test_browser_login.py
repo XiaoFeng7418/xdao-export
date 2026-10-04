@@ -1858,6 +1858,225 @@ def test_write_jar_dump_writes_a_readable_file() -> None:
         odd.unlink(missing_ok=True)
 
 
+class _ContextSession:
+    """只答上下文那两问的假会话（v0.13.48）。
+
+    ``Target.getBrowserContexts`` 与 ``Target.getTargets``：哪一问给的是异常对象就
+    让那一问抛出来 —— 用例要钉的正是「一问成一问败」时怎么办。
+    """
+
+    def __init__(self, contexts: object, targets: object) -> None:
+        self._answers = {
+            "Target.getBrowserContexts": contexts,
+            "Target.getTargets": targets,
+        }
+        self.asked: list[str] = []
+
+    def call(self, method: str, params: object = None) -> object:
+        self.asked.append(method)
+        answer = self._answers.get(method)
+        if isinstance(answer, BaseException):
+            raise answer
+        return {} if answer is None else answer
+
+
+def test_browser_context_ids_reads_the_ids_off_the_targets_too() -> None:
+    """上下文名单要从**两处**并起来（v0.13.48）：无痕窗那份罐只挂在目标身上。
+
+    本机探针 ``probe_incognito_contexts.py`` 实测：``msedge.exe --incognito`` 起浏览器时
+    ``Target.getBrowserContexts`` 回的是 ``[]``，而那个页面目标身上明明挂着
+    ``browserContextId=2199AF8D…``。少了目标这一问，用户在无痕窗里登录挣来的
+    userhash 一辈子读不到 —— v0.13.47 的「别路=」就是在这里空的。
+    """
+    session = _ContextSession(
+        {"browserContextIds": ["", "3f2a1b77"]},
+        {
+            "targetInfos": [
+                {"type": "page", "browserContextId": "2199AF8D"},
+                {"type": "page"},  # 默认上下文的页面上根本没有这一项
+                "不是字典",
+                {"type": "page", "browserContextId": "3f2a1b77"},  # 和第一问重复
+            ]
+        },
+    )
+    assert bl.CDPSession.browser_context_ids(session) == ["3f2a1b77", "2199AF8D"]  # type: ignore[arg-type]
+    assert session.asked == ["Target.getBrowserContexts", "Target.getTargets"]
+
+
+def test_browser_context_ids_survives_one_failing_question() -> None:
+    """一问成一问败就按成的那一问报；**两问都败才认输**（v0.13.48）。
+
+    页面级连接、老浏览器都可能只认其中一问 —— 少报一份罐顶多读不到，报错却会把
+    整条「别路=」掐断；反过来，两问都败还硬说「没有别的罐」就等于骗用户。
+    """
+    only_targets = _ContextSession(
+        bl.CdpError("页面级连接问不了这一句"),
+        {"targetInfos": [{"type": "page", "browserContextId": "2199AF8D"}]},
+    )
+    assert bl.CDPSession.browser_context_ids(only_targets) == ["2199AF8D"]  # type: ignore[arg-type]
+    only_contexts = _ContextSession(
+        {"browserContextIds": ["3f2a1b77"]}, bl.CdpError("老浏览器不认这一句")
+    )
+    assert bl.CDPSession.browser_context_ids(only_contexts) == ["3f2a1b77"]  # type: ignore[arg-type]
+    both = _ContextSession(bl.CdpError("第一句挂了"), bl.CdpError("第二句也挂了"))
+    with pytest.raises(bl.CdpError, match="第一句挂了"):
+        bl.CDPSession.browser_context_ids(both)  # type: ignore[arg-type]
+
+
+def _page_target_session(infos: object) -> object:
+    class _PageSession:
+        def call(self, method: str, params: object = None) -> object:
+            assert method == "Target.getTargets", method
+            return {"targetInfos": infos}
+
+    return _PageSession()
+
+
+def test_browser_page_targets_lists_the_pages_and_their_jars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """「窗口=」那一手的取数（v0.13.48）：只留页面标签，带上它所属的罐与调试地址。
+
+    真机 m41779 的僵局是「程序读的是 login.html（罐里只有 PHPSESSID）、用户眼前那扇
+    是已登录的 index.html，而 ``页=1``」—— 哪扇挂在哪个上下文里，只有目标表答得出来。
+    """
+    opened: list[dict] = []
+    infos = [
+        {
+            "type": "page",
+            "url": "https://www.nmbxd1.com/Member/User/Index/index.html",
+            "browserContextId": "3f2a1b77ab",
+            "targetId": "T1",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/page/T1",
+        },
+        {"type": "page", "url": "https://www.nmbxd1.com/Member/User/Index/login.html"},
+        {"type": "service_worker", "url": "https://x/", "browserContextId": "3f2a1b77ab"},
+        "不是字典",
+    ]
+
+    def fake_open(ws_url: str, timeout: float, **kwargs: object) -> object:
+        opened.append({"ws_url": ws_url, **kwargs})
+        return _page_target_session(infos)
+
+    monkeypatch.setattr(bl, "_open_window_session", fake_open)
+    monkeypatch.setattr(bl, "_close_window_session", lambda session: None)
+    rows = bl.browser_page_targets("ws://127.0.0.1:53051/devtools/browser/XY")
+    assert [
+        (row["url"], row["context"], row["targetId"]) for row in rows
+    ] == [
+        ("https://www.nmbxd1.com/Member/User/Index/index.html", "3f2a1b77ab", "T1"),
+        ("https://www.nmbxd1.com/Member/User/Index/login.html", "", ""),
+    ]
+    # 目标表只有浏览器级连接答得出来（页面级会被拒）—— 这一点和「别路=」同源。
+    assert [(item["ws_url"], item.get("browser_level")) for item in opened] == [
+        ("ws://127.0.0.1:53051/devtools/browser/XY", True)
+    ]
+    # 给的是页面地址就自己去换端点，照样挂在浏览器级连接上。
+    monkeypatch.setattr(
+        bl,
+        "_probe_http_json",
+        lambda url, timeout=5.0: {"webSocketDebuggerUrl": "ws://127.0.0.1:53051/devtools/browser/REAL"},
+    )
+    opened.clear()
+    assert bl.browser_page_targets("ws://127.0.0.1:53051/devtools/page/AB")
+    assert [(item["ws_url"], item.get("browser_level")) for item in opened] == [
+        ("ws://127.0.0.1:53051/devtools/browser/REAL", True)
+    ]
+
+
+def test_browser_page_targets_gives_up_quietly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """问不出来（空地址 / 换不出端点 / 命令被拒）一律回空表，绝不往外抛（v0.13.48）。"""
+    assert bl.browser_page_targets("") == []
+    monkeypatch.setattr(
+        bl, "_probe_http_json", lambda url, timeout=5.0: (_ for _ in ()).throw(bl.CdpError("哑"))
+    )
+    assert bl.browser_page_targets("ws://127.0.0.1:53051/devtools/page/AB") == []
+
+    class _Refusing:
+        def call(self, method: str, params: object = None) -> object:
+            raise bl.CdpError("这一句被拒了")
+
+    monkeypatch.setattr(bl, "_open_window_session", lambda *a, **k: _Refusing())
+    monkeypatch.setattr(bl, "_close_window_session", lambda session: None)
+    assert bl.browser_page_targets("ws://127.0.0.1:53051/devtools/browser/XY") == []
+
+
+def test_describe_page_targets_names_each_window_and_its_jar() -> None:
+    """「窗口=」那一句的写法（v0.13.48）：第几扇、在哪份罐（前 6 位，跟「别路=」同名）。"""
+    notes = bl.describe_page_targets(
+        [
+            {"url": "https://www.nmbxd1.com/Member/User/Index/index.html", "context": ""},
+            {"url": "", "context": "3f2a1b77ab"},
+            {"url": "https://a/" + "长" * 200, "context": "3f2a1b77ab"},
+            "不是字典",
+        ]
+    )
+    assert notes[0] == "第1扇（默认）https://www.nmbxd1.com/Member/User/Index/index.html"
+    assert notes[1] == "第2扇（上下文3f2a1b）空"
+    assert len(notes) == 3 and len(notes[2]) < 80
+    assert bl.describe_page_targets([]) == []
+
+
+def test_jar_forensics_names_the_windows_and_the_jar_path() -> None:
+    """对账行末尾再加两段（v0.13.48）：``窗口=`` 与 ``罐路径=``，有才写。"""
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    line = bl.jar_forensics(
+        session,  # type: ignore[arg-type]
+        jar_tag="browser-profile",
+        pages_tag="第1扇（默认）https://…",
+        jar_path="C:\\Temp\\xdao-export-browser-profile-9-9-0",
+    )
+    assert "｜窗口=第1扇（默认）https://…" in line
+    assert "｜罐路径=C:\\Temp\\xdao-export-browser-profile-9-9-0" in line
+    without = bl.jar_forensics(session, jar_tag="browser-profile")  # type: ignore[arg-type]
+    assert "窗口=" not in without and "罐路径=" not in without
+    long_tag = "第1扇（默认）" + "网" * 500
+    assert len(bl.jar_forensics(session, pages_tag=long_tag)) < 1000  # type: ignore[arg-type]
+
+
+def test_jar_dump_carries_the_jar_path_and_the_window_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """详单里还抄两样（v0.13.48）：这次用的目录**完整路径**、以及每扇窗各自在哪份罐。"""
+    asked: list[str] = []
+    monkeypatch.setattr(
+        bl,
+        "browser_page_targets",
+        lambda ws_url, **kwargs: asked.append(ws_url)
+        or (
+            [
+                {
+                    "url": "https://www.nmbxd1.com/Member/User/Index/index.html",
+                    "context": "3f2a1b77ab",
+                    "targetId": "T1",
+                    "ws": "ws://127.0.0.1:1/devtools/page/T1",
+                }
+            ]
+            if ws_url
+            else []
+        ),
+    )
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    data = bl.jar_dump(  # type: ignore[arg-type]
+        session,
+        page_urls=[bl.LOGIN_URL],
+        browser_ws_url="ws://127.0.0.1:53051/devtools/browser/XY",
+        profile_path="C:\\Temp\\xdao-export-browser-profile-9-9-0",
+    )
+    assert data["罐路径"] == "C:\\Temp\\xdao-export-browser-profile-9-9-0"
+    assert data["目标"] == [
+        {
+            "地址": "https://www.nmbxd1.com/Member/User/Index/index.html",
+            "上下文": "3f2a1b77ab",
+            "目标": "T1",
+        }
+    ]
+    assert asked == ["ws://127.0.0.1:53051/devtools/browser/XY"]
+    # 没给路径 / 没给地址：格子照旧在（空值），不因为少一样就少一个键。
+    plain = bl.jar_dump(session)  # type: ignore[arg-type]
+    assert plain["罐路径"] == "" and plain["目标"] == []
+
+
 
 def test_program_profile_lines_only_name_our_own_dirs(tmp_path: Path) -> None:
     """进程侧普查的认门规矩（v0.13.37）：自家两族全认，别人家的一个不沾。

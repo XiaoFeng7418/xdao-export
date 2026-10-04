@@ -345,6 +345,13 @@ def no_real_live_windows_for_dialog(monkeypatch):
         "write_jar_dump",
         lambda data, *, stamp: Path(tempfile.gettempdir()) / "xdao-读罐详单-测试占位.json",
     )
+    # v0.13.48 再添一处：对账行里的「窗口=」（每个页面标签挂在哪个浏览器上下文里）
+    # 也要真连一次浏览器级端点 —— 与「别路=」同一个理由，替身那扇连不上，只会白等
+    # 一个超时。钉成空表；演这一段的用例自己再覆盖一次（``describe_page_targets``
+    # 是纯函数，留着真跑，正好把「行长什么样」一并钉住）。
+    monkeypatch.setattr(
+        browser_login, "browser_page_targets", lambda browser_ws_url, **kwargs: []
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -1298,6 +1305,102 @@ def test_the_forensics_line_names_the_other_jars(
     )
     line = next(text for text in logged if text.startswith("读罐对账："))
     assert "别路=上下文3f2a1b" in line, line
+    dialog._on_cancel()
+
+
+def test_the_forensics_line_names_every_window_and_the_jar_path(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """对账行末尾再补两段（v0.13.48）：每扇窗各在哪份罐里、这次用的目录**完整路径**。
+
+    真机 m41779：程序读的那扇是 login.html（罐里只有 PHPSESSID），用户眼前那扇是已登录
+    的 index.html，而日志里写着「页=1」—— 「这两扇到底是不是同一扇」「同名的目录是不是
+    同一只罐」只有这两段答得出来（``罐=`` 只有目录名，配置目录下的常驻罐和 %TEMP% 里的
+    一次性罐可能同名）。
+    """
+    seen: list[dict[str, object]] = []
+
+    def fake_forensics(session, jar_tag="", link_tag="", **kwargs):  # noqa: ANN001
+        seen.append({"jar_tag": jar_tag, **kwargs})
+        return "挂=…｜窗口=" + str(kwargs.get("pages_tag", ""))
+
+    monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
+    monkeypatch.setattr(
+        browser_login,
+        "browser_page_targets",
+        lambda browser_ws_url, **kwargs: [
+            {
+                "url": "https://www.nmbxd1.com/Member/User/Index/index.html",
+                "context": "3f2a1b77ab",
+                "targetId": "T1",
+                "ws": "",
+            },
+            {
+                "url": "https://www.nmbxd1.com/Member/User/Index/login.html",
+                "context": "",
+                "targetId": "T2",
+                "ws": "",
+            },
+        ],
+    )
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: any(line.startswith("读罐对账：") for line in logged),
+        timeout=15.0,
+    ), f"对账行没进运行日志：{logged}"
+    tags = [str(item.get("pages_tag", "")) for item in seen]
+    assert tags and all(
+        "第1扇（上下文3f2a1b）" in tag and "第2扇（默认）" in tag for tag in tags
+    ), f"窗口那一段没传下去：{tags}"
+    paths = [str(item.get("jar_path", "")) for item in seen]
+    assert paths and all(path for path in paths), f"罐路径没传下去：{paths}"
+    assert all(
+        Path(path).name == str(item.get("jar_tag"))
+        for path, item in zip(paths, seen)
+    ), f"罐路径和罐名对不上：{list(zip(paths, [i.get('jar_tag') for i in seen]))}"
+    line = next(text for text in logged if text.startswith("读罐对账："))
+    assert "窗口=第1扇（上下文3f2a1b）" in line, line
+    dialog._on_cancel()
+
+
+def test_the_shared_jar_count_is_written_even_when_it_is_zero(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """``同罐进程=`` 数出来是 0 也要写（v0.13.48）。
+
+    过去只有「多于 1」才写这一段，于是「这一段缺席」和「查了、就一只」在用户贴出来的
+    日志里长得一模一样 —— 而这两件事的诊断意义正相反（前者说明这一问没跑，后者才是
+    「没有第二个实例共用这只罐」）。0 就得明写。
+    """
+    seen: list[dict[str, object]] = []
+
+    def fake_forensics(session, jar_tag="", link_tag="", **kwargs):  # noqa: ANN001
+        seen.append(dict(kwargs))
+        return "挂=…｜同罐进程=" + str(kwargs.get("procs_tag", ""))
+
+    monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
+    # autouse 那个 fixture 已经把 profile_process_pids 钉成空表（＝一只也没有）。
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: any(line.startswith("读罐对账：") for line in logged),
+        timeout=15.0,
+    ), f"对账行没进运行日志：{logged}"
+    assert seen, "对账一次都没被叫过"
+    assert all(item.get("procs_tag") == "0" for item in seen), (
+        f"数为 0 时没写这一段：{[item.get('procs_tag') for item in seen]}"
+    )
+    line = next(text for text in logged if text.startswith("读罐对账："))
+    assert "同罐进程=0" in line, line
     dialog._on_cancel()
 
 
