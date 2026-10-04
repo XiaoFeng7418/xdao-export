@@ -3138,7 +3138,7 @@ def test_build_find_apply_script_reads_the_page_without_requesting_anything() ->
     """「看看当前页有什么」这一步**一个请求都不许发**。
 
     这是 v0.13.17 的核心教训：v0.13.15 在页面里用 fetch 复刻站点自己的
-    ``switchTo`` / ``export`` 两个接口，真机上（用户报告）拿回来的只是站点那张
+    ``switchTo`` / ``export`` 两个接口，真机上拿回来的只是站点那张
     「跳转提示」页 —— 那一跳不是 HTTP 重定向，页面里的 fetch 不会去执行它，
     userhash 于是永远种不进浏览器，界面一路等到超时。现在改成「读页面 + 导航」，
     读的这一半必须干干净净只读 DOM。

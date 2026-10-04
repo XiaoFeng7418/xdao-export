@@ -275,7 +275,7 @@ def test_browser_login_failure_lands_in_the_run_log(monkeypatch):
     assert logs[0].endswith("Edge 刚起来就退出了（退出码 21）")
     assert "浏览器登录没成" in logs[0]
     # v0.13.26：子窗口还要拿主窗口的日志出口，好把「领饼干那条路」的结论当场写进去
-    # （用户报问题时贴的是运行日志，那条路的原话以前只活在子窗口那行小字里）。
+    # （遇到问题时贴的是运行日志，那条路的原话以前只活在子窗口那行小字里）。
     assert FakeBrowserLoginDialog.made[-1].log is holder.log
 
 
