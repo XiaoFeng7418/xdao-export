@@ -687,14 +687,11 @@ def sweep_stale_fallback_profiles(
     return deleted
 
 
-def live_browser_dirs(profile: Path) -> list[Path]:
-    """把「浏览器还开着的」资料目录列出来，新的排前面（v0.13.33）。
+def _window_candidates(profile: Path) -> list[Path]:
+    """**可能**是自家窗口的资料目录（去重、保持顺序）：现场目录 + 备用目录 + %TEMP% 临时目录。
 
-    要问的地方：现场目录、备用目录，还有 %TEMP% 里带我们前缀的那些临时目录 ——
-    fresh 目录的名字里带着**上一个进程**的 PID，新进程猜不出名字，只能列出来挨个问。
-    每个目录按 ``DevToolsActivePort`` 的端口答不答话判死活（见 :func:`_profile_in_use`）：
-    答话的就是还开着的窗口。按端口文件的修改时间倒序 —— 最晚开的那个才是用户
-    眼前看着的那扇窗。
+    备用目录与临时目录的名字里带着**上一个进程**的 PID / 时间戳，新进程猜不出名字，
+    只能列出来挨个问（真机 m38110 的普查盲区就是这么来的）。
     """
     candidates: list[Path] = [profile, *fallback_profile_dirs(profile)]
     try:
@@ -702,12 +699,25 @@ def live_browser_dirs(profile: Path) -> list[Path]:
         candidates.extend(entry for entry in root.iterdir() if _is_temp_profile_dir(entry))
     except OSError:  # pragma: no cover —— 临时目录列不出来就只问已知的几个
         pass
-    live: list[tuple[float, Path]] = []
+    unique: list[Path] = []
     seen: set[Path] = set()
     for candidate in candidates:
         if candidate in seen:
             continue
         seen.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
+def live_browser_dirs(profile: Path) -> list[Path]:
+    """把「浏览器还开着的」资料目录列出来，新的排前面（v0.13.33）。
+
+    要问的地方见 :func:`_window_candidates`。每个目录按 ``DevToolsActivePort``
+    的端口答不答话判死活（见 :func:`_profile_in_use`）：答话的就是还开着的窗口。
+    按端口文件的修改时间倒序 —— 最晚开的那个才是用户眼前看着的那扇窗。
+    """
+    live: list[tuple[float, Path]] = []
+    for candidate in _window_candidates(profile):
         try:
             mtime = (candidate / "DevToolsActivePort").stat().st_mtime
         except OSError:
@@ -717,6 +727,30 @@ def live_browser_dirs(profile: Path) -> list[Path]:
         live.append((mtime, candidate))
     live.sort(key=lambda item: item[0], reverse=True)
     return [candidate for _, candidate in live]
+
+
+def stale_window_dirs(profile: Path) -> list[str]:
+    """有 ``DevToolsActivePort``、但那个端口**不答话**的自家目录名（v0.13.46）。
+
+    为什么单列这一族（真机 m40502/m40810）：对账行一直「接=端口…、罐=browser-profile、
+    全罐=1」，而同一屏的 F12 里明明有三条饼干含 userhash。逐窗读又一句都没多报 ——
+    说明那把 userhash 所在的窗**不是**程序能问到的活窗。可能的两种形状靠这一族分开：
+    那扇窗的调试端口已经死了（文件还在）⇒ 名字出现在这里；那扇窗压根不是程序开的
+    （用户自己平时的浏览器）⇒ 这一族也空，只剩「请在那扇窗里登录或直接粘贴饼干」一条路。
+
+    只报目录名、不报路径（这行会被用户截图贴到公开版面）。按端口文件修改时间倒序。
+    """
+    stale: list[tuple[float, str]] = []
+    for candidate in _window_candidates(profile):
+        try:
+            mtime = (candidate / "DevToolsActivePort").stat().st_mtime
+        except OSError:
+            continue
+        if _profile_in_use(candidate):
+            continue
+        stale.append((mtime, candidate.name))
+    stale.sort(key=lambda item: item[0], reverse=True)
+    return [name for _, name in stale]
 
 
 def _parse_program_profile_lines(text: str, profile: Path) -> list[Path]:
@@ -802,6 +836,73 @@ def program_profile_dirs(profile: Path) -> list[Path]:
     except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
         return []
     return _parse_program_profile_lines(done.stdout or "", profile)
+
+
+def _parse_profile_process_pids(text: str, profile: Path) -> list[int]:
+    """从进程侧普查的输出里挑出「命令行里正拿着这个资料目录」的 PID（v0.13.46，只读）。
+
+    每行形如 ``PID<TAB>整条命令行``；命令行里所有 ``--user-data-dir=`` 都抠出来，
+    只认**恰好等于** ``profile`` 的那个（不认备用目录：备用目录是程序自己开的
+    一次性窗，不是「用户可能在里面登录的那扇」）。
+    """
+    wanted = str(profile).rstrip("\\/").lower()
+    pids: list[int] = []
+    for line in text.splitlines():
+        head, _, command_line = line.partition("\t")
+        if not command_line:
+            continue
+        for raw in re.findall(r"--user-data-dir=(\"[^\"]*\"|\S+)", command_line, flags=re.IGNORECASE):
+            if raw.strip('"').rstrip("\\/").lower() != wanted:
+                continue
+            try:
+                pids.append(int(head.strip()))
+            except ValueError:  # pragma: no cover —— 表头行之类
+                pass
+            break
+    return pids
+
+
+def profile_process_pids(profile: Path) -> list[int]:
+    """问一次系统：此刻有几个浏览器进程正拿着这个资料目录（v0.13.46，**只读**）。
+
+    为什么单问这一句（真机 m40810 的形状）：程序 CDP 读到的那只罐里只有一条
+    PHPSESSID、逐窗读也没探到别的活窗口，可用户在同一个目录名（``browser-profile``）
+    的另一扇窗里明明登着、F12 里三条饼干都在。同一只罐不可能一条也读不到，
+    只有两种形状说得通：
+
+    * 还有**另一个浏览器进程**也在用这个名字的目录（Windows 上第二个实例发现
+      目录被占时可能另开一份内存罐），它不会出现在端口普查里（端口文件被新的
+      一轮 :meth:`LoginBrowser._launch` 覆盖/占着，或压根不是程序起的）；
+    * 用户是**在自己平时的浏览器**里登录的 —— 那种情况这表里也只有程序自己那一个
+      pid，比例才是可分辨的：pid 多于一个 ⇒ 前者；只有一个 ⇒ 后者。
+
+    非 Windows、powershell 被拦、普查被用例关掉（``_PROCESS_CENSUS``）一律回空表 ——
+    这一手只用来给日志多一行证据，绝不许拦下登录的正路。
+    """
+    if not _PROCESS_CENSUS:
+        return []
+    # 和 :func:`program_profile_dirs` 同一个理由：当场 import 标准库。
+    import subprocess as _subprocess
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" |"
+        " ForEach-Object { if ($_.CommandLine -match '--user-data-dir') {"
+        " \"$($_.ProcessId)`t$($_.CommandLine)\" } }"
+    )
+    try:
+        done = _subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20.0,
+            creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
+        return []
+    return _parse_profile_process_pids(done.stdout or "", profile)
 
 
 def _profile_failure(exc: BaseException) -> bool:
@@ -2645,6 +2746,8 @@ def jar_forensics(
     jar_tag: str = "",
     link_tag: str = "",
     windows_tag: str = "",
+    stale_tag: str = "",
+    procs_tag: str = "",
 ) -> str:
     """「读罐对账」一行：挂着哪页、读的是哪份罐、四路各自看见哪些**名字**（v0.13.34）。
 
@@ -2686,8 +2789,21 @@ def jar_forensics(
     ``全罐=1``/``合并=PHPSESSID``）。本机三版探针（分区饼干、跨标签、浏览器端点）
     已排除「读法漏了」这条路，剩下的解释只有「程序读的那一扇 ≠ 用户登录的那一扇」——
     所以这一行现在把**每一扇活着的程序窗**各报一句：端口、罐名、那一罐里的名字清单
-    （``windows_tag`` 由调用方用 :func:`userhash_across_windows` 取，空就不写这段）。
-    同一只罐读漏了还是两只罐，从此一张截图分得清。
+    （``windows_tag`` 由调用方用 :func:`userhash_across_windows` 取）。同一只罐读漏了
+    还是两只罐，从此一张截图分得清。
+
+    v0.13.46 两处补强（真机 m40810 的第二张截图：``逐窗=`` 一句都没有 —— 用户和程序
+    都读不出「到底是没别的窗，还是这一手没跑」）：
+
+    * ``逐窗=`` **always 写**：一扇活窗都没有时写「没有别的活窗口」，不再靠「这段缺席」
+      传达意思（缺席的含义太容易被读成「程序没查」）；
+    * 新增一段 ``哑窗=``（``stale_tag``）：有 ``DevToolsActivePort`` 文件、但那个端口
+      **不答话**的自家目录名（见 :func:`stale_window_dirs`）—— 那正是「另一扇窗的调试
+      端口已经死了」的形状：端口普查看不见它、进程还在。空就不写这段（没有才是常态）；
+    * 新增一段 ``同罐进程=``（``procs_tag``）：命令行里正拿着这个资料目录的浏览器
+      进程数（见 :func:`profile_process_pids`）。多于 1 = 还有第二个实例在共用这只罐
+      （目录名一样、内存罐各自独立 ⇒ CDP 读的那一只里当然没有用户登录挣来的饼干）。
+      查不到就不写这段。
     """
     parts: list[str] = []
     try:
@@ -2770,8 +2886,13 @@ def jar_forensics(
     except Exception as exc:  # noqa: BLE001
         parts.append(f"合并=出错（{type(exc).__name__}）")
     windows = str(windows_tag or "").strip()
-    if windows:
-        parts.append(f"逐窗={windows[:200]}")
+    parts.append(f"逐窗={windows[:200] if windows else '没有别的活窗口'}")
+    stale = str(stale_tag or "").strip()
+    if stale:
+        parts.append(f"哑窗={stale[:120]}")
+    procs = str(procs_tag or "").strip()
+    if procs:
+        parts.append(f"同罐进程={procs[:24]}")
     return "｜".join(parts)
 
 
@@ -2874,13 +2995,13 @@ def _fetch_in_page(session: "CDPSession", url: str) -> dict | None:
 WATCH_BANNER_ID = "__xdaoWatchBanner"
 
 
-def build_watch_banner_script(stamp: str = "") -> str:
-    """给被盯的窗口钉一条「程序正在看这个窗口」的顶部横条（v0.13.33）。
+def build_watch_banner_script(stamp: str = "", port: int | None = None) -> str:
+    """给被盯的窗口钉一条「程序正在看这个窗口」的横条（v0.13.33）。
 
     为什么：登录这条路历史上一直分不清「用户在操作哪扇窗」—— 程序读的是它挂着
     的那个实例的饼干罐，用户在另一扇长得一模一样的窗口里登录、点「应用」，程序
     这边就永远「取不到饼干」（真机 m35762/m35800）。横幅只出现在**程序正在读的那扇
-    窗**里：窗口顶上有条棕色横条 = 对；没有 = 你正站在别的窗口里，别看这里了。
+    窗**里：窗口上有条棕色横条 = 对；没有 = 你正站在别的窗口里，别看这里了。
 
     v0.13.35 两处补强（真机 m36897：横幅在两扇窗里可能同时存在 —— 旧程序退出后
     它注入的横幅会**冻**在那扇幸存的窗里，用户分不清哪扇是活的）：
@@ -2889,19 +3010,32 @@ def build_watch_banner_script(stamp: str = "") -> str:
       就知道眼前这扇是不是程序此刻在盯的；
     * 已存在的横幅**也刷新文案**（旧横幅带着旧号/旧版话术，不刷就成了假信号）。
 
+    v0.13.46 两处改形（真机 m40810：横条钉在页面**顶上**，把「我的饼干」列表的
+    复选框与『应用』按钮压住了一半）：
+
+    * 横条挪到**窗口底部**、字更小、只占一行 —— 站点的操作区都在上半屏，从此不再
+      遮住要点的地方；横条本身 ``pointer-events:none``（点它等于点在页面上），
+      只有右上角那个「×」收得起（v0.13.46 新增，用户可随时收起）；
+    * 文案尾带端口（``port`` 非空时）——「窗口号 + 端口」两样一起报，日志里的
+      ``接=端口…`` 与眼前的窗对得上号。拿到 userhash 后由
+      :func:`remove_watch_banner` 把横条摘掉，不再留个假信号。
+
     规矩两条：**只在 X 岛站内的页面上出现**（横幅是给登录流程看的，别跑到别的
     网站顶上碍事），**幂等** —— 同一个 id 已经在就不重复钉（登录过程会刷好几页，
     worker 每一轮都注一次，绝不能越叠越厚）。全程吞异常：横幅是辅助说明，
     它出什么问题都不许把登录带崩。
     """
     text = (
-        "串导出程序正在看这个窗口 —— 请在这里登录 X 岛；"
-        "登录成功站点就自动带上你当前的饼干，程序自己会拿到；"
-        "十几秒还没拿到就到「我的饼干」点一行『应用』。"
+        "串导出程序正在看这个窗口 —— 就在这里登录 X 岛；"
+        "登录成功站点会自己带上你当前的饼干；"
+        "十几秒还没拿到，就到「我的饼干」点一行『应用』。"
     )
     stamp = str(stamp or "").strip()
     if stamp:
-        text = f"{text}【窗口号 {stamp}】"
+        tail = f"【窗口号 {stamp}"
+        if port:
+            tail = f"{tail} · 端口{int(port)}"
+        text = f"{text}{tail}】"
     return (
         "(() => {\n"
         f"  const id = {json.dumps(WATCH_BANNER_ID)};\n"
@@ -2912,15 +3046,26 @@ def build_watch_banner_script(stamp: str = "") -> str:
         "    if (location.hostname.indexOf('nmbxd1') < 0) return 'off-site';\n"
         "    const existing = document.getElementById(id);\n"
         "    if (existing) {\n"
-        "      if (existing.textContent !== text) existing.textContent = text;\n"
+        "      const label = existing.querySelector('span');\n"
+        "      if (label && label.textContent !== text) label.textContent = text;\n"
         "      return 'present';\n"
         "    }\n"
         "    const bar = document.createElement('div');\n"
         "    bar.id = id;\n"
-        "    bar.textContent = text;\n"
-        "    bar.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:2147483647;"
-        "background:#b45309;color:#ffffff;font:13px/1.6 sans-serif;padding:6px 12px;"
-        "text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.35);pointer-events:none;');\n"
+        "    bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;"
+        "background:#b45309;color:#ffffff;font:12px/1.5 sans-serif;padding:3px 26px 3px 10px;"
+        "text-align:center;box-shadow:0 -2px 8px rgba(0,0,0,0.35);pointer-events:none;');\n"
+        "    const label = document.createElement('span');\n"
+        "    label.textContent = text;\n"
+        "    const close = document.createElement('button');\n"
+        "    close.textContent = '×';\n"
+        "    close.title = '收起这条横条（程序还在读这扇窗）';\n"
+        "    close.setAttribute('style', 'pointer-events:auto;position:absolute;right:4px;"
+        "top:50%;transform:translateY(-50%);background:transparent;border:0;color:#ffffff;"
+        "font:15px/1 sans-serif;cursor:pointer;padding:2px 6px;');\n"
+        "    close.onclick = function () { try { bar.remove(); } catch (e) { } };\n"
+        "    bar.appendChild(label);\n"
+        "    bar.appendChild(close);\n"
         "    document.documentElement.appendChild(bar);\n"
         "    return 'added';\n"
         "  } catch (e) { return 'err'; }\n"
@@ -2928,10 +3073,33 @@ def build_watch_banner_script(stamp: str = "") -> str:
     )
 
 
-def ensure_watch_banner(session: "CDPSession", stamp: str = "") -> str:
-    """往被盯的标签注入横幅（带窗口号）；一切失败都咽掉，回一句状态码给测试用。"""
+def build_remove_watch_banner_script() -> str:
+    """把横条摘掉的页面脚本（v0.13.46）：拿到 userhash 之后就不该再挂着它。"""
+    return (
+        "(() => {\n"
+        f"  const id = {json.dumps(WATCH_BANNER_ID)};\n"
+        "  try {\n"
+        "    const el = document.getElementById(id);\n"
+        "    if (!el) return 'absent';\n"
+        "    el.remove();\n"
+        "    return 'removed';\n"
+        "  } catch (e) { return 'err'; }\n"
+        "})()"
+    )
+
+
+def ensure_watch_banner(session: "CDPSession", stamp: str = "", port: int | None = None) -> str:
+    """往被盯的标签注入横幅（带窗口号/端口）；一切失败都咽掉，回一句状态码给测试用。"""
     try:
-        return str(session.evaluate(build_watch_banner_script(stamp)))
+        return str(session.evaluate(build_watch_banner_script(stamp, port)))
+    except Exception:  # noqa: BLE001 —— 横幅不许把登录带崩
+        return ""
+
+
+def remove_watch_banner(session: "CDPSession") -> str:
+    """把横幅从被盯的标签上摘掉（v0.13.46）；同样一切失败都咽掉。"""
+    try:
+        return str(session.evaluate(build_remove_watch_banner_script()))
     except Exception:  # noqa: BLE001 —— 横幅不许把登录带崩
         return ""
 

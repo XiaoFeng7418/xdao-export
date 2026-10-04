@@ -677,6 +677,31 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.46**（盯窗横条挪到窗口底部并可收起、拿到饼干后自己摘掉；横条与对话框写明「程序不替你点『应用』」；对账行补上「哑窗=」与「同罐进程=N」）：
+  **一、为什么要改（岛友原话）。** 现场（2026-10-04 m40811）：「0.13.45还是无法登录，还有一点是最上方的提示条会遮挡选择饼干的ui
+  看你怎么改一下 是自动帮用户随便选一个饼干应用还是告诉用户需要自己应用饼干 如果不需要应用饼干就能抓到userhash就不用这么提醒了」。
+  截图（``sha256:928c6d28…``）显示：v0.13.45 的对账行 ``接=端口53051｜罐=browser-profile｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜全罐=1
+  ｜原始userhash=无｜存储读=PHPSESSID｜页面JS=PHPSESSID｜合并=PHPSESSID``（**连「逐窗=」都没有**），而同一屏 F12 里那扇窗有三条饼干
+  （``mem…`` / ``PHPS…`` 35 字节 / ``userh…`` 70 字节）。附着浏览器整罐只有 1 条 PHPSESSID ⇒ 仍是「程序读的那只罐不是看着的那扇窗」。
+  **二、横条为什么挡得住。** 旧横条是 ``position:fixed;top:0``，正压在「我的饼干」列表第一排『应用』按钮上 —— 它 ``pointer-events:none``
+  不挡点击，但**挡眼睛**，恰好在用户需要点『应用』的那一刻。
+  **三、改法（四条）。** ①``build_watch_banner_script(stamp, port)`` 挪到 ``bottom:0``（``box-shadow`` 朝上、``font:12px/1.5``），
+  横条 = ``span``（文案）+ ``button``（``×``、``pointer-events:auto``、``onclick`` 里 ``bar.remove()``）；新增
+  ``build_remove_watch_banner_script()`` / ``remove_watch_banner(session)``，``gui.py`` 在 ``verify_userhash_live`` 通过、把值塞进队列
+  之前调它 —— 登录成的那一刻横条自己摘掉。②横条尾部带 ``【窗口号 XXXX · 端口NNNN】``：号管「这一趟尝试」、端口管「这一只罐」，
+  两张截图对得上。③话术统一成「**程序不替你点『应用』**」（登录成功站点会自己带上当前饼干；点『应用』是换一块的动作，挑哪一块是
+  账号的事）。④对账行新增 ``哑窗=``（``stale_window_dirs()``：有 ``DevToolsActivePort`` 文件、端口却不答话的自家目录名，只报目录名）
+  与 ``同罐进程=N``（``profile_process_pids()``：命令行 ``--user-data-dir`` 恰好等于这只目录的浏览器进程数，``_PROCESS_CENSUS`` 关掉就只回
+  ``[]``）；``逐窗=`` 改成**always 写**（没有别的活窗口就写「没有别的活窗口」，免得再把「没别人」误读成「这一手没跑」）。
+  **四、两条机械教训。** ①横条是**同步** ``Runtime.evaluate``，它慢一步就拖慢「登录成功那一刻」的发现 —— 于是 ``gui.py`` 把
+  ``stale_window_dirs``（挨个探端口）与 ``profile_process_pids``（起一次 powershell）整体塞进 ``BROWSER_PROCS_SECONDS = 30.0`` 的
+  节流块（``next_procs``），中间轮次沿用上一次结果；两问都吞异常，只补证据、不许带崩等待循环。②界面试点的 autouse fixture
+  （``no_real_live_windows_for_dialog``）必须连同这两处现场提问一起钉住 —— 只钉 ``live_browser_dirs`` / ``program_profile_dirs`` 时，
+  每个 GUI 用例每轮都真起一次 powershell，``test_the_wait_extends_itself_while_the_browser_is_still_open`` 报
+  ``AssertionError: 续等越过了上限：4.4 秒``、``test_timeout_message_explains_which_browser_counts`` 直接等不到那句状态。
+  **五、测试。** ``tests/test_browser_login.py`` 加 4 条（``stale_window_dirs``、``_parse_profile_process_pids`` + ``profile_process_pids``、
+  ``jar_forensics`` 的 ``哑窗=``/``同罐进程=``、``remove_watch_banner`` 脚本；横幅两条老用例改断言：``bottom:0``、``×``、端口），
+  ``tests/test_gui_browser_login.py`` 加 2 条（对账行拿到两段提示；拿到 userhash 后横条被摘掉）。收集 **1834 项**、本机 **1827 passed / 7 skipped**。
 - **v0.13.45**（不只看自己接的那一扇窗：自己这只罐里没有 userhash 时挨个问每一扇活窗口的罐；对账行新增「逐窗=」；读饼干出错不再静默）：
   **一、为什么要改。** 现场（2026-10-04）用 v0.13.44 复现：日志写 ``开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。``，
   对账行写 ``罐=browser-profile｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜全罐=1｜原始userhash=无｜存储读=PHPSESSID｜合并=PHPSESSID``；

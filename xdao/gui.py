@@ -705,6 +705,10 @@ class LoginDialog(tk.Toplevel):
 BROWSER_POLL_SECONDS = 1.5
 # 没读到 userhash 时，隔这么久去饼干页领一次（用户登录成功那一刻正好用上）。
 BROWSER_LEAF_SECONDS = 5.0
+# 隔这么久问一次「有几个浏览器进程正拿着这个资料目录」（v0.13.46）。
+# 这一问要起一次 powershell（真机上半秒到一秒），而对账行只在没拿到 userhash 时才写，
+# 所以隔几十秒问一次足够把「是不是有第二个实例在共用这只罐」这种形状区分出来。
+BROWSER_PROCS_SECONDS = 30.0
 # 「领饼干」**一次都不导航**用户眼前那个标签页（v0.13.23）。
 #
 # v0.13.17~v0.13.22 走过一段弯路：那几版让程序自己去站点「应用」饼干（navigate=True），
@@ -746,7 +750,7 @@ BROWSER_READ_RETRY_LIMIT = 4
 BROWSER_PASTE_NUDGE_SECONDS = 120.0
 #: 说破那一句（走常驻那一行，不会被 15 秒一次的状态替换刷掉）。
 BROWSER_PASTE_NUDGE = (
-    "等了两分多钟还没有饼干：程序一直在盯这个窗口的饼干罐（顶上棕色横条、【窗口号】对上的这扇），"
+    "等了两分多钟还没有饼干：程序一直在盯这个窗口的饼干罐（窗口底部棕色横条、【窗口号】对上的这扇），"
     "罐里确实没有 userhash —— 多半是这次登录没提交成功："
     "窗口里还留着上次看到的『饼干列表』，那只是上次登录留下的缓存画面，不代表现在登着。"
     "号对不上或没有横条的窗口登了也白登。请在这扇窗里回登录页重新提交账号密码验证码，"
@@ -832,8 +836,13 @@ def _waiting_status(waited: int, stamp: str = "") -> str:
     冒充「程序在看这里」，所以 ``stamp`` 非空时把窗口号报进这句 —— 用户拿横幅
     末尾的号和这里一比就知道真假；另外「自动带上」保留为主口径，但补一句
     「十几秒没拿到就点一行『应用』」作保底：万一站点哪天又不带了，用户有得做。
+
+    v0.13.46 两处改口径（真机 m40810 的横条压在「我的饼干」列表上，用户问「到底是
+    自动帮我选一块、还是要我自己点应用」）：横条挪到**窗口底部**，这句跟着改说法；
+    并明说**程序不会替你点『应用』** —— 那一行点下去是「换一块饼干」的动作，挑哪一块
+    是账号的事，程序不替用户做这个决定（用户自己的浏览器里点的『应用』，程序也看不见）。
     """
-    window_hint = "顶上有条棕色横条写着『程序正在看这个窗口』"
+    window_hint = "窗口底部有条棕色横条写着『程序正在看这个窗口』"
     stamp = str(stamp or "").strip()
     if stamp:
         window_hint += f"、末尾带【窗口号 {stamp}】"
@@ -842,6 +851,7 @@ def _waiting_status(waited: int, stamp: str = "") -> str:
         f"要在这个窗口打开的那个浏览器里登录（{window_hint}才是对的窗口），程序才看得到；"
         "登录成功站点就自动带上你当前的饼干，程序自己会拿到 —— "
         "十几秒没拿到就到「我的饼干」列表点一行『应用』（站点会显示「饼干切换成功」）；"
+        "程序**不会**替你点那一行（点哪一块是账号的事，得你自己定）。"
         "在自己平时用的浏览器里登录，程序看不到 —— "
         "已经登好了程序却没拿到，就点「直接粘贴饼干登录」，把 userhash 抄过来。"
     )
@@ -967,8 +977,10 @@ class BrowserLoginDialog(tk.Toplevel):
                 "请在里面用 X岛账号登录一次（跟微软账号无关，别输微软密码）。\n"
                 "登录成功，站点就自动带上你当前的饼干，程序自己会拿到；\n"
                 "十几秒没拿到就到「我的饼干」列表点一行『应用』，看到「饼干切换成功」。\n"
-                "程序看的那个窗口，顶上会有一条棕色横条写着『程序正在看这个窗口』，\n"
+                "那一行程序不替你点：点哪一块饼干是账号的事，得你自己定。\n"
+                "程序看的那个窗口，底边会有一条棕色横条写着『程序正在看这个窗口』，\n"
                 "横条末尾带【窗口号】—— 号对不上或没有横条的窗口登了也白登。\n"
+                "横条压不到页面上的按钮（它在窗底），嫌碍事点它右端的「×」就收起。\n"
                 "程序只取一个 X岛的登录饼干；关掉窗口后临时资料就删掉了，\n"
                 "你自己的浏览器一点也不受影响。\n"
                 "不想重输：关掉它，点「直接粘贴饼干登录」，\n"
@@ -1422,6 +1434,7 @@ class BrowserLoginDialog(tk.Toplevel):
         leaf_hint = ""  # 最近一次领饼干的结论：写进常驻那一行
         leaf_hints: list[str] = []  # 领饼干试过的几步（按发生顺序、去重）：拼进超时那句话
         next_http = started  # 下一次「走 HTTP 领饼干」最早什么时候（v0.13.26）
+        next_procs = started  # 下一次问「几个进程拿着这只罐」（v0.13.46，隔 30 秒问一次）
         last_http_jar = ""  # 上一次试 HTTP 时罐头长什么样（变了就立刻再试一次）
         forensics_line = ""  # 最近一次「读罐对账」已写进日志的那行（v0.13.34，变了才再写）
         # 对账行里标的「罐」= 这次真正在用的资料目录名（v0.13.35）：接了旧窗就写旧窗的
@@ -1449,7 +1462,14 @@ class BrowserLoginDialog(tk.Toplevel):
                 # 从此装不了死（m36897 的「F12 有饼干、程序读空罐」只剩两窗一种解释）。
                 banner = getattr(backend, "ensure_watch_banner", None)
                 if callable(banner):
-                    banner(session, stamp)
+                    # v0.13.46：横条尾带端口（「窗口号 + 端口」两样一起报，日志里的
+                    # 「接=端口…」与眼前的窗对得上号），横条挪到窗底、右上角能收起
+                    # （真机 m40810：原来的顶部横条把「我的饼干」列表的复选框与
+                    # 『应用』按钮压住了一半）。旧 backend 不收 port 也不许带崩。
+                    try:
+                        banner(session, stamp, getattr(browser, "port", None))
+                    except TypeError:
+                        banner(session, stamp)
                 value, fill_note = self._read_userhash(backend, session)
                 if fill_note and fill_note not in leaf_hints:
                     # 「按地址那读漏了、整罐读补上」要留痕（v0.13.29）：这句话是下次
@@ -1493,6 +1513,33 @@ class BrowserLoginDialog(tk.Toplevel):
                             if note not in leaf_hints:
                                 leaf_hints.append(note)
                             self._queue.put(("hint", note))
+                    # v0.13.46：把「另一扇窗」剩下的两种形状也写进对账行 —— 真机 m40810
+                    # 的僵局是「同一只罐一条也读不到」，而「逐窗=」一句都没有，看不出到底
+                    # 是没别的窗、还是这一手没跑：
+                    #   哑窗=     有 DevToolsActivePort 文件、端口却不答话的自家目录名
+                    #             （那扇窗还在，只是程序问不进去）；
+                    #   同罐进程=N 命令行里正拿着这个资料目录的浏览器进程数（多于 1 就说明
+                    #             还有第二个实例在共用这只罐 —— 目录名一样、内存罐各自独立，
+                    #             CDP 读的那一只里当然没有用户登录挣来的饼干）。
+                    # 两问都要真去问系统（一个挨个探端口、一个起 powershell），所以和
+                    # 「领饼干」那一步一样按时间节流：BROWSER_PROCS_SECONDS 刷新一次，
+                    # 中间的轮次沿用上一次的结果 —— 别让它们拖着 1.5 秒一轮的等待循环。
+                    if jar_profile is not None and leaf_now >= next_procs:
+                        next_procs = leaf_now + BROWSER_PROCS_SECONDS
+                        stale_probe = getattr(backend, "stale_window_dirs", None)
+                        if callable(stale_probe):
+                            try:
+                                names = [str(name) for name in stale_probe(jar_profile)]
+                            except Exception:  # noqa: BLE001 —— 只是补一行证据
+                                names = []
+                            stale_tag = "、".join(names[:3])
+                        pids_probe = getattr(backend, "profile_process_pids", None)
+                        if callable(pids_probe):
+                            try:
+                                pids = [int(pid) for pid in pids_probe(jar_profile)]
+                            except Exception:  # noqa: BLE001 —— 只是补一行证据
+                                pids = []
+                            procs_tag = str(len(pids)) if pids else ""
                     # v0.13.23：这一步**不导航**用户的标签页 —— 只读页面状态和饼干罐。
                     # 站点那边「应用」是跳转式的，程序一导航，用户眼前那个标签页就会被
                     # 留在站点自己的「饼干切换成功!」倒计时页上原地重载，看起来就是
@@ -1555,12 +1602,15 @@ class BrowserLoginDialog(tk.Toplevel):
                                         jar_tag=jar_tag,
                                         link_tag=link_tag,
                                         windows_tag=windows_tag,
+                                        stale_tag=stale_tag,
+                                        procs_tag=procs_tag,
                                     )
                                     or ""
                                 )
                             except TypeError:
-                                # backend 是旧模块（`jar_forensics` 还不收 `windows_tag`）：
-                                # 退回来只报原来那几段，别让对账把登录带崩。
+                                # backend 是旧模块（`jar_forensics` 还不收 `windows_tag` /
+                                # `stale_tag` / `procs_tag`）：退回来只报原来那几段，
+                                # 别让对账把登录带崩。
                                 line = str(
                                     forensics(session, jar_tag=jar_tag, link_tag=link_tag) or ""
                                 )
@@ -1592,6 +1642,14 @@ class BrowserLoginDialog(tk.Toplevel):
                             # 也不能把一个来路不明的值当成功。
                             verified = None
                             continue
+                        # v0.13.46：登录已经成了，横幅也该收了 —— 留着它，下一扇窗
+                        # （或者下次登录）就会看到一条骗人的「程序正在看这个窗口」。
+                        drop_banner = getattr(backend, "remove_watch_banner", None)
+                        if callable(drop_banner):
+                            try:
+                                drop_banner(session)
+                            except Exception:  # noqa: BLE001 —— 收横幅失败不许误事
+                                pass
                         self._queue.put(("ok", value))
                         return
                     if note:
@@ -1685,7 +1743,7 @@ class BrowserLoginDialog(tk.Toplevel):
         ) / 60
         return (
             f"等了 {waited_minutes:.0f} 分钟还没看到登录成功。"
-            "要在这个窗口打开的浏览器里登录（对得上：程序看的窗口顶上有一条棕色横条），程序才看得到 —— "
+            "要在这个窗口打开的浏览器里登录（对得上：程序看的窗口底边有一条棕色横条），程序才看得到 —— "
             "在自己平时用的浏览器里登录不行；登录成功站点会自动带上当前饼干，要换一块才点『应用』；"
             "也可以点「直接粘贴饼干登录」。"
             f"{tail}{diagnosis}"

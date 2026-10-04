@@ -312,6 +312,11 @@ def no_real_live_windows_for_dialog(monkeypatch):
     # v0.13.37 的进程侧普查当场 import 标准库 subprocess（躲上面的 Popen 替身），
     # 替身拦不住它——不钉住的话，每个用例都会真起一个 powershell 问 CIM。
     monkeypatch.setattr(browser_login, "program_profile_dirs", lambda profile: [])
+    # v0.13.46 又加了两处同类的现场提问：对账行里的「哑窗=」（要挨个目录问端口）
+    # 与「同罐进程=N」（也要起一次 powershell）。同样钉住 —— 用例不许真去问系统，
+    # 否则每一轮等待里挂上一次 powershell，超时那几个用例的秒数全乱。
+    monkeypatch.setattr(browser_login, "stale_window_dirs", lambda profile: [])
+    monkeypatch.setattr(browser_login, "profile_process_pids", lambda profile: [])
 
 
 @pytest.fixture(autouse=True)
@@ -1035,13 +1040,16 @@ def test_every_round_pins_the_banner_to_the_watched_tab(
     窗口的罐 —— 两个窗口长得一模一样，光靠文字说不清谁是谁。从这一版起横幅
     每轮重插一次（导航会把页面整个换掉），插的就是这一轮 retarget 后真正在读
     的那个 session，指哪看哪。v0.13.35 起每轮还带上这一趟的窗口号（旧窗口的
-    冻横幅装死，靠号识破 —— m36897）。
+    冻横幅装死，靠号识破 —— m36897）。v0.13.46 起连端口一起写进横条：窗口号管
+    「这一趟」，端口管「这一只罐」，两个叠起来两张截图才能对上。
     """
-    banners: list[tuple[object, str]] = []
+    banners: list[tuple[object, str, object]] = []
     monkeypatch.setattr(
         browser_login,
         "ensure_watch_banner",
-        lambda session, stamp="": banners.append((session, stamp)) or "added",
+        lambda session, stamp="", port=None: (
+            banners.append((session, stamp, port)) or "added"
+        ),
     )
     dialog = open_dialog()
     assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
@@ -1052,9 +1060,14 @@ def test_every_round_pins_the_banner_to_the_watched_tab(
     assert all(item[0] is session for item in banners), (
         "横幅没钉在这一轮真正在读的标签上"
     )
-    stamps = {stamp for _unused, stamp in banners}
+    stamps = {stamp for _unused, stamp, _port in banners}
     assert len(stamps) == 1, f"一趟尝试里窗口号换了：{stamps}"
     assert re.fullmatch(r"[0-9A-F]{4}", stamps.pop()), f"窗口号不是 4 位十六进制：{stamps}"
+    # v0.13.46：横条尾部还带端口 —— 同一趟里不该变，有的话必须是真端口号。
+    ports = {port for _unused, _stamp, port in banners}
+    assert len(ports) == 1, f"同一趟里端口变了：{ports}"
+    port = ports.pop()
+    assert port is None or (isinstance(port, int) and port > 0), f"端口不对劲：{port!r}"
     dialog._on_cancel()
 
 
@@ -1134,6 +1147,84 @@ def test_a_userhash_found_in_another_window_is_used_and_named(
     assert asked, "逐窗读一次都没被问过"
     assert "端口7002" in dialog.hint_var.get(), "没点名 userhash 在哪一扇窗里"
     assert "D-9691%04%02abc" not in dialog.hint_var.get(), "对话框里漏了饼干值"
+    dialog._on_cancel()
+
+
+def test_the_forensics_line_gets_the_mute_and_shared_jar_hints(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """对账行还要带上「哑窗=」与「同罐进程=N」两段（v0.13.46）。
+
+    真机 m40810：附着的那只浏览器整罐只有 1 条 PHPSESSID、对账行里连「逐窗=」
+    都没有 —— 看不出到底是「真没别的窗」还是「有窗，但调试端口已经哑了」。这两段
+    就是替那两种形状准备的：端口不答话的自家目录点名，正拿着同一只资料目录的
+    浏览器进程数也报出来（多于 1 ⇒ 还有第二个实例在共用这只罐）。
+    """
+    seen: list[dict[str, object]] = []
+
+    def fake_forensics(session, jar_tag="", link_tag="", **kwargs):  # noqa: ANN001
+        seen.append({"jar": jar_tag, "link": link_tag, **kwargs})
+        return "挂=…｜" + f"哑窗={kwargs.get('stale_tag', '')}｜同罐进程={kwargs.get('procs_tag', '')}"
+
+    monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
+    monkeypatch.setattr(
+        browser_login, "stale_window_dirs", lambda profile: ["browser-profile-8-9"]
+    )
+    monkeypatch.setattr(
+        browser_login, "profile_process_pids", lambda profile: [1111, 2222]
+    )
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: any(line.startswith("读罐对账：") for line in logged),
+        timeout=15.0,
+    ), f"对账行没进运行日志：{logged}"
+    assert seen, "对账一次都没被叫过"
+    assert all(item.get("stale_tag") == "browser-profile-8-9" for item in seen), (
+        f"哑窗那一段没传下去：{[item.get('stale_tag') for item in seen]}"
+    )
+    assert all(item.get("procs_tag") == "2" for item in seen), (
+        f"同罐进程数没传下去：{[item.get('procs_tag') for item in seen]}"
+    )
+    line = next(text for text in logged if text.startswith("读罐对账："))
+    assert "哑窗=browser-profile-8-9" in line, line
+    assert "同罐进程=2" in line, line
+    dialog._on_cancel()
+
+
+def test_the_watch_banner_is_taken_off_once_the_userhash_lands(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """饼干拿到手就把横条摘掉（v0.13.46）。
+
+    真机 m40811：横条一直挂着会挡住饼干列表那一排「应用」按钮。程序不替用户点
+    「应用」（点哪一块是账号的事），但登录一旦成功、userhash 已经拿到，横条就再没有
+    存在的理由 —— 摘掉，别在用户已经登好的页面上留一条催命横幅。
+    """
+    removed: list[object] = []
+    monkeypatch.setattr(
+        browser_login,
+        "remove_watch_banner",
+        lambda session: removed.append(session) or "removed",
+    )
+    dialog = open_dialog()
+
+    def ready() -> bool:
+        for session in _dialog_sessions():
+            session.cookies = [{"name": "userhash", "value": FAKE_USERHASH}]
+        return dialog.userhash is not None
+
+    assert _wait_for(root_window, ready), "没能从浏览器读到 userhash"
+    assert _wait_for(root_window, lambda: bool(removed), timeout=10.0), (
+        "拿到 userhash 了，横条却没摘"
+    )
+    assert all(item is _dialog_sessions()[0] for item in removed), (
+        "摘的不是这一轮真正在读的那个标签"
+    )
     dialog._on_cancel()
 
 

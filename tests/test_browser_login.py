@@ -1701,6 +1701,77 @@ def test_live_browser_dirs_lists_only_live_windows_newest_first(
     assert unrelated not in got
 
 
+def test_stale_window_dirs_names_the_mute_ones_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """哑窗那一段（v0.13.46）：有端口文件、端口却不答话的自家目录名，按端口文件时间倒序。
+
+    真机 m40810 的僵局里「逐窗=一句都没有」看不出到底有没有另一扇窗：调试端口已经死了的
+    那扇窗，端口普查看不见它、进程还在 —— 名字出现在这里就是那张图。只报**目录名**
+    （这行会被用户截图贴到公开版面，盘上路径不写）。答话的、没端口文件的、别人家的目录
+    都不许混进来。
+    """
+    root = tmp_path / "temp"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(root))
+    dirs = {}
+    for name, age in (("mute-old", 100.0), ("mute-new", 10.0), ("alive", 5.0), ("noport", 1.0)):
+        d = root / f"xdao-export-browser-profile-{name}"
+        d.mkdir()
+        if name != "noport":
+            port_file = d / "DevToolsActivePort"
+            port_file.write_text("9000\n/devtools/browser/x\n", encoding="utf-8")
+            stamp = time.time() - age
+            os.utime(port_file, (stamp, stamp))
+        dirs[name] = d
+    unrelated = root / "unrelated-dir"
+    unrelated.mkdir()
+    (unrelated / "DevToolsActivePort").write_text("9000\n", encoding="utf-8")
+    monkeypatch.setattr(bl, "_profile_in_use", lambda p: p == dirs["alive"])
+    monkeypatch.setattr(bl, "live_browser_dirs", _REAL_LIVE_BROWSER_DIRS)
+    got = bl.stale_window_dirs(tmp_path / "profile")
+    assert got == [dirs["mute-new"].name, dirs["mute-old"].name]
+    assert dirs["alive"].name not in got and dirs["noport"].name not in got
+    assert all(str(root) not in name for name in got), "只报目录名，不报盘上路径"
+
+
+def test_profile_process_pids_counts_holders_of_the_jar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同罐进程那一段（v0.13.46）：命令行里正拿着这只罐的浏览器进程有几个（只读）。
+
+    真机 m40810：「同一只罐一条也读不到」只有两种形状 —— 还有第二个实例在共用这只罐
+    （pid 多于一个），或者用户在自己平时的浏览器里登录（pid 只有一个）。这一手只查、
+    不杀；普查被用例关掉（``_PROCESS_CENSUS``）时连 powershell 都不许起。
+    """
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    lines = "\n".join(
+        [
+            f"1111\t\"msedge.exe\" --user-data-dir=\"{profile}\" --remote-debugging-port=0",
+            f"2222\t\"msedge.exe\" --user-data-dir=\"{profile}\" --remote-debugging-port=0",
+            # 别人家浏览器（占位符写法，公开材料里不许出现本机用户名）。
+            "3333\t\"chrome.exe\" --user-data-dir=\"C:\\Users\\你\\AppData\\Local\\Google\\Chrome\\User Data\"",
+            f"4444\t\"msedge.exe\" --user-data-dir=\"{profile}\\browser-profile-8-9\"",
+            "",
+        ]
+    )
+    assert bl._parse_profile_process_pids(lines, profile) == [1111, 2222]
+    assert bl._parse_profile_process_pids("表头\t没有命令行\n", profile) == []
+    spawned: list = []
+    monkeypatch.setattr(bl, "_PROCESS_CENSUS", False)
+    monkeypatch.setattr(bl.subprocess, "run", lambda *a, **k: spawned.append(a))
+    assert bl.profile_process_pids(profile) == []
+    assert spawned == [], "普查关掉时不许真起一个 powershell"
+
+    class _Done:
+        stdout = lines
+
+    monkeypatch.setattr(bl, "_PROCESS_CENSUS", True)
+    monkeypatch.setattr(bl.subprocess, "run", lambda *a, **k: _Done())
+    assert bl.profile_process_pids(profile) == [1111, 2222]
+
+
 def test_watch_banner_script_carries_the_identity_line() -> None:
     """横幅脚本要点齐三件事：id 幂等、只在站内出现、说清「自动带上/换一块才点应用」。
 
@@ -1708,28 +1779,62 @@ def test_watch_banner_script_carries_the_identity_line() -> None:
     换饼干 —— 但这两个词仍要在句里，让人知道去哪换。
     v0.13.35（m36897）：旧窗口上冻着的横幅会装死，所以文案补「十几秒没拿到就点
     『应用』」这句保底，且**已存在的横幅也要刷新文案**（脚本里得有赋值那一手）。
+    v0.13.46（m40810）：横条从页面**顶上**挪到**窗底**（顶上的那条把「我的饼干」
+    列表的复选框与『应用』按钮压住了一半），并自带一个「×」收得起。
     """
     script = bl.build_watch_banner_script()
     assert bl.WATCH_BANNER_ID in script
     assert "程序正在看这个窗口" in script and "『应用』" in script
-    assert "自动带上" in script, "别再吓人说光登录不算完（m36307 证伪）"
+    assert "自己带上" in script, "别再吓人说光登录不算完（m36307 证伪）"
     assert "光登录不算完" not in script and "才算数" not in script
     assert "十几秒还没拿到" in script, "点应用这条保底路要留在句里"
     assert "窗口号" not in script, "没传号不许凭空造一个"
     assert "nmbxd1" in script, "站外的页面不该出现横幅"
     assert "getElementById" in script, "同一轮里反复注入要能认出『已经有了』"
-    assert "existing.textContent = text" in script, "旧横幅不刷新文案就是假信号（m36897）"
+    assert "label.textContent = text" in script, "旧横幅不刷新文案就是假信号（m36897）"
+    # v0.13.46：横条在窗底（bottom:0，不再 top:0），可收起，且只有那个「×」收得到点击
+    assert "bottom:0" in script and "top:0;" not in script, "别再把页面顶上的操作区压住"
+    assert "close" in script and "bar.remove()" in script, "横条要能自己收起（m40810）"
+    assert "pointer-events:auto" in script, "横条本体不吃点击，只有那个「×」吃"
 
 
 def test_watch_banner_script_carries_the_window_stamp() -> None:
-    """横幅末尾的【窗口号】（v0.13.35）：界面话术报同一个号，肉眼一比识破冻横幅。"""
+    """横幅末尾的【窗口号】（v0.13.35）：界面话术报同一个号，肉眼一比识破冻横幅。
+
+    v0.13.46 起传了端口就一起报「窗口号 · 端口」：日志里的「接=端口…」与眼前的窗
+    从此对得上号（真机 m40810 的两只罐现场就是靠这个分出来的）。
+    """
     script = bl.build_watch_banner_script("3F7A")
     assert "【窗口号 3F7A】" in script
     assert "【窗口号 】" not in script
+    assert "端口" not in script, "没传端口就不许写端口"
+    with_port = bl.build_watch_banner_script("3F7A", 53051)
+    assert "【窗口号 3F7A · 端口53051】" in with_port
+
+
+def test_remove_watch_banner_script_takes_the_bar_off() -> None:
+    """摘横幅的脚本（v0.13.46）：认得出、删掉、没有也不报错，全程吞异常。"""
+    script = bl.build_remove_watch_banner_script()
+    assert bl.WATCH_BANNER_ID in script
+    assert "remove()" in script
+    assert "'absent'" in script and "'removed'" in script
+
+    class _Session:
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            assert bl.WATCH_BANNER_ID in expression
+            return "removed"
+
+    assert bl.remove_watch_banner(_Session()) == "removed"  # type: ignore[arg-type]
+
+    class _Broken:
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            raise bl.CdpError("标签没了")
+
+    assert bl.remove_watch_banner(_Broken()) == ""  # type: ignore[arg-type]
 
 
 def test_ensure_watch_banner_passes_the_stamp_into_the_page() -> None:
-    """注入这手要把号原样带进 evaluate 的脚本里；吞异常的规矩不变。"""
+    """注入这手要把号与端口原样带进 evaluate 的脚本里；吞异常的规矩不变。"""
     seen: list[str] = []
 
     class _Session:
@@ -1737,8 +1842,9 @@ def test_ensure_watch_banner_passes_the_stamp_into_the_page() -> None:
             seen.append(expression)
             return "added"
 
-    assert bl.ensure_watch_banner(_Session(), "AB12") == "added"  # type: ignore[arg-type]
+    assert bl.ensure_watch_banner(_Session(), "AB12", 53051) == "added"  # type: ignore[arg-type]
     assert "AB12" in seen[0]
+    assert "端口53051" in seen[0]
 
 
 def test_ensure_watch_banner_swallows_every_failure() -> None:
@@ -4246,7 +4352,10 @@ def test_jar_forensics_names_every_other_window_when_asked() -> None:
 
     真机 m40502：同一扇挂着程序横幅的窗，F12 有 三条饼干含 userhash，对账行却一路
     只报 PHPSESSID。这一行把别的窗口的名单也摆出来，「同一只罐读漏了」和
-    「本来就两只罐」从此一张截图分得清；没传就不写这段（老截图不长尾巴）。
+    「本来就两只罐」从此一张截图分得清。
+
+    v0.13.46（m40810 的第二张截图）：这一段**总是在**（没有别的活窗就写「没有别的活窗口」）
+    —— 真机上「逐窗=」一句都没有，用户和程序都读不出「是没别的窗，还是这一手没跑」。
     """
     session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
     line = bl.jar_forensics(
@@ -4255,9 +4364,30 @@ def test_jar_forensics_names_every_other_window_when_asked() -> None:
         windows_tag="端口7002 browser-profile-8-9：PHPSESSID、userhash（userhash 在这一扇）",
     )
     assert "｜逐窗=端口7002 browser-profile-8-9：PHPSESSID、userhash（userhash 在这一扇）" in line
-    assert "逐窗=" not in bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert bl.jar_forensics(session).endswith("｜逐窗=没有别的活窗口")  # type: ignore[arg-type]
     long_tag = "端口1 罐：" + "名" * 400
     assert len(bl.jar_forensics(session, windows_tag=long_tag)) < 1000  # type: ignore[arg-type]
+
+
+def test_jar_forensics_names_the_mute_and_shared_jar_hints() -> None:
+    """哑窗=／同罐进程= 两段（v0.13.46）：把「另一扇窗」剩下的两种形状摆出来。
+
+    真机 m40810：程序读的那只罐里只有一条 PHPSESSID、也没有别的活窗 —— 而用户在同一个
+    目录名的另一扇窗里明明登着。两种形状只有这两段能分开：那扇窗的调试端口已经死了
+    （``哑窗=``，端口普查看不见它、进程还在），或者还有第二个实例在共用这只罐
+    （``同罐进程=N``，多于 1 就是它）。查不到就不写这两段，别写个空壳糊弄读者。
+    """
+    session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
+    line = bl.jar_forensics(  # type: ignore[arg-type]
+        session,
+        stale_tag="browser-profile-12268-1790850954",
+        procs_tag="2",
+    )
+    assert "｜哑窗=browser-profile-12268-1790850954｜" in line
+    assert line.endswith("｜同罐进程=2")
+    plain = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert "哑窗=" not in plain and "同罐进程=" not in plain
+    assert len(bl.jar_forensics(session, stale_tag="名" * 400)) < 1000  # type: ignore[arg-type]
 
 
 def test_named_userhash_entries_separates_present_from_plausible() -> None:
