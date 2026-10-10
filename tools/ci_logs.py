@@ -31,15 +31,33 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.request
 import zipfile
+from pathlib import Path
 
-REPO = "XiaoFeng7418/xdao-export"
-API = "https://api.github.com"
+# 仓库 slug、代理无关的「怎么问 GitHub」真源都在 xdao/ 与 tools/make_release.py 下；
+# 脚本要能直接 `python tools/ci_logs.py` 跑，所以先把仓库根与 tools 都挂进 sys.path
+# （tools 那一份是给下面 import make_release 用的）。
+_TOOLS = Path(__file__).resolve().parent
+_ROOT = _TOOLS.parent
+for _entry in (_ROOT, _TOOLS):
+    if str(_entry) not in sys.path:
+        sys.path.insert(0, str(_entry))
+
+from xdao.appinfo import GITHUB_REPO  # noqa: E402  （必须在上面那段 sys.path 之后）
+from xdao.github_api import (  # noqa: E402
+    API_BASE,
+    ApiError,
+    gh_token as _gh_token,
+    request_bytes,
+    should_retry_ci,
+)
+
+REPO = GITHUB_REPO
+API = API_BASE
 
 # GitHub 的结论里 failure 只是「没成功」的一种。以前只认 failure，
 # 于是 cancelled / timed_out 这些也印 ✓ —— 被取消的运行看着跟全绿一样。
@@ -62,46 +80,56 @@ def conclusion_text(conclusion: str | None) -> str:
 
 
 def token() -> str:
-    """优先取环境变量，其次复用 make_release 里的 gh 令牌读取逻辑。"""
-    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        value = os.environ.get(name)
-        if value:
-            return value.strip()
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    try:
-        import make_release  # type: ignore
+    """优先取环境变量，其次复用别处那套 gh 令牌读取逻辑。
 
-        return make_release.gh_token()
+    本脚本与别的脚本只有两处不同：环境变量顺序是 ``GH_TOKEN`` 在前，
+    以及拿不到令牌时抛的是 ``SystemExit``（命令行工具，不该吐 traceback）——
+    原先那份还会把内层的失败原因套进「拿不到 GitHub 令牌：…」里，这里照旧。
+    """
+    try:
+        return _gh_token(env_names=("GH_TOKEN", "GITHUB_TOKEN"))
     except Exception as exc:  # pragma: no cover - 仅本地辅助脚本
-        raise SystemExit(f"拿不到 GitHub 令牌：{exc}")
+        raise SystemExit(f"拿不到 GitHub 令牌：{exc}") from exc
 
 
 def api(path: str, tok: str, *, retries: int = 4):
-    url = path if path.startswith("http") else API + path
-    last: Exception | None = None
-    for attempt in range(retries):
-        req = urllib.request.Request(url)
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("User-Agent", "xdao-ci-logs")
-        req.add_header("Authorization", f"Bearer {tok}")
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", "replace")[:400]
-            if exc.code in RETRY_STATUS and attempt + 1 < retries:
-                last = exc
-                print(
-                    f"    （GitHub API {exc.code}，第 {attempt + 1} 次：等一会儿再试）",
-                    file=sys.stderr,
-                )
-                time.sleep(2 * (attempt + 1))
-                continue
-            raise SystemExit(f"GitHub API {exc.code}: {body}") from exc
-        except Exception as exc:  # 网络抖动，重试
-            last = exc
-            time.sleep(2 * (attempt + 1))
-    raise SystemExit(f"请求失败：{url} -> {last}")
+    """GET 一个接口路径，返回解析好的 JSON。
+
+    重试与退避的实现在 :func:`xdao.github_api.request_bytes`；这里保留本脚本那套
+    与别处都不同的尺度：``retries`` 是**总尝试次数**（不是重试次数）、白名单是更窄的
+    :data:`RETRY_STATUS`（501/505 不重试）、等待曲线 ``2×第几次``、重试提示打到 **stderr**，
+    以及网络异常时**最后一次失败也照等**（原实现就是无条件 sleep）。
+    """
+    raw = request_bytes(
+        "GET",
+        path,
+        token=tok,
+        timeout=120.0,
+        user_agent="xdao-ci-logs",
+        attempts=retries,
+        should_retry=should_retry_ci,
+        backoff=lambda tries: 2.0 * tries,
+        sleep_on_last_failure=True,
+        on_retry=_report_retry,
+        error=SystemExit,
+        http_failure=lambda code, detail: f"GitHub API {code}: {detail}",
+        gave_up=lambda last: f"请求失败：{path if path.startswith('http') else API + path} -> {last}",
+        chain_gave_up=True,
+    )
+    return json.loads(raw.decode("utf-8"))
+
+
+def _report_retry(tries: int, wait: float, failure: BaseException, last: BaseException) -> None:
+    """重试前的提示：只对 HTTP 状态码说话，而且打到 stderr（原实现如此）。
+
+    网络异常（超时、连接重置）原先是静默重试的，这里靠 ``isinstance(failure, HTTPError)``
+    把这条区别保住 —— 别顺手给网络抖动也加一句话。
+    """
+    if isinstance(failure, urllib.error.HTTPError):
+        print(
+            f"    （GitHub API {failure.code}，第 {tries} 次：等一会儿再试）",
+            file=sys.stderr,
+        )
 
 
 def latest_run(tok: str, repo: str = REPO) -> dict:

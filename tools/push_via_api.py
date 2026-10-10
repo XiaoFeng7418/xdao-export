@@ -31,75 +31,73 @@ import argparse
 import base64
 import json
 import os
-import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-API = "https://api.github.com"
+# 「怎么问 GitHub」的真源在 xdao/github_api.py；脚本要能直接
+# `python tools/push_via_api.py` 跑，所以先把仓库根挂进 sys.path 再 import。
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from xdao.github_api import (  # noqa: E402  （必须在上面那段 sys.path 之后）
+    API_BASE,
+    ApiError,
+    gh_token as _gh_token,
+    git as _git,
+    linear_backoff,
+    request_bytes,
+)
 
-class ApiError(RuntimeError):
-    pass
+API = API_BASE
 
 
 def gh_token() -> str:
-    """取 GitHub 令牌：优先环境变量，其次 PATH 上的 gh（可用 XDAO_GH 指定路径）。"""
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        return token.strip()
-    gh = os.environ.get("XDAO_GH") or "gh"
-    try:
-        result = subprocess.run([gh, "auth", "token"], capture_output=True, text=True)
-    except FileNotFoundError as exc:
-        raise ApiError(f"找不到 gh（{gh}）；请先 gh auth login，或设置 XDAO_GH") from exc
-    if result.returncode != 0 or not result.stdout.strip():
-        raise ApiError(f"取不到 gh 令牌：{result.stderr.strip()}")
-    return result.stdout.strip()
+    """取 GitHub 令牌：优先环境变量，其次 PATH 上的 gh（可用 XDAO_GH 指定路径）。
+
+    实现搬去了 :mod:`xdao.github_api`（四个脚本共用一份），这里保留原来的名字 ——
+    调用方与测试认的都是 ``push_via_api.gh_token``。本脚本原先那两句话与别处不同
+    （``XDAO_GH`` 后面不带「指向 gh.exe」、失败时把 gh 的 stderr 带出来），照旧传回去。
+    """
+    return _gh_token(
+        missing="找不到 gh（{gh}）；请先 gh auth login，或设置 XDAO_GH",
+        failed="取不到 gh 令牌：{stderr}",
+    )
 
 
 def api(token: str, method: str, path: str, payload: dict | None = None,
         retries: int = 4) -> dict:
-    """调用 GitHub API。网络抖动在本机很常见，因此默认重试若干次。"""
-    url = path if path.startswith("http") else API + path
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    last_error: Exception | None = None
-    for attempt in range(retries + 1):
-        req = urllib.request.Request(url, data=data, method=method)
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("User-Agent", "xdao-push")
-        req.add_header("X-GitHub-Api-Version", "2022-11-28")
-        if data:
-            req.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                body = resp.read()
-                return json.loads(body) if body else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:300]
-            # 5xx 与 429 值得重试；4xx 属于确定性错误（除非是限流）。
-            if exc.code in (429,) or 500 <= exc.code < 600:
-                last_error = ApiError(f"{method} {path} -> {exc.code} {detail}")
-            else:
-                raise ApiError(f"{method} {path} -> {exc.code}\n{detail}") from exc
-        except Exception as exc:  # 超时、连接重置、SSL EOF 都重试
-            last_error = exc
-        if attempt < retries:
-            wait = min(20.0, 2.0 * (attempt + 1))
-            print(f"    （网络失败，{wait:.0f} 秒后重试 {attempt + 2}/{retries + 1}：{type(last_error).__name__}）")
-            time.sleep(wait)
-    raise ApiError(f"{method} {path} 连续 {retries + 1} 次失败：{last_error}") from last_error
+    """调用 GitHub API。网络抖动在本机很常见，因此默认重试若干次。
+
+    重试与退避的实现在 :func:`xdao.github_api.request_bytes`；这里保留原先的行为：
+    ``retries`` 仍是**重试次数**（总尝试 ``retries + 1`` 次）、等待曲线 ``min(20, 2×第几次)``、
+    ``xdao-push`` 的 User-Agent 与 ``X-GitHub-Api-Version`` 头、提示文案一字不改，
+    最后那次失败仍带 ``from last_error`` 的因果链，4xx（除 429）仍立刻抛、不退避。
+    """
+    body = request_bytes(
+        method,
+        path,
+        token=token,
+        payload=payload,
+        timeout=180.0,
+        user_agent="xdao-push",
+        api_version="2022-11-28",
+        attempts=retries + 1,
+        backoff=lambda tries: linear_backoff(tries, limit=20.0),
+        on_retry=lambda tries, wait, failure, last: print(
+            f"    （网络失败，{wait:.0f} 秒后重试 {tries + 1}/{retries + 1}："
+            f"{type(last).__name__}）"
+        ),
+        retry_error=lambda exc, detail: ApiError(f"{method} {path} -> {exc.code} {detail}"),
+        gave_up=lambda last: f"{method} {path} 连续 {retries + 1} 次失败：{last}",
+        chain_gave_up=True,
+    )
+    return json.loads(body) if body else {}
 
 
-def git(*args: str) -> bytes:
-    result = subprocess.run(["git", *args], capture_output=True)
-    if result.returncode != 0:
-        raise ApiError(f"git {' '.join(args)} 失败：{result.stderr.decode('utf-8', 'replace')}")
-    return result.stdout
+#: ``git`` 子进程封装与 sync_from_api 那份是同一段逻辑，合并到 github_api 了。
+#: 名字留在本模块：调用方与测试认的都是 ``push_via_api.git``。
+git = _git
 
 
 def commit_message(sha: str) -> str:

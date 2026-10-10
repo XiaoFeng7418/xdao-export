@@ -677,6 +677,72 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.49**（按《架构评审-2026-10-07》§7.1 做的一次仓库级重构：目录与写权限下沉 `xdao/paths.py`、五个导出器立 `Exporter` 底座、产品名与 GitHub 问答抽成 `xdao/appinfo.py` / `xdao/github_api.py`；顺带删掉确认没人用的旧代码、合并两处重复，并修掉一条在忙机器上假红的界面用例）：
+  **一、来源与范围。** 用户 2026-10-07 要求「通读并梳理当前代码库，做一次基于第一性原理的架构评审」，评审写成
+  ``<工作目录>\xdao-export-架构评审-2026-10-07.md``（六节 + 登录链路专项诊断 + 需要用户补充的背景）；
+  用户随后（m42339）说「不过我们还是先把评审里的问题修一下吧」⇒ 本版只做 §7.1 的三件与 §6 里风险最低的那几项。
+  **推后**（不是漏做）：元信息渲染 4 份合一、EPUB 图片双存、``xdao/site.py``、``xdao/limits.py``、``gui.py`` 抽层（§7.3 阶段 C/D）。
+  **二、件 1：`xdao/paths.py`。** 把「这个目录写不写得进去」这件事从 ``exporters/_shared.py`` 原样搬进新模块
+  （``OutputDirNotWritable``、``PROBE_NAME``、``PROBE_ALT_NAME``、``ensure_writable``、``_probe_once``、``probe_writable``、
+  ``can_write_dir``、``DirChoice``、``fallback_dirs``、``_unique_dir``、``_with_reason``、``CLASSIC_BLOCK_HINT``、
+  ``choose_writable_dir``，docstring 保留 0.5.0→0.5.3 沿革），``_shared.py`` 只留转发 import 与 ``__all__``。
+  这样就消掉了两条**依赖方向倒挂**：``cache → exporters._shared`` 与 ``preflight → exporters._shared``。
+  改导入点：``xdao/cache.py:23-24``、``xdao/preflight.py:29-31``、``xdao/gui.py:29-31``、``xdao/exporters/__init__.py``；
+  ``tests/test_cli.py`` 两处 monkeypatch 目标从 ``xdao.exporters._shared.can_write_dir`` 改成 ``xdao.paths.can_write_dir``
+  （``choose_writable_dir`` 现在在自己模块里查找 ``can_write_dir``）。
+  **三、件 2：`xdao/exporters/base.py` 的 `class Exporter`。** 类属性 ``key`` / ``display`` / ``suffix`` / ``save_message`` /
+  ``lf_newlines``；``__init__(client, progress=None, filename_template=None, **options)``（不认识的参数落 ``self.options``，
+  构造不再因为参数名对不上而降级）；``_notify`` / ``output_name`` / ``target_path`` / ``build``（``NotImplementedError``）/
+  ``write_text``（``lf_newlines`` 为真时用 ``newline="\n"``）/ ``save`` 模板方法（``ensure_writable`` → 有 ``save_message`` 就提示
+  → ``target_path`` → ``write_text(build(...))``）。五个导出器改成继承：``html.py``（保留自己的 ``__init__`` 设 ``_image_cache``）、
+  ``txt.py``（提示留在 ``build`` 里）、``markdown.py``（``lf_newlines=True``）、``epub.py``（保留自己写 zip 的 ``build`` 与 ``save``）、
+  ``pdf.py``（保留 ``PdfError`` → 同名 ``.html`` 兜底，改用 ``self.target_path(...).with_suffix(".html")``）。
+  ``exporters/__init__.py`` 的 ``EXPORTERS`` 改成由类推导 ``{cls.key: (cls.display, cls.suffix, cls)}``（形状不变、顺序即界面下拉框顺序），
+  ``create_exporter`` 删掉那个**五层 TypeError 降级阶梯**，改成一个 dict 装参数、丢掉 ``None``、一次构造。
+  **四、件 3：`xdao/appinfo.py` + `xdao/github_api.py`。** ``appinfo``：``PRODUCT_NAME`` / ``WINDOW_TITLE`` / ``GITHUB_REPO`` /
+  ``USER_AGENT`` / ``PAYLOAD_PREFIX="xdao-export-v"`` / ``PLATFORM_TAG="-win64"`` / ``LAUNCHER_NAME`` / ``SIDECAR_SUFFIX`` /
+  ``VERSION`` / ``version()`` / ``payload_root_name()`` / ``payload_dir_name()`` / ``asset_name()`` / ``read_version(repo)``
+  （逐行读 ``repo/xdao/__init__.py``，不 import）。``github_api``：``gh_token()``（环境变量 → ``XDAO_GH`` → ``gh auth token``）、
+  ``_env_proxy`` / ``_winreg_proxy`` / ``_usable_proxy`` / ``detect_proxy`` / ``proxy_handlers`` / ``build_opener_with_proxy``、
+  ``default_backoff`` / ``linear_backoff`` / ``should_retry`` / ``should_retry_ci``、
+  ``request_bytes(...)``（退避与重试的唯一实现）、``git`` / ``git_in``。改用的地方：``xdao/update_check.py``、``xdao/updater.py``、
+  ``xdao/notifications.py``（``APP_TITLE``）、``xdao/gui.py``（窗口标题与页内标题都用 ``WINDOW_TITLE``）、
+  ``tools/{build_zip,make_release,push_via_api,sync_from_api,ci_logs,repo_check,gui_probe}.py``。
+  ``updater.py`` 那条 ``from .update_check import REPO, UpdateCheckError, detect_proxy`` 的**反向依赖**就此消失。
+  四个脚本保留自己的模块级名字（``gh_token`` / ``api`` / ``request_json`` / ``request_text`` / ``ApiError``）作薄包装 ——
+  测试 monkeypatch 打在这些名字上。**纪律**：不把这些脚本原先各不相同的退避参数、提示流向、重试白名单「统一」成一套，
+  差异用 ``request_bytes`` 的钩子表达（``attempts=retries`` 或 ``retries+1``、``limit=15`` / ``limit=20`` / ``2*n``、
+  提示走 stdout / stderr / 不提示、通用 ``429|5xx`` vs ci_logs 的窄白名单）。
+  **五、`git show` 救回的一个真 bug。** 抽 ``USER_AGENT`` 时写成 ``f".../{GITHUB_REPO}"`` 会拼出
+  ``github.com//XiaoFeng7418/xdao-export``（**双斜杠**，``GITHUB_REPO`` 自带斜杠），而旧字面量是单斜杠 ——
+  靠 ``git show HEAD:xdao/updater.py`` 比对才发现，已改回单斜杠并加注释（这是**对外可见**的请求头，值得记一笔）。
+  **六、§6.1 死代码：三处假阳性（以评审文档附录 B 为准）。** 那份「零引用」清单是静态扫描得来的，逐条 grep 复核发现：
+  ``client.import_userhash`` **有 4 个调用方**（``gui.py:881/:1187/:1324/:1706``）、``main._CONSOLE_HINT_FLAGS`` 在 ``main.py:91`` 在用、
+  ``pdf.is_frozen`` 在 ``pdf.py:113`` 在用且被 ``tests/test_pdf.py:395`` 钉着 ⇒ **三条都保留**。
+  ``browser_check.check_browsers`` 确是纯别名，但**有 4 处调用**（``gui.py``、``main.py`` 与 ``tests/test_gui_entry.py`` 的两处 monkeypatch），
+  所以是「删别名 + 改调用方」，顺手把 ``check_all`` 那段说反了的 docstring 改对（它是「第一个成功就 break」，
+  ``tests/test_browser_check.py:207`` 钉的就是这个）。
+  **真删掉的**：整个 ``xdao/fetcher.py``（122 行；``ThreadFetcher`` / ``to_thread_data`` 零引用，唯一有用的 ``parse_thread_id``
+  改从 ``.cache`` 取）、``cache.fingerprint_pairs``（零引用，且读 ``_page`` 而真实字段是 ``page``，恒第 1 页）、
+  ``cache.probe_cache_dir``（零引用）、``update_check.PROXY_DETECT_TIMEOUT``（零引用）；``README.md`` / ``HANDOFF.md`` 的树行同步。
+  **七、§6.2 两处去重 + 一处恒假判断。** ①``xdao/client.py`` 新增模块级 ``reply_count(payload)``，
+  ``XdaoClient._extract_page_count`` 的兜底与 ``cache.parse_reply_count``（变成薄包装）都用它 ⇒ 字段名与容错只剩一份。
+  ②``WatchTarget`` 序列化统一**写** ``hashes``（``watcher.py to_dict``），``from_dict`` 两个键都认（老配置文件仍读得进，
+  ``tests/test_cli.py`` 里那条 ``include_hashes`` 老夹具正好成了兼容性用例）；``watch_list._target_record`` 与
+  ``watcher.save_export_state`` 都改成从 ``to_dict()`` 派生，不再各写一份。③``client.py`` 里那段恒假的
+  ``any(isinstance(h, ProxyHandler) …)`` 换成直接装配 ``ProxyHandler(proxy_map)``。另外把 ``_attachment_url`` 的两份副本
+  （``markdown.py`` / ``epub.py``）收成 ``exporters/_shared.attachment_image_url``。
+  **八、假失败加固。** ``tests/test_gui_browser_login.py:497 _wait_for`` 的默认 ``timeout`` 从 5.0 改成 20.0
+  （与 ``tests/test_gui_entry.py:1099 _wait_until`` 一致）：2026-10-07 那次全量里
+  ``test_browser_that_dies_at_once_reports_a_readable_error`` 单独跑 26 秒通过、全量里被挤到超时（机器当时很挤）。
+  **九、顺带查清的本机环境坑（只影响开发脚本）。** 运行期 Python 的 ``DLLs\tcl86t.dll`` 是 Tcl **8.6.12**，
+  而 ``_scratch/run_pytest.py`` 原先钉的 ``<本机 Python>\tcl`` 已是 **8.6.15** ⇒ 报
+  ``version conflict for package "Tcl": have 8.6.12, need exactly 8.6.15``，**41 条 Tk 用例被静默跳过**（报告仍是「0 failed」）。
+  已改成优先用 ``Path(sys.executable).parent / "tcl"``（运行期自带、与 DLL 配套），找不到再退回旧树。
+  **十、测试与计数。** ``tests/test_exporters.py`` 加 4 条钉住新契约（五个导出器构造签名一致且多余参数进 ``options``、
+  注册表的显示名与扩展名来自类属性、``save`` 用类上的扩展名、每个注册类都是 ``Exporter`` 子类）。
+  收集 **1860 项**、本机 **1853 passed / 7 skipped**（``tests/test_exporters.py`` 77 → 81）。
+  契约五件套（文档事实、版本一致、使用说明分段、文本卫生、打包清单）全绿。
 - **v0.13.48**（补齐「到底是哪一扇、哪一只罐」这两件事的证据：「窗口=」「罐路径=」两段新证据、「同罐进程=」数出 0 也照写、上下文名单改成两处并起来）：
   **一、为什么还要再加一段。** v0.13.47 上线后用户第二次真机复验（2026-10-04 m41778/m41779）仍然读不到，
   这一轮的日志精确内容是这样的：``读罐对账：挂=https://www.nmbxd1.com/Member/User/Index/login.html｜页=1

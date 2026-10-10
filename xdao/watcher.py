@@ -49,22 +49,28 @@ class WatchTarget:
         return str(self.thread_id or self.url_or_id)
 
     def to_dict(self) -> dict:
+        """存进配置文件的形态。饼干筛选一律写成 ``hashes``（v0.13.49 起统一）。
+
+        历史上这里写的是 ``include_hashes``，与监控列表导入导出文件里的 ``hashes``
+        两个名字并存过一阵；``from_dict`` 两个都认，写只写一个。
+        """
         return {
             "url_or_id": self.url_or_id,
             "scope": self.scope,
             "format_key": self.format_key,
-            "include_hashes": list(self.include_hashes),
+            "hashes": list(self.include_hashes),
             "image_mode": self.image_mode,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "WatchTarget":
         image_mode = str(data.get("image_mode") or "embed")
+        raw_hashes = data.get("hashes", data.get("include_hashes"))
         return cls(
             url_or_id=str(data.get("url_or_id") or ""),
             scope=str(data.get("scope") or "all"),
             format_key=str(data.get("format_key") or "html"),
-            include_hashes=[str(h) for h in (data.get("include_hashes") or [])],
+            include_hashes=[str(h) for h in (raw_hashes or [])],
             image_mode=image_mode if image_mode in ("embed", "url", "drop") else "embed",
         )
 
@@ -115,20 +121,18 @@ def save_export_state(cache_dir: Path, target: WatchTarget, posts: int, exports:
     path = _export_state_path(cache_dir, target)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # 配置那几项走 to_dict()（与配置文件同一个形态），再补上跑出来的计数。
+        record = dict(target.to_dict())
+        record.update(
+            {
+                "thread_id": target.thread_id,
+                "posts": posts,
+                "exports": exports,
+                "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
         path.write_text(
-            json.dumps(
-                {
-                    "thread_id": target.thread_id,
-                    "scope": target.scope,
-                    "format_key": target.format_key,
-                    "include_hashes": list(target.include_hashes),
-                    "posts": posts,
-                    "exports": exports,
-                    "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(record, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except OSError:

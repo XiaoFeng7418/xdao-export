@@ -37,13 +37,8 @@ from ..browser_flags import launch_flags
 from ..cdp import CDPSession, CdpError
 from ..client import XdaoClient
 from ..pdf_opts import DEFAULT_PAPER, PdfOptions
-from ._shared import (
-    ThreadData,
-    derive_filename,
-    ensure_writable,
-    render_filename,
-    sanitize_filename,
-)
+from ._shared import ThreadData, ensure_writable
+from .base import Exporter
 from .html import HtmlBuilder
 
 # 常见安装位置，按顺序探测（用户自己装的优先于系统自带的 Edge）。
@@ -389,8 +384,13 @@ def _decode_pdf_data(result: dict) -> bytes:
     return data
 
 
-class PdfBuilder:
+class PdfBuilder(Exporter):
     """把串导出为 PDF。"""
+
+    key = "pdf"
+    display = "PDF（浏览器渲染）"
+    suffix = ".pdf"
+    save_message = "正在整理 HTML（图片内嵌）…"
 
     def __init__(
         self,
@@ -401,10 +401,9 @@ class PdfBuilder:
         pdf_timeout: int | None = None,
         fallback_html: bool = True,
         pdf_options: PdfOptions | None = None,
+        **options,
     ) -> None:
-        self._client = client
-        self._progress = progress
-        self.filename_template = filename_template
+        super().__init__(client, progress, filename_template, **options)
         self.browser_path = browser_path
         self.timeout = int(pdf_timeout or DEFAULT_TIMEOUT)
         # 浏览器启不来时是否退而保存 HTML（对用户总比什么都没有强）
@@ -414,13 +413,6 @@ class PdfBuilder:
         self.pdf_options = pdf_options
         # 复用 HTML 导出器：图片内嵌、正文渲染这些逻辑不再重复实现。
         self._html = HtmlBuilder(client, progress=progress, filename_template=filename_template)
-
-    def _notify(self, message: str) -> None:
-        if self._progress:
-            self._progress(message)
-
-    def output_name(self, thread: ThreadData) -> str:
-        return render_filename(self.filename_template, thread, derive_filename(thread))
 
     def render_pdf(self, html: str, _work_dir: Path, output_pdf: Path) -> Path:
         return render_html_to_pdf(
@@ -452,8 +444,8 @@ class PdfBuilder:
     ) -> Path:
         # PDF 与 HTML 一样，先确认目录可写，别等渲染完才失败。
         output_dir = ensure_writable(output_dir)
-        self._notify("正在整理 HTML（图片内嵌）…")
-        path = output_dir / (sanitize_filename(self.output_name(thread)) + ".pdf")
+        self._notify(self.save_message)
+        path = self.target_path(thread, output_dir)
         try:
             return self.build(thread, scope, path, include_hashes)
         except PdfError:
@@ -462,7 +454,7 @@ class PdfBuilder:
             # 浏览器启不来时，把抓到并渲染好的内容存成 HTML ——
             # 用户在浏览器里打开后按 Ctrl+P 即可另存为 PDF。
             self._notify("PDF 渲染失败，改为保存 HTML（可在浏览器里打印成 PDF）…")
-            html_path = output_dir / (sanitize_filename(self.output_name(thread)) + ".html")
+            html_path = self.target_path(thread, output_dir).with_suffix(".html")
             html_path.write_text(
                 self._html.build(thread, scope, include_hashes), encoding="utf-8"
             )

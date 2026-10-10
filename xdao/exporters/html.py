@@ -5,24 +5,20 @@ from __future__ import annotations
 import base64
 import concurrent.futures
 import html as html_lib
-from pathlib import Path
 
 from ..client import Post, XdaoClient
 from ._shared import (
     ThreadData,
-    derive_filename,
-    ensure_writable,
     fetch_image,
     guess_mime,
     iter_post_image_urls,
     plain_text,
-    render_filename,
     resolve_image_url,
-    sanitize_filename,
 )
+from .base import Exporter
 
 
-class HtmlBuilder:
+class HtmlBuilder(Exporter):
     """生成图片内嵌的 HTML。
 
     - 图片以 data URI 内嵌，导出的文件可以单独转发、离线打开、直接打印成 PDF。
@@ -30,18 +26,23 @@ class HtmlBuilder:
     - 同一张图片在多个楼层出现只下载一次。
     """
 
+    key = "html"
+    display = "HTML（图片嵌入）"
+    suffix = ".html"
+    save_message = "正在整理并保存 HTML 文件…"
+
     # 内嵌图片的内存缓存上限，超过就丢弃，避免超长串把内存吃满。
     MAX_CACHE_ENTRIES = 2000
 
-    def __init__(self, client: XdaoClient, progress=None, filename_template: str | None = None) -> None:
-        self._client = client
-        self._progress = progress
-        self.filename_template = filename_template
+    def __init__(
+        self,
+        client: XdaoClient,
+        progress=None,
+        filename_template: str | None = None,
+        **options,
+    ) -> None:
+        super().__init__(client, progress, filename_template, **options)
         self._image_cache: dict[str, str] = {}
-
-    def _notify(self, message: str) -> None:
-        if self._progress:
-            self._progress(message)
 
     # ---------- 图片 ----------
 
@@ -249,23 +250,3 @@ class HtmlBuilder:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             list(executor.map(load, wanted))
-
-    # ---------- 保存 ----------
-
-    def output_name(self, thread: ThreadData) -> str:
-        """按模板（若设置）推导文件名主体。"""
-        return render_filename(self.filename_template, thread, derive_filename(thread))
-
-    def save(
-        self,
-        thread: ThreadData,
-        scope: str = "all",
-        output_dir: Path | str = ".",
-        include_hashes: list[str] | None = None,
-    ) -> Path:
-        # 先确认目录可写，避免抓了几分钟才在最后一步失败。
-        output_dir = ensure_writable(output_dir)
-        self._notify("正在整理并保存 HTML 文件…")
-        path = output_dir / (sanitize_filename(self.output_name(thread)) + ".html")
-        path.write_text(self.build(thread, scope, include_hashes), encoding="utf-8")
-        return path

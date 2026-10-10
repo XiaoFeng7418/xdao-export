@@ -31,6 +31,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# 产品名、启动器名、包名与版本号读法的真源都在 xdao/appinfo.py —— 更新检查与升级器
+# 认的是同一张表，这里不再各拼一遍。脚本要能直接 `python tools/build_zip.py` 跑，
+# 所以先把仓库根挂进 sys.path 再 import（和 tools/repo_info.py 一个路子）。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from xdao.appinfo import (  # noqa: E402  （必须在上面那段 sys.path 之后）
+    LAUNCHER_NAME,
+    PRODUCT_NAME,
+    SIDECAR_SUFFIX,
+    asset_name,
+    payload_dir_name,
+    payload_root_name,
+    read_version,
+)
+
 #: 打进包里的几个仓库文件（源文件 -> 包内文件名）。使用说明要给用户看，
 #: 两个 .ps1/.cmd 是「把抓取与导出的每一步写进日志」的诊断脚本，出问题时让用户跑它。
 EXTRA_FILES: tuple[tuple[str, str], ...] = (
@@ -44,7 +60,7 @@ EXTRA_FILES: tuple[tuple[str, str], ...] = (
 NEEDS_BOM = ("使用说明.txt", "诊断写入.ps1", "诊断写入-双击运行.cmd")
 
 AUTHOR = "晓风"
-PRODUCT = "X岛串导出工具"
+PRODUCT = PRODUCT_NAME
 
 
 def version_quad(version: str) -> tuple[int, int, int, int]:
@@ -79,7 +95,7 @@ def version_file_text(version: str, author: str = AUTHOR, product: str = PRODUCT
         f"         StringStruct('FileVersion', '{version}'),\n"
         "         StringStruct('InternalName', 'xdao-export'),\n"
         f"         StringStruct('LegalCopyright', '{author} · MIT 许可'),\n"
-        "         StringStruct('OriginalFilename', 'xdao-export.exe'),\n"
+        f"         StringStruct('OriginalFilename', '{LAUNCHER_NAME}'),\n"
         f"         StringStruct('ProductName', '{product}'),\n"
         f"         StringStruct('ProductVersion', '{version}')]\n"
         "      )]),\n"
@@ -144,14 +160,6 @@ def check_docs(repo: Path, version: str) -> list[str]:
     return problems
 
 
-def read_version(repo: Path) -> str:
-    """直接读 `xdao/__init__.py`，不 import —— 打包脚本不该把整个包加载起来。"""
-    for line in (repo / "xdao" / "__init__.py").read_text(encoding="utf-8").splitlines():
-        if line.startswith("__version__"):
-            return line.split("=", 1)[1].strip().strip('"').strip("'")
-    raise SystemExit("xdao/__init__.py 里找不到 __version__")
-
-
 def kill_leftover_exe() -> None:
     """清掉还在跑的打包版进程。
 
@@ -161,7 +169,7 @@ def kill_leftover_exe() -> None:
     if os.name != "nt":
         return
     subprocess.run(
-        ["taskkill", "/F", "/IM", "xdao-export.exe"],
+        ["taskkill", "/F", "/IM", LAUNCHER_NAME],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
@@ -216,14 +224,14 @@ def main(argv: list[str] | None = None) -> int:
         print("PyInstaller 打包中…", flush=True)
         dist = build_pyinstaller(repo, args.python, version_file, work, out / "pyinstaller")
 
-        root = out / f"xdao-export-v{version}"
-        stage = root / f"xdao-export-v{version}-win64"
+        root = out / payload_root_name(version)
+        stage = root / payload_dir_name(version)
         kill_leftover_exe()
         if root.exists():
             shutil.rmtree(root)
         stage.mkdir(parents=True)
         shutil.copytree(dist / "_internal", stage / "_internal")
-        shutil.copy2(dist / "xdao-export.exe", stage / "xdao-export.exe")
+        shutil.copy2(dist / LAUNCHER_NAME, stage / LAUNCHER_NAME)
         for source, name in EXTRA_FILES:
             shutil.copy2(repo / source, stage / name)
 
@@ -238,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(f"  ✓ {name}：{path.stat().st_size} 字节，BOM 正常", flush=True)
 
-        zip_path = out / f"xdao-export-v{version}-win64.zip"
+        zip_path = out / asset_name(version)
         if zip_path.exists():
             zip_path.unlink()
         count = 0
@@ -248,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
                 count += 1
 
         digest = sha256_file(zip_path)
-        sidecar = Path(str(zip_path) + ".sha256")
+        sidecar = Path(str(zip_path) + SIDECAR_SUFFIX)
         sidecar.write_text(sidecar_text(digest, zip_path.name), encoding="utf-8", newline="\n")
 
         print(f"zip：{zip_path}", flush=True)
@@ -256,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  SHA256 {digest}", flush=True)
         print(f"校验文件：{sidecar.name}（{sidecar.stat().st_size} 字节）", flush=True)
 
-        exe = stage / "xdao-export.exe"
+        exe = stage / LAUNCHER_NAME
         if os.name == "nt":
             for extra in (["--version"], ["--selftest"]):
                 done = subprocess.run(

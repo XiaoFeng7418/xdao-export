@@ -173,15 +173,13 @@ def _target_record(target: WatchTarget) -> dict:
     这类字段是**跑出来的临时状态**，跟着缓存目录走。导出它们会让导入方以为
     「这个串已经检查过了、文件也导出过了」，于是第一轮该导出的不导出；
     而缓存目录在另一台机器上根本没有。所以只搬配置，导入后第一轮会正常导出一份。
+
+    配置那几项与配置文件里的形态**同一个来源**（``WatchTarget.to_dict``，v0.13.49
+    起统一写 ``hashes``），这里只多补一个 ``thread_id`` 方便人读写。
     """
-    return {
-        "url_or_id": target.url_or_id,
-        "thread_id": target.thread_id,
-        "scope": target.scope,
-        "format_key": target.format_key,
-        "hashes": list(target.include_hashes),
-        "image_mode": target.image_mode,
-    }
+    record = target.to_dict()
+    record["thread_id"] = target.thread_id
+    return record
 
 
 def export_targets(

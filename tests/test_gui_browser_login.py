@@ -494,7 +494,14 @@ def _pump(root: tk.Tk, seconds: float = 0.1) -> None:
         time.sleep(0.01)
 
 
-def _wait_for(root: tk.Tk, predicate, timeout: float = 5.0) -> bool:
+def _wait_for(root: tk.Tk, predicate, timeout: float = 20.0) -> bool:
+    """等对话框上的某个变化出现。
+
+    默认 20 秒（与 ``test_gui_entry._wait_until`` 一致）：这条路会真的启一次浏览器、
+    还要把每个候选浏览器走一遍，机器忙的时候 5 秒不够 —— 2026-10-07 的那次全量里
+    ``test_browser_that_dies_at_once_reports_a_readable_error`` 就是这么假红的
+    （单独跑 26 秒通过、全量里被挤到超时）。
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         root.update()

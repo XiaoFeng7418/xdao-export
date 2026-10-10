@@ -25,7 +25,7 @@ from pathlib import Path
 from ..client import Post
 from ._shared import (
     ThreadData,
-    derive_filename,
+    attachment_image_url,
     ensure_writable,
     fetch_image,
     guess_mime,
@@ -33,10 +33,9 @@ from ._shared import (
     markdown_images_to_xhtml,
     mime_to_ext,
     plain_text,
-    render_filename,
     render_inline_content,
-    sanitize_filename,
 )
+from .base import Exporter
 
 
 # 没有 PO 饼干时给一个固定的作者名兜底。
@@ -94,8 +93,14 @@ def _epub_title(thread: ThreadData) -> str:
     return derive_filename(thread)
 
 
-class EpubBuilder:
+class EpubBuilder(Exporter):
     """把串导出成 epub 文件。"""
+
+    key = "epub"
+    display = "EPUB（电子书）"
+    suffix = ".epub"
+    # 进度提示在 build 里（「正在生成 EPUB 文件…」）。
+    save_message = ""
 
     def __init__(
         self,
@@ -103,10 +108,9 @@ class EpubBuilder:
         progress=None,
         filename_template: str | None = None,
         image_mode: str | None = None,
+        **options,
     ) -> None:
-        self._client = client
-        self._progress = progress
-        self.filename_template = filename_template
+        super().__init__(client, progress, filename_template, **options)
         # 构造函数里的设置作为 build()/save() 未显式传参时的默认值。
         self.image_mode = image_mode if image_mode in ("embed", "url", "drop") else "embed"
         # url -> 图片原始字节；None 表示下载失败，不再重试。
@@ -115,10 +119,6 @@ class EpubBuilder:
         self._uri_cache: dict[str, str] = {}
 
     # ---------- 基础工具 ----------
-
-    def _notify(self, message: str) -> None:
-        if self._progress:
-            self._progress(message)
 
     def build(
         self,
@@ -141,15 +141,11 @@ class EpubBuilder:
             self._write_epub(archive, thread, posts, images, image_mode)
         return output_path
 
-    def output_name(self, thread: ThreadData) -> str:
-        """按模板（若设置）推导文件名主体。"""
-        return render_filename(self.filename_template, thread, derive_filename(thread))
-
     def save(
         self,
         thread: ThreadData,
-        scope: str,
-        output_dir: Path,
+        scope: str = "all",
+        output_dir: Path | str = ".",
         *,
         image_mode: str | None = None,
         include_hashes: list[str] | None = None,
@@ -157,11 +153,10 @@ class EpubBuilder:
         """在 output_dir 下按文件名模板（或推导结果）保存。"""
         # 先确认目录可写，避免抓了几分钟才在最后一步失败。
         output_dir = ensure_writable(output_dir)
-        name = sanitize_filename(self.output_name(thread)) + ".epub"
         return self.build(
             thread,
             scope,
-            output_dir / name,
+            self.target_path(thread, output_dir),
             image_mode=image_mode,
             include_hashes=include_hashes,
         )
@@ -228,20 +223,6 @@ class EpubBuilder:
             return self._data_uri_for(url)
         return url
 
-    def _attachment_url(self, post: Post) -> str:
-        """post.img / post.ext 对应的附件图 URL，没有则空串。"""
-        if not (post.img and post.ext):
-            return ""
-        try:
-            url = self._client.image_url(post.img, post.ext)
-        except Exception:
-            # 附件图地址异常不该影响导出。
-            return ""
-        if not url:
-            return ""
-        # 以公共收集逻辑为准，避免正文里出现同名的相对地址时重复附图。
-        return url if url in iter_post_image_urls(self._client, post) else ""
-
     # ---------- 正文 ----------
 
     def _render_body(self, post: Post, image_mode: str) -> str:
@@ -252,7 +233,7 @@ class EpubBuilder:
             image_mode=image_mode,
             embedder=self._data_uri_for,
         )
-        attachment = self._attachment_url(post)
+        attachment = attachment_image_url(self._client, post)
         if attachment:
             # 附件图不在正文里，单独作为一段图片附加在正文后面。
             markdown = (
