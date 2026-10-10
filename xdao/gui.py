@@ -24,12 +24,12 @@ from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .cache import CachedThreadFetcher, resolve_cache_dir
+from .appinfo import WINDOW_TITLE
+from .cache import CachedThreadFetcher, parse_thread_id, resolve_cache_dir
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
-from .exporters._shared import OutputDirNotWritable, choose_writable_dir, ensure_writable
-from .fetcher import parse_thread_id
 from .notifications import Notifier
+from .paths import OutputDirNotWritable, choose_writable_dir, ensure_writable
 from . import pdf_opts, theme, watch_list
 from .settings import AppSettings
 from .theme import apply_theme, font, mono, resolve_fonts
@@ -3135,7 +3135,7 @@ class SelftestDialog(tk.Toplevel):
                 self._browser_queue.put(("progress", message))
 
             try:
-                report = browser_check.check_browsers(explicit or "", progress=progress)
+                report = browser_check.check_all(explicit or "", progress=progress)
             except Exception as exc:  # noqa: BLE001 —— 探测自己出错也要说人话
                 self._browser_queue.put(
                     ("error", f"{type(exc).__name__}: {exc}")
@@ -3268,7 +3268,9 @@ class App:
         # 切换主题时旧控件会被销毁，这里记住本次实例出来的控件，便于重建
         self._widget_roots: list[tk.Misc] = []
 
-        root.title("X岛串导出")
+        # 窗口标题的真源是 xdao/appinfo.WINDOW_TITLE：tools/gui_probe.py 就是拿它
+        # 核对「主窗口到底起没起来」的，两处不许各写一份字面量。
+        root.title(WINDOW_TITLE)
         root.geometry("1060x760")
         root.minsize(940, 680)
 
@@ -3441,7 +3443,7 @@ class App:
 
         title_box = ttk.Frame(header)
         title_box.grid(row=0, column=0, sticky="w")
-        ttk.Label(title_box, text="X岛串导出", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(title_box, text=WINDOW_TITLE, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             title_box,
             text="HTML · PDF · TXT · Markdown · EPUB　|　断点续传 · 图片缓存 · 更新监控",

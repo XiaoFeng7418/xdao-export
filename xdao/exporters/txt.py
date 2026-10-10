@@ -2,34 +2,22 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from ..client import XdaoClient
-from ._shared import (
-    ThreadData,
-    derive_filename,
-    ensure_writable,
-    iter_post_image_urls,
-    plain_text,
-    render_filename,
-    sanitize_filename,
-)
+from ._shared import ThreadData, derive_filename, iter_post_image_urls, plain_text
+from .base import Exporter
 
 _SEPARATOR = "=" * 48
 _POST_SEPARATOR = "-" * 48
 
 
-class TxtBuilder:
+class TxtBuilder(Exporter):
     """生成便于阅读和检索的纯文本。"""
 
-    def __init__(self, client: XdaoClient, progress=None, filename_template: str | None = None) -> None:
-        self._client = client
-        self._progress = progress
-        self.filename_template = filename_template
-
-    def _notify(self, message: str) -> None:
-        if self._progress:
-            self._progress(message)
+    key = "txt"
+    display = "TXT（纯文本）"
+    suffix = ".txt"
+    # 进度提示放在 build 里（「正在生成 TXT 文件…」），保存阶段不再重复一句。
+    save_message = ""
 
     def build(
         self,
@@ -82,19 +70,3 @@ class TxtBuilder:
             lines.append("")
 
         return "\n".join(lines)
-
-    def output_name(self, thread: ThreadData) -> str:
-        return render_filename(self.filename_template, thread, derive_filename(thread))
-
-    def save(
-        self,
-        thread: ThreadData,
-        scope: str = "all",
-        output_dir: Path | str = ".",
-        include_hashes: list[str] | None = None,
-    ) -> Path:
-        # 先确认目录可写，避免抓了几分钟才在最后一步失败。
-        output_dir = ensure_writable(output_dir)
-        path = output_dir / (sanitize_filename(self.output_name(thread)) + ".txt")
-        path.write_text(self.build(thread, scope, include_hashes), encoding="utf-8")
-        return path

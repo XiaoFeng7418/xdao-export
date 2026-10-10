@@ -1113,7 +1113,7 @@ def test_selftest_dialog_has_a_way_to_find_out_if_the_browser_even_starts(
     """自检里要能回答「浏览器到底起不起得来」——不是「装没装」。
 
     这条路真的会把假浏览器启一次（假货自己写端口文件、假调试服务答一句话），
-    所以它验的是整条链路：按钮 → 后台线程 → ``browser_check.check_browsers``
+    所以它验的是整条链路：按钮 → 后台线程 → ``browser_check.check_all``
     → 结论写回文本区。假货用闸门拦住到**真结果已经回到队列里**为止，这样
     「跑着的按钮是禁用的」不是靠抢时间断言出来的。
     """
@@ -1136,16 +1136,16 @@ def test_selftest_dialog_has_a_way_to_find_out_if_the_browser_even_starts(
     )
     gate = threading.Event()
     # 先把真实现存下来：monkeypatch 之后模块属性就是替身了，
-    # 替身里再调 ``browser_check.check_browsers`` 会自己调自己（第一次写成那样，
+    # 替身里再调 ``browser_check.check_all`` 会自己调自己（第一次写成那样，
     # 界面上显示的是 ``RecursionError: maximum recursion depth exceeded``）。
-    real_check = browser_check.check_browsers
+    real_check = browser_check.check_all
 
     def gated_check(*args, **kwargs):
         report = real_check(*args, **kwargs)
         gate.wait(20.0)  # 结果已经在手上，但先别交回主线程
         return report
 
-    monkeypatch.setattr(browser_check, "check_browsers", gated_check)
+    monkeypatch.setattr(browser_check, "check_all", gated_check)
     app = _SelftestApp(dialog_root)
     dialog = _open_selftest(dialog_root, app)
     try:
@@ -1185,7 +1185,7 @@ def test_selftest_browser_check_says_so_when_the_probe_itself_blows_up(
     def boom(*args, **kwargs):
         raise RuntimeError("探测炸了")
 
-    monkeypatch.setattr(browser_check, "check_browsers", boom)
+    monkeypatch.setattr(browser_check, "check_all", boom)
     app = _SelftestApp(dialog_root)
     dialog = _open_selftest(dialog_root, app)
     try:

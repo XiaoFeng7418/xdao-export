@@ -53,6 +53,20 @@ class XdaoError(Exception):
     """X 岛访问错误。"""
 
 
+def reply_count(payload) -> int:
+    """从接口返回里稳妥地取出回复数（字段名与容错只此一处，v0.13.49）。
+
+    接口有时把它写成字符串、有时干脆没有这个字段；猜字段名这件事以前在
+    ``XdaoClient._extract_page_count`` 与 ``cache.parse_reply_count`` 各写过一份。
+    """
+    if not isinstance(payload, dict):
+        return 0
+    try:
+        return max(0, int(payload.get("ReplyCount") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class LoginError(XdaoError):
     """登录相关错误。"""
 
@@ -120,13 +134,9 @@ class XdaoClient:
 
         handlers: list[urllib.request.BaseHandler] = []
         self.proxy = (proxy or "").strip() or self._proxy_from_env()
-        if self.proxy:
-            handlers.append(
-                urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy})
-            )
-        if not any(isinstance(h, urllib.request.ProxyHandler) for h in handlers):
-            # 显式装配空代理，避免继承系统级代理设置导致行为不可预期。
-            handlers.append(urllib.request.ProxyHandler({}))
+        # 显式装配代理；没有代理时也装一个空的，免得继承系统级代理设置让行为不可预期。
+        proxy_map = {"http": self.proxy, "https": self.proxy} if self.proxy else {}
+        handlers.append(urllib.request.ProxyHandler(proxy_map))
 
         self._jar = CookieJar()
         handlers.append(urllib.request.HTTPCookieProcessor(self._jar))
@@ -701,10 +711,7 @@ class XdaoClient:
                 continue
             if value > 0:
                 return value
-        try:
-            return max(1, int(payload.get("ReplyCount") or 0) // 19 + 1)
-        except (TypeError, ValueError):
-            return 1
+        return max(1, reply_count(payload) // 19 + 1)
 
     def parse_thread_page(self, payload: dict, page: int | None = None) -> dict:
         """把一页 /thread 的原始数据解析成规范结构。

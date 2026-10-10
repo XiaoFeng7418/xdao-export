@@ -254,12 +254,13 @@ def check_all(
     env: dict | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> BrowserReport:
-    """挨个试候选浏览器，**直到有一个能起来**（不是试到一个能用就停）。
+    """挨个试候选浏览器，直到有一个能起来（或候选试完）。
 
-    和 :func:`check_browsers` 的差别只在「什么时候停」：那条路（``--check-browser``）
-    要回答的是「我现在点得动吗」，能起来就够了；这条路要回答的是「自己那个起不来是
-    普遍现象，还是只有它」—— 用户碰到的正是「默认浏览器（Edge）一起来就被拦下，
-    但 Chrome 能用」，只报告第一个失败会让人以为整条路都废了。
+    碰到起不来的**不**收手，继续试下一个：现场就是「默认那个（Edge）一起来就被
+    拦下，但 Chrome 能用」，只报告第一个失败会让人以为整条路都废了。第一个候选是
+    用户在设置里指定的那个 / 系统默认浏览器（和「用浏览器登录」同一套挑选逻辑），
+    所以这份结论能直接回答「我为什么点不动」。CLI 的 ``--check-browser``、界面上的
+    「试浏览器」按钮与自检都走这一个入口（v0.13.49 起不再有 ``check_browsers`` 别名）。
     """
     head = find_browser(explicit or None, env)
     if head is None:
@@ -287,21 +288,3 @@ def check_all(
         if check.ok:
             break  # 有一个能起来就够了，剩下的不必挨个启动一遍
     return BrowserReport(checks)
-
-
-def check_browsers(
-    explicit: str = "",
-    *,
-    timeout: float = DEFAULT_TIMEOUT,
-    limit: int = DEFAULT_LIMIT,
-    env: dict | None = None,
-    progress: Callable[[str], None] | None = None,
-) -> BrowserReport:
-    """依次试几个候选浏览器，返回第一个「能起来」的结论。
-
-    第一个是**用户在设置里指定的那个 / 系统默认浏览器**（和「用浏览器登录」走的是
-    同一个挑选逻辑），所以这份结论能直接回答「我为什么点不动」。
-    """
-    return check_all(
-        explicit, timeout=timeout, limit=limit, env=env, progress=progress
-    )

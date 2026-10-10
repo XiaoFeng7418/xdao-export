@@ -20,8 +20,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .client import Post, XdaoClient, XdaoError
-from .exporters._shared import OutputDirNotWritable, can_write_dir, ensure_writable
+from .client import Post, XdaoClient, XdaoError, reply_count
+from .paths import OutputDirNotWritable, can_write_dir, ensure_writable
 
 # 缓存格式版本，结构不兼容时旧缓存自动失效。
 CACHE_VERSION = 1
@@ -79,15 +79,6 @@ class CachedThread:
     retry_note: str = ""
     # 产物是否明确不完整（缺页，或撞上页数上限没抓完）。界面据此给不同的提示。
     truncated: bool = False
-
-    def fingerprint_pairs(self) -> list[tuple[int, str, str]]:
-        """(页号, 楼层 id, 指纹) 三元组，用于回写缓存。"""
-        pairs: list[tuple[int, str, str]] = []
-        for post in self.posts:
-            page = int(getattr(post, "_page", 1) or 1)
-            pairs.append((page, str(post.id), post_fingerprint(post)))
-        return pairs
-
 
 @dataclass
 class ThreadCache:
@@ -248,11 +239,8 @@ class ThreadCache:
 
 
 def parse_reply_count(payload: dict) -> int:
-    """从接口返回里稳妥地取出回复数。"""
-    try:
-        return max(0, int(payload.get("ReplyCount") or 0))
-    except (TypeError, ValueError):
-        return 0
+    """从接口返回里稳妥地取出回复数（薄包装；真源在 :func:`xdao.client.reply_count`）。"""
+    return reply_count(payload)
 
 
 def default_cache_dir(base: Path | None = None) -> Path:
@@ -322,14 +310,6 @@ def resolve_cache_dir(preferred: Path | str | None = None) -> tuple[Path, str]:
                 "想固定下来可以在设置里改「缓存目录」。"
             )
     return first, ""
-
-
-def probe_cache_dir(preferred: Path | str | None = None):
-    """resolve_cache_dir 的薄包装，交给调用方自行处理异常。"""
-    try:
-        return resolve_cache_dir(preferred)
-    except OSError:
-        return Path(preferred) if preferred else default_cache_dir(), ""
 
 
 _THREAD_ID_RE = re.compile(r"(?:^|/t/|/thread/|/id/)(\d{3,})")

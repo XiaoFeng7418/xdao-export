@@ -15,30 +15,31 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from .appinfo import GITHUB_REPO, USER_AGENT, VERSION, asset_name
+# 代理探测与 opener 装配的实现在 xdao/github_api.py：xdao/updater.py 下载升级包时也要
+# 用同一套，而它原先得反过来 import 本模块。名字仍从本模块出去（下面有转发），
+# 免得调用方与测试里打在 update_check 上的桩失效。
+from .github_api import _env_proxy, _usable_proxy, _winreg_proxy, build_opener_with_proxy
 from .settings import app_config_dir
 
-# 问的就是自家仓库，写死即可。
-REPO = "XiaoFeng7418/xdao-export"
+# 问的就是自家仓库。仓库地址与 User-Agent 的真源在 xdao/appinfo.py（打包脚本、
+# CI 工具问的是同一个），这里只是把老名字留在原地。
+REPO = GITHUB_REPO
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 
 #: 缓存多久之内不再问接口。
 CACHE_TTL_SECONDS = 24 * 60 * 60
 #: 单次请求超时（秒）。这是锦上添花的功能，不能让人等。
 TIMEOUT_SECONDS = 8.0
-#: 代理探测也很快，给个更短的超时。
-PROXY_DETECT_TIMEOUT = 3.0
 
-_USER_AGENT = f"xdao-export/{__version__} (+https://github.com/{REPO})"
+_USER_AGENT = USER_AGENT
 
 _CACHE_NAME = "update-check.json"
 _MAX_RESPONSE_BYTES = 512 * 1024
@@ -81,7 +82,7 @@ class UpdateResult:
 
     ok: bool = False
     newer: bool = False
-    current: str = __version__
+    current: str = VERSION
     latest: ReleaseInfo | None = None
     reason: str = ""
     from_cache: bool = False
@@ -180,65 +181,18 @@ def is_newer(remote: str, local: str) -> bool:
 # 这个功能问的是 GitHub，和 X 岛接口不是一回事：用户为 X 岛配的代理可能只
 # 代理了别处，而 GitHub 在国内常常需要梯子。所以这里自己决定用哪个代理：
 # 环境变量优先，其次 Windows「Internet 选项」里的系统代理（很多梯子只写这
-# 一处），都没有就直连。
-
-
-def _env_proxy() -> str:
-    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
-        value = (os.environ.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _winreg_proxy() -> str:
-    """读 Windows 的「Internet 选项」代理设置（读不到就空串）。"""
-    try:
-        import winreg
-    except ImportError:
-        return ""
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-        ) as key:
-            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
-            server, _ = winreg.QueryValueEx(key, "ProxyServer")
-    except OSError:
-        return ""
-    if not enabled or not server:
-        return ""
-    text = str(server)
-    # 可能是「http=host:port;https=host:port」这种按协议分开的写法。
-    if "=" in text:
-        for item in text.split(";"):
-            name, _, value = item.partition("=")
-            if name.strip().lower() == "https" and value.strip():
-                return value.strip()
-        return ""
-    return text
-
-
-def _usable_proxy(text: str) -> str:
-    """把注册表里的 ``127.0.0.1:7890`` 补成 ``http://127.0.0.1:7890``。"""
-    candidate = (text or "").strip()
-    if not candidate:
-        return ""
-    if "://" not in candidate:
-        candidate = f"http://{candidate}"
-    try:
-        parsed = urllib.parse.urlsplit(candidate)
-    except ValueError:
-        return ""
-    if parsed.scheme not in ("http", "https"):
-        return ""
-    if not parsed.hostname or not parsed.port:
-        return ""
-    return candidate
+# 一处），都没有就直连。具体实现（``_env_proxy`` / ``_winreg_proxy`` /
+# ``_usable_proxy``）在 xdao/github_api.py，本模块按老名字转发过来。
 
 
 def detect_proxy() -> str:
-    """当前该用哪个代理（空串表示直连）。"""
+    """当前该用哪个代理（空串表示直连）。
+
+    实现搬去了 :mod:`xdao.github_api`（``updater`` 下载升级包用的是同一套），但这个
+    函数留在原处：调用方与测试都在 ``update_check.detect_proxy`` 这个名字上打桩，
+    换地方会让桩打空。它照旧读本模块的 ``_env_proxy`` / ``_winreg_proxy``，
+    所以那三个名字也仍然可以从这里替换（见上面的转发 import）。
+    """
     return _usable_proxy(_env_proxy()) or _usable_proxy(_winreg_proxy())
 
 
@@ -311,7 +265,7 @@ def _pick_asset(payload: Any, tag: str) -> tuple[str, str, int]:
     cleaned = (tag or "").strip()
     if cleaned[:1] in ("v", "V"):
         cleaned = cleaned[1:]
-    wanted = f"xdao-export-v{cleaned}-win64.zip" if cleaned else ""
+    wanted = asset_name(cleaned) if cleaned else ""
     for item in candidates:
         if wanted and item["name"] == wanted:
             return (item["url"], item["name"], item["size"])
@@ -323,14 +277,7 @@ def _pick_asset(payload: Any, tag: str) -> tuple[str, str, int]:
 
 def fetch_latest(proxy: str = "", timeout: float = TIMEOUT_SECONDS) -> ReleaseInfo:
     """问一次 GitHub：最新 Release 是哪个版本。失败抛 UpdateCheckError。"""
-    handlers: list[urllib.request.BaseHandler] = []
-    if proxy:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    else:
-        # 显式装配空代理：系统级代理常常只对特定程序生效，继承过来反而
-        # 会让「本可以直连」的环境连不上。
-        handlers.append(urllib.request.ProxyHandler({}))
-    opener = urllib.request.build_opener(*handlers)
+    opener = build_opener_with_proxy(proxy)
     request = urllib.request.Request(
         API_URL,
         headers={
@@ -376,7 +323,7 @@ def fetch_latest(proxy: str = "", timeout: float = TIMEOUT_SECONDS) -> ReleaseIn
 def check_for_update(
     *,
     force: bool = False,
-    current: str = __version__,
+    current: str = VERSION,
     ttl: float = CACHE_TTL_SECONDS,
     path: Path | None = None,
     fetcher: Any = None,

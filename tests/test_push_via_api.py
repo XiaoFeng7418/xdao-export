@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import push_via_api  # noqa: E402
+from xdao import github_api  # noqa: E402  （打桩要打在真正发请求的那一层）
 
 GIT_ENV = dict(
     os.environ,
@@ -671,8 +672,8 @@ def test_the_api_retries_a_server_error(monkeypatch, capsys):
             raise item
         return item
 
-    monkeypatch.setattr(push_via_api.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(push_via_api.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(github_api.time, "sleep", lambda seconds: None)
     assert push_via_api.api("t", "GET", "/x") == {"ok": True}
     assert "重试" in capsys.readouterr().out
 
@@ -684,8 +685,8 @@ def test_the_api_does_not_retry_a_404(monkeypatch):
         attempts.append(request)
         raise _http_error(404, b'{"message":"Not Found"}')
 
-    monkeypatch.setattr(push_via_api.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(push_via_api.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(github_api.time, "sleep", lambda seconds: None)
     with pytest.raises(push_via_api.ApiError, match="404"):
         push_via_api.api("t", "GET", "/x")
     assert len(attempts) == 1
@@ -698,8 +699,8 @@ def test_the_api_gives_up_after_the_last_retry(monkeypatch):
         attempts.append(request)
         raise _http_error(503)
 
-    monkeypatch.setattr(push_via_api.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(push_via_api.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(github_api.time, "sleep", lambda seconds: None)
     with pytest.raises(push_via_api.ApiError, match="连续 3 次失败"):
         push_via_api.api("t", "GET", "/x", retries=2)
     assert len(attempts) == 3

@@ -25,8 +25,15 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-# 主窗口标题，必须与 xdao/gui.py 里 root.title("X岛串导出") 一致
-EXPECTED_TITLE = "X岛串导出"
+# 主窗口标题的真源在 xdao/appinfo.py（gui.py 用它设标题）；脚本要能直接
+# `python tools/gui_probe.py` 跑，所以先把仓库根挂进 sys.path 再 import。
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from xdao.appinfo import WINDOW_TITLE  # noqa: E402  （必须在上面那段 sys.path 之后）
+
+# 主窗口标题，与 xdao/gui.py 里 root.title(WINDOW_TITLE) 是同一个串
+EXPECTED_TITLE = WINDOW_TITLE
 
 # 出错时可能出现的对话框标题（都按小写比）。PyInstaller 的未捕获异常对话框是
 # 「Unhandled exception in script」，bootloader 层的致命错误是「Fatal error detected」，

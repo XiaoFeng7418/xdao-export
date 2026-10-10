@@ -185,7 +185,7 @@ def check_browser(json_output: bool = False) -> int:
             print("设置里没指定浏览器，按「系统默认浏览器 → Edge → Chrome」的顺序试。")
         print("（会真的启动浏览器进程，试完立刻关掉；最多试几个就停。）")
         print("")
-    report = browser_check.check_browsers(explicit, progress=progress)
+    report = browser_check.check_all(explicit, progress=progress)
     print(report.to_json() if json_output else report.render())
     return 0 if report.ok else 1
 

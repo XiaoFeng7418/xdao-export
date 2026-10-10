@@ -751,3 +751,51 @@ def test_create_exporter_accepts_include_hashes(out_dir, key):
         text = path.read_text(encoding="utf-8")
         assert "回复正文" in text
         assert "主帖正文" not in text
+
+
+# ---------- 导出器基类（2026-10-07 架构评审） ----------
+
+
+def test_every_exporter_takes_the_same_construction_signature():
+    """五个导出器的构造签名统一成 ``(client, progress, filename_template, **options)``。
+
+    签名不一致正是 ``create_exporter`` 当初需要「带全部参数 → TypeError 就删一项再试」
+    那条五层阶梯的根因（阶梯丢过 browser_path / pdf_timeout / fallback_html /
+    pdf_options）。这条用例把「不认识的参数不炸构造、留在 options 里」钉住 —— 有了它，
+    阶梯才可以删。
+    """
+    from xdao.exporters import EpubBuilder, MarkdownBuilder
+
+    client = FakeClient()
+    builders = (HtmlBuilder, TxtBuilder, MarkdownBuilder, EpubBuilder, PdfBuilder)
+    for cls in builders:
+        exporter = cls(client, progress=None, filename_template=None, 没听说过的参数=1)
+        assert exporter.options["没听说过的参数"] == 1
+
+
+def test_registry_display_and_suffix_come_from_the_class():
+    """注册表不再抄一份显示名与扩展名：它与类属性必须逐字一致。
+
+    抄一份的后果是「注册表说 .md、save 里写 .md」这种两份真源可以各自走样
+    （2026-10-07 架构评审）。
+    """
+    for key, (label, suffix, cls) in EXPORTERS.items():
+        assert (cls.key, cls.display, cls.suffix) == (key, label, suffix)
+
+
+def test_save_uses_the_class_suffix(out_dir):
+    """扩展名只有一份真源：类属性 ``suffix``（save 不再自己拼 .html/.md/…）。"""
+    from xdao.exporters import MarkdownBuilder
+
+    path = MarkdownBuilder(FakeClient()).save(sample_thread(), "all", out_dir)
+    assert path.suffix == MarkdownBuilder.suffix
+    assert path.exists()
+
+
+def test_base_class_covers_every_registered_exporter():
+    """每个注册在册的导出器都真的继承基类（而不是各自再写一份 save）。"""
+    from xdao.exporters import Exporter
+
+    for _, (_, _, cls) in EXPORTERS.items():
+        assert issubclass(cls, Exporter)
+        assert cls is not Exporter

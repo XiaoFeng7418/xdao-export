@@ -16,65 +16,56 @@ from __future__ import annotations
 
 import argparse
 import base64
-import json
 import os
-import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-API = "https://api.github.com"
+# 「怎么问 GitHub」的真源在 xdao/github_api.py；脚本要能直接
+# `python tools/sync_from_api.py` 跑，所以先把仓库根挂进 sys.path 再 import。
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from xdao.github_api import (  # noqa: E402  （必须在上面那段 sys.path 之后）
+    API_BASE,
+    ApiError,
+    gh_token as _gh_token,
+    git as _git,
+    linear_backoff,
+    request_bytes,
+)
 
-class ApiError(RuntimeError):
-    pass
+API = API_BASE
 
-
-def gh_token() -> str:
-    """取 GitHub 令牌：优先环境变量，其次 PATH 上的 gh（可用 XDAO_GH 指定路径）。"""
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        return token.strip()
-    gh = os.environ.get("XDAO_GH") or "gh"
-    try:
-        out = subprocess.run([gh, "auth", "token"], capture_output=True, text=True)
-    except FileNotFoundError as exc:
-        raise ApiError(f"找不到 gh（{gh}）；请先 gh auth login，或设置 XDAO_GH") from exc
-    if out.returncode != 0 or not out.stdout.strip():
-        raise ApiError("取不到 gh 令牌，请先 gh auth login")
-    return out.stdout.strip()
+#: ``gh_token`` 原先这份与 make_release 那份逐字相同，直接共用同一个实现。
+gh_token = _gh_token
 
 
 def api(token: str, path: str, retries: int = 5) -> dict:
-    last: Exception | None = None
-    for attempt in range(retries + 1):
-        req = urllib.request.Request(API + path)
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("User-Agent", "xdao-sync")
-        try:
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                return json.load(resp)
-        except urllib.error.HTTPError as exc:
-            if exc.code in (429,) or 500 <= exc.code < 600:
-                last = exc
-            else:
-                raise ApiError(f"GET {path} -> {exc.code}: {exc.read()[:200]!r}") from exc
-        except Exception as exc:
-            last = exc
-        if attempt < retries:
-            time.sleep(min(20.0, 2.0 * (attempt + 1)))
-    raise ApiError(f"GET {path} 连续失败：{last}")
+    """GET 一个接口路径，返回解析好的 JSON。
+
+    重试与退避的实现在 :func:`xdao.github_api.request_bytes`；这里保留原先的
+    等待曲线（``min(20, 2×第几次)``、共 ``retries + 1`` 次尝试）、``xdao-sync``
+    的 User-Agent、**重试期间不打印任何东西**，以及确定性错误里那句
+    ``f"GET {path} -> {code}: {body!r}"``（正文取前 200 字节的 repr）。
+    """
+    body = request_bytes(
+        "GET",
+        path,
+        token=token,
+        timeout=180.0,
+        user_agent="xdao-sync",
+        attempts=retries + 1,
+        backoff=lambda tries: linear_backoff(tries, limit=20.0),
+        detail_bytes=200,
+        detail_repr=True,
+        http_failure=lambda code, detail: f"GET {path} -> {code}: {detail}",
+    )
+    return json.loads(body)
 
 
-def git(*args: str, data: bytes | None = None) -> bytes:
-    result = subprocess.run(["git", *args], input=data, capture_output=True)
-    if result.returncode != 0:
-        raise ApiError(f"git {' '.join(args)} 失败：{result.stderr.decode('utf-8', 'replace')}")
-    return result.stdout
+#: ``git`` 子进程封装与 push_via_api 那份是同一段逻辑，合并到 github_api。
+git = _git
 
 
 def worktree_changes() -> list[str]:

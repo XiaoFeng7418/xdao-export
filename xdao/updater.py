@@ -32,8 +32,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__
-from .update_check import REPO, UpdateCheckError, detect_proxy
+# 升级包的外层目录必须以 PAYLOAD_PREFIX 开头（免得把别的 zip 当升级包解了）、
+# 里面那个 exe 叫 LAUNCHER_NAME、User-Agent 带着版本号与仓库地址：这些事实的真源
+# 都在 xdao/appinfo.py，打包脚本按同一张表命名。
+from .appinfo import LAUNCHER_NAME, PAYLOAD_PREFIX, USER_AGENT
+# 代理探测与 opener 装配和「查询新版本」共用一份（原先这里反过来 import update_check
+# 才拿到它们，依赖方向是倒的）；``detect_proxy`` 仍从 updater 出去，因为调用方与测试
+# 都在 ``updater.detect_proxy`` 上打桩。
+from .github_api import detect_proxy, proxy_handlers
+from .update_check import UpdateCheckError
 
 #: 下载超时（秒）。安装包十几 MB，给宽一点，但也不能挂死。
 DOWNLOAD_TIMEOUT = 60.0
@@ -50,8 +57,6 @@ LEFTOVER_SUFFIX = ".leftover-"
 LEFTOVER_MIN_AGE = 30.0
 #: 暂存目录最多留多久还删不掉就交给下次启动（秒）。给足帮手启动、解压、换目录的时间。
 STAGING_STALE_SECONDS = 600.0
-#: 解压出来的目录名必须长这样，免得把别的 zip 当升级包解了。
-PAYLOAD_PREFIX = "xdao-export-v"
 #: 换下来的旧目录后缀（``<目录名>.old-20261001-091500``）。
 BACKUP_SUFFIX = ".old-"
 #: 旧备份留多久（秒）之后由下次启动顺手清掉。
@@ -59,7 +64,6 @@ BACKUP_KEEP_SECONDS = 24 * 60 * 60
 #: 等老进程退出最多等多久（秒）。
 WAIT_FOR_EXIT_SECONDS = 60.0
 
-LAUNCHER_NAME = "xdao-export.exe"
 SELFTEST_TIMEOUT = 180.0
 
 
@@ -123,18 +127,13 @@ def download_asset(
     """把升级包下到 ``target``。失败抛 :class:`UpdateCheckError`。"""
     if not url:
         raise UpdateCheckError("没有下载地址")
-    handlers: list[urllib.request.BaseHandler] = []
-    handlers.append(
-        urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        if proxy
-        else urllib.request.ProxyHandler({})
-    )
+    handlers = proxy_handlers(proxy)
     build = opener_factory or urllib.request.build_opener
     opener = build(*handlers)
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": f"xdao-export/{__version__} (+https://github.com/{REPO})",
+            "User-Agent": USER_AGENT,
             "Accept": "application/octet-stream",
         },
     )

@@ -242,7 +242,7 @@ def test_output_dir_falls_back_when_the_configured_one_is_blocked(
     ``-o`` 是命令行里写死的，所以不换地方；只有配置里的默认值才换。
     """
     import xdao.exporters as exporters_module
-    import xdao.exporters._shared as shared_module
+    import xdao.paths as paths_module
 
     exporters_module, cache_module = patch_offline(monkeypatch)
     local = tmp_path / "LocalAppData"
@@ -251,8 +251,10 @@ def test_output_dir_falls_back_when_the_configured_one_is_blocked(
 
     blocked = tmp_path / "桌面" / "被拦的新建文件夹"
     blocked.mkdir(parents=True)
-    # choose_writable_dir 的默认探测函数取自 _shared，patch 必须落在那一层
-    monkeypatch.setattr(shared_module, "can_write_dir", lambda path: Path(path) != blocked)
+    # choose_writable_dir 的默认探测函数取自 xdao.paths，patch 必须落在那一层
+    # （2026-10-07：这份实现从 exporters._shared 搬到了 xdao.paths，顺带消掉
+    #   cache/preflight → exporters 的依赖倒挂）
+    monkeypatch.setattr(paths_module, "can_write_dir", lambda path: Path(path) != blocked)
 
     written: list[Path] = []
 
@@ -288,13 +290,13 @@ def test_output_dir_falls_back_when_the_configured_one_is_blocked(
 def test_explicit_output_dir_is_never_silently_moved(out_dir, tmp_path, monkeypatch, capsys):
     """``-o`` 指定的目录只提示、不换地方：用户的显式选择不能被程序偷偷改掉。"""
     import xdao.exporters as exporters_module
-    import xdao.exporters._shared as shared_module
+    import xdao.paths as paths_module
 
     exporters_module, cache_module = patch_offline(monkeypatch)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
 
     requested = tmp_path / "用户指定的目录"
-    monkeypatch.setattr(shared_module, "can_write_dir", lambda path: False)
+    monkeypatch.setattr(paths_module, "can_write_dir", lambda path: False)
     monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_fake_fetcher(5004, "测试串"))
 
     code = main(["5004", "-f", "txt", "-o", str(requested)])

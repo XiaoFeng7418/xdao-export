@@ -21,15 +21,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from make_release import ApiError, gh_token, parse_sidecar, request_json, request_text  # noqa: E402
 from push_via_api import find_pushed_prefix, local_commits, remote_chain  # noqa: E402
 from repo_info import expected_description, expected_topics  # noqa: E402
+# 附件名的后缀与 git 子进程封装的真源都在 xdao/ 下（后缀原先在本脚本里手抄了两遍）。
+from xdao.appinfo import SIDECAR_SUFFIX  # noqa: E402
+from xdao.github_api import git_in  # noqa: E402
 
 OK = "✓"
 WARN = "!"
@@ -59,11 +62,12 @@ class Report:
 
 
 def local_tree(repo_dir: Path) -> dict[str, str]:
-    """本地 HEAD 的 (路径 -> blob sha)。"""
-    out = subprocess.run(
-        ["git", "ls-tree", "-r", "HEAD"],
-        cwd=repo_dir, capture_output=True, text=True, encoding="utf-8",
-    )
+    """本地 HEAD 的 (路径 -> blob sha)。
+
+    「怎么起 git 子进程」收在 :func:`xdao.github_api.git_in` 里（三处封装共用一份）；
+    它**不抛异常**，失败怎么处理由这里决定：读不到树要出诊断结论，所以抛 ``ApiError``。
+    """
+    out = git_in(repo_dir, "ls-tree", "-r", "HEAD")
     if out.returncode != 0:
         raise ApiError(f"读取本地树失败：{out.stderr.strip()}")
     result = {}
@@ -75,10 +79,7 @@ def local_tree(repo_dir: Path) -> dict[str, str]:
 
 def worktree_changes(repo_dir: Path) -> list[str]:
     """工作区相对 HEAD 的改动（改过的、暂存的、未跟踪的都算），返回路径列表。"""
-    out = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True,
-        encoding="utf-8",
-    )
+    out = git_in(repo_dir, "status", "--porcelain")
     if out.returncode != 0:
         raise ApiError(f"读工作区状态失败：{out.stderr.strip()}")
     names: list[str] = []
@@ -93,10 +94,12 @@ def worktree_changes(repo_dir: Path) -> list[str]:
 
 
 def git_subjects(repo_dir: Path, *args: str) -> list[str] | None:
-    """跑一条 git 命令，按行返回；失败时返回 None（例如本地没有那个对象）。"""
-    out = subprocess.run(
-        ["git", *args], cwd=repo_dir, capture_output=True, text=True, encoding="utf-8",
-    )
+    """跑一条 git 命令，按行返回；失败时返回 None（例如本地没有那个对象）。
+
+    这一处的失败处理与上面两处不同，所以 ``returncode`` 仍由本函数自己判断 ——
+    ``git_in`` 本身是不抛异常的。
+    """
+    out = git_in(repo_dir, *args)
     if out.returncode != 0:
         return None
     return [line for line in out.stdout.strip().splitlines() if line.strip()]
@@ -124,7 +127,7 @@ def sha256_finding(repo: str, zip_asset: dict | None, sidecar: dict, token: str)
     except ApiError as exc:
         return WARN, area, f"读不到 {sidecar['name']} 的内容：{exc}"
     try:
-        digest, name = parse_sidecar(text, sidecar["name"][: -len(".sha256")])
+        digest, name = parse_sidecar(text, sidecar["name"][: -len(SIDECAR_SUFFIX)])
     except ApiError as exc:
         return BAD, area, f"{sidecar['name']} 不是一份能用的校验文件：{exc}"
     if zip_asset is None:
@@ -286,7 +289,9 @@ def main(argv: list[str]) -> int:
         # 还要把附件里那串跟 GitHub 记的 digest 对一遍 —— 挂着一份和 zip 不配套的
         # .sha256，比不挂更坏：用户照它核对会以为下载坏了。
         zip_asset = next((a for a in latest.get("assets", []) if a["name"].endswith(".zip")), None)
-        sidecar = next((a for a in latest.get("assets", []) if a["name"].endswith(".sha256")), None)
+        sidecar = next(
+            (a for a in latest.get("assets", []) if a["name"].endswith(SIDECAR_SUFFIX)), None
+        )
         if zip_asset is not None and sidecar is None:
             report.add(WARN, "发布", "最新 Release 没有 .sha256 校验附件，用户没法自己核对下载")
         elif sidecar is not None:

@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import __version__, browser_flags, cache, settings as settings_mod
 from .browser_login import find_browser
-from .exporters._shared import can_write_dir
+from .paths import can_write_dir
 
 STATUS_LABELS = {"ok": "可以", "warn": "注意", "fail": "不行"}
 

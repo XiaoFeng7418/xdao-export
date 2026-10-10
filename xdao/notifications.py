@@ -21,8 +21,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-#: 通知里显示的程序名（跟窗口标题一致）。
-APP_TITLE = "X岛串导出工具"
+from .appinfo import PRODUCT_NAME
+
+#: 通知里显示的程序名（跟窗口标题一致）。真源在 xdao/appinfo.py，打包脚本写进
+# PE 版本信息的是同一个字符串。
+APP_TITLE = PRODUCT_NAME
 
 # PowerShell 里拼 XML 再交给 WinRT；用 -EncodedCommand 是为了避开引号转义问题。
 _PS_TEMPLATE = """[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;

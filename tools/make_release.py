@@ -20,7 +20,6 @@ import argparse
 import hashlib
 import json
 import mimetypes
-import os
 import subprocess
 import sys
 import time
@@ -29,32 +28,34 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-API = "https://api.github.com"
+# 程序身份、附件后缀与「怎么问 GitHub」的真源都在 xdao/ 下；脚本要能直接
+# `python tools/make_release.py` 跑，所以先把仓库根挂进 sys.path 再 import
+# （和 tools/repo_info.py 一个路子）。
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-#: 校验附件的后缀。附件名就是「它描述的那个文件的完整文件名 + 这个后缀」。
-SIDECAR_SUFFIX = ".sha256"
+from xdao.appinfo import SIDECAR_SUFFIX  # noqa: E402  （必须在上面那段 sys.path 之后）
+from xdao.github_api import (  # noqa: E402
+    API_BASE,
+    ApiError,
+    gh_token as _gh_token,
+    linear_backoff,
+    request_bytes,
+)
 
-
-class ApiError(RuntimeError):
-    pass
+API = API_BASE
 
 
 def gh_token() -> str:
     """取 GitHub 令牌：优先环境变量，其次 PATH 上的 gh。
 
     本机的 gh 可能不在 PATH 里，可以用环境变量 ``XDAO_GH`` 指向 gh.exe。
+
+    实现搬去了 :mod:`xdao.github_api`（四个脚本共用一份），这里保留原来的名字与
+    文案。``subprocess`` 也仍然 import 在本模块里：测试与调用方是拿
+    ``make_release.subprocess.run`` 打桩的。
     """
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        return token.strip()
-    gh = os.environ.get("XDAO_GH") or "gh"
-    try:
-        out = subprocess.run([gh, "auth", "token"], capture_output=True, text=True)
-    except FileNotFoundError as exc:
-        raise ApiError(f"找不到 gh（{gh}）；请先 gh auth login，或设置 XDAO_GH 指向 gh.exe") from exc
-    if out.returncode != 0 or not out.stdout.strip():
-        raise ApiError("取不到 gh 令牌，请先 gh auth login")
-    return out.stdout.strip()
+    return _gh_token()
 
 
 def read_notes(path: Path) -> str:
@@ -80,32 +81,30 @@ def missing_assets(assets: list[Path]) -> list[Path]:
 
 def request_json(method: str, path: str, token: str, payload: dict | None = None,
                  retries: int = 4) -> dict:
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    last: Exception | None = None
-    for attempt in range(retries + 1):
-        req = urllib.request.Request(API + path, data=data, method=method)
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("User-Agent", "xdao-release")
-        if data:
-            req.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                body = resp.read()
-                return json.loads(body) if body else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:300]
-            if exc.code in (429,) or 500 <= exc.code < 600:
-                last = ApiError(f"{exc.code} {detail}")
-            else:
-                raise ApiError(f"{method} {path} -> {exc.code}\n{detail}") from exc
-        except Exception as exc:
-            last = exc
-        if attempt < retries:
-            wait = min(15.0, 2.0 * (attempt + 1))
-            print(f"    （网络失败，{wait:.0f} 秒后重试：{type(last).__name__}）")
-            time.sleep(wait)
-    raise ApiError(f"{method} {path} 连续失败：{last}")
+    """问一次 GitHub 接口，返回解析好的 JSON。
+
+    重试与退避的实现在 :func:`xdao.github_api.request_bytes`；这里保留原先的
+    等待曲线（``min(15, 2×第几次)``、共 ``retries + 1`` 次尝试）、提示文案与
+    「重试期间记着 ``ApiError(f"{code} {detail}")``」的细节。
+    """
+    body = request_bytes(
+        method,
+        path,
+        token=token,
+        payload=payload,
+        timeout=120.0,
+        user_agent="xdao-release",
+        attempts=retries + 1,
+        backoff=lambda tries: linear_backoff(tries, limit=15.0),
+        on_retry=_report_retry,
+        retry_error=lambda exc, detail: ApiError(f"{exc.code} {detail}"),
+        parse=lambda body: json.loads(body) if body else {},
+    )
+
+
+def _report_retry(tries: int, wait: float, failure: BaseException, last: BaseException) -> None:
+    """重试前的提示（原来两份实现里各印了一遍，文案一字不改）。"""
+    print(f"    （网络失败，{wait:.0f} 秒后重试：{type(last).__name__}）")
 
 
 def request_text(path: str, token: str, retries: int = 4) -> str:
@@ -113,29 +112,25 @@ def request_text(path: str, token: str, retries: int = 4) -> str:
 
     ``request_json`` 会把响应当 JSON 解析；附件的正文不是 JSON，得单独走一条，
     靠 ``Accept: application/octet-stream`` 让 GitHub 把原始字节给出来。
+
+    重试与退避同样交给 :func:`xdao.github_api.request_bytes`，等待曲线与提示
+    文案跟 ``request_json`` 一致。
     """
-    last: Exception | None = None
-    for attempt in range(retries + 1):
-        req = urllib.request.Request(API + path)
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("Accept", "application/octet-stream")
-        req.add_header("User-Agent", "xdao-release")
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return resp.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:300]
-            if exc.code in (429,) or 500 <= exc.code < 600:
-                last = ApiError(f"{exc.code} {detail}")
-            else:
-                raise ApiError(f"GET {path} -> {exc.code}\n{detail}") from exc
-        except Exception as exc:
-            last = exc
-        if attempt < retries:
-            wait = min(15.0, 2.0 * (attempt + 1))
-            print(f"    （网络失败，{wait:.0f} 秒后重试：{type(last).__name__}）")
-            time.sleep(wait)
-    raise ApiError(f"GET {path} 连续失败：{last}")
+    body = request_bytes(
+        "GET",
+        path,
+        token=token,
+        accept="application/octet-stream",
+        timeout=120.0,
+        user_agent="xdao-release",
+        attempts=retries + 1,
+        backoff=lambda tries: linear_backoff(tries, limit=15.0),
+        on_retry=_report_retry,
+        http_failure=lambda code, detail: f"GET {path} -> {code}\n{detail}",
+        gave_up=lambda last: f"GET {path} 连续失败：{last}",
+        retry_error=lambda exc, detail: ApiError(f"{exc.code} {detail}"),
+        parse=lambda body: body.decode("utf-8", "replace"),
+    )
 
 
 def parse_sidecar(text: str, fallback_name: str = "") -> tuple[str, str]:
