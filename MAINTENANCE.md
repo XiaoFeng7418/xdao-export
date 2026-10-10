@@ -677,6 +677,30 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.50**（修 v0.13.49 重构在发版脚本里留下的一个 `return` 漏写：Release 建出来、附件一个没传；连带补三条盯着返回值的用例）：
+  **一、症状。** v0.13.49 发布时 ``tools/make_release.py`` 报
+  ``TypeError: 'NoneType' object is not subscriptable``（在 ``print(f"已创建 Release {release['tag_name']}…")`` 那一行）：
+  接口其实**已经**把 Release 建好了，脚本却在打印时崩掉，**两个附件一个都没上传**（当次是事后用
+  ``gh release upload --clobber`` 手动补的）。以 ``--target <sha>`` 建 Release 还会先撞一次 422
+  ``tag_name is not a valid tag`` —— 那是顺序问题：**先打附注标签并 push，再建 Release**（不带 ``--target``），
+  这条纪律又一次被验证（见 v0.5.2 的教训）。
+  **二、根因。** §7.1 件 3 把四个脚本的 GitHub 问答抽成 ``xdao/github_api.request_bytes`` 时，
+  ``tools/make_release.py`` 的 ``request_json``（:82）与 ``request_text``（:110）被改成
+  ``body = request_bytes(...)`` 却**漏了 ``return body``** ⇒ 两个函数都回 ``None``。
+  ``request_json`` 是建/改 Release 的必经之路，``request_text`` 取附件正文。
+  用 AST 扫「调了 ``request_bytes`` 却没有任何 ``return`` 的函数」把仓库里同类漏网查了一遍：
+  只有这两处。
+  **三、修法。** 两处各补 ``return body``；``tests/test_make_release.py`` 新增三条
+  （``test_request_json_returns_the_parsed_body``、``test_request_json_treats_an_empty_body_as_an_empty_object``、
+  ``test_request_text_returns_the_decoded_body``）：把 ``make_release.request_bytes`` 换成
+  「记参数 + 按对方的 ``parse`` 处理响应体」的假货，**不替掉** ``request_json`` / ``request_text`` 本身 ——
+  过去的用例全是把这两个函数整个替掉的，于是那两行永远不在覆盖里（**教训：替身换得太多，等于把被测的代码挖掉**）。
+  真机复核：直接调 ``request_json('GET', '/repos/…/releases/tags/v0.13.49', tok)`` 拿到 dict（tag 与两个附件名都在），
+  ``request_text(<附件 url>, tok)`` 拿到 97 字节摘要文本。
+  **四、附带说明。** 事故只影响发版脚本（``tools/`` 不在免安装包里），用户手上的程序与 v0.13.49 逐字节等价
+  （版本号串除外）；但因为「仓库里被 tag 的提交带着一个坏掉的发版脚本」，仍然按规矩补一个补丁版本，
+  让「最新 Release」与仓库状态一致（``tools/repo_check.py`` 会核这一条）。
+  收集 **1863 项**、本机 **1856 passed / 7 skipped**（``tests/test_make_release.py`` 28 → 31）。
 - **v0.13.49**（按《架构评审-2026-10-07》§7.1 做的一次仓库级重构：目录与写权限下沉 `xdao/paths.py`、五个导出器立 `Exporter` 底座、产品名与 GitHub 问答抽成 `xdao/appinfo.py` / `xdao/github_api.py`；顺带删掉确认没人用的旧代码、合并两处重复，并修掉一条在忙机器上假红的界面用例）：
   **一、来源与范围。** 用户 2026-10-07 要求「通读并梳理当前代码库，做一次基于第一性原理的架构评审」，评审写成
   ``<工作目录>\xdao-export-架构评审-2026-10-07.md``（六节 + 登录链路专项诊断 + 需要用户补充的背景）；
