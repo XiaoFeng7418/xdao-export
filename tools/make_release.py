@@ -100,6 +100,7 @@ def request_json(method: str, path: str, token: str, payload: dict | None = None
         retry_error=lambda exc, detail: ApiError(f"{exc.code} {detail}"),
         parse=lambda body: json.loads(body) if body else {},
     )
+    return body
 
 
 def _report_retry(tries: int, wait: float, failure: BaseException, last: BaseException) -> None:
@@ -131,6 +132,7 @@ def request_text(path: str, token: str, retries: int = 4) -> str:
         retry_error=lambda exc, detail: ApiError(f"{exc.code} {detail}"),
         parse=lambda body: body.decode("utf-8", "replace"),
     )
+    return body
 
 
 def parse_sidecar(text: str, fallback_name: str = "") -> tuple[str, str]:

@@ -459,3 +459,54 @@ def test_an_http_error_while_uploading_is_an_error(monkeypatch, tmp_path):
         make_release.upload_asset(UPLOAD_URL, asset, "tok")
     assert "422" in str(info.value)
     assert "Validation Failed" in str(info.value)
+
+
+def _capture_request_bytes(monkeypatch, body: bytes) -> list[dict]:
+    """把 ``request_bytes`` 换成「记下参数、按对方的 ``parse`` 处理响应体」的假货。
+
+    这里刻意**不**替掉 ``request_json`` / ``request_text`` 本身：2026-10-10 发 v0.13.49 时
+    踩过一次 —— 抽取重构把这两个函数体改成 ``body = request_bytes(...)`` 却漏了 ``return``，
+    于是 API 明明建好了 Release，函数回 ``None``、脚本在打印那一行崩掉，附件一个都没传；
+    而当时的用例全是替掉 ``request_json`` 的，谁都没跑到这两行。这两条用例专门盯着返回值。
+    """
+    calls: list[dict] = []
+
+    def fake_request_bytes(method, path, **kwargs):
+        calls.append({"method": method, "path": path, **kwargs})
+        parse = kwargs.get("parse")
+        return parse(body) if parse is not None else body
+
+    monkeypatch.setattr(make_release, "request_bytes", fake_request_bytes)
+    return calls
+
+
+def test_request_json_returns_the_parsed_body(monkeypatch):
+    """``request_json`` 必须把响应体交出去（漏 ``return`` 曾让 Release 建好却传不上附件）。"""
+    calls = _capture_request_bytes(monkeypatch, b'{"id": 7}')
+
+    assert make_release.request_json("POST", "/repos/o/n/releases", "tok", {"a": 1}) == {"id": 7}
+
+    (call,) = calls
+    assert call["method"] == "POST"
+    assert call["path"] == "/repos/o/n/releases"
+    assert call["payload"] == {"a": 1}
+    assert call["attempts"] == 5          # retries=4 默认 → 5 次尝试
+    assert call["backoff"](3) == 6.0      # min(15, 2×3)
+
+
+def test_request_json_treats_an_empty_body_as_an_empty_object(monkeypatch):
+    """204 之类没有正文的响应：回 ``{}``，别把 ``None`` 递给下面按字典用的代码。"""
+    _capture_request_bytes(monkeypatch, b"")
+
+    assert make_release.request_json("PATCH", "/x", "tok") == {}
+
+
+def test_request_text_returns_the_decoded_body(monkeypatch):
+    """``request_text`` 取附件正文，同样必须把值交出去。"""
+    calls = _capture_request_bytes(monkeypatch, "说明正文".encode("utf-8"))
+
+    assert make_release.request_text("/asset", "tok") == "说明正文"
+
+    (call,) = calls
+    assert call["method"] == "GET"
+    assert call["accept"] == "application/octet-stream"
