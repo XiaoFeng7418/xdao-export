@@ -36,6 +36,10 @@ COUNT_TIAO = re.compile(r"(\d+) 条")
 SUMMARY_COUNT = re.compile(r"单元测试\s*(\d+)\s*项")
 #: ``README.md`` 目录树里那句：``tests/   1119 个离线单元测试（1113 通过，另 6 个真机用例默认跳过）``
 README_TESTS_LINE = re.compile(r"tests/\s+(\d+) 个离线单元测试（(\d+) 通过，另 (\d+) 个真机用例默认跳过）")
+#: ``HANDOFF.md`` 第二节那句：``其中界面相关的 144 项（`test_theme.py` / `test_window.py` / …）``
+#: v0.13.51 补上这个检查：那串数字不在测试表里（表只管逐文件），加删界面用例时没人提醒
+#: —— v0.13.51 给 ``test_gui_browser_login.py`` 加了 4 条，这句就漏成了旧数（140）。
+UI_SECTION = re.compile(r"界面相关的\s*(\d+)\s*项（([^）]*)）")
 
 #: 表里至少该有这么多行 —— 防「一行都没解析到」的假绿
 MIN_ENTRIES = 25
@@ -113,6 +117,21 @@ def test_the_handoff_summary_count_matches_the_collected_total() -> None:
     total = sum(_collected_counts().values())
     assert documented == total, (
         f"HANDOFF.md 写的是「单元测试 {documented} 项」，实际收集到 {total} 项。改法同上。"
+    )
+
+    # 同一节里那句「其中界面相关的 N 项」也要对上（它不在测试表里，所以单独核）：
+    # N 必须等于它自己列的那几个文件的实际收集数之和。
+    section = UI_SECTION.search(text)
+    assert section, "HANDOFF.md 第二节应当写明「其中界面相关的 N 项（…）」并列出是哪几个文件"
+    names = re.findall(r"test_[a-z0-9_]+\.py", section.group(2))
+    assert names, "「界面相关的 N 项」那句里应当列出是哪几个文件"
+    real = _collected_counts()
+    parts = {name: real.get(name, 0) for name in names}
+    got = sum(parts.values())
+    assert int(section.group(1)) == got, (
+        f"HANDOFF.md 写的是「界面相关的 {section.group(1)} 项」，实际是 "
+        + " + ".join(f"{name} {count}" for name, count in parts.items())
+        + f" = {got} 项。加删界面用例之后要连这句一起改。"
     )
 
 
