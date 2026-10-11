@@ -169,7 +169,15 @@ class AppSettings:
         self.theme_name = theme_name if theme_name in PALETTES else "light"
         self.extra = data.get("extra") or {}
 
-    def save(self) -> None:
+    def save(self) -> bool:
+        """把设置写进配置文件；写成功 ``True``，写不进去 ``False``（v0.13.53）。
+
+        为什么要把结果交出去：以前这里是 ``except Exception: pass`` —— 写失败也
+        一声不响，界面照着报「登录成功，饼干已保存。」。2026-10-11 真机上就出现了
+        这种自相矛盾：日志说保存成功，``config.json`` 的修改时间却停在两周前、里面
+        ``userhash`` 是空的，重启程序还得重新登录。写不进去是环境问题（目录没有写
+        权限、被安全软件拦、程序放在受限目录里），但**必须让调用方有机会说出来**。
+        """
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             data = {
@@ -206,8 +214,9 @@ class AppSettings:
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         except Exception:
-            # 保存失败不应导致程序崩溃。
-            pass
+            # 保存失败不该把程序崩掉，但要把结果交给调用方去告诉用户。
+            return False
+        return True
 
     # ---------- 便捷方法 ----------
 

@@ -310,3 +310,20 @@ def test_tests_never_touch_the_real_config(config_path: Path) -> None:
     assert real_dir not in config_path.parents
     assert real_dir not in load_config(config_path).config_path.parents
     assert real_dir not in fresh_config(config_path).config_path.parents
+
+def test_save_reports_whether_the_file_could_be_written(tmp_path: Path) -> None:
+    """``save()`` 要把「写没写成」交出去（v0.13.53）。
+
+    以前它把异常吞掉、什么都不返回，界面便无论成败都报「登录成功，饼干已保存。」——
+    2026-10-11 真机上就出现了「日志说保存成功、``config.json`` 的修改时间停在两周前、
+    重启程序还要重新登录」这种自相矛盾。写不进去是环境问题，但不许不出声。
+
+    这里用「父路径是一个文件」造一个必然写不进去的落点：跨平台、不依赖权限设置。
+    """
+    ok_path = tmp_path / "ok" / "config.json"
+    assert AppSettings(_path=ok_path).save() is True
+    assert ok_path.exists()
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("我不是目录", encoding="utf-8")
+    assert AppSettings(_path=blocker / "config.json").save() is False
