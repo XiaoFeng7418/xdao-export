@@ -1,10 +1,13 @@
-"""公开材料里不许出现真实串号、本机个人目录和凭据。
+"""公开材料里不许出现真实串号、本机个人目录、凭据，也不许把用户写成来源。
 
 规则写在 ``MAINTENANCE.md`` 的「不许写什么」一节（2026-10-01 收紧的那一版）：
 例子一律用 X岛官方的测试串 ``50000001``，或者明显编出来的 ``12345678``；
-自己的目录写成 ``<工作目录>``、``<本机 Python>`` 这样的占位符。
-以前靠人肉复查，2026-10-02 起改成机器把关：谁把真串号或本机路径抄进文档、
+自己的目录写成 ``<工作目录>``、``<本机 Python>`` 这样的占位符；来源写成客观事实
+（「2026-10-04 真机复验」这种），不写「按你……要的」「用户报过……」。以前靠人肉复查，
+2026-10-02 起改成机器把关：谁把真串号、本机路径，或把用户当来源的句子抄进文档、
 测试、发布说明里，CI 直接红，红的位置和改法都打在失败信息里。
+（第二人称那几条是 2026-10-11 补的：v0.13.49 的发布说明里漏了一句「按你 2026-10-07
+要的那份……」，线上正文照着它发出去了，事后用 ``gh release edit`` 才改回来。）
 
 被扫的是 ``git ls-files`` 那批文件 —— 那就是「公开材料」的定义（仓库外还有
 GitHub 的 Release 正文与标签信息，那两处得另外扫，做法见 ``MAINTENANCE.md``）。
@@ -33,6 +36,31 @@ ALLOWED_USER_DIRS = frozenset({"你", "<你", "...", "me"})
 
 #: 不许出现的本机字样：工作目录名、解释器目录名、本机用户名。
 FORBIDDEN_SUBSTRINGS = ("小玩意", "python3129", "14515")
+
+#: 不许把用户写成来源、或用第二人称把「要求 / 报的 / 反馈」记进公开材料。
+#: 规矩与 FORBIDDEN_SUBSTRINGS 同一节（「不许写什么」）：仓库是公开的，读者不需要知道
+#: 哪句话是谁说的。凡是引述这条规矩本身的句子（「有用户问……」这类样本）都不在禁列 ——
+#: 禁的是真的把用户当来源写出来，例如「按你 2026-10-07 要的那份报告」。
+#: ``按你(?!设)``：放行 README 与说明里「下次启动仍按你设的位置试」这种对读者的称呼。
+FORBIDDEN_ADDRESS = re.compile(
+    "|".join(
+        [
+            r"按你(?!设)",
+            r"你说",
+            r"你要求",
+            r"你报",
+            r"你反馈",
+            r"你提到",
+            r"你反映",
+            r"你提的",
+            r"你发的",
+            r"你给的",
+            r"你要的",
+            r"你要我",
+            r"你的问题",
+        ]
+    )
+)
 
 #: ``userhash=`` 后面这种 16 位小写十六进制看着就像真饼干；只放行经典假值。
 ALLOWED_USERHASHES = frozenset({"deadbeefdeadbeef"})
@@ -139,7 +167,7 @@ def test_thread_urls_and_no_numbers_are_official_or_fake() -> None:
 
 
 def test_no_personal_directories_in_public_material() -> None:
-    """不许出现本机个人目录、解释器目录名、用户名。"""
+    """不许出现本机个人目录、解释器目录名、用户名，也不许把用户写成来源。"""
     bad: list[tuple[str, int, str]] = []
     for relative, line_number, line in _lines(re.compile("|".join(map(re.escape, FORBIDDEN_SUBSTRINGS))), skip_self=True):
         bad.append((relative, line_number, line))
@@ -151,10 +179,13 @@ def test_no_personal_directories_in_public_material() -> None:
                 name = match.group(1)
                 if name not in ALLOWED_USER_DIRS:
                     bad.append((relative, number, line.strip()))
+    for relative, number, line in _lines(FORBIDDEN_ADDRESS, skip_self=True):
+        bad.append((relative, number, line))
     assert not bad, (
-        "公开材料里出现了本机个人目录/用户名：\n"
+        "公开材料里出现了本机个人目录/用户名，或把用户写成了来源：\n"
         f"{_where(bad)}\n"
-        "路径写 <工作目录>、<本机 Python>，用户目录写 C:\\Users\\你 这种占位符。"
+        "路径写 <工作目录>、<本机 Python>，用户目录写 C:\\Users\\你 这种占位符；"
+        "来源一律写成客观事实（「2026-10-04 真机复验」这种），别写「按你……要的」「你说」「用户报过」。"
     )
 
 
