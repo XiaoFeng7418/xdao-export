@@ -229,6 +229,17 @@ def publish_release(root: Path, zip_path: Path, sidecar: Path, release_dir: Path
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 中文 Windows 的控制台默认是 GBK，脚本里那几个「✓ / ×」打印会当场抛
+    # UnicodeEncodeError（2026-10-11 打包 v0.13.52 时真撞上：包已经打好了，
+    # 卡在自检那几行上，退出码 1）。与 main.py 同一套办法：先把输出改成 UTF-8。
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:  # --windowed 打包版没有控制台
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 —— 编码修不好也不该挡住打包
+            pass
     parser = argparse.ArgumentParser(description="打免安装包并生成 .sha256")
     parser.add_argument("--out", default="dist", help="产物目录（默认 ./dist）")
     parser.add_argument(

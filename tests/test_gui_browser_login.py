@@ -2743,6 +2743,133 @@ def test_the_jar_path_is_corrected_from_the_process_command_line(
     dialog._on_cancel()
 
 
+def test_the_stale_cookie_verdict_also_goes_into_the_run_log(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """「X 岛不认这块饼干」这句必须进运行日志（v0.13.52）。
+
+    它以前只走 ``("note")`` —— 那是「换一句状态」的意思，只进对话框常驻那一行。用户
+    等到超时再关窗，日志里就只剩几行饼干名单，连「卡在读、还是卡在验」都断不出来
+    （真机 m44431 就是这样：我只能靠「哪些行在什么条件下才写」去反推，反推不出定论）。
+    """
+    monkeypatch.setattr(
+        gui, "verify_userhash_live", lambda client, value: gui.BROWSER_STALE_COOKIE_MESSAGE
+    )
+    lines: list[str] = []
+    dialog = open_dialog(log=lines.append)
+
+    def saw_it() -> bool:
+        for session in _dialog_sessions():
+            session.cookies = [{"name": "userhash", "value": FAKE_USERHASH}]
+        return any("验饼干：" in line for line in lines)
+
+    assert _wait_for(root_window, saw_it, timeout=15.0), f"验饼干的结论没进运行日志：{lines!r}"
+    assert any(
+        gui.BROWSER_STALE_COOKIE_MESSAGE in line for line in lines
+    ), f"日志里没抄下那句原话：{lines!r}"
+    # 常驻那一行也要有（真机 m44708：读到值以后常驻行空着，用户以为程序没看见他登录，
+    # 一直等到 635 秒也没有下文）。
+    assert _wait_for(
+        root_window,
+        lambda: "没通过核验" in dialog.hint_var.get(),
+        timeout=5.0,
+    ), f"常驻行没说清卡在哪：{dialog.hint_var.get()!r}"
+    assert dialog.winfo_exists(), "饼干不认却把窗口关了"
+    dialog._on_cancel()
+
+
+def test_closing_the_window_before_the_timeout_still_leaves_the_jar_dump(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """等不下去、直接关窗：现场也得留下来（v0.13.52）。
+
+    真机 m44431 那次用户「一直等到超时」之后关窗，而「读罐详单」只在超时那条路上落盘
+    —— 唯一一份能逐字段比对的证据跟着窗口一起没了。现在取消/关窗之前先落一份，落成
+    或落不成都在运行日志里写一句（那份文件到哪去了，不能再靠猜）。
+    """
+    dump_path = Path(tempfile.gettempdir()) / "xdao-读罐详单-关窗也留.json"
+    monkeypatch.setattr(browser_login, "write_jar_dump", lambda data, *, stamp: dump_path)
+    real_dump = gui.BrowserLoginDialog._write_jar_dump
+    calls: list[tuple[str, str]] = []
+
+    def spy(backend, session, browser, stamp, jar_path):  # noqa: ANN001
+        calls.append((str(stamp), str(jar_path)))
+        return real_dump(backend, session, browser, stamp, jar_path)
+
+    monkeypatch.setattr(gui.BrowserLoginDialog, "_write_jar_dump", staticmethod(spy))
+    lines: list[str] = []
+    dialog = open_dialog(log=lines.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    _pump(root_window, 0.5)
+    dialog._on_cancel()
+    assert calls, "关窗前没落详单"
+    assert calls[-1][0], f"落盘时没有窗口号：{calls!r}"
+    joined = "\n".join(lines)
+    assert "读罐详单已写到" in joined and str(dump_path) in joined, (
+        f"日志里没说现场写到哪了：{lines!r}"
+    )
+
+
+def test_the_whole_browser_jar_is_carried_before_verifying(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """核验之前要把浏览器那一罐饼干**整罐**装进客户端（v0.13.52，根因修复）。
+
+    真机复现（2026-10-11，`_scratch/probe_verify_full_jar.py`，饼干取自 v0.13.51 落下的
+    `xdao-读罐详单-62CA.json`）：同一块 userhash，只带它请求用户系统的「饼干」页，落点仍是
+    `Member/User/Index/login.html`（3592 字节）；把 `PHPSESSID`、`memberUserspapapa` 一起
+    带上就停在饼干列表页（24935 字节、正文有「退出」）。程序以前只 import 了 userhash 一块，
+    于是每次核验都被弹回登录页、被判成「X 岛不认这块饼干」——这就是连续几版的真根因。
+    """
+    client = XdaoClient()
+    seen: list[list[dict]] = []
+    real_import = client.import_cookies
+
+    def spy(items):  # noqa: ANN001
+        seen.append([item for item in items])
+        return real_import(items)
+
+    monkeypatch.setattr(client, "import_cookies", spy)
+    lines: list[str] = []
+    dialog = open_dialog(client_for_dialog=client, log=lines.append)
+
+    def landed() -> bool:
+        for session in _dialog_sessions():
+            session.cookies = [
+                {"name": "userhash", "value": FAKE_USERHASH, "domain": ".nmbxd1.com", "path": "/"},
+                {
+                    "name": "PHPSESSID",
+                    "value": "9t9er8js904bjbq191piiltf07",
+                    "domain": "www.nmbxd1.com",
+                    "path": "/",
+                },
+                {
+                    "name": "memberUserspapapa",
+                    "value": "%F8O%E0%92%8DRx",
+                    "domain": "www.nmbxd1.com",
+                    "path": "/",
+                },
+            ]
+        return bool(seen)
+
+    assert _wait_for(root_window, landed, timeout=15.0), "核验之前没把整罐装进来"
+    names = {str(item.get("name")) for item in seen[0]}
+    assert {"PHPSESSID", "memberUserspapapa"} <= names, f"会话饼干没带上：{seen[0]!r}"
+    jar = {(cookie.name, cookie.domain) for cookie in client._jar}
+    assert ("PHPSESSID", "www.nmbxd1.com") in jar, f"装进去的饼干不在 jar 里：{jar!r}"
+    assert _wait_for(
+        root_window,
+        lambda: any("整罐饼干已装进客户端" in line for line in lines),
+        timeout=5.0,
+    ), f"运行日志里没说这次是带着整罐走的：{lines!r}"
+    try:
+        dialog._on_cancel()
+    except tk.TclError:  # pragma: no cover - 成功路已经自己关掉了窗口
+        pass
+
+
 def test_fake_session_covers_every_method_the_library_calls_on_a_session():
     """替身要覆盖库在会话上真正调用过的方法，外加上下文管理协议。"""
     used = _session_methods_used_by_library()

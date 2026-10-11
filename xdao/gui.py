@@ -762,6 +762,9 @@ BROWSER_LOCAL_SECONDS = 3.0
 # 「读罐详单」（v0.13.51）。真机上用户往往在 68 秒就截图或者取消，而原来只在等满
 # 300 秒×续等轮数之后才落盘 —— 那份唯一能逐字段比对的证据，谁也拿不到。
 BROWSER_EARLY_DUMP_SECONDS = 5.0
+# 取消 / 关窗之前，等后台线程让开 CDP 会话的上限（秒，v0.13.52）。它一看到停止位就
+# 从等待里醒来退出，等它是毫秒级；等不到就照旧收摊 —— 关窗不许被一次读罐卡住。
+BROWSER_CANCEL_DUMP_WAIT = 2.0
 #: 说破那一句（走常驻那一行，不会被 15 秒一次的状态替换刷掉）。
 BROWSER_PASTE_NUDGE = (
     "等了两分多钟还没有饼干：程序一直在盯这个窗口的饼干罐（窗口底部棕色横条、【窗口号】对上的这扇），"
@@ -955,6 +958,14 @@ class BrowserLoginDialog(tk.Toplevel):
         # 浏览器自报的 UA（读一次就缓存，v0.13.31）：领饼干、验饼干、之后导出都改用
         # 这张嘴说话 —— 饼干是浏览器挣来的，站点认不认常常就看请求像不像它。
         self._browser_ua: str | None = None
+        # 这一趟的窗口号与资料目录（v0.13.52）：后台线程定下来时写在登记处，
+        # 「关窗前留一份现场」要用它俩 —— 那时线程已经让开了，只能从登记处拿。
+        self._stamp = ""
+        self._jar_path = ""
+        # 这次到底落过盘没有（v0.13.52）：落过就别在关窗时再写一份同名的。
+        self._jar_dump_written = False
+        # 浏览器那一罐饼干装进客户端了没有（v0.13.52）：装一次就够。
+        self._session_jar_carried = False
         # 「抄 userhash」那句提醒消费了几次（v0.13.32）：后台线程只发一次，
         # 这个数钉住「界面上也只该变一次」。
         self._paste_nudges = 0
@@ -1268,8 +1279,57 @@ class BrowserLoginDialog(tk.Toplevel):
     def _on_cancel(self) -> None:
         """取消 / 点关闭：线程、CDP、浏览器进程一样都不许留下再销毁窗口。"""
         self._closing = True
+        # v0.13.52：收摊之前先把现场留下来 —— 用户最常做的动作就是「等不下去，关窗」，
+        # 而那正是唯一那份逐字段证据被一起带走的时候（真机 m44431）。
+        self._dump_jar_before_close()
         self._shutdown()
         self.destroy()
+
+    def _dump_jar_before_close(self) -> None:
+        """关窗/取消之前，用还没被拆掉的会话落一份「读罐详单」（v0.13.52，只碰队列之外的文件）。
+
+        顺序是故意的：先让后台线程停下来（它一看到停止位就从 ``wait`` 里醒来退出），
+        免得两边同时用一条 CDP 会话；等不到就照旧收摊 —— 关窗不许被一次读罐卡住。
+        落成也好、落不成也好，都要在运行日志里留一句：不然「这份文件到哪去了」又只剩猜。
+        """
+        if self._jar_dump_written:
+            return
+        session, browser = self._session, self._browser
+        if session is None or browser is None:
+            return
+        # 先举停止位再等：后台线程只在 `_stop.wait(...)` 上睡，不叫它它不会自己让开。
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=BROWSER_CANCEL_DUMP_WAIT)
+        try:
+            backend = _load_browser_login()
+        except Exception:  # pragma: no cover - 组件缺失时按「没写成」算
+            backend = None
+        path = None
+        if backend is not None:
+            path = self._write_jar_dump(backend, session, browser, self._stamp, self._jar_path)
+        if path is not None:
+            self._jar_dump_written = True
+            self._say_log(
+                f"读罐详单已写到：{path}（关窗前把现场留下来了；含域、路径、分区键、"
+                "哪一份罐和每条读法的原话，里面有饼干值，只在本机、贴出去前请自己掂量）"
+            )
+        else:
+            self._say_log(
+                "关窗前想留一份「读罐详单」没写成（多半是临时目录写不进去）——"
+                "这一次的现场只能靠截图了。"
+            )
+
+    def _say_log(self, message: str) -> None:
+        """把一句话写进运行日志（没有回调就丢掉，绝不往外抛）。"""
+        log = self._log
+        if not callable(log):
+            return
+        try:
+            log(message)
+        except Exception:  # pragma: no cover - 日志回调不该拖垮收尾
+            pass
 
     def _release(self) -> None:
         """停线程、关 CDP 会话、结束浏览器进程。可重复调用，不碰 Tk —— 后台线程也能调。
@@ -1370,6 +1430,7 @@ class BrowserLoginDialog(tk.Toplevel):
         # 这一趟的窗口号：钉进横幅末尾、等待话术与就绪文案里。旧程序窗口上冻着的
         # 横幅也会冒充「程序在看这里」（真机 m36897）—— 号对得上才算数。
         stamp = f"{random.randrange(0x10000):04X}"
+        self._stamp = stamp
         if self._stop.is_set():  # 找浏览器的功夫里用户已经取消了，别再多开一个进程
             return
         try:
@@ -1465,6 +1526,7 @@ class BrowserLoginDialog(tk.Toplevel):
         # v0.13.48：光有目录名分不出「配置目录下的常驻罐」和「%TEMP% 里的一次性罐」
         # （两个都可能叫 browser-profile），完整路径才是唯一对得上的证据。
         jar_path = str(getattr(browser, "used_profile", "") or "")
+        self._jar_path = jar_path
         # 对账行里的「接」= 程序此刻对话的是哪一扇（v0.13.37）：真机 m38110 的僵局
         # ——用户那扇窗硬刷新都不弹回（窗里有真饼干），程序却只看见登录页一签。
         # 端口号一亮出来，「两扇窗、两个罐」当场定案，不用再猜程序读没读瞎。
@@ -1534,6 +1596,7 @@ class BrowserLoginDialog(tk.Toplevel):
                             real_path = ""
                         if real_path and os.path.normcase(real_path) != os.path.normcase(jar_path):
                             jar_path = real_path
+                            self._jar_path = real_path
                             real_name = Path(real_path).name
                             if real_name:
                                 jar_tag = real_name
@@ -1613,6 +1676,7 @@ class BrowserLoginDialog(tk.Toplevel):
                     early_dumped = True
                     dump_now = self._write_jar_dump(backend, session, browser, stamp, jar_path)
                     if dump_now is not None:
+                        self._jar_dump_written = True
                         dump_note = (
                             f"读罐详单已写到：{dump_now}（含域、路径、分区键、哪一份罐，"
                             "里面有饼干值，只在本机、贴出去前请自己掂量）"
@@ -1841,6 +1905,14 @@ class BrowserLoginDialog(tk.Toplevel):
                         self._browser_ua = self._read_browser_ua(backend, session)
                     if self._browser_ua:
                         self.client.user_agent = self._browser_ua
+                    # v0.13.52（根因修复）：站点认的是**整罐**会话，不是孤立的一块 userhash。
+                    # 2026-10-11 用 v0.13.51 落下的详单复现过（`_scratch/probe_verify_full_jar.py`）：
+                    # 同一块 userhash，只带它请求用户系统的「饼干」页，落点还是
+                    # `Member/User/Index/login.html`（3592 字节）；把浏览器里那两块会话饼干
+                    # （PHPSESSID、memberUserspapapa）一起带上，就停在饼干列表页（24935 字节、
+                    # 正文有「退出」）。这就是连续几版「读到了 userhash 却被说不认」的根因 ——
+                    # 程序只 import 了 userhash 一块，站点当它是没登录的请求。
+                    self._carry_browser_jar(backend, session)
                     note = verify_userhash_live(self.client, value)
                     if note is None:
                         verified = value
@@ -1868,6 +1940,18 @@ class BrowserLoginDialog(tk.Toplevel):
                         if not said_dead:
                             said_dead = True
                             self._queue.put(("note", note))
+                            # v0.13.52：这一句是整轮里最有信息量的一句，可它以前只走
+                            # ("note") —— 那是「换一句状态」的意思，而状态行每 15 秒就
+                            # 被「已经等了 N 秒…」整句替换掉，运行日志里更是一个字都没有。
+                            # 真机 m44431/m44708 那两次，用户等到十几分钟只看到「还没在
+                            # 浏览器里看到登录」，我手里也只剩几张截图，连「卡在读还是
+                            # 卡在验」都断不出来。现在两份都留：「forensics」进运行日志，
+                            # 「hint」占住常驻那一行（读到值以后程序就不再报罐里有什么了，
+                            # 常驻行空着正是用户以为程序没看见他登录的原因）。
+                            self._queue.put(("forensics", f"验饼干：{note}"))
+                            self._queue.put(
+                                ("hint", f"读到一块 userhash，但没通过核验：{note}")
+                            )
                 read_failures = 0  # 这一轮读通了，前面的磕绊一笔勾销
             except Exception as exc:
                 # 一次读挂不算挂（v0.13.31）：用户正关标签、重开页面时 CDP 会抽风一下，
@@ -1926,6 +2010,7 @@ class BrowserLoginDialog(tk.Toplevel):
             # 往往等不到 300 秒就截图/取消，那样这份唯一的证据永远拿不到。
             dump_path = self._write_jar_dump(backend, session, browser, stamp, jar_path)
             if dump_path is not None:
+                self._jar_dump_written = True
                 # 只报给对话框（这不是「程序试过的一步」，不进 leaf_hints —— 那条
                 # 列表是超时那句话里「试过的几步」，多这一段会把真步骤挤出去）。
                 dump_line = (
@@ -1946,6 +2031,42 @@ class BrowserLoginDialog(tk.Toplevel):
                     self._timeout_message(
                         steps, self._diagnosis(), time.monotonic() - started
                     ),
+                )
+            )
+
+    def _carry_browser_jar(self, backend, session) -> None:
+        """把浏览器那一罐饼干（不只 userhash）装进客户端（v0.13.52）。
+
+        为什么非装不可：`verify_userhash_live` 问的是用户系统的「饼干」页，而站点认的是
+        整罐会话。2026-10-11 的真机详单（`xdao-读罐详单-62CA.json`）里，四路读法都看得见
+        三块饼干，可程序只 import 了 userhash 一块 —— 于是每一次核验都被弹回登录页，
+        主循环把它读成「X 岛不认这块饼干」，退回重等，一直等到十几分钟没有下文。
+
+        装成功一次就记下来（:attr:`_session_jar_carried`）；读不到或装不进都不算错，
+        下一轮还会再试 —— 这条路上「多试一次」比「报错」有用。
+        """
+        if self._session_jar_carried:
+            return
+        reader = getattr(backend, "read_site_cookies", None)
+        importer = getattr(self.client, "import_cookies", None)
+        if not (callable(reader) and callable(importer)):
+            return
+        try:
+            items = reader(session)
+        except Exception:  # noqa: BLE001 —— 读不到就下一轮再说
+            return
+        try:
+            count = int(importer(items) or 0)
+        except Exception:  # noqa: BLE001 —— 装不进也不许带崩登录
+            return
+        if count:
+            self._session_jar_carried = True
+            # 这一句必须进运行日志：以后再看日志，一眼能看出「这次是带着整罐走的」。
+            self._queue.put(
+                (
+                    "forensics",
+                    f"整罐饼干已装进客户端（{count} 块）：站点认的是整罐会话，"
+                    "只带一块 userhash 会被弹回登录页。",
                 )
             )
 
