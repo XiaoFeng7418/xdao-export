@@ -2843,8 +2843,8 @@ class SettingsDialog(tk.Toplevel):
         except (TypeError, ValueError):
             settings.retries = DEFAULT_RETRIES
 
-        settings.save()
-        self.saved = True
+        # v0.13.53：把写盘结果记下来 —— 写不进去时外面那句「设置已保存」就是假话。
+        self.saved = bool(settings.save())
         self.destroy()
 
 
@@ -4141,6 +4141,24 @@ class App:
         else:
             self.image_mode_frame.pack_forget()
 
+    def save_settings(self, *, loud: bool = False) -> bool:
+        """存设置，并把「写不进去」这件事说出来（v0.13.53）。
+
+        为什么不能让 :meth:`AppSettings.save` 默默失败：它以前是
+        ``except Exception: pass``，界面照样报「登录成功，饼干已保存。」—— 2026-10-11
+        真机上就出现了「日志说保存成功、``config.json`` 两周没变、重启还要重新登录」
+        这种自相矛盾。这里做成统一出口：第一次失败说一句（``loud=True`` 每次都说），
+        省得每改一次界面元素就刷一行。
+        """
+        ok = bool(self.settings.save())
+        if not ok and (loud or not getattr(self, "_settings_save_warned", False)):
+            self._settings_save_warned = True
+            self.log(
+                f"设置没能写进 {self.settings.config_path} —— 这次的改动只在本次运行里有效，"
+                "重启就没了。多半是这个目录写不进去（程序放在受限目录里、或被安全软件拦住）。"
+            )
+        return ok
+
     def parse_hashes(self) -> list[str]:
         return self.settings.parse_hashes(self.hashes_var.get())
 
@@ -4152,11 +4170,11 @@ class App:
         self.settings.use_cache = bool(self.use_cache_var.get())
         self.settings.notify = bool(self.notify_var.get())
         self.settings.image_mode = self.current_image_mode()
-        self.settings.save()
+        self.save_settings()
 
     def persist_watch_targets(self) -> None:
         self.settings.watch_targets = [t.to_dict() for t in self.watch_targets]
-        self.settings.save()
+        self.save_settings()
 
     def apply_settings_to_client(self) -> None:
         self.client.apply_config(self.settings)
@@ -4188,9 +4206,19 @@ class App:
             self.root.wait_window(dialog)
             if dialog.userhash:
                 self.settings.userhash = dialog.userhash
-                self.settings.save()
+                saved = self.save_settings(loud=True)
                 self.show_login_state()
-                self.log("登录成功，饼干已保存。")
+                if saved:
+                    self.log("登录成功，饼干已保存。")
+                else:
+                    messagebox.showwarning(
+                        "饼干能用，但登录状态没存下来",
+                        f"登录已经生效，可以正常导出了。\n\n但是设置写不进：\n{self.settings.config_path}\n\n"
+                        "文件里存不下来这一条，重启程序要重新登录一次。"
+                        "常见原因：程序所在的目录、或这个配置目录被限制写入"
+                        "（被系统策略限制的程序目录、安全软件的受保护目录）。\n"
+                        "把程序整个文件夹挪到不受限的位置（例如 D:\\X岛\\xdao-export-v*）通常就好了。",
+                    )
         except XdaoError as exc:
             messagebox.showerror("无法打开登录页", str(exc))
         except Exception as exc:
@@ -4202,12 +4230,16 @@ class App:
         if dialog.saved:
             self.apply_settings_to_client()
             self.refresh_cache_info()
+            # v0.13.53：`dialog.saved` 现在只在真的写进了文件时为真；写不进去要在日志里
+            # 说清楚（以前无论成败都写「设置已保存」，真机上骗过一次）。
             self.log(
                 f"设置已保存：超时 {self.settings.timeout:g} 秒、重试 {self.settings.retries} 次、"
                 f"间隔 {self.settings.throttle:g} 秒、代理 "
                 f"{'已设置' if self.settings.proxy else '直连'}、缓存 "
                 f"{'启用' if self.settings.use_cache else '关闭'}。"
             )
+        else:
+            self.save_settings(loud=True)
 
     def open_watch(self) -> None:
         if self._watch_dialog is not None and self._watch_dialog.winfo_exists():
