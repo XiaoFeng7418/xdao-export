@@ -35,6 +35,13 @@ DEFAULT_PDF_SCALE = "1.0"
 DEFAULT_PDF_BACKGROUND = True
 DEFAULT_PDF_PAGE_RANGES = ""
 
+# ---------- 导出范围的默认值 ----------
+# 页数上限：0 表示不限。它与 xdao/cache.py 里那道安全阀（SAFETY_MAX_PAGES）
+# 是两件事 —— 用户没填时仍然保留安全阀，填了更小的值就以用户填的为准。
+DEFAULT_MAX_PAGES = 0
+# 串号截止：空串表示不截止；「含它」的语义见 cache.filter_until_thread_id。
+DEFAULT_UNTIL_THREAD_ID = ""
+
 
 def app_config_dir() -> Path:
     """本机配置目录。"""
@@ -71,6 +78,12 @@ class AppSettings:
     image_mode: str = "embed"
     # 导出 PDF 时使用的浏览器；留空表示自动探测 Chrome / Edge
     pdf_browser: str = ""
+
+    # ---------- 导出范围 ----------
+    # 每个串最多抓几页：0＝不限（仍受 cache.SAFETY_MAX_PAGES 那道安全阀约束）
+    max_pages: int = DEFAULT_MAX_PAGES
+    # 抓到该串号为止（**含它**）；空串＝不截止。串号从网址里解析。
+    until_thread_id: str = DEFAULT_UNTIL_THREAD_ID
 
     # ---------- PDF 纸张 / 页边距 ----------
     # 归一化全部交给 xdao/pdf_opts.py（界面与命令行同一套规则）；
@@ -135,6 +148,11 @@ class AppSettings:
         image_mode = str(data.get("image_mode") or "embed")
         self.image_mode = image_mode if image_mode in ("embed", "url", "drop") else "embed"
         self.pdf_browser = str(data.get("pdf_browser") or "")
+        # 页数上限：0 是合法值（＝不限），所以不能走 _as_int 的"非正数回落默认"。
+        self.max_pages = _max_pages(data.get("max_pages"), DEFAULT_MAX_PAGES)
+        self.until_thread_id = _until_thread_id(
+            data.get("until_thread_id"), DEFAULT_UNTIL_THREAD_ID
+        )
         # 逐字段解析：老配置没有这些键 → 取默认值（＝ v0.7.0 的成品外观）；
         # 有键但值坏 → 同样回落默认，绝不让读配置抛异常。
         self.pdf_paper = _pdf_choice(data.get("pdf_paper"), DEFAULT_PDF_PAPER, "normalize_paper")
@@ -193,6 +211,8 @@ class AppSettings:
                 "include_hashes": self.include_hashes,
                 "image_mode": self.image_mode,
                 "pdf_browser": self.pdf_browser,
+                "max_pages": self.max_pages,
+                "until_thread_id": self.until_thread_id,
                 "pdf_paper": self.pdf_paper,
                 "pdf_orientation": self.pdf_orientation,
                 "pdf_margin": self.pdf_margin,
@@ -261,6 +281,40 @@ def _as_int(value, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return result if result >= 0 else fallback
+
+
+def _max_pages(value, fallback: int) -> int:
+    """页数上限：认不出来的值回落默认；负数当坏值。
+
+    0 是**合法值**（＝不限页数），所以不能借用 ``_as_int`` 那套"非正数回落"的
+    写法 —— 借了就会把用户特意填的 0 悄悄换成默认值。
+    """
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return result if result >= 0 else fallback
+
+
+def _until_thread_id(value, fallback: str) -> str:
+    """串号截止：只认能解析出串号的写法（网址或纯数字），其余回落默认（空串＝不截止）。
+
+    存的是用户写的那串原文（网址原样留着），解析交给
+    :func:`xdao.cache.parse_thread_id`；这里借它来判"这值坏没坏"，
+    不另外实现一套解析规则。
+    """
+    text = str(value if value is not None else "").strip()
+    # 0 / "0" 不是串号（parse_thread_id 那边也把 0 当无效）：配置里手写成 0 时
+    # 按"没填"处理，免得存下一个 "0" 让截止逻辑去比一个不存在的串号。
+    if not text or text == "0":
+        return fallback
+    try:
+        from .cache import parse_thread_id
+
+        thread_id = parse_thread_id(text)
+    except Exception:  # noqa: BLE001 —— 解析模块出问题也不该让读配置失败
+        return fallback
+    return text if thread_id is not None else fallback
 
 
 def _as_bool(value, fallback: bool) -> bool:

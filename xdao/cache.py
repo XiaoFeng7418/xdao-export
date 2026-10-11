@@ -27,6 +27,11 @@ from .paths import OutputDirNotWritable, can_write_dir, ensure_writable
 CACHE_VERSION = 1
 DEFAULT_CACHE_DIRNAME = ".cache"
 
+#: 页数安全阀：调用方没给页数上限时最多抓这么多页。
+#: 与「用户填的页数上限」是两件事 —— 用户上限更小时以用户上限为准，
+#: 用户没填（0＝不限）时仍然保留这道阀，免得一个畸形的超长串被一把拉到底。
+SAFETY_MAX_PAGES = 5000
+
 
 def post_fingerprint(post: Post) -> str:
     """一条发言的内容指纹，用来判断楼层是否被编辑过。"""
@@ -330,6 +335,36 @@ def parse_thread_id(value: str | int | None) -> int | None:
     return None
 
 
+def filter_until_thread_id(
+    threads: list[str],
+    until_thread_id: int | None,
+) -> tuple[list[str], list[str]]:
+    """按「串号截止」截取要导出的那些串。
+
+    语义只有一句：**抓到该串号为止，并且包含它**；它后面的串一律跳过。
+    串号从每条的网址里解析（``parse_thread_id``），列表顺序按用户写的顺序来
+    （这个功能就是给「列表常常是新串排在最后」那类用法准备的，不重排）。
+
+    截止串自己没出现在列表里时，按「列表里最后出现的、串号 ≤ 截止值的那些都导」
+    处理 —— 等于值的那一条同样要导（含它）：拿一串编号去卡一条范围时，
+    「截止值落在两个串中间」是常态，不该因为差一个号就把整整一段全丢掉。
+
+    返回 ``(要导出的那些, 跳过的那些)``；``until_thread_id`` 为 ``None``
+    （没填截止）时原样返回，一个串都不动。
+    """
+    if until_thread_id is None:
+        return list(threads), []
+    kept: list[str] = []
+    skipped: list[str] = []
+    for item in threads:
+        thread_id = parse_thread_id(item)
+        if thread_id is not None and thread_id > until_thread_id:
+            skipped.append(item)
+        else:
+            kept.append(item)
+    return kept, skipped
+
+
 class CachedThreadFetcher:
     """带缓存的串抓取器。"""
 
@@ -403,13 +438,19 @@ class CachedThreadFetcher:
         self,
         url_or_id: str,
         *,
-        max_pages: int = 5000,
+        max_pages: int = SAFETY_MAX_PAGES,
         verify_cached: bool = False,
     ) -> CachedThread:
         """抓取（或从缓存取得）一个串的完整内容。
 
         verify_cached=True 时会重新抓取最终页并比对指纹，能发现老楼层被编辑；
         为 False 时在回复数没变的情况下一次请求都不多用。
+
+        max_pages 是**总页数上限**（含第 1 页）：正数表示最多只抓这么多页，
+        撞上就停手并把 ``truncated`` 置上（结果里 ``retry_note`` 会说明
+        "只抓到第几页"）；``0`` 表示不限页数。参数默认值 5000 是这道安全阀
+        原先的样子 —— 调用方要区分"用户填的上限"与"安全阀"，用户上限更小时
+        就把更小的那个传进来，没填时照旧用默认值。
         """
         thread_id = parse_thread_id(url_or_id)
         if thread_id is None:
@@ -453,22 +494,34 @@ class CachedThreadFetcher:
         # `cache.pages` 的语义是"从第 1 页起、中间不缺页的那一段有多长"
         # （由 contiguous_pages() 维护，见 _assemble）。缓存能不能直接用，
         # 要同时满足两件事：那段长度和缓存里的页数对得上（天然成立，防脏数据），
-        # 以及它已经盖到接口报的总页数。后者才是关键：
+        # 以及它已经盖到**这次要抓的范围**。后者才是关键：
         #   * 盖满了、回复数也没变 → 一次请求都不用多花，直接用（默认行为）；
         #   * 首页接口没报总页数（page_count == 1）→ 跟以前一样只刷新第 1 页；
         #   * 只盖住前几页、串后面还有页（含"中间某页当时没抓下来、
         #     后面几页却已落盘"那种）→ 必须去补，不能在这儿提前返回，
         #     否则下一次导出会一直复用中间缺页的缓存（实测踩过这个坑）。
-        cache_covers = (
+        # 接口自称的总页数先被页数上限压一次：撞上上限时"够不够用"该按上限算，
+        # 不然缓存里已经盖满全串时会绕过上限、把整串都交出去。
+        requested_pages = page_count
+        if max_pages > 0:
+            requested_pages = min(page_count, max_pages)
+        # 早退这条路只管"一次请求都不多发"。判据有两层，缺一不可：
+        #   * `len(cached_pages) == cache.pages`：状态文件说的那段连续区间
+        #     真的都读出来了（页文件被删/坏了时对不上，就得去补，别复用缺口）；
+        #   * `cache.pages == requested_pages`：那段区间**正好**盖到这次要抓的
+        #     页数。上限把范围压小、而缓存里存着更多页（上次是另一条上限，
+        #     或者没填）时这条不成立，落下去走抓取流程 —— 那里按上限把缓存剪到
+        #     requested_pages 页再交出产物，既不多发请求，也不混进超出上限的内容。
+        cache_shortcut = (
             bool(cached_pages)
-            and len(cached_pages) >= cache.pages
-            and cache.pages >= page_count
+            and len(cached_pages) == cache.pages
+            and cache.pages == requested_pages
         )
         if (
             self.use_cache
             and cached_first is not None
             and cache.reply_count == reply_count
-            and (cache_covers or page_count <= 1)
+            and (cache_shortcut or page_count <= 1)
         ):
             if not verify_cached:
                 payloads = dict(cached_pages)
@@ -480,6 +533,8 @@ class CachedThreadFetcher:
                     reason="回复数未变化，直接使用本地缓存",
                     pages_reused=len(payloads),
                     previous_post_ids=previous_ids,
+                    page_count=page_count,
+                    requested_pages=requested_pages,
                 )
             # 校验模式：重抓最终页，比对是否有楼层被编辑。
             if page_count in cached_pages and page_count > 1:
@@ -497,6 +552,8 @@ class CachedThreadFetcher:
                         reason="校验失败，沿用本地缓存",
                         pages_reused=len(payloads),
                         previous_post_ids=previous_ids,
+                        page_count=page_count,
+                        requested_pages=requested_pages,
                     )
                 if isinstance(fresh_last, dict) and (
                     ThreadCache.hash_payload(fresh_last)
@@ -511,6 +568,8 @@ class CachedThreadFetcher:
                         reason="校验通过，内容与缓存一致",
                         pages_reused=len(payloads),
                         previous_post_ids=previous_ids,
+                        page_count=page_count,
+                        requested_pages=requested_pages,
                     )
                 cached_pages[page_count] = fresh_last
                 payloads = dict(cached_pages)
@@ -522,6 +581,8 @@ class CachedThreadFetcher:
                     reason="检测到楼层变化，已更新",
                     pages_reused=len(payloads),
                     previous_post_ids=previous_ids,
+                    page_count=page_count,
+                    requested_pages=requested_pages,
                 )
             payloads = dict(cached_pages)
             payloads[1] = first
@@ -532,6 +593,8 @@ class CachedThreadFetcher:
                 reason="仅一页内容，已用最新数据刷新",
                 pages_reused=len(payloads),
                 previous_post_ids=previous_ids,
+                page_count=page_count,
+                requested_pages=requested_pages,
             )
 
         # ---- 需要向服务器补页 ----
@@ -541,8 +604,12 @@ class CachedThreadFetcher:
         pages_to_fetch: list[int] = []
         # 第 1 页由这一轮的首页请求提供，且必须写进缓存，
         # 否则缓存永远缺第 1 页，后续每次都判定为"缓存不完整"而全量重抓。
-        for page in range(2, page_count + 1):
+        # 循环只走到 `requested_pages`（已被页数上限压过），这样第 2 页之后
+        # 越界的页根本不会进队列；队列里也不会有"已经有的页"被重复请求。
+        for page in range(2, requested_pages + 1):
             if page in cached_pages:
+                # 只交出要抓范围内的缓存页：缓存里存着更多页（上次是另一条
+                # 上限，或者上限没填）时，超出范围的页这一趟不能混进产物。
                 payloads[page] = cached_pages[page]
                 reused += 1
             else:
@@ -552,18 +619,24 @@ class CachedThreadFetcher:
         if self.use_cache:
             cache.store_page(1, first)
 
+        # 抓取上界（页号，含）：requested_pages 已经含了页数上限这一层；
+        # 上限没填时保留原先那道安全阀，防止把畸形的超长串一次性拉到底。
+        # 页数上限与安全阀必须分开看：用户上限更小时以用户上限为准，
+        # 没填时才轮到安全阀 —— 两者混成一个数就分不出"是因为哪个停下的"。
+        # 队列本身只到 requested_pages，所以这里的 min 只在"没填上限"时起作用。
+        upper_bound = requested_pages
+        if max_pages <= 0:
+            upper_bound = min(upper_bound, SAFETY_MAX_PAGES)
+
         # 抓不下来的页先记进"重试队列"，不再像以前那样当场 break 把后面
         # 所有页一起丢掉。原因：接口偶发超时/限流/返回空壳时，旧行为会静默
         # 少抓一大截，用户拿到的产物缺页却看不出来。
         failed: set[int] = set()
         attempted = 0
-        capped = False
-        for index, page in enumerate(pages_to_fetch, start=1):
-            if len(payloads) >= page_count:
-                break
-            if index > max_pages:
-                # 撞上页数上限，剩下的页一个都没抓 —— 产物必然不完整。
-                capped = True
+        for page in pages_to_fetch:
+            if page > upper_bound:
+                # 撞上页数上限：剩下的页一个都没抓。这里什么都不用记 ——
+                # 产物是否不完整由 `_assemble` 拿最后一页与要抓的页数比出来。
                 break
             attempted = page
             status = self._process_page(
@@ -620,7 +693,7 @@ class CachedThreadFetcher:
             previous_post_ids=previous_ids,
             failed_pages=failed,
             page_count=page_count,
-            capped=capped,
+            requested_pages=requested_pages,
         )
 
     def _process_page(
@@ -718,15 +791,17 @@ class CachedThreadFetcher:
         previous_post_ids: set[str] | None = None,
         failed_pages: set[int] | None = None,
         page_count: int = 0,
-        capped: bool = False,
+        requested_pages: int = 0,
     ) -> CachedThread:
         """把若干页原始数据合并成完整的串内容，并回写缓存状态。
 
         ``previous_post_ids`` 是本轮抓取之前缓存里已有的楼层 id：
         只有"上次就有、这次指纹变了"才算被编辑，否则一律算新增楼层。
         ``failed_pages`` 是补抓之后仍然缺的页号，会原样带进结果里。
-        ``page_count`` 是接口自称的总页数，``capped`` 表示撞上了页数上限
-        没抓完 —— 两者一起决定 ``truncated``（产物是否明确不完整）。
+        ``page_count`` 是接口自称的总页数，``requested_pages`` 是**这一趟要抓到的
+        页数**（总页数与用户页数上限里更小的那个）。两个一比较就知道这次的范围
+        有没有被上限压过；再拿它和解析出来的最后一页比，``truncated``
+        （产物是否明确不完整）就出来了。
         """
         posts: list[Post] = []
         seen: set[int] = set()
@@ -812,6 +887,11 @@ class CachedThreadFetcher:
         missing = sorted(int(page) for page in (failed_pages or ()))
         last_page = max(payloads) if payloads else 0
         # 产物不完整有两种来源：补抓之后仍缺页，或者撞上页数上限没抓完。
+        # 后者就是"最后一页没到接口说的总页数"：抓取流程结束了却没抓满，
+        # 只可能是被页数上限（或那道安全阀）挡住的 —— 接口说到头时会走 end
+        # 分支，那时最后一页正等于总页数。这里不去看抓取循环里的标志，
+        # 所以补抓救回来的页也改变不了这个判断。
+        capped = page_count > last_page
         truncated = bool(missing) or capped
         retry_note = ""
         if missing:
@@ -829,7 +909,7 @@ class CachedThreadFetcher:
             )
         elif capped:
             retry_note = (
-                f"这次只抓到第 {last_page} 页（串比这长），剩下的页没有抓："
+                f"这次只抓到第 {last_page} 页（这次要抓的范围比这长），剩下的页没有抓："
                 "可以用「抓取范围 → 指定页码」分批导出，或把页数上限调大后重跑。"
             )
         elif getattr(self, "_retried_ok", 0):

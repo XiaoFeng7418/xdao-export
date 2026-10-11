@@ -9,9 +9,11 @@ import pytest
 
 from xdao.cache import (
     CachedThreadFetcher,
+    SAFETY_MAX_PAGES,
     ThreadCache,
     cache_dir_candidates,
     default_cache_dir,
+    filter_until_thread_id,
     parse_reply_count,
     parse_thread_id,
     post_fingerprint,
@@ -770,6 +772,174 @@ def test_page_cap_marks_the_result_incomplete(artifacts_dir):
     assert result.failed_pages == []  # 不是失败，是"没抓完"
     assert "只抓到第" in result.retry_note
     assert "页数上限" in result.retry_note
+
+
+def test_max_pages_is_the_total_page_limit(artifacts_dir):
+    """``max_pages`` 是**总页数**上限（含第 1 页）：填 2 只抓第 1、2 页就停。
+
+    这条是功能的正面用例：用户填的页数上限必须真的挡住后面的页，而且结果里
+    要能看出"是因为到上限才停的"（``truncated`` ＋ 说明文字），不能悄悄少抓。
+    """
+    # 另开一个缓存目录：共用 artifacts_dir 的话会命中上一趟留下的缓存，
+    # "有没有真的去请求第 2 页"就测不出来了。
+    cache_dir = artifacts_dir / "cap-fresh"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    api = build_three_page_api()
+    result = make_fetcher(api, cache_dir).fetch(7001, max_pages=2)
+
+    assert (7001, 2) in api.requests  # 上限内的页照抓
+    assert (7001, 3) not in api.requests  # 到上限就停手，不再往下抓
+    assert result.meta.pages == 2
+    assert [post.id for post in result.posts] == [7001, 101, 102, 103, 104]
+    assert result.truncated is True  # 产物明确不完整
+    assert result.failed_pages == []  # 不是失败，是"没抓完"
+    assert "只抓到第" in result.retry_note
+
+
+def test_page_limit_reuses_cache_without_trimming_the_product(artifacts_dir):
+    """缓存里存着超过上限的页时：不再多发请求，但产物只到上限那一页。
+
+    长串第一次不限页数抓过、第二次把上限改小，是这套功能最常见的用法 ——
+    这时候不能因为"缓存够用"就把整串（超过上限的部分）交出去。
+    """
+    full = build_three_page_api()
+    first = make_fetcher(full, artifacts_dir).fetch(7001)
+    assert first.truncated is False
+
+    api = build_three_page_api()
+    result = make_fetcher(api, artifacts_dir).fetch(7001, max_pages=2)
+
+    assert api.requests == [(7001, 1)]  # 首页照刷新，别的页一个都不多请求
+    assert result.meta.pages == 2
+    assert [post.id for post in result.posts] == [7001, 101, 102, 103, 104]  # 第 3 页不入成品
+    assert result.truncated is True
+    assert "只抓到第" in result.retry_note
+
+
+def test_user_page_limit_beats_the_safety_valve(artifacts_dir):
+    """用户填的上限更小时以用户上限为准，安全阀拦不住它。"""
+    api = FakeApi(
+        {
+            page: make_page(7001, page, [make_reply(100 + page)], reply_count=6, page_count=3)
+            for page in range(1, 4)
+        }
+    )
+    result = make_fetcher(api, artifacts_dir).fetch(7001, max_pages=1)
+
+    assert [page for _, page in api.requests] == [1]  # 第 2、3 页一个都没请求
+    assert result.truncated is True
+    assert SAFETY_MAX_PAGES > 1  # 挡住它的只能是用户上限，不是那道安全阀
+
+
+def test_safety_valve_applies_only_when_no_user_limit(artifacts_dir):
+    """不填页数上限（0＝不限）时仍然保留 5000 页那道安全阀。
+
+    为什么这条要有：把"用户上限"与"安全阀"分开之后，很容易顺手把安全阀
+    一起删掉 —— 那样一个畸形的超长串会被一把拉到底。这里用一个只认页数的
+    轻量接口把 5001 次请求跑完，确认第 5001 页一次都没请求、并且明确报"没抓完"。
+    """
+    total_pages = SAFETY_MAX_PAGES + 1
+
+    class HugeApi(FakeApi):
+        def fetch_thread_page(self, thread_id: int, page: int = 1) -> dict:
+            self.requests.append((thread_id, page))
+            # 每页都给一条回复：一条回复都没有会被当成"接口说到头了"（end），
+            # 那样跑不到安全阀就停了，这条用例也就测不到它想测的东西。
+            payload = make_page(
+                thread_id, page, [make_reply(200 + page)], reply_count=0, page_count=total_pages
+            )
+            self.last_page_count = total_pages
+            self.last_page_index = page
+            return payload
+
+    api = HugeApi({})
+    fetcher = CachedThreadFetcher(
+        api, cache_dir=artifacts_dir, use_cache=False, retry_delay=0.0, retry_attempts=0
+    )
+    result = fetcher.fetch(7001)
+
+    assert (7001, SAFETY_MAX_PAGES + 1) not in api.requests  # 安全阀挡住了最后一页
+    assert (7001, SAFETY_MAX_PAGES) in api.requests  # 阀内的最后一页照抓
+    assert len(api.requests) == SAFETY_MAX_PAGES
+    assert result.truncated is True
+    assert "只抓到第" in result.retry_note
+
+
+def test_zero_max_pages_means_no_limit(artifacts_dir):
+    """``max_pages=0`` 表示不限：比总页数短的串必须原样抓完、不算截断。"""
+    api = build_three_page_api()
+    result = make_fetcher(api, artifacts_dir).fetch(7001, max_pages=0)
+
+    assert (7001, 3) in api.requests
+    assert result.truncated is False
+    assert result.retry_note == ""
+    assert [post.id for post in result.posts] == [7001, 101, 102, 103, 104, 105, 106]
+
+
+# ---------- 串号截止 ----------
+
+
+def test_until_thread_id_keeps_the_cutoff_thread_itself():
+    """截止是"含它"：等于截止值的那个串必须留下，它后面的才跳过。"""
+    threads = [
+        "https://www.nmbxd1.com/t/7001",
+        "https://www.nmbxd1.com/t/7003",
+        "https://www.nmbxd1.com/t/7005",
+    ]
+    kept, skipped = filter_until_thread_id(threads, 7003)
+
+    assert kept == threads[:2]
+    assert skipped == threads[2:]
+
+
+def test_until_thread_id_without_the_cutoff_thread_keeps_everything_below():
+    """截止串没在列表里：串号 ≤ 截止值的都导（含等于），后面的一律跳过。"""
+    threads = [
+        "https://www.nmbxd1.com/t/7001",
+        "https://www.nmbxd1.com/t/7003",
+        "https://www.nmbxd1.com/t/7011",
+    ]
+    kept, skipped = filter_until_thread_id(threads, 7007)
+
+    assert kept == threads[:2]
+    assert skipped == threads[2:]
+
+
+def test_until_thread_id_keeps_the_list_order_and_plain_ids():
+    """列表顺序照用户写的来（这个功能不重排）；纯数字与网址写法都认。"""
+    threads = ["7001", "https://www.nmbxd1.com/t/7003", "7005"]
+    kept, skipped = filter_until_thread_id(threads, 7003)
+
+    assert kept == threads[:2]
+    assert skipped == threads[2:]
+
+
+def test_until_thread_id_keeps_unparseable_entries():
+    """解析不出串号的条目（手写的备注之类）不参与比较，也不该被悄悄丢掉。"""
+    threads = ["7001", "顺手记一笔", ""]
+    kept, skipped = filter_until_thread_id(threads, 7001)
+
+    assert kept == threads
+    assert skipped == []
+
+
+def test_no_cutoff_keeps_every_thread():
+    """没填截止（None）：一个串都不动。"""
+    threads = ["7001", "7002"]
+    kept, skipped = filter_until_thread_id(threads, None)
+
+    assert kept == threads
+    assert skipped == []
+    assert kept is not threads  # 返回的是新列表，调用方改它不会动到原列表
+
+
+def test_until_thread_id_can_skip_every_thread():
+    """截止比列表里任何一个都小：全都跳过（调用方据此提示"没有要导出的串"）。"""
+    threads = ["https://www.nmbxd1.com/t/7003"]
+    kept, skipped = filter_until_thread_id(threads, 7001)
+
+    assert kept == []
+    assert skipped == threads
 
 
 def test_fatal_api_error_still_raises(artifacts_dir):

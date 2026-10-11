@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,6 +162,44 @@ def make_fake_fetcher(thread_id: int, title: str):
             return FakeResult()
 
     return FakeFetcher
+
+
+def make_recording_fetcher():
+    """记录每次 fetch 的调用参数，并按网址返回对应串号的结果。
+
+    用来核对命令行把导出范围（页数上限、串号截止）真的交给了抓取层，以及
+    截止过滤后到底请求了哪几个串。
+    """
+    from xdao.cache import parse_thread_id
+
+    calls: list[tuple[str, dict]] = []
+
+    class RecordingFetcher:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def fetch(self, url, **kwargs):
+            calls.append((url, kwargs))
+            thread_id = parse_thread_id(url) or 50000001
+            return SimpleNamespace(
+                meta=SimpleNamespace(thread_id=thread_id, title=f"测试串 {thread_id}", po_hash="PO"),
+                posts=[],
+                reason="测试用抓取结果",
+                retry_note="",
+                cache_warning="",
+            )
+
+    return RecordingFetcher, calls
+
+
+def make_writing_exporter():
+    class FakeExporter:
+        def save(self, thread, scope, output_dir, include_hashes=None):
+            path = Path(output_dir) / "结果.html"
+            path.write_text("ok", encoding="utf-8")
+            return path
+
+    return lambda *a, **k: FakeExporter()
 
 
 def test_failure_reason_is_written_to_log(out_dir, monkeypatch):
@@ -956,3 +995,175 @@ def test_offline_with_check_update_is_refused(monkeypatch, capsys):
     assert code == 2
     assert calls == [], "说了 --offline 却还是去问了接口"
     assert "不能一起用" in capsys.readouterr().err
+
+
+# ---------- 导出范围：--max-pages / --until ----------
+
+
+def test_parser_max_pages_accepts_zero_and_rejects_junk():
+    """``--max-pages`` 认非负整数；0 表示不限，写错当场报错而不是静默忽略。"""
+    assert build_parser().parse_args(["50000001", "--max-pages", "0"]).max_pages == 0
+    assert build_parser().parse_args(["50000001", "--max-pages", "3"]).max_pages == 3
+    assert build_parser().parse_args(["50000001"]).max_pages is None  # 没给就用配置
+
+    for bad in ("-1", "abc", "2.5", ""):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["50000001", "--max-pages", bad])
+
+
+def test_parser_until_keeps_the_raw_value():
+    """``--until`` 存原文（网址或串号都收），解析交给抓取层那一个函数。"""
+    args = build_parser().parse_args(["7001", "--until", "https://www.nmbxd1.com/t/7003"])
+    assert args.until == "https://www.nmbxd1.com/t/7003"
+    assert build_parser().parse_args(["7001"]).until is None
+
+
+def test_help_says_the_cutoff_thread_is_included(capsys):
+    """``--help`` 必须写明截止那个串**含它**，否则用户会以为是不含。"""
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--max-pages" in out
+    assert "--until" in out
+    assert "含它" in out
+
+
+def test_until_keeps_the_cutoff_thread_and_skips_the_rest(out_dir, monkeypatch, capsys):
+    """``--until`` 就是"含它"：等于截止值的那个串照导，它后面的跳过。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(
+        [
+            "https://www.nmbxd1.com/t/7001",
+            "https://www.nmbxd1.com/t/7003",
+            "https://www.nmbxd1.com/t/7005",
+            "--until",
+            "7003",
+            "-f",
+            "html",
+            "-o",
+            str(out_dir),
+        ]
+    )
+
+    assert code == 0
+    # 截止串自己必须在里面；它后面的那个一次都不许请求。
+    assert [url for url, _ in calls] == [
+        "https://www.nmbxd1.com/t/7001",
+        "https://www.nmbxd1.com/t/7003",
+    ]
+    out = capsys.readouterr().out
+    assert "含它" in out
+    log = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
+    assert "成功 2 / 2" in log  # 汇总按过滤后的数量报
+
+
+def test_until_without_the_cutoff_thread_keeps_everything_at_or_below(
+    out_dir, monkeypatch, capsys
+):
+    """截止串没在列表里：串号 ≤ 截止值的都导（含等于），后面的一律跳过。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(
+        [
+            "https://www.nmbxd1.com/t/7001",
+            "https://www.nmbxd1.com/t/7003",
+            "https://www.nmbxd1.com/t/7011",
+            "--until",
+            "7007",
+            "-f",
+            "html",
+            "-o",
+            str(out_dir),
+        ]
+    )
+
+    assert code == 0
+    assert [url for url, _ in calls] == [
+        "https://www.nmbxd1.com/t/7001",
+        "https://www.nmbxd1.com/t/7003",
+    ]
+    assert "跳过它之后的 1 个串" in capsys.readouterr().out
+
+
+def test_until_that_blocks_every_thread_exits_cleanly(out_dir, monkeypatch, capsys):
+    """截止把列表挡光时：不建目录、不连网络，给一句人话并正常退出。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(
+        [
+            "https://www.nmbxd1.com/t/7005",
+            "--until",
+            "7003",
+            "-f",
+            "html",
+            "-o",
+            str(out_dir),
+        ]
+    )
+
+    assert code == 0
+    assert calls == [], "一个串都被截止挡住了，不该再去抓"
+    err = capsys.readouterr().err
+    assert "没有要导出的串" in err
+    assert "含它" in err
+    assert not (out_dir / "xdao-export.log").exists()  # 什么都没导，不该留下日志
+
+
+def test_max_pages_reaches_the_fetcher(out_dir, monkeypatch):
+    """``--max-pages`` 要原样透传到抓取层（页数上限只在那一层生效）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["50000001", "--max-pages", "2", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["max_pages"] for _, kwargs in calls] == [2]
+
+
+def test_max_pages_defaults_to_unlimited(out_dir, monkeypatch):
+    """没给 ``--max-pages`` 时传 0（不限）：那道 5000 页的安全阀留给抓取层。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["max_pages"] for _, kwargs in calls] == [0]
+
+
+def test_max_pages_falls_back_to_the_saved_setting(out_dir, monkeypatch):
+    """命令行没写时用配置里存的那条上限（界面里填过就能在这条路上生效）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    class SettingsWithRange(OfflineSettings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.max_pages = 5
+            self.until_thread_id = ""
+
+    import xdao.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "AppSettings", SettingsWithRange)
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["max_pages"] for _, kwargs in calls] == [5]

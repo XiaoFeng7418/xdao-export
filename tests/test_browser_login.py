@@ -5512,6 +5512,9 @@ def test_profile_of_process_reads_the_command_line_of_that_pid(monkeypatch):
     monkeypatch.setattr(real_subprocess, "run", fake_run)
     assert bl.profile_of_process(9911) == "C:\\Temp\\xdao-export-browser-profile-7-1"
     assert seen and "ProcessId=9911" in seen[0][-1], seen
+    # v0.14.0：脚本开头必须钉住 UTF-8 输出 —— 中文 Windows 上 powershell 默认按 GBK
+    # 回话，按 UTF-8 解码会把带中文的资料目录变成乱码（真机详单里的「罐路径」段）。
+    assert "OutputEncoding" in seen[0][-1], seen
 
 
 def test_the_witness_line_names_every_jar_and_every_page(monkeypatch):

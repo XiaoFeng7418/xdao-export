@@ -573,6 +573,19 @@ class _SyncThread:
         self._target()
 
 
+def _messagebox_calls(monkeypatch) -> list[tuple[str, str, str]]:
+    """记下 ``messagebox`` 弹了什么（函数名, 标题, 正文），并把弹窗换成不阻塞的假函数。"""
+    calls: list[tuple[str, str, str]] = []
+    for name in ("showwarning", "showerror", "showinfo"):
+        monkeypatch.setattr(
+            gui.messagebox,
+            name,
+            lambda title, message, _name=name, **kw: calls.append((_name, title, message)),
+        )
+    return calls
+
+
+
 class _FakeWidget:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
@@ -632,6 +645,14 @@ class _FakeApp:
     def parse_hashes(self) -> bool:
         return False
 
+    def max_pages_limit(self) -> int:
+        """导出范围：0＝不限页数（与真 App 上那条路径同一个语义）。"""
+        return 0
+
+    def until_thread_id(self):
+        """串号截止：None＝不截止。"""
+        return None
+
     def current_cache_dir(self):
         return self._output
 
@@ -641,6 +662,37 @@ class _FakeApp:
     def _poll_export(self) -> None:
         """``App.start()`` 结尾会 ``root.after(50, self._poll_export)``；这里什么都不做。"""
         pass
+
+
+class _FakeAppWithRange(_FakeApp):
+    """``_FakeApp`` 的导出范围版本：页数上限与串号截止由用例指定。
+
+    真 ``App`` 上这两个值来自两个输入框（见下面那组 ``_max_pages_text`` /
+    ``_until_thread_text`` / ``App.max_pages_limit`` / ``App.until_thread_id``
+    的用例）；这里只把它们喂进 ``start()``，核对界面这条路接得对不对。
+    """
+
+    def __init__(self, settings, output_dir: Path, *, max_pages: int = 0, until=None) -> None:
+        super().__init__(settings, output_dir)
+        self._max_pages = max_pages
+        self._until = until
+
+    def max_pages_limit(self) -> int:
+        return self._max_pages
+
+    def until_thread_id(self):
+        return self._until
+
+
+class _RecordingExporter:
+    """只记下被要求写哪几个串，不真写文件。"""
+
+    def __init__(self) -> None:
+        self.saved: list[object] = []
+
+    def save(self, thread, scope, path, include_hashes=False):
+        self.saved.append(thread)
+        return Path(path) / "结果.html"
 
 
 def test_gui_export_passes_pdf_options_to_the_exporter(artifacts_dir, monkeypatch):
@@ -665,7 +717,7 @@ def test_gui_export_passes_pdf_options_to_the_exporter(artifacts_dir, monkeypatc
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def fetch(self, url):
+        def fetch(self, url, **kwargs):
             return SimpleNamespace(
                 meta=SimpleNamespace(thread_id="12345678", title="测试串", po_hash="PO"),
                 posts=[],
@@ -704,7 +756,7 @@ def test_gui_export_does_not_mention_pdf_options_when_they_are_default(
         gui,
         "CachedThreadFetcher",
         lambda *a, **k: SimpleNamespace(
-            fetch=lambda url: SimpleNamespace(
+            fetch=lambda url, **kwargs: SimpleNamespace(
                 meta=SimpleNamespace(thread_id="1", title="测试串", po_hash="PO"),
                 posts=[],
                 reason="测试用抓取结果",
@@ -720,6 +772,157 @@ def test_gui_export_does_not_mention_pdf_options_when_they_are_default(
 
     assert not any("PDF 设置" in line for line in app.logs)
     assert any(line.startswith("导出目录：") for line in app.logs)
+
+
+# ---------------------------------------------------------------------------
+# 导出范围：页数上限 / 串号截止
+# ---------------------------------------------------------------------------
+
+
+def _patch_gui_export(monkeypatch) -> list[tuple[str, dict]]:
+    """把界面的抓取与导出换成替身，返回每次 fetch 的 ``(网址, 参数)``。"""
+    calls: list[tuple[str, dict]] = []
+
+    class RecordingFetcher:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def fetch(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return SimpleNamespace(
+                meta=SimpleNamespace(thread_id="50000001", title="测试串", po_hash="PO"),
+                posts=[],
+                reason="测试用抓取结果",
+                retry_note="",
+                cache_warning="",
+            )
+
+    exporter = _RecordingExporter()
+    monkeypatch.setattr(gui, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: exporter)
+    monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
+    return calls
+
+
+def test_untils_hint_says_the_cutoff_thread_is_included():
+    """界面文案必须写明「含它」—— 这是这个功能最容易误解的地方。
+
+    界面上那行说明是 ``MAX_PAGES_HINT + UNTIL_THREAD_ID_HINT``（左栏高度紧，
+    两段拼一行），所以这里按拼好的原文检查。
+    """
+    hint = gui.MAX_PAGES_HINT + gui.UNTIL_THREAD_ID_HINT
+    assert "含它" in hint
+    assert "含它" in gui.UNTIL_THREAD_ID_UNIT
+    assert "不限" in hint  # 页数上限留空/0 = 不限
+    assert "跳过" in hint  # 截止后面的串会被跳过
+
+
+def test_max_pages_text_parses_user_input():
+    """页数上限框：留空/0/坏值都当"不限"（0），正数原样。"""
+    assert gui._max_pages_text("") == 0
+    assert gui._max_pages_text("  ") == 0
+    assert gui._max_pages_text("0") == 0
+    assert gui._max_pages_text("12") == 12
+    assert gui._max_pages_text(" 7 ") == 7
+    for bad in ("abc", "-3", "1.5"):
+        assert gui._max_pages_text(bad) == 0
+
+
+def test_until_thread_text_keeps_parseable_values_only():
+    """串号截止框：能解析出串号就留原文（网址原样），否则当没填。"""
+    assert gui._until_thread_text("") == ""
+    assert gui._until_thread_text("50000001") == "50000001"
+    url = "https://www.nmbxd1.com/t/50000001"
+    assert gui._until_thread_text(url) == url
+    for bad in ("不是网址", "abc123xyz", "0"):
+        assert gui._until_thread_text(bad) == ""
+
+
+def test_app_reads_the_range_inputs_from_its_own_variables():
+    """真 ``App`` 的两个取值入口读的就是界面上那两个输入框（极简替身即可验证）。"""
+
+    class Stub:
+        max_pages_var = SimpleNamespace(get=lambda: "9")
+        until_thread_var = SimpleNamespace(get=lambda: "https://www.nmbxd1.com/t/50000001")
+
+    assert gui.App.max_pages_limit(Stub()) == 9
+    assert gui.App.until_thread_id(Stub()) == 50000001
+
+    class Empty:
+        max_pages_var = SimpleNamespace(get=lambda: "")
+        until_thread_var = SimpleNamespace(get=lambda: "")
+
+    assert gui.App.max_pages_limit(Empty()) == 0
+    assert gui.App.until_thread_id(Empty()) is None
+
+
+def test_gui_export_passes_max_pages_to_the_fetcher(artifacts_dir, monkeypatch):
+    """界面上的页数上限要交给抓取层；没填时传 0（不限，安全阀仍在抓取层）。"""
+    calls = _patch_gui_export(monkeypatch)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeAppWithRange(settings, artifacts_dir / "out", max_pages=3)
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert [kwargs["max_pages"] for _, kwargs in calls] == [3]
+    assert any("最多 3 页" in line for line in app.logs)
+
+
+def test_gui_export_leaves_the_limit_unlimited_by_default(artifacts_dir, monkeypatch):
+    """没填页数上限：传 0 下去，日志里写"全部页"。"""
+    calls = _patch_gui_export(monkeypatch)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeAppWithRange(settings, artifacts_dir / "out", max_pages=0)
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert [kwargs["max_pages"] for _, kwargs in calls] == [0]
+    assert any("全部页" in line for line in app.logs)
+
+
+def test_gui_export_skips_threads_after_the_cutoff(artifacts_dir, monkeypatch):
+    """串号截止：等于截止值的那个串照导（含它），它后面的一个都不请求。"""
+    calls = _patch_gui_export(monkeypatch)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeAppWithRange(settings, artifacts_dir / "out", until=7003)
+    gui.App.start(
+        app,
+        [
+            "https://www.nmbxd1.com/t/7001",
+            "https://www.nmbxd1.com/t/7003",
+            "https://www.nmbxd1.com/t/7005",
+        ],
+    )
+
+    assert [url for url, _ in calls] == [
+        "https://www.nmbxd1.com/t/7001",
+        "https://www.nmbxd1.com/t/7003",
+    ]
+    assert any("含它" in line for line in app.logs)
+    assert any("跳过它之后的 1 个串" in line for line in app.logs)
+
+
+def test_gui_export_warns_when_the_cutoff_blocks_every_thread(
+    artifacts_dir, monkeypatch
+):
+    """截止把列表挡光时：明确弹一句（含它规则），并且一个串都不去抓。"""
+    calls = _patch_gui_export(monkeypatch)
+    popped = _messagebox_calls(monkeypatch)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    gui.App.start(
+        _FakeAppWithRange(settings, artifacts_dir / "out", until=7003),
+        ["https://www.nmbxd1.com/t/7005"],
+    )
+
+    assert calls == []
+    assert popped and popped[0][0] == "showwarning"
+    assert "含它" in popped[0][2]
 
 
 class _FakeWatchApp:

@@ -28,6 +28,7 @@ import pytest
 from xdao import settings as settings_module
 from xdao.pdf_opts import PdfOptions, from_settings
 from xdao.settings import (
+    DEFAULT_MAX_PAGES,
     DEFAULT_PDF_BACKGROUND,
     DEFAULT_PDF_MARGIN,
     DEFAULT_PDF_MARGIN_MM,
@@ -35,6 +36,7 @@ from xdao.settings import (
     DEFAULT_PDF_PAGE_RANGES,
     DEFAULT_PDF_PAPER,
     DEFAULT_PDF_SCALE,
+    DEFAULT_UNTIL_THREAD_ID,
     AppSettings,
 )
 
@@ -47,6 +49,14 @@ PDF_FIELDS = (
     "pdf_background",
     "pdf_page_ranges",
 )
+
+#: 「导出范围」那两个键：页数上限（0＝不限）与串号截止（空串＝不截止）。
+RANGE_FIELDS = ("max_pages", "until_thread_id")
+
+RANGE_DEFAULTS = {
+    "max_pages": DEFAULT_MAX_PAGES,
+    "until_thread_id": DEFAULT_UNTIL_THREAD_ID,
+}
 
 DEFAULTS = {
     "pdf_paper": DEFAULT_PDF_PAPER,
@@ -165,7 +175,10 @@ def test_legacy_config_still_renders_like_v070(legacy_config: Path) -> None:
 
 
 def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
-    """存回去只是多出这 7 个键：老键与老值一个字都不许变。"""
+    """存回去只是多出这些新键：老键与老值一个字都不许变。
+
+    「新键」= PDF 那 7 个 + 导出范围的 2 个（页数上限、串号截止）。
+    """
     load_config(legacy_config).save()
 
     data = json.loads(legacy_config.read_text(encoding="utf-8"))
@@ -173,7 +186,9 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         assert data[key] == value, f"老键 {key} 被改动了"
     for name in PDF_FIELDS:
         assert data[name] == DEFAULTS[name]
-    assert set(data) - set(LEGACY_V070) == set(PDF_FIELDS)
+    for name in RANGE_FIELDS:
+        assert data[name] == RANGE_DEFAULTS[name]
+    assert set(data) - set(LEGACY_V070) == set(PDF_FIELDS) | set(RANGE_FIELDS)
 
 
 # ---------------------------------------------------------------- 有效值
@@ -279,6 +294,90 @@ def test_broken_config_file_falls_back_to_defaults(config_path: Path, broken: st
 
     loaded = load_config(config_path)
     assert {name: getattr(loaded, name) for name in PDF_FIELDS} == DEFAULTS
+    assert {name: getattr(loaded, name) for name in RANGE_FIELDS} == RANGE_DEFAULTS
+
+
+# ---------------------------------------------------------------- 导出范围
+# 页数上限与串号截止：0 / 空串都是**合法值**（分别表示"不限"与"不截止"），
+# 所以坏值的判据与 PDF 那几项不同 —— 这里专门钉住这条边界。
+
+
+def test_export_range_defaults_are_unlimited(config_path: Path) -> None:
+    """全新配置：页数不限（0）、串号不截止（空串）。"""
+    settings = fresh_config(config_path)
+    assert {name: getattr(settings, name) for name in RANGE_FIELDS} == RANGE_DEFAULTS
+    assert settings.max_pages == 0
+    assert settings.until_thread_id == ""
+
+
+def test_export_range_round_trip(config_path: Path) -> None:
+    """两个新字段要能原样存下来、再读回来。"""
+    settings = fresh_config(config_path)
+    settings.max_pages = 12
+    # 网址原样存（界面上回显的是用户写的那一串），解析另有 parse_thread_id 一套。
+    settings.until_thread_id = "https://www.nmbxd1.com/t/50000001"
+    settings.save()
+
+    loaded = load_config(config_path)
+    assert loaded.max_pages == 12
+    assert loaded.until_thread_id == "https://www.nmbxd1.com/t/50000001"
+
+
+def test_export_range_zero_and_empty_survive_a_round_trip(config_path: Path) -> None:
+    """0 与空串是"不限/不截止"的正规写法，不能被偷偷换成别的值。"""
+    settings = fresh_config(config_path)
+    settings.max_pages = 0
+    settings.until_thread_id = ""
+    settings.save()
+
+    loaded = load_config(config_path)
+    assert loaded.max_pages == 0
+    assert loaded.until_thread_id == ""
+
+
+@pytest.mark.parametrize(
+    "bad",
+    (None, "", "abc", -1, "3.5", [], {}),
+)
+def test_bad_max_pages_falls_back_to_unlimited(config_path: Path, bad: object) -> None:
+    """坏值只影响页数上限这一项，且回落到"不限"（0）；读配置绝不抛异常。"""
+    write_config(config_path, {"max_pages": bad, "until_thread_id": "50000001"})
+
+    loaded = load_config(config_path)
+
+    assert loaded.max_pages == DEFAULT_MAX_PAGES
+    assert loaded.until_thread_id == "50000001"  # 另一项不受牵连
+
+
+@pytest.mark.parametrize(
+    "bad",
+    (None, "", "不是网址", "abc123xyz", 0, [], {}),
+)
+def test_bad_until_thread_id_falls_back_to_no_cutoff(config_path: Path, bad: object) -> None:
+    """解析不出串号的截止值一律当"没填"；不影响页数上限。"""
+    write_config(config_path, {"max_pages": 7, "until_thread_id": bad})
+
+    loaded = load_config(config_path)
+
+    assert loaded.until_thread_id == DEFAULT_UNTIL_THREAD_ID
+    assert loaded.max_pages == 7  # 另一项不受牵连
+
+
+@pytest.mark.parametrize(
+    "good,expected",
+    (
+        (50000001, "50000001"),  # 纯数字（JSON 里也可能写成数字）
+        (" 50000001 ", "50000001"),  # 手改配置时带空白
+        ("https://www.nmbxd1.com/t/50000001", "https://www.nmbxd1.com/t/50000001"),
+    ),
+)
+def test_until_thread_id_keeps_anything_parseable(
+    config_path: Path, good: object, expected: str
+) -> None:
+    """能解析出串号就原样保留原文（数字写进来则存成字符串）。"""
+    write_config(config_path, {"until_thread_id": good})
+
+    assert load_config(config_path).until_thread_id == expected
 
 
 # ---------------------------------------------------------------- 路径守卫
