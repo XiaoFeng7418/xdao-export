@@ -5457,3 +5457,144 @@ def test_real_browser_reports_a_devtools_port() -> None:
     finally:
         _remove_tree(profile)
     assert not profile.exists(), "停止浏览器后临时用户目录应当能删掉"
+
+
+# ---------- v0.13.51：现场取证三件（命令行里的真目录、现场那一行、页面本地存储） ----------
+
+
+def test_user_data_dir_is_read_out_of_a_command_line():
+    """命令行里的 ``--user-data-dir=`` 要能抠出来，带引号的也要（v0.13.51）。"""
+    assert (
+        bl._parse_user_data_dir(
+            '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" '
+            "--user-data-dir=C:\\Users\\你\\AppData\\Local\\Temp\\xdao-export-browser-profile-9911-1 "
+            "--remote-debugging-port=0"
+        )
+        == "C:\\Users\\你\\AppData\\Local\\Temp\\xdao-export-browser-profile-9911-1"
+    )
+    assert (
+        bl._parse_user_data_dir('msedge.exe --user-data-dir="D:\\有 空格\\罐" --no-sandbox')
+        == "D:\\有 空格\\罐"
+    )
+    assert bl._parse_user_data_dir("msedge.exe --remote-debugging-port=0") == ""
+    assert bl._parse_user_data_dir("") == ""
+
+
+def test_profile_of_process_gives_up_quietly_outside_windows(monkeypatch):
+    """非 Windows（或没有 PID）时这一手只回空串 —— 它只是给日志添证据（v0.13.51）。"""
+    monkeypatch.setattr(bl, "_IS_WINDOWS", False)
+    assert bl.profile_of_process(4321) == ""
+    monkeypatch.setattr(bl, "_IS_WINDOWS", True)
+    assert bl.profile_of_process(0) == ""
+
+
+def test_profile_of_process_reads_the_command_line_of_that_pid(monkeypatch):
+    """Windows 上要真去问一句 CIM，并只认回显里那一个 ``--user-data-dir``（v0.13.51）。
+
+    真机 m43212 的教训：``used_profile`` 是程序**打算**用的候选目录，浏览器实际在用的
+    可能是 %TEMP% 里那只一次性罐 —— 命令行才是实据。
+    """
+    monkeypatch.setattr(bl, "_IS_WINDOWS", True)
+    seen: list[list[str]] = []
+
+    class _Done:
+        stdout = (
+            '"C:\\msedge.exe" --user-data-dir="C:\\Temp\\xdao-export-browser-profile-7-1" '
+            "--remote-debugging-port=50459\n"
+        )
+
+    def fake_run(args, **kwargs):  # noqa: ANN001
+        seen.append(list(args))
+        return _Done()
+
+    import subprocess as real_subprocess
+
+    monkeypatch.setattr(real_subprocess, "run", fake_run)
+    assert bl.profile_of_process(9911) == "C:\\Temp\\xdao-export-browser-profile-7-1"
+    assert seen and "ProcessId=9911" in seen[0][-1], seen
+
+
+def test_the_witness_line_names_every_jar_and_every_page(monkeypatch):
+    """「现场：…」那行要报每一份罐的名字 + 每扇页面挂在哪份罐里（v0.13.51）。
+
+    饼干值不许出现在里面 —— 这一行是要直接贴进日志的。
+    """
+    monkeypatch.setattr(
+        bl,
+        "browser_level_jars",
+        lambda browser_ws_url, **kwargs: [
+            ("默认", [{"name": "PHPSESSID"}, {"name": "memberUserspapapa"}]),
+            ("上下文2c8811", [{"name": "PHPSESSID"}]),
+        ],
+    )
+    monkeypatch.setattr(
+        bl,
+        "browser_page_targets",
+        lambda browser_ws_url, **kwargs: [
+            {"url": "https://www.nmbxd1.com/Member/User/Index/index.html", "context": "2c8811ab"},
+            {"url": "https://www.nmbxd1.com/Member/User/Index/login.html", "context": ""},
+        ],
+    )
+    line = bl.browser_jar_witness("ws://127.0.0.1:1/devtools/browser/x")
+    assert line.startswith("默认=PHPSESSID、memberUserspapapa｜上下文2c8811=PHPSESSID｜页="), line
+    assert "第1扇（上下文2c8811）" in line and "第2扇（默认）" in line, line
+
+
+def test_the_witness_line_marks_partitioned_cookies(monkeypatch):
+    """带分区（CHIPS）的那类要单独点出来：真机上它常是「F12 看得见、按地址读看不见」那块。"""
+    monkeypatch.setattr(
+        bl,
+        "browser_level_jars",
+        lambda browser_ws_url, **kwargs: [
+            ("默认", [{"name": "PHPSESSID"}, {"name": "userhash", "partitionKey": {"topLevelSite": "x"}}])
+        ],
+    )
+    monkeypatch.setattr(bl, "browser_page_targets", lambda browser_ws_url, **kwargs: [])
+    line = bl.browser_jar_witness("ws://127.0.0.1:1/devtools/browser/x")
+    assert line == "默认=PHPSESSID、userhash（其中带分区的）", line
+
+
+def test_the_witness_line_never_throws_and_never_blanks_out(monkeypatch):
+    """问不出来就回空串、看一眼就抛也不许带崩登录（v0.13.51）。"""
+    assert bl.browser_jar_witness("") == ""
+
+    def boom(*args, **kwargs):  # noqa: ANN001
+        raise RuntimeError("端口没了")
+
+    monkeypatch.setattr(bl, "browser_level_jars", boom)
+    assert bl.browser_jar_witness("ws://127.0.0.1:1/devtools/browser/x") == ""
+
+    monkeypatch.setattr(bl, "browser_level_jars", lambda browser_ws_url, **kwargs: [("默认", [])])
+    monkeypatch.setattr(bl, "browser_page_targets", boom)
+    assert bl.browser_jar_witness("ws://127.0.0.1:1/devtools/browser/x") == "默认=空"
+
+
+def test_userhash_is_looked_for_in_the_page_storage():
+    """页面本地存储里那块要能捞出来（v0.13.51）—— 名字带 hash/user/token 的先看。"""
+
+    class _Session:
+        url = "https://www.nmbxd1.com/Member/User/Index/index.html"
+
+        def __init__(self, payload: str, *, boom: bool = False) -> None:
+            self.payload = payload
+            self.boom = boom
+
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:  # noqa: ARG002
+            assert "localStorage" in expression and "sessionStorage" in expression, expression
+            if self.boom:
+                raise bl.CdpError("页面换文档了")
+            return self.payload
+
+    import json as _json
+
+    good = _json.dumps(
+        {
+            "l": {"theme": "dark", "userhash": "D-9691%04%02abc"},
+            "s": {},
+        }
+    )
+    assert bl.userhash_from_page_storage(_Session(good)) == "D-9691%04%02abc"
+    # 名字不相干、值也不像的，一律不认（宁缺勿滥：认错了会把「登录没成」说成成了）
+    assert bl.userhash_from_page_storage(_Session(_json.dumps({"l": {"a": "1 2 3"}}))) == ""
+    assert bl.userhash_from_page_storage(_Session("", boom=True)) == ""
+    assert bl.userhash_from_page_storage(_Session("不是 JSON")) == ""

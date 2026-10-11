@@ -50,6 +50,9 @@ class _FakeProcess:
         self.terminated = False
         self.killed = False
         self.profile: Path | None = None
+        # 真 Popen 一定有 pid，界面层 v0.13.51 起会拿它去问「命令行里那只资料目录」。
+        # 替身没有这一项时那条路整段走不到，用例就成真空断言了。
+        self.pid = 4242
         if not exit_immediately:
             self._write_devtools_port()
 
@@ -351,6 +354,15 @@ def no_real_live_windows_for_dialog(monkeypatch):
     # 是纯函数，留着真跑，正好把「行长什么样」一并钉住）。
     monkeypatch.setattr(
         browser_login, "browser_page_targets", lambda browser_ws_url, **kwargs: []
+    )
+    # v0.13.51 又添三处：①「现场：…」每隔十几秒要真连一次浏览器级端点（同一个理由，
+    # 替身那扇连不上只会白等）；②「罐路径=」要起一次 powershell 问进程命令行；
+    # ③页面本地存储那一扫要真去问渲染进程。全都钉住 —— 用例既不问真连接、也不真起
+    # powershell、更不去碰替身会话里那些根本没实现的东西；演这几条路的用例自己再覆盖。
+    monkeypatch.setattr(browser_login, "browser_jar_witness", lambda browser_ws_url, **kwargs: "")
+    monkeypatch.setattr(browser_login, "profile_of_process", lambda pid, **kwargs: "")
+    monkeypatch.setattr(
+        browser_login, "userhash_from_page_storage", lambda session: ""
     )
 
 
@@ -2568,6 +2580,167 @@ def _session_methods_used_by_library() -> set[str]:
         ):
             used.add(func.attr)
     return used
+
+
+def test_the_run_log_keeps_a_live_witness_line(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """运行日志里要**反复**留下「现场：…」那一行（v0.13.51）。
+
+    真机 m43212 的死结是：F12 里 70 字节的 userhash 明明白白，程序四条读法一条也没
+    看见，而「读罐对账」只在某一轮里写一行 —— 登录落在哪一秒、落在哪一份罐里，
+    事后从日志上断不出来（那张截图里三条对账行长得几乎一样）。这一行把时间轴补上：
+    每一份罐此刻有哪些名字、哪扇页面挂在哪份罐里，变了就写一行。
+    """
+    monkeypatch.setattr(gui, "BROWSER_WITNESS_SECONDS", 0.2)
+    monkeypatch.setattr(
+        browser_login,
+        "browser_jar_witness",
+        lambda browser_ws_url, **kwargs: (
+            "默认=PHPSESSID、memberUserspapapa｜上下文2c8811=PHPSESSID"
+            "｜页=第1扇（上下文2c8811）https://www.nmbxd1.com/Member/User/Index/login.html"
+        ),
+    )
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: any("现场：" in line for line in logged),
+        timeout=15.0,
+    ), f"「现场」那行没进运行日志：{logged}"
+    line = next(text for text in logged if "现场：" in text)
+    assert "上一轮花了" in line, line
+    assert "默认=PHPSESSID、memberUserspapapa" in line, line
+    assert "上下文2c8811=PHPSESSID" in line, line
+    assert "abc123" not in line, "「现场」那行漏了饼干值"
+    dialog._on_cancel()
+
+
+def test_the_page_storage_path_is_tried_once_the_page_is_not_the_login_page(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """页面已经不在登录页时，还要去页面自己的本地存储里找一次 userhash（v0.13.51）。
+
+    饼干罐之外唯一还可能藏着它的地方就是 ``localStorage``/``sessionStorage``（真机
+    m43212：同一扇窗、F12 有那块饼干、程序四条读法一条也没有）。演法是钉住那一手：
+    地址是登录页时**不该**被问，换成已登录页之后就该被问、并在提示行里说清它是从哪
+    找到的。值本身照样要过服务端那一关（那条路由 ``verify_userhash_live`` 管）。
+    """
+    asked: list[str] = []
+
+    def fake_storage(session):  # noqa: ANN001
+        asked.append(session.current_url())
+        return "D-9691%04%02abc"
+
+    monkeypatch.setattr(browser_login, "userhash_from_page_storage", fake_storage)
+    dialog = open_dialog()
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    login_url = f"{browser_login.COOKIE_SITE}/Member/User/Index/login.html"
+    session.current_url_value = login_url
+    assert not _wait_for(
+        root_window, lambda: bool(asked), timeout=3.0
+    ), "页面还停在登录页，不该去问本地存储"
+    session.current_url_value = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+    assert _wait_for(root_window, lambda: bool(asked), timeout=15.0), "登录页之外没问本地存储"
+    assert _wait_for(
+        root_window,
+        lambda: "本地存储" in dialog.hint_var.get(),
+        timeout=15.0,
+    ), f"没在提示行里说清这块饼干是从哪找到的：{dialog.hint_var.get()!r}"
+    dialog._on_cancel()
+
+
+def test_the_dump_is_written_early_when_the_page_is_past_the_login(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """页面已经不在登录页、可四条读法都看不见 userhash：当场落一份详单（v0.13.51）。
+
+    原来只在等满 ``BROWSER_LOGIN_TIMEOUT``（300 秒）× 续等轮数之后才落盘，而真机上
+    用户往往 68 秒就截图或取消 —— 那份唯一能逐字段比对（域、路径、partitionKey、
+    browserContextId）的证据谁也拿不到。这里钉住「提前落盘 + 把路径报出来」。
+    """
+    monkeypatch.setattr(gui, "BROWSER_EARLY_DUMP_SECONDS", 0.1)
+    dump_path = Path(tempfile.gettempdir()) / "xdao-读罐详单-提前落盘.json"
+    monkeypatch.setattr(browser_login, "write_jar_dump", lambda data, *, stamp: dump_path)
+    dumps: list[str | None] = []
+    real_dump = gui.BrowserLoginDialog._write_jar_dump
+
+    def spy(backend, session, browser, stamp, jar_path):  # noqa: ANN001
+        result = real_dump(backend, session, browser, stamp, jar_path)
+        dumps.append(result)
+        return result
+
+    monkeypatch.setattr(gui.BrowserLoginDialog, "_write_jar_dump", staticmethod(spy))
+    lines: list[str] = []
+    dialog = open_dialog(log=lines.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    session.current_url_value = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
+
+    def where() -> str:
+        return (
+            f"提示={dialog.hint_var.get()!r} 落盘调用={dumps!r} "
+            f"导航={session.navigations!r} 地址={session.current_url_value!r} "
+            f"日志={lines!r}"
+        )
+
+    assert _wait_for(
+        root_window,
+        lambda: "读罐详单已写到" in dialog.hint_var.get(),
+        timeout=15.0,
+    ), f"没提前落详单：{where()}"
+    assert str(dump_path) in dialog.hint_var.get(), where()
+    # 提示行同一轮里会被「领饼干那条路」的 jar_note 顶掉（2026-10-11 全量里就这么
+    # 假红过一次：文件写成了、这两条断言里只看提示位的那条不稳）。所以路径必须
+    # 另有一份进运行日志 —— 那一份谁顶不掉。
+    assert _wait_for(
+        root_window,
+        lambda: any("读罐详单已写到" in line for line in lines),
+        timeout=5.0,
+    ), f"路径没进运行日志：{where()}"
+    dialog._on_cancel()
+
+
+def test_the_jar_path_is_corrected_from_the_process_command_line(
+    root_window, browser_shim, open_dialog, monkeypatch
+):
+    """``罐路径=`` 要报**浏览器真正在用的**目录，不是程序打算用的候选目录（v0.13.51）。
+
+    真机 m43212：对账行报的是配置目录里那只 ``browser-profile``，可磁盘上它一个多月
+    没被碰过（``Cookies`` 一行都没有）—— 那只浏览器其实用的是 %TEMP% 里的一次性目录。
+    命令行里的 ``--user-data-dir`` 才是实据；问出来的与候选不同就改用问出来的，
+    ``罐=``（目录名）也跟着改，不然两段互相打架。
+    """
+    seen: list[dict[str, object]] = []
+
+    def fake_forensics(session, jar_tag="", link_tag="", **kwargs):  # noqa: ANN001
+        seen.append({"jar_tag": jar_tag, **kwargs})
+        return "挂=…｜罐路径=" + str(kwargs.get("jar_path", ""))
+
+    monkeypatch.setattr(browser_login, "jar_forensics", fake_forensics)
+    real_path = str(Path(tempfile.gettempdir()) / "xdao-export-browser-profile-9911")
+    monkeypatch.setattr(browser_login, "profile_of_process", lambda pid, **kwargs: real_path)
+    logged: list[str] = []
+    dialog = open_dialog(log=logged.append)
+    assert _wait_for(root_window, lambda: bool(_dialog_sessions())), "浏览器没起来"
+    session = _dialog_sessions()[0]
+    session.cookies = [{"name": "PHPSESSID", "value": "abc123"}]
+    assert _wait_for(
+        root_window,
+        lambda: any(line.startswith("读罐对账：") for line in logged),
+        timeout=15.0,
+    ), f"对账行没进运行日志：{logged}"
+    paths = [str(item.get("jar_path", "")) for item in seen]
+    assert paths and all(path == real_path for path in paths), f"罐路径没改准：{paths}"
+    tags = [str(item.get("jar_tag", "")) for item in seen]
+    assert tags and all(tag == Path(real_path).name for tag in tags), f"罐名没跟上：{tags}"
+    dialog._on_cancel()
 
 
 def test_fake_session_covers_every_method_the_library_calls_on_a_session():

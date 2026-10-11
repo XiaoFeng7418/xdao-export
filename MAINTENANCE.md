@@ -677,6 +677,16 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.13.51**（「登录读不到 userhash」的现场取证：现场行 + 提前落详单 + 按命令行问准真正在用的资料目录 + 页面本地存储里再找一次；另修 `罐路径=` 误报常驻罐）：
+  **一、症状（真机 m43212，v0.13.50）。** 用户在程序自己起的那扇窗（横条「窗口号 C925 · 端口50459」）里登录，F12 → 应用程序 → Cookie 里三条：`memberUsers…`、`PHPSESSID`、70 字节的 `userhash`；程序四条读法（按地址读 / 整罐读 / 存储读 / 页面 JS）一条都没看见（`原始userhash=无`）。到 00:03:31 为止的日志里 `挂=…login.html`、`页=1（…login.html#）`、`别路=上下文2C8811：PHPSESSID`、`罐路径=C:\Users\你\AppData\Roaming\xdao-export\browser-profile`，对话框状态是「已经等了 68 秒」。
+  **二、本机已排除的两条。** ①「分区饼干对读法隐身」：新探针 `_scratch/probe_chips_response.py`（真 Edge + 本机 http.server，用**响应头** `Set-Cookie: chips-real=2; Path=/; SameSite=None; Secure; Partitioned` 在跨站 iframe 里种真 CHIPS 饼干）跑下来，`Network.getCookies`（按地址）、`Network.getAllCookies`、`Storage.getCookies`、`read_all_cookies()` **四条全看得见**（`["chips-real+分区"]`）⇒ 假设不成立；顺带证实 `Target.getTargets` 里默认上下文也带一个随机 id（`别路=上下文…` 不能当成「多出来的一份罐」）。②`罐路径=` 报的那只常驻罐自 2026/10/1 起再没被碰过（`Default\Network\Cookies` 20480 字节、mtime 2026/10/1 14:30，`Cookies-journal` 0 字节、里面一行都没有）⇒ 那几轮用的都是一次性 %TEMP% 目录，诊断报错了罐。
+  **三、这一版做什么。** 不做猜测性的改法，只把现场钉住 + 修上面那处诊断：
+  ① `browser_login.browser_jar_witness(browser_ws_url, *, timeout=JAR_WITNESS_TIMEOUT=1.5)`：用 `browser_level_jars`（默认罐 + 逐个 `browser_context_ids()`）与 `browser_page_targets` / `describe_page_targets` 拼一行「每一份罐有哪些名字（`_cookie_names` 复用 `summarize_cookies`，带 `partitionKey` 的另标「（其中带分区的）」）｜每扇页面挂在哪份罐里」，永不抛；`gui.py` 每 `BROWSER_WITNESS_SECONDS=15.0` 写一行 `("forensics", f"现场：上一轮花了{int(last_round_seconds)}秒｜{line}")`，去重键 =（名字清单, 节拍落在哪个 5 秒档）—— 稳态不刷屏，一慢下来立刻多一行。
+  ② 节拍本身写进那一行：循环里记 `round_t0` / `last_round_seconds`（一轮从头走到 sleep 花了多少秒）。真机两次「接=端口」相隔 12~38 秒，而 `BROWSER_POLL_SECONDS=1.5`，怀疑正是领饼干那几步（`BROWSER_LEAF_SECONDS=5.0` 的页面内 fetch、`BROWSER_LEAF_HTTP_SECONDS=30.0` 的 HTTP 重放、逐窗/逐上下文探罐）把节拍顶住了 —— 慢步骤跑完**再读一次**（`late_value`），最坏情况下的发现延迟从「一整个轮次」缩回「一次 CDP 往返」。
+  ③ 页面已经不是登录页（`session.current_url()` 里没有 `login`）⇒ 站点认为登录成了：`browser_login.userhash_from_page_storage(session)` 在 localStorage/sessionStorage 里按 key 含 `hash`/`user`/`token` 优先、再用 `looks_like_userhash` 粗筛，找到就当成功（提示写明「饼干罐里没有它」）；同一条件下持续 `BROWSER_EARLY_DUMP_SECONDS=5.0` 就**当场**落一份「读罐详单」（超时那段落盘体抽成 `BrowserLoginDialog._write_jar_dump`，两处共用），并把路径写进日志 —— 以前只在等满 300 秒×续等轮数之后才写，真机上用户 68 秒就截图/取消，那份唯一能逐字段比对的证据谁也没见过。
+  ④ `browser_login.profile_of_process(pid)` + `_parse_user_data_dir(text)`：powershell 问 `Win32_Process` 里那个 pid 的 CommandLine、抠 `--user-data-dir=`；`gui.py` 每轮问一次，与 `used_profile` 不同（`os.path.normcase` 比）就改 `jar_path` 与 `jar_tag` —— `罐=` / `罐路径=` 从此报真正在用的那只。
+  **四、用例。** `tests/test_browser_login.py` 加 7 条（`_parse_user_data_dir`；`profile_of_process` 的非 Windows 门与真 `subprocess.run` 调用；现场行的名字清单、分区标注、永不抛；页面本地存储里找 userhash），`tests/test_gui_browser_login.py` 加 4 条（现场行进运行日志且带「上一轮花了」；页面不是登录页时 3 秒内不许问本地存储、换页后必须问且提示写「本地存储」；提前落详单；`罐路径` 按命令行纠正）；两处 autouse fixture 追加钉住 `browser_jar_witness` / `profile_of_process` / `userhash_from_page_storage`，`_FakeProcess` 补 `pid`。
+  收集 **1874 项**、本机 **1867 passed / 7 skipped**。
 - **v0.13.50**（修 v0.13.49 重构在发版脚本里留下的一个 `return` 漏写：Release 建出来、附件一个没传；连带补三条盯着返回值的用例）：
   **一、症状。** v0.13.49 发布时 ``tools/make_release.py`` 报
   ``TypeError: 'NoneType' object is not subscriptable``（在 ``print(f"已创建 Release {release['tag_name']}…")`` 那一行）：

@@ -748,6 +748,20 @@ BROWSER_READ_RETRY_LIMIT = 4
 # 罐里真没有 userhash，最像的解释是这次登录本身没提交成功：窗口里留着的「饼干列表」
 # 是上次登录的缓存画面，不说明此刻登录着。所以这一句改说「回这扇窗重新提交登录」。
 BROWSER_PASTE_NUDGE_SECONDS = 120.0
+# 隔这么久把「现场」写一行进运行日志（v0.13.51）：同一只浏览器里每一份罐各有哪些名字、
+# 每个页面标签挂在哪份罐里。真机 m43212 的死结是「F12 里 70 字节的 userhash 明明在，
+# 程序四条读法一条也没有」，而「读罐对账」只在某一轮里写一行 —— 登录落在哪一秒、
+# 落在哪一份罐里，事后从日志上断不出来。这一行（变了才写，不刷屏）把时间轴补上：
+# 要是登录那一刻罐里的名字自己长了、可 userhash 始终不出现，那问题在读；要是这份罐
+# 从头到尾就没变过，那程序盯的根本不是用户眼前那一份。
+BROWSER_WITNESS_SECONDS = 15.0
+# 页面已经不是登录页（站点认为登录成了）之后，隔这么久扫一次页面自己的
+# localStorage/sessionStorage（v0.13.51）—— 饼干罐之外唯一可能藏着 userhash 的地方。
+BROWSER_LOCAL_SECONDS = 3.0
+# 页面已经不在登录页、可四条读法都看不见 userhash，持续这么久就**当场**落一份
+# 「读罐详单」（v0.13.51）。真机上用户往往在 68 秒就截图或者取消，而原来只在等满
+# 300 秒×续等轮数之后才落盘 —— 那份唯一能逐字段比对的证据，谁也拿不到。
+BROWSER_EARLY_DUMP_SECONDS = 5.0
 #: 说破那一句（走常驻那一行，不会被 15 秒一次的状态替换刷掉）。
 BROWSER_PASTE_NUDGE = (
     "等了两分多钟还没有饼干：程序一直在盯这个窗口的饼干罐（窗口底部棕色横条、【窗口号】对上的这扇），"
@@ -1455,6 +1469,29 @@ class BrowserLoginDialog(tk.Toplevel):
         # ——用户那扇窗硬刷新都不弹回（窗里有真饼干），程序却只看见登录页一签。
         # 端口号一亮出来，「两扇窗、两个罐」当场定案，不用再猜程序读没读瞎。
         link_tag = f"端口{browser.port}" if getattr(browser, "port", None) else ""
+        # v0.13.51：三条「现场取证」用的状态。
+        # witness_key = 最近一次写进日志的「现场：…」那行的去重键（罐的名字清单 + 节拍档，
+        #              两样都没变才不重复写）；
+        # logged_in_since = 页面已经不是登录页（站点认为登录成了）那一刻，没到就是 None；
+        # early_dumped = 提前落过详单没有（只落一次，别每 5 秒写一个文件）。
+        witness_key: tuple[str, int] = ("", -1)
+        next_witness = started + BROWSER_WITNESS_SECONDS
+        next_local = started
+        logged_in_since: float | None = None
+        early_dumped = False
+        # v0.13.51：提前落盘那句提示要留到本轮**最后**再发 —— 「领饼干那条路」的
+        # jar_note 就排在它后面，同一轮里会把它盖掉（2026-10-11 全量测试逮到的
+        # 假红正是这个形状：文件写成了、提示行却被后一句顶掉）。sent_dump_note
+        # 记住已经发过哪一句，别每轮重复刷。
+        dump_note = ""
+        sent_dump_note = ""
+        jar_path_checked = False  # 命令行里那只**真正**在用的资料目录问过了没有（v0.13.51）
+        # v0.13.51：上一轮「从头走到 sleep」花了多少秒。真机 m43212 的可疑处正是**节拍**
+        # —— 领饼干那几步（页面内 fetch、HTTP 重放、逐窗/逐上下文探罐）各自都带等待，
+        # 一轮要是被顶到几十秒，1.5 秒的读循环就名存实亡，用户的浏览器里饼干都到手了，
+        # 程序下一次读还在半路。这个数写进「现场」那一行，事后一眼能看出节拍有没有垮。
+        round_t0 = time.monotonic()
+        last_round_seconds = 0.0
         while not self._stop.is_set():
             process = browser.process  # 用户自己把浏览器窗口关掉时要能察觉
             if process is not None and process.poll() is not None:
@@ -1482,12 +1519,105 @@ class BrowserLoginDialog(tk.Toplevel):
                     except TypeError:
                         banner(session, stamp)
                 value, fill_note = self._read_userhash(backend, session)
+                # v0.13.51：先把「真正在用的资料目录」问准一次 —— `used_profile` 是程序
+                # **打算**用的候选目录，真机 m43212 的对账行报的是配置目录里那只罐，可磁盘
+                # 上它一个多月没被碰过（Cookies 一行都没有）：那只浏览器其实用的是 %TEMP%
+                # 里的一次性目录。命令行才是实据，`罐=`/`罐路径=` 都改用问出来的那个。
+                if not jar_path_checked:
+                    jar_path_checked = True
+                    ask_owner = getattr(backend, "profile_of_process", None)
+                    owner_pid = int(getattr(process, "pid", 0) or 0)
+                    if owner_pid and callable(ask_owner):
+                        try:
+                            real_path = str(ask_owner(owner_pid) or "")
+                        except Exception:  # noqa: BLE001 —— 问不出来就照旧报候选目录
+                            real_path = ""
+                        if real_path and os.path.normcase(real_path) != os.path.normcase(jar_path):
+                            jar_path = real_path
+                            real_name = Path(real_path).name
+                            if real_name:
+                                jar_tag = real_name
                 if fill_note and fill_note not in leaf_hints:
                     # 「按地址那读漏了、整罐读补上」要留痕（v0.13.29）：这句话是下次
                     # 真机报告里唯一能说明「漏在哪一读」的书面线索。
                     leaf_hints.append(fill_note)
                     self._queue.put(("hint", fill_note))
                 leaf_now = time.monotonic()
+                # v0.13.51：页面已经不是登录页 ⇒ 站点认为登录成了。从这一刻起，「读不到」
+                # 才是真问题，而这块饼干除了那个罐，还可能被站点写在页面自己的
+                # localStorage/sessionStorage 里 —— 顺手扫一遍（没登录时不扫，白费往返）。
+                if not value:
+                    try:
+                        page_url = str(session.current_url() or "")
+                    except Exception:  # noqa: BLE001 —— 问不到地址就当还在登录页
+                        page_url = ""
+                    if page_url and "login" not in page_url.lower():
+                        if logged_in_since is None:
+                            logged_in_since = leaf_now
+                        if leaf_now >= next_local:
+                            next_local = leaf_now + BROWSER_LOCAL_SECONDS
+                            look_local = getattr(backend, "userhash_from_page_storage", None)
+                            if callable(look_local):
+                                try:
+                                    found = str(look_local(session) or "")
+                                except Exception:  # noqa: BLE001 —— 这一手只是多一条路
+                                    found = ""
+                                if found:
+                                    value = found
+                                    self._queue.put(
+                                        (
+                                            "hint",
+                                            "userhash 是在页面自己的本地存储"
+                                            "（localStorage/sessionStorage）里找到的 —— "
+                                            "饼干罐里没有它。",
+                                        )
+                                    )
+                    else:
+                        logged_in_since = None
+                # v0.13.51：每隔十几秒把「现场」写一行（变了才写）：这一刻浏览器里每一份罐
+                # 各有哪些名字、每个页面标签挂在哪份罐里。有了它，事后能一眼看出「登录落在
+                # 哪一秒、饼干罐是不是跟着长」，而不是只有某一轮那一行孤零零的「读罐对账」。
+                if leaf_now >= next_witness:
+                    next_witness = leaf_now + BROWSER_WITNESS_SECONDS
+                    witness = getattr(backend, "browser_jar_witness", None)
+                    if callable(witness):
+                        try:
+                            line = str(
+                                witness(str(getattr(browser, "browser_ws_url", "") or "")) or ""
+                            )
+                        except Exception:  # noqa: BLE001 —— 这一手只是证据
+                            line = ""
+                        if line:
+                            # 「上一轮花了多少秒」也写进这一行：罐没变可节拍垮了，同样是
+                            # 可疑信号，所以去重键里带上「秒数落在哪个 5 秒档」—— 稳态下
+                            # 不重复刷，一慢下来立刻多出一行。
+                            tempo = int(max(0.0, last_round_seconds) // 5.0)
+                            if (line, tempo) != witness_key:
+                                witness_key = (line, tempo)
+                                self._queue.put(
+                                    (
+                                        "forensics",
+                                        f"现场：上一轮花了{int(last_round_seconds)}秒｜{line}",
+                                    )
+                                )
+                # v0.13.51：页面已经不在登录页、可四条读法都看不见 userhash，持续几秒就
+                # **当场**落一份「读罐详单」。原来只在等满 300 秒×续等轮数之后才落盘，
+                # 而真机上用户往往 68 秒就截图或取消 —— 那份唯一能逐字段比对的证据，
+                # 谁也没见过。落一次就够，别每轮写一个新的。
+                if (
+                    not value
+                    and logged_in_since is not None
+                    and not early_dumped
+                    and leaf_now - logged_in_since >= BROWSER_EARLY_DUMP_SECONDS
+                ):
+                    early_dumped = True
+                    dump_now = self._write_jar_dump(backend, session, browser, stamp, jar_path)
+                    if dump_now is not None:
+                        dump_note = (
+                            f"读罐详单已写到：{dump_now}（含域、路径、分区键、哪一份罐，"
+                            "里面有饼干值，只在本机、贴出去前请自己掂量）"
+                            "—— 这一版请把这个文件发我，它就是现场。"
+                        )
                 if not value and leaf_now >= next_leaf:
                     # 先报「浏览器里到底有哪些饼干」：真机上「读不出来」和「只有匿名会话号」
                     # 在界面上长得一模一样（m30629 那张截图就分不出来），而这一行还会进
@@ -1685,6 +1815,17 @@ class BrowserLoginDialog(tk.Toplevel):
                             if line and line != forensics_line:
                                 forensics_line = line
                                 self._queue.put(("forensics", line))
+                    if not value:
+                        # v0.13.51：这一轮的慢步骤（逐窗、逐上下文、领饼干、HTTP 重放）可能
+                        # 正好跨在「站点刚把 userhash 写进罐里」那一秒上 —— 慢步骤跑完再读
+                        # 一次，最坏情况下的发现延迟就从「一整个轮次」缩回「一次 CDP 往返」。
+                        # 真机 m43212 的日志里两条读取相隔 12~38 秒，而 F12 里那块饼干恰恰
+                        # 是在这中间出现的：读循环的**节拍**正是当时最可疑的地方。
+                        late_value, late_note = self._read_userhash(backend, session)
+                        if late_value:
+                            value = late_value
+                        elif late_note and late_note not in leaf_hints:
+                            leaf_hints.append(late_note)
                 if value and value != verified:
                     # 看到 userhash **不等于**登录成了：浏览器资料目录是留下来的，
                     # 上一回登录的旧饼干还躺在里面，会话早就过期了。不验一下就会
@@ -1768,58 +1909,33 @@ class BrowserLoginDialog(tk.Toplevel):
                     deadline = now + BROWSER_LOGIN_TIMEOUT
                 else:
                     break
+            if dump_note and dump_note != sent_dump_note:
+                # 这一轮该发的提示都发完了，最后才轮到详单路径 —— 上面「领饼干那条路」
+                # 的 jar_note 会盖掉它（v0.13.51，见 dump_note 的初值注释）。再抄一份
+                # 进运行日志：提示行只留最后一句，日志留得住，用户截图/取消之后还能找回。
+                sent_dump_note = dump_note
+                self._queue.put(("hint", dump_note))
+                self._queue.put(("forensics", dump_note))
+            last_round_seconds = max(0.0, time.monotonic() - round_t0)
+            round_t0 = time.monotonic()
             self._stop.wait(BROWSER_POLL_SECONDS)
         if not self._stop.is_set():
-            # v0.13.47：到点了还没读出来，就把**这一刻的原始返回**落一份盘。真机
-            # m41248/m41249 的死结是「F12 有 70 字节的 userhash、程序四条读法一条都
-            # 没有」，而已有的日志只报名字 —— 名字一样的两块饼干可以分属不同的罐
-            # （浏览器上下文），拿名字根本对不出来。这份「读罐详单」（JSON，含域、路径、
-            # partitionKey、browserContextId 与每条读法的成败原因）是唯一能逐字段
-            # 比对的东西。里面有饼干值（会话凭据），所以只写在本机临时目录、只在
-            # 等超时这一刻写一次，并在运行日志里把路径报给用户 —— 用户愿意就贴出来。
-            dump_jar = getattr(backend, "jar_dump", None)
-            write_dump = getattr(backend, "write_jar_dump", None)
-            if callable(dump_jar) and callable(write_dump):
-                dump_path = None
-                try:
-                    urls = backend.cookie_urls_for(session)
-                except Exception:  # noqa: BLE001 —— 地址列不出来就只报别的几路
-                    urls = []
-                try:
-                    try:
-                        # v0.13.48：详单里还抄两样 —— 这次真正在用的资料目录**完整路径**
-                        # （光有目录名分不出常驻罐还是一次性罐），以及浏览器里每个目标的
-                        # 原始信息（含各自的 browserContextId）。旧 backend 不收这两个
-                        # 参数时退回来照旧落盘，别让一份诊断把登录带崩。
-                        data = dump_jar(
-                            session,
-                            page_urls=urls,
-                            browser_ws_url=str(
-                                getattr(browser, "browser_ws_url", "") or ""
-                            ),
-                            profile_path=jar_path,
-                        )
-                    except TypeError:
-                        data = dump_jar(
-                            session,
-                            page_urls=urls,
-                            browser_ws_url=str(
-                                getattr(browser, "browser_ws_url", "") or ""
-                            ),
-                        )
-                    dump_path = write_dump(data, stamp=stamp)
-                except Exception:  # noqa: BLE001 —— 落盘失败不许误事
-                    dump_path = None
-                if dump_path is not None:
-                    # 只报给对话框（这不是「程序试过的一步」，不进 leaf_hints —— 那条
-                    # 列表是超时那句话里「试过的几步」，多这一段会把真步骤挤出去）。
-                    self._queue.put(
-                        (
-                            "hint",
-                            f"读罐详单已写到：{dump_path}（含域、路径、分区键、哪一份罐，"
-                            "里面有饼干值，只在本机、贴出去前请自己掂量）",
-                        )
-                    )
+            # v0.13.47：到点了还没读出来，就把**这一刻的原始返回**落一份盘（详单的形状与
+            # 理由见 :meth:`_write_jar_dump`）。v0.13.51 起同样的落盘还会在「页面已经
+            # 不在登录页、可四条读法都看不见 userhash」时提前做一次 —— 真机上用户
+            # 往往等不到 300 秒就截图/取消，那样这份唯一的证据永远拿不到。
+            dump_path = self._write_jar_dump(backend, session, browser, stamp, jar_path)
+            if dump_path is not None:
+                # 只报给对话框（这不是「程序试过的一步」，不进 leaf_hints —— 那条
+                # 列表是超时那句话里「试过的几步」，多这一段会把真步骤挤出去）。
+                dump_line = (
+                    f"读罐详单已写到：{dump_path}（含域、路径、分区键、哪一份罐，"
+                    "里面有饼干值，只在本机、贴出去前请自己掂量）"
+                )
+                self._queue.put(("hint", dump_line))
+                # v0.13.51：下面那句超时提示会顶掉这一行的提示位，所以再写一份进运行
+                # 日志 —— 路径是用户唯一能发过来的东西，不能只活到下一句提示为止。
+                self._queue.put(("forensics", dump_line))
             # 把领饼干试过的几步按顺序拼进这句话：它会进运行日志（窗口一关就找不到了），
             # 是「到底卡在哪一步」唯一的书面记录。只留最后一条不够用 —— 「饼干罐里还是没有
             # userhash」这种最没信息量的收尾会盖掉前面「用户还没登录」那条（v0.13.20）。
@@ -1949,6 +2065,39 @@ class BrowserLoginDialog(tk.Toplevel):
             shape = f"读到的值形状不像 userhash（{_describe_value_shape(value)}）"
             return None, f"{detail}；{shape}" if detail else f"{shape}。", navigated
         return None, detail, navigated
+
+    @staticmethod
+    def _write_jar_dump(backend, session, browser, stamp: str, jar_path: str) -> str | None:
+        """把**这一刻的原始读数**落一份「读罐详单」，回写好的路径（v0.13.47/v0.13.51）。
+
+        为什么要有这份东西：真机 m41248/m41249/m43212 的死结都是「F12 里有 70 字节的
+        userhash、程序四条读法一条都没有」，而日志只报名字 —— 名字一样的两块饼干可以
+        分属不同的罐（浏览器上下文），拿名字根本对不出来。详单是 JSON，含域、路径、
+        ``partitionKey``、``browserContextId`` 与每条读法的成败原因，是唯一能逐字段
+        比对的东西。里面有饼干值（会话凭据），所以只写本机临时目录、并在日志里把路径
+        报给用户 —— 用户愿意才贴出来。
+
+        v0.13.51 起这一手不再只等超时才做：页面已经不在登录页、可四条读法都看不见
+        userhash 时也要**当场**落一份（真机上用户往往等不到 300 秒就截图/取消，
+        那样这份唯一的证据永远拿不到）。旧 backend 不收 ``profile_path`` 就退回来。
+        """
+        dump_jar = getattr(backend, "jar_dump", None)
+        write_dump = getattr(backend, "write_jar_dump", None)
+        if not (callable(dump_jar) and callable(write_dump)):
+            return None
+        try:
+            urls = backend.cookie_urls_for(session)
+        except Exception:  # noqa: BLE001 —— 地址列不出来就只报别的几路
+            urls = []
+        ws_url = str(getattr(browser, "browser_ws_url", "") or "")
+        try:
+            try:
+                data = dump_jar(session, page_urls=urls, browser_ws_url=ws_url, profile_path=jar_path)
+            except TypeError:
+                data = dump_jar(session, page_urls=urls, browser_ws_url=ws_url)
+            return write_dump(data, stamp=stamp)
+        except Exception:  # noqa: BLE001 —— 落盘失败不许误事
+            return None
 
     @staticmethod
     def _jar_summary(backend, session) -> str:

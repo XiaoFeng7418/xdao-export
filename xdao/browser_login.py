@@ -92,6 +92,9 @@ _SITE_WAIT = 8.0
 # userhash」的预算：够连上、够读一次饼干，又不至于让「哪扇登录过」这个问题拖慢开窗。
 # 只连本地调试端口、只读饼干，不动用户正看着的那一页。
 WINDOW_PROBE_TIMEOUT = 3.0
+# 「现场」那一行（见 :func:`browser_jar_witness`）的预算：它每隔十几秒就要问一遍浏览器端点，
+# 而它**只是证据** —— 不能反过来把 1.5 秒一轮的登录读循环拖慢。问不出来就少写一段。
+JAR_WITNESS_TIMEOUT = 1.5
 # 判断「裸粘贴」的字符集：整段的粘贴不会只由这些字符组成，因此能挡掉 HTML/JSON 残渣。
 _BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
 # 「浏览器刚起来就退出了」这句错误文案里的固定部分：启动失败与读调试接口失败的
@@ -903,6 +906,52 @@ def profile_process_pids(profile: Path) -> list[int]:
     except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
         return []
     return _parse_profile_process_pids(done.stdout or "", profile)
+
+
+def _parse_user_data_dir(text: str) -> str:
+    """从一段命令行里抠出 ``--user-data-dir=…``（v0.13.51，只读）。"""
+    for raw in re.findall(r"--user-data-dir=(\"[^\"]*\"|\S+)", text or "", flags=re.IGNORECASE):
+        path = raw.strip().strip('"').strip()
+        if path:
+            return path
+    return ""
+
+
+def profile_of_process(pid: int, *, timeout: float = 20.0) -> str:
+    """问系统：这个 PID 的浏览器**真正**在用哪只资料目录（v0.13.51，**只读**）。
+
+    为什么不信 ``used_profile``：那是程序**打算**用的候选目录，不一定就是眼前这只
+    浏览器真在用的那只。真机 m43212 的对账行报的是配置目录里的
+    ``…/xdao-export/browser-profile``，可磁盘上那只罐一个多月没被碰过、``Cookies``
+    一行都没有 —— 那只浏览器其实用的是 %TEMP% 里的一次性目录（关窗就删），
+    日志里那行路径把「哪一只罐」指错了方向。命令行才是实据。
+
+    非 Windows、PID 为空、powershell 被拦一律回空串：这一手只给日志添证据，
+    绝不许拦下登录的正路。
+    """
+    if not _IS_WINDOWS or not pid:
+        return ""
+    # 和 :func:`profile_process_pids` 同一个理由：当场 import 标准库，躲开用例的替身。
+    import subprocess as _subprocess
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        f"Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" |"
+        " Select-Object -ExpandProperty CommandLine"
+    )
+    try:
+        done = _subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
+        return ""
+    return _parse_user_data_dir(done.stdout or "")
 
 
 def _profile_failure(exc: BaseException) -> bool:
@@ -2517,6 +2566,55 @@ def describe_page_targets(rows: list[dict]) -> list[str]:
     return notes
 
 
+def _cookie_names(cookies: list[dict]) -> str:
+    """一份罐里有哪些名字（v0.13.51）：复用 :func:`summarize_cookies`，另标出分区那类。
+
+    分区饼干（CHIPS）在真机上常常正是「F12 看得见、按地址读看不见」的那一块，所以
+    单独用一句话点出来；值一个都不写。
+    """
+    text = summarize_cookies(cookies)
+    has_partition = any(
+        isinstance(item, dict) and item.get("partitionKey") for item in cookies or []
+    )
+    if has_partition:
+        return f"{text}（其中带分区的）" if text else "只有带分区的"
+    return text or "空"
+
+
+def browser_jar_witness(
+    browser_ws_url: str,
+    *,
+    timeout: float = JAR_WITNESS_TIMEOUT,
+) -> str:
+    """把「这一刻浏览器里每一份罐各有哪些名字」写成一行（v0.13.51）。
+
+    真机 m43212 的死结是：同一扇窗、F12 里那块 70 字节的 userhash 明明白白，
+    程序四条读法一条也没看见，而「读罐对账」只在某一轮里写一行 —— 登录落在哪一秒、
+    落在哪一份罐里，日志上断不出前后。这一行每隔十几秒写一次（罐没变就不重复写），
+    于是「饼干罐是随登录一起长的，还是程序盯错了另一份罐」一对就清楚。
+
+    形状：``默认=PHPSESSID、memberUserspapapa｜上下文2c8811=PHPSESSID｜页=第1扇（上下文2c8811）https://…``
+    （``页=`` 那半段复用 :func:`describe_page_targets`）。任何一步问不出来就少写一段，
+    整条问不出来回空串，绝不往外抛。
+    """
+    if not browser_ws_url:
+        return ""
+    try:
+        jars = browser_level_jars(browser_ws_url, timeout=timeout)
+    except Exception:  # noqa: BLE001 —— 这一手只是证据，不许拦下登录
+        return ""
+    if not jars:
+        return ""
+    parts = [f"{label}={_cookie_names(cookies)}" for label, cookies in jars]
+    try:
+        rows = browser_page_targets(browser_ws_url, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        rows = []
+    if rows:
+        parts.append("页=" + "；".join(describe_page_targets(rows)))
+    return "｜".join(parts)
+
+
 def userhash_across_contexts(
     browser_ws_url: str,
     *,
@@ -3000,6 +3098,57 @@ def read_page_document_cookies(session: "CDPSession") -> list[dict]:
     if not isinstance(raw, str) or not raw:
         return []
     return parse_document_cookie(raw, host)
+
+
+_STORAGE_SCAN_SCRIPT = (
+    "JSON.stringify({l:Object.fromEntries(Object.entries(localStorage)),"
+    "s:Object.fromEntries(Object.entries(sessionStorage))})"
+)
+
+
+def userhash_from_page_storage(session: "CDPSession") -> str:
+    """在页面自己的本地存储里找一块像 userhash 的值（v0.13.51）。
+
+    真机 m43212 的形状是「同一扇窗、F12 的 Cookie 列表里 70 字节的 userhash 明明
+    在那里，程序四条读法一条也没看见」。饼干罐既然排除了分区那条路（探针
+    ``probe_chips_response.py``：真 CHIPS 饼干四条读法都看得见），还有一种可能：
+    站点把登录态**同时**写进了 ``localStorage``/``sessionStorage``，或者只写在那里。
+    这一手就是把那两个存储扫一遍。
+
+    只做**粗筛**（:func:`looks_like_userhash`），认下来的值照样要过服务端那一关
+    （界面层拿到后走 ``verify_userhash_live``），所以宁松勿严。任何一步出问题回空串。
+    """
+    try:
+        raw = session.evaluate(_STORAGE_SCAN_SCRIPT)
+    except Exception:  # noqa: BLE001 —— 页面读不了就当没有
+        return ""
+    if not isinstance(raw, str) or not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    preferred: list[str] = []
+    others: list[str] = []
+    for area in ("l", "s"):
+        store = data.get(area)
+        if not isinstance(store, dict):
+            continue
+        for key, value in store.items():
+            text = str(value or "").strip()
+            if not text:
+                continue
+            label = str(key).lower()
+            if "hash" in label or "user" in label or "token" in label:
+                preferred.append(text)
+            else:
+                others.append(text)
+    for text in preferred + others:
+        if looks_like_userhash(text):
+            return text
+    return ""
 
 
 def summarize_cookies(cookies: Iterable[dict]) -> str:
