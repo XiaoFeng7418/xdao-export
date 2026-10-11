@@ -296,6 +296,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="抓取范围：all 全部发言，po 仅发串人",
     )
     parser.add_argument(
+        "--max-pages",
+        type=_page_limit,
+        default=None,
+        metavar="N",
+        help="每个串最多抓 N 页（含第 1 页）；填 0 表示不限页数",
+    )
+    parser.add_argument(
+        "--until",
+        default=None,
+        metavar="串号",
+        help="导出多个串时抓到该串号为止（含它），它后面的串跳过；"
+        "没写这个串号时，列表里串号不超过它的串都导",
+    )
+    parser.add_argument(
         "--hashes",
         default=None,
         metavar="饼干",
@@ -474,6 +488,51 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _page_limit(raw: str) -> int:
+    """``--max-pages`` 的取值校验：非负整数；0 表示不限页数。
+
+    为什么挡在这里而不是悄悄回落到默认：写错的参数（``--max-pages abc``）若不报错，
+    用户会以为上限生效了，实际按"不限"抓完整个串 —— 那正是这个开关要防的事。
+    argparse 的报错会给出开关名与写法，比导出跑到一半再失败清楚得多。
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"页数上限得填一个非负整数（现在填的是 {raw!r}）；0 表示不限页数"
+        ) from None
+    if value < 0:
+        raise argparse.ArgumentTypeError("页数上限不能是负数；0 表示不限页数")
+    return value
+
+
+def _effective_max_pages(args: argparse.Namespace, settings) -> int:
+    """这次导出实际用的页数上限：命令行给了就用它，否则用配置，都没给就是 0（不限）。
+
+    0 有意与 ``xdao/cache.py`` 里那道 5000 页的安全阀分开：传 0 进去表示"用户没填"，
+    抓取层遇到它仍会留一道阀；用户填了更小的值时就以用户填的为准。
+    """
+    if args.max_pages is not None:
+        return int(args.max_pages)
+    try:
+        value = int(getattr(settings, "max_pages", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _effective_until(args: argparse.Namespace, settings) -> int | None:
+    """这次导出实际用的串号截止：命令行优先，其次配置；都为空就是不截止。
+
+    解析只有 ``xdao.cache.parse_thread_id`` 一套规则（网址、纯数字都认），
+    界面上填的东西走的是同一个函数。
+    """
+    from xdao.cache import parse_thread_id
+
+    raw = args.until if args.until is not None else getattr(settings, "until_thread_id", "")
+    return parse_thread_id(raw)
+
+
 def _collect_hashes(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -533,7 +592,7 @@ def _resolve_pdf_options(args: argparse.Namespace, settings):
 
 def run_cli(args: argparse.Namespace) -> int:
     """命令行导出 / 监控。返回进程退出码。"""
-    from xdao.cache import CachedThreadFetcher
+    from xdao.cache import CachedThreadFetcher, filter_until_thread_id
     from xdao.client import XdaoClient, XdaoError
     from xdao.exporters import EXPORTERS, ThreadData, choose_writable_dir, create_exporter
     from xdao.settings import AppSettings
@@ -546,6 +605,21 @@ def run_cli(args: argparse.Namespace) -> int:
         print(f"PDF 参数有误：{pdf_error}", file=sys.stderr)
         print("（可选值见 --help）", file=sys.stderr)
         return 2
+    # 导出范围（页数上限、串号截止）也先定下来：两者都可能来自配置文件，
+    # 且"一个串都不用导"这件事要在建目录、连网络之前就报出来。
+    max_pages = _effective_max_pages(args, settings)
+    until_thread_id = _effective_until(args, settings)
+    export_urls, skipped_urls = filter_until_thread_id(args.threads, until_thread_id)
+    if not export_urls:
+        # 不是错误：列表被截止挡光了。说清楚规则，用户改一个数就能重来。
+        print(
+            "串号截止把列表里的串全都挡住了，没有要导出的串。\n"
+            f"截止是「抓到串号 {until_thread_id} 为止（含它）」："
+            "列表里串号比它大的串都会跳过。\n"
+            "把 --until 改成更大的串号、或去掉这个开关后重试。",
+            file=sys.stderr,
+        )
+        return 0
     client = XdaoClient(
         timeout=settings.timeout,
         retries=settings.retries,
@@ -616,6 +690,15 @@ def run_cli(args: argparse.Namespace) -> int:
         print(f"注意：{cache_note}")
     if hashes:
         print(f"只看饼干：{'、'.join(hashes)}")
+    # 生效的导出范围每次都报：只导了一段却看起来"抓完了"，是这类功能最容易误判的地方。
+    range_text = "全部页" if max_pages <= 0 else f"最多 {max_pages} 页"
+    if until_thread_id is None:
+        until_text = "不按串号截止"
+    else:
+        until_text = f"导到串号 {until_thread_id} 为止（含它）"
+        if skipped_urls:
+            until_text += f"，跳过它之后的 {len(skipped_urls)} 个串"
+    print(f"导出范围：{range_text}；{until_text}。")
 
     if args.watch:
         interval = args.interval or settings.watch_interval
@@ -692,13 +775,18 @@ def run_cli(args: argparse.Namespace) -> int:
         f"开始时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"导出目录：{output_dir}",
         f"格式：{format_key}｜范围：{scope}｜缓存：{'启用' if use_cache else '关闭'}",
+        f"导出范围：{range_text}；{until_text}",
         "",
     ]
-    for index, raw in enumerate(args.threads, start=1):
-        print(f"[{index}/{len(args.threads)}] {raw}")
-        log_lines.append(f"[{index}/{len(args.threads)}] {raw}")
+    for index, raw in enumerate(export_urls, start=1):
+        print(f"[{index}/{len(export_urls)}] {raw}")
+        log_lines.append(f"[{index}/{len(export_urls)}] {raw}")
         try:
-            result = fetcher.fetch(raw, verify_cached=args.verify)
+            # 页数上限（0＝不限）交给抓取层：它是唯一知道"到没到上限"的地方，
+            # 撞上时结果里的 retry_note 会写清楚停在那一页。
+            result = fetcher.fetch(
+                raw, max_pages=max_pages, verify_cached=args.verify
+            )
             thread = ThreadData(
                 thread_id=result.meta.thread_id,
                 title=result.meta.title,
@@ -737,7 +825,7 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"    失败：{detail}", file=sys.stderr)
             log_lines.append(f"    失败：{detail}")
 
-    summary = f"全部处理完毕：成功 {succeeded} / {len(args.threads)} 个。"
+    summary = f"全部处理完毕：成功 {succeeded} / {len(export_urls)} 个。"
     print(summary)
     log_lines.append("")
     log_lines.append(summary)

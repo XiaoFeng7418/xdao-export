@@ -25,7 +25,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .appinfo import WINDOW_TITLE
-from .cache import CachedThreadFetcher, parse_thread_id, resolve_cache_dir
+from .cache import CachedThreadFetcher, filter_until_thread_id, parse_thread_id, resolve_cache_dir
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
 from .notifications import Notifier
@@ -55,6 +55,38 @@ TEXT = _PAL.text
 MUTED = _PAL.muted
 BORDER = _PAL.border
 OK_GREEN = _PAL.ok
+
+# 「①输入串网址」里那两个导出范围输入的说明文字。写成模块级常量是为了让用例能
+# 直接核对文案（尤其是截止那个必须写明**含它**：写含糊了用户会以为是不含）。
+# 「含它」这三个字不是啰嗦：抓到某个串号为止时，差一个号就把整整一段丢掉，
+# 是这类功能最容易让人误判的地方。
+# 这段说明刻意压得很短：左栏在最小窗口（940x680）下只剩几十像素余量，
+# 多一层换行就会把「开始导出」挤出可视区、逼出滚动条。两段拼成一行显示。
+# 说全版（「没这个串号时串号不超过它的都导」）放在 --help 与导出日志里。
+MAX_PAGES_HINT = "留空或 0 = 不限；"
+UNTIL_THREAD_ID_HINT = "串号截止含它本身，它后面的串跳过。"
+#: 页数上限输入框旁边的单位。
+MAX_PAGES_UNIT = "页"
+#: 串号截止输入框旁边的提示：那三个字必须出现（见上）。
+UNTIL_THREAD_ID_UNIT = "（含它）"
+
+
+def _describe_export_range(
+    max_pages: int, until_thread_id: int | None, skipped: list[str]
+) -> str:
+    """把这一趟实际生效的导出范围写成一行日志。
+
+    为什么每次导出都写一行：范围和成品直接相关 —— 只导了一段却看起来"抓完了"，
+    是这类功能最容易让人误判的地方。没填的两项不占字，全默认时只说"全部"。
+    """
+    range_text = "全部页" if max_pages <= 0 else f"最多 {max_pages} 页"
+    if until_thread_id is None:
+        until_text = "不按串号截止"
+    else:
+        until_text = f"导到串号 {until_thread_id} 为止（含它）"
+        if skipped:
+            until_text += f"，跳过它之后的 {len(skipped)} 个串"
+    return f"导出范围：{range_text}；{until_text}。"
 
 
 def refresh_colors() -> None:
@@ -229,11 +261,13 @@ def describe_export_failure(exc: BaseException) -> str:
     target = getattr(exc, "filename", None) or ""
     where = f"目录 {Path(target).parent}" if target else "导出目录"
     return (
-        f"{text}\n    Windows 不允许往{where}写文件。最常见的原因是安全软件的"
-        "「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），"
-        "它默认只放行白名单程序写「桌面 / 文档 / 图片 / 视频」这几个位置；"
-        "本程序这一版起会自动改用 %LOCALAPPDATA%\\xdao-export\\导出 这类不受保护的位置，"
-        "也可以手动把导出目录换过去，或把本程序加入白名单。"
+        f"{text}\n    Windows 不允许往{where}写文件，按实测有三类成因：①程序是从一个"
+        "「被限制写入的目录」里启动的（沙箱、受限令牌这类环境）—— 把程序整个文件夹挪到"
+        "不受限的位置即可；②Windows 的「受控文件夹访问」（Windows 安全中心 → 病毒和威胁"
+        "防护 → 勒索软件防护）只放行白名单程序写「桌面 / 文档 / 图片 / 视频」；"
+        "③火绒一类的安全软件按「有没有签名」判定，没签名的程序会被悄悄拒绝"
+        "（它的「信任区」通常只管病毒查杀）。本程序这一版起会自动改用"
+        "%LOCALAPPDATA%\\xdao-export\\导出 这类不受保护的位置，也可以手动把导出目录换过去。"
     )
 
 
@@ -2508,6 +2542,37 @@ def _pdf_page_ranges_text(raw: str, fallback: str) -> str:
     return options.page_ranges
 
 
+def _max_pages_text(raw: str) -> int:
+    """页数上限：留空、非数字、负数一律当"不限"（0）。
+
+    解析只在这一处做：界面、持久化、抓取层拿到的都是同一套规则。用户把上限
+    填错时不该让整趟导出失败，也不该悄悄改成某个数 —— 回落到"不限"最接近
+    "没填"的原意，而且安全阀还在（见 ``xdao/cache.py`` 的 SAFETY_MAX_PAGES）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _until_thread_text(raw: str) -> str:
+    """串号截止：能解析出串号才留下原文（网址原样存），否则当没填。
+
+    存原文而不是解析后的数字，是为了让"填网址"和"填串号"两种写法在界面上
+    原样回显；解析只有 ``cache.parse_thread_id`` 一套规则。
+    """
+    text = str(raw or "").strip()
+    # 「0」不是串号（parse_thread_id 也把 0 当无效）：按没填处理，
+    # 免得存下一个 "0"，下次读回来时截止逻辑去比一个不存在的串号。
+    if not text or text == "0":
+        return ""
+    return text if parse_thread_id(text) is not None else ""
+
+
 class SettingsDialog(tk.Toplevel):
     """网络、缓存与导出设置。"""
 
@@ -3823,13 +3888,15 @@ class App:
             style="Card.TRadiobutton",
         ).pack(side="left")
 
-        # 只看指定饼干
+        # 只看指定饼干 + 导出范围：并成一行、共用下面一条说明。
+        # 为什么这么挤：左栏在最小窗口（940x680）下几乎没有余量，多一层就出滚动条
+        # （见 MAX_PAGES_HINT 上面的注释）。
         cookie_row = ttk.Frame(input_card.body, style="Card.TFrame")
         cookie_row.pack(fill="x", pady=(theme.gap(1), 0))
         ttk.Label(cookie_row, text="只看指定饼干", style="Card.TLabel").pack(side="left")
         self.hashes_var = tk.StringVar(value=self.settings.include_hashes)
-        ttk.Entry(cookie_row, textvariable=self.hashes_var).pack(
-            side="left", fill="x", expand=True, padx=(theme.gap(2), theme.gap(1))
+        ttk.Entry(cookie_row, textvariable=self.hashes_var, width=12).pack(
+            side="left", padx=(theme.gap(2), theme.gap(1))
         )
         self.pick_cookie_button = ttk.Button(
             cookie_row,
@@ -3838,17 +3905,36 @@ class App:
             command=self.pick_cookies,
         )
         self.pick_cookie_button.pack(side="left")
-        self.hash_hint = ttk.Label(
+
+        # 导出范围：每个串最多抓几页、抓到哪个串号为止。
+        # 两件事都作用在「抓什么」上，所以跟「抓取范围」「只看指定饼干」放在同一张卡里。
+        range_row = ttk.Frame(input_card.body, style="Card.TFrame")
+        range_row.pack(fill="x", pady=(theme.gap(1), 0))
+        ttk.Label(range_row, text="最多页数", style="Card.TLabel").pack(side="left")
+        self.max_pages_var = tk.StringVar(value=str(self.settings.max_pages or ""))
+        ttk.Entry(range_row, textvariable=self.max_pages_var, width=6).pack(
+            side="left", padx=(theme.gap(1.5), theme.gap(0.5))
+        )
+        ttk.Label(range_row, text=MAX_PAGES_UNIT, style="Card.TLabel").pack(side="left")
+        # 截止这栏不写标题，只留「串号截止（含它）」当提示：这个功能最容易误解的
+        # 地方就是"到底导不导那一串"，所以那三个字必须紧贴在输入框旁边。
+        ttk.Label(range_row, text="串号截止", style="Card.TLabel").pack(
+            side="left", padx=(theme.gap(2), theme.gap(0.5))
+        )
+        self.until_thread_var = tk.StringVar(value=self.settings.until_thread_id or "")
+        ttk.Entry(range_row, textvariable=self.until_thread_var, width=14).pack(side="left")
+        ttk.Label(range_row, text=UNTIL_THREAD_ID_UNIT, style="CardFaint.TLabel").pack(
+            side="left", padx=(theme.gap(0.5), 0)
+        )
+        # 一行说明管两个输入：页数留空/0 是"不限"，串号截止含它本身。
+        self.range_hint = ttk.Label(
             input_card.body,
-            text="留空 = 不筛选；多个用空格或逗号分隔。",
+            text=MAX_PAGES_HINT + UNTIL_THREAD_ID_HINT,
             style="CardFaint.TLabel",
             justify="left",
         )
-        self.hash_hint.pack(anchor="w", fill="x", pady=(theme.gap(0.5), 0))
-        self.hash_hint.bind(
-            "<Configure>",
-            lambda e: e.widget.configure(wraplength=max(200, e.width - theme.gap(1))),
-        )
+        self.range_hint.pack(anchor="w", fill="x", pady=(theme.gap(0.5), 0))
+        wrap_to_width(self.range_hint, minimum=200)
 
         ttk.Separator(input_card.body, orient="horizontal").pack(
             fill="x", pady=(theme.gap(1), theme.gap(1))
@@ -4162,6 +4248,14 @@ class App:
     def parse_hashes(self) -> list[str]:
         return self.settings.parse_hashes(self.hashes_var.get())
 
+    def max_pages_limit(self) -> int:
+        """界面上填的页数上限；留空或 0 表示不限（0 就是抓取层的"不限"）。"""
+        return _max_pages_text(self.max_pages_var.get())
+
+    def until_thread_id(self) -> int | None:
+        """界面上填的串号截止；留空表示不截止。取值从网址或纯数字里解析。"""
+        return parse_thread_id(_until_thread_text(self.until_thread_var.get()) or None)
+
     def persist_prefs(self) -> None:
         self.settings.output_dir = self.output_var.get().strip() or None
         self.settings.scope = self.scope_var.get()
@@ -4170,6 +4264,9 @@ class App:
         self.settings.use_cache = bool(self.use_cache_var.get())
         self.settings.notify = bool(self.notify_var.get())
         self.settings.image_mode = self.current_image_mode()
+        # 导出范围也跟着存下来：下次打开程序还是这套范围，不用重填。
+        self.settings.max_pages = _max_pages_text(self.max_pages_var.get())
+        self.settings.until_thread_id = _until_thread_text(self.until_thread_var.get())
         self.save_settings()
 
     def persist_watch_targets(self) -> None:
@@ -4795,8 +4892,9 @@ class App:
                 "导出目录已自动改到能写的位置",
                 "\n\n".join(choice.notes)
                 + f"\n\n本次的成品都会放在：\n{output_dir}\n\n"
-                "想固定用别的位置：把导出目录换成不受保护的地方（例如自建的文件夹），"
-                "或在安全软件里把本程序加入白名单。",
+                "想固定用别的位置：把导出目录换成不受保护的地方（例如自建的文件夹）。"
+                "如果连兜底位置也写不进去，多半是程序本身被判成「受限」——"
+                "把程序整个文件夹挪到一个不受限的位置再试。",
             )
         return output_dir
 
@@ -4813,9 +4911,27 @@ class App:
             messagebox.showwarning("提示", "请至少输入一个串网址。")
             return
 
+        # 串号截止在这里就切好：过滤只做一次，后面计数、进度、导出全用切过的那份，
+        # 不会出现"进度显示 5 个、实际导 3 个"这种对不上的情况。
+        kept, skipped = filter_until_thread_id(urls, self.until_thread_id())
+        if not kept:
+            messagebox.showwarning(
+                "没有要导出的串",
+                "串号截止把列表里的串全都挡住了。\n\n"
+                "截止是「抓到该串号为止（含它）」：列表里串号比它大的串都会跳过。\n"
+                "把截止改成更大的串号，或者清空截止框后重试。",
+            )
+            return
+        urls = kept
+
         resolved = self.prepare_export_dir()
         if resolved is None:
             return
+        # 导出范围在这里定下来（主线程算一次，worker 线程直接用）：
+        # max_pages=0 表示不限，抓取层仍会用自己那道安全阀；
+        # until_thread_id 的过滤已经在上面做完了。
+        max_pages = self.max_pages_limit()
+        until_thread_id = self.until_thread_id()
         # 导出目录存到实例上：_finish()（结束汇总/弹窗）跑在主线程，
         # 拿不到 start() 里的局部变量。曾经这里只写局部变量，导致
         # 一整趟导出结束后弹「NameError: name 'output_dir' is not defined」
@@ -4835,6 +4951,7 @@ class App:
             f"缓存 {'启用' if self.use_cache_var.get() else '关闭'}。"
         )
         self.log(f"导出目录：{output_dir}")
+        self.log(_describe_export_range(max_pages, until_thread_id, skipped))
         if self.current_format() == "pdf":
             # 只在真的改过纸张/边距/背景/页码时说一声，全默认不必占一行。
             pdf_options = pdf_opts.from_settings(self.settings)
@@ -4878,7 +4995,9 @@ class App:
                     ("progress", (index - 1, len(urls), f"[{index}/{len(urls)}] {url}"))
                 )
                 try:
-                    result = fetcher.fetch(url)
+                    # max_pages 是"每个串最多抓几页"：0 交给抓取层当"不限"
+                    # （那道安全阀仍在），撞上限时 result.retry_note 会说清楚。
+                    result = fetcher.fetch(url, max_pages=max_pages)
                     thread = ThreadData(
                         thread_id=result.meta.thread_id,
                         title=result.meta.title,

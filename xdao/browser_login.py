@@ -72,6 +72,11 @@ TEMP_PROFILE_WAIT = 3.0
 #: 删临时目录前要不要先把「命令行里带这个目录」的浏览器进程收掉（见
 #: :func:`_kill_processes_using_profile`）。用例会把它改成 False —— 那一手要真起
 #: 一个 powershell，不该在每个用例里跑一遍。
+#: 让 powershell 按 UTF-8 回话（v0.14.0）。中文 Windows 上 powershell 5.1 的 stdout 是
+#: ANSI/GBK 代码页，而这几处一律按 UTF-8 解码 —— 于是带中文的资料目录会变成 `D:\С����\…`
+#: 这种乱码（v0.13.51 真机详单里的「罐路径」段就是这样）。在脚本开头钉一句输出编码，
+#: 解码那侧不用动。
+_PS_UTF8 = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
 _KILL_PROFILE_PROCESSES = _IS_WINDOWS
 #: 普查要不要再问操作系统一遍「谁此刻用着我们家的资料目录」（见 :func:`program_profile_dirs`）。
 #: 端口普查只认「名字猜得到」的目录（:func:`live_browser_dirs`）：备用目录的名字带着
@@ -828,7 +833,7 @@ def program_profile_dirs(profile: Path) -> list[Path]:
     )
     try:
         done = _subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_UTF8 + script],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -895,7 +900,7 @@ def profile_process_pids(profile: Path) -> list[int]:
     )
     try:
         done = _subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_UTF8 + script],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -941,7 +946,7 @@ def profile_of_process(pid: int, *, timeout: float = 20.0) -> str:
     )
     try:
         done = _subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_UTF8 + script],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1183,7 +1188,7 @@ def _kill_processes_using_profile(profile: Path) -> None:
     )
     try:
         _subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_UTF8 + script],
             stdin=_subprocess.DEVNULL,
             stdout=_subprocess.DEVNULL,
             stderr=_subprocess.DEVNULL,
