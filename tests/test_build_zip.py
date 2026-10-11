@@ -133,6 +133,43 @@ def test_bom_list_only_covers_files_that_go_into_the_zip() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 摆给下载者的那一份
+# ---------------------------------------------------------------------------
+
+
+def test_release_dir_gets_the_three_pieces_and_replaces_the_old_tree(tmp_path: Path) -> None:
+    """`--release-dir` 摆过去的是三件套，同名旧目录先删掉 —— 别让新旧文件混在一起。"""
+    out = tmp_path / "dist"
+    root = out / "xdao-export-v9.9.9"
+    stage = root / "xdao-export-v9.9.9-win64"
+    stage.mkdir(parents=True)
+    (stage / "xdao-export.exe").write_bytes(b"exe")
+    zip_path = out / "xdao-export-v9.9.9-win64.zip"
+    zip_path.write_bytes(b"zip")
+    sidecar = Path(str(zip_path) + build_zip.SIDECAR_SUFFIX)
+    sidecar.write_text(f"{'a' * 64}  {zip_path.name}\n", encoding="utf-8")
+
+    release = tmp_path / "release"
+    stale = release / "xdao-export-v9.9.9" / "上一版留下的.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("旧文件", encoding="utf-8")
+
+    placed = build_zip.publish_release(root, zip_path, sidecar, release)
+
+    assert [path.name for path in placed] == [
+        "xdao-export-v9.9.9",
+        zip_path.name,
+        sidecar.name,
+    ]
+    assert (release / root.name / stage.name / "xdao-export.exe").is_file()
+    assert not stale.exists(), "同名旧目录没先删掉，新旧文件会混在一起"
+    assert (release / zip_path.name).read_bytes() == b"zip"
+    assert (release / sidecar.name).is_file()
+    # 产物目录就是它自己时不用再摆，也不该报错
+    assert build_zip.publish_release(root, zip_path, sidecar, out) == []
+
+
+# ---------------------------------------------------------------------------
 # 文档自检
 # ---------------------------------------------------------------------------
 

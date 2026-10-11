@@ -10,11 +10,17 @@
 
 用法::
 
-    python tools/build_zip.py                 # 产物写到 ./dist
-    python tools/build_zip.py --out D:\\out   # 换个目录
+    python tools/build_zip.py                                 # 产物写到 ./dist
+    python tools/build_zip.py --out D:\\out                     # 换个目录
+    python tools/build_zip.py --release-dir D:\\发布目录         # 打完再摆一份给下载者
 
 跑完打印 zip 路径、条目数、字节数与 SHA256；`.sha256` 就写在 zip 旁边，内容是一行
 ``<摘要>  <文件名>``（`sha256sum -c` / `certutil` 那一类工具认这个格式）。
+
+`--release-dir` 是 2026-10-11 加的：产物默认落在仓库里的 `./dist`，下载者习惯去的外层
+目录（本机用的是放各版本目录的那个目录）就什么都没有 —— 每版都靠人记得加 `--out`，
+v0.13.51 漏了一次，是事后手工解压补齐的。给了这个开关就一步摆好三件套，同名的旧版本
+目录先删掉再摆。
 """
 
 from __future__ import annotations
@@ -197,9 +203,39 @@ def build_pyinstaller(repo: Path, python: str, version_file: Path, work: Path, o
     return out / "xdao-export"
 
 
+def publish_release(root: Path, zip_path: Path, sidecar: Path, release_dir: Path) -> list[Path]:
+    """把这次的三件套再摆一份到 ``release_dir``：解开的版本目录 + zip + `.sha256`。
+
+    `root` 是这次解开的目录（`xdao-export-v<版本>`，里面一层 `…-win64`），
+    `zip_path` / `sidecar` 是打包目录里那两份文件。同名旧目录先删掉再摆，免得新旧
+    文件混在一起；返回真正摆过去的那几样（`release_dir` 就是打包目录时返回空）。
+    """
+    release_dir = Path(release_dir).resolve()
+    placed: list[Path] = []
+    target_root = release_dir / root.name
+    if target_root.resolve() == Path(root).resolve():
+        return placed
+    release_dir.mkdir(parents=True, exist_ok=True)
+    if target_root.exists():
+        shutil.rmtree(target_root)
+    shutil.copytree(root, target_root)
+    placed.append(target_root)
+    for source in (zip_path, sidecar):
+        target = release_dir / source.name
+        if target.resolve() != Path(source).resolve():
+            shutil.copy2(source, target)
+            placed.append(target)
+    return placed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="打免安装包并生成 .sha256")
     parser.add_argument("--out", default="dist", help="产物目录（默认 ./dist）")
+    parser.add_argument(
+        "--release-dir",
+        default="",
+        help="再摆一份到哪个目录（解开的版本目录 + zip + .sha256；省了就不摆）",
+    )
     parser.add_argument("--python", default=sys.executable, help="用哪个解释器跑 PyInstaller")
     args = parser.parse_args(argv)
 
@@ -273,6 +309,21 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 tail = " | ".join((done.stdout or done.stderr or "").strip().splitlines()[-2:])
                 print(f"  {' '.join(extra)} → 退出码 {done.returncode}：{tail}", flush=True)
+
+        if args.release_dir:
+            release_dir = Path(args.release_dir).resolve()
+            placed = publish_release(root, zip_path, sidecar, release_dir)
+            if placed:
+                print(f"另外摆了一份到 {release_dir}：", flush=True)
+                for path in placed:
+                    print(f"  {path.name}", flush=True)
+            else:
+                print("产物目录就是 --release-dir，不用再摆一份。", flush=True)
+        elif out == (ROOT / "dist").resolve() and not os.environ.get("GITHUB_ACTIONS"):
+            # 只在本机提醒：CI 就是往 ./dist 打的（签名要求产物由 CI 构建），那儿不用摆。
+            print("提醒：这次产物留在仓库的 ./dist 里。", flush=True)
+            print("      要让下载者在外层目录看到「版本目录 + zip + .sha256」，", flush=True)
+            print("      加 --release-dir <那个目录> 再跑（本机发布用的是放各版本目录的那个目录）。", flush=True)
         print("DONE", flush=True)
         return 0
     finally:
