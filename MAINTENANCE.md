@@ -78,6 +78,10 @@ $pypi = '<本机 Python>\python.exe'
 
 # 3) 组装免安装包（exe + _internal + 使用说明.txt），压缩成
 #    xdao-export-vX.Y.Z-win64.zip
+#    现在这一步不用手工拼：& $py -X utf8 tools/build_zip.py --python $pypi
+#    产物默认落在仓库的 ./dist；本机发布再带 `--release-dir '<外层目录>'`（放各版本目录
+#    的那个目录），它会把「解开的版本目录 + zip + .sha256」摆到那里，同名的旧目录先删掉
+#    再摆（2026-10-11 加的；v0.13.51 漏了这一步，是事后手工解压补的）。
 
 # 4) 验证产物能跑（自检退出码应为 0）
 #    xdao-export.exe --version      # 应输出「X岛串导出工具 X.Y.Z」
@@ -677,6 +681,10 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **2026-10-11 打包摆放 + 公开材料第二条**（都不算版本：一个只动 `tools/build_zip.py`，一个只动文档与用例）：
+  **一、`tools/build_zip.py --release-dir <外层目录>`。** 产物默认落在仓库的 `./dist`，下载者习惯去的外层目录里就什么都没有 —— 每版都得靠人记得加 `--out`，v0.13.51 漏了一次，事后才手工解压补出「版本目录 + zip + .sha256」三件套。现在给 `--release-dir` 就一步摆好（同名的旧版本目录先删掉再摆）；本机不带它而产物落在 `./dist` 时会打一行「提醒」，CI 用 `--out dist` 且有 `GITHUB_ACTIONS`，不提醒。用例 `tests/test_build_zip.py::test_release_dir_gets_the_three_pieces_and_replaces_the_old_tree`。
+  **二、公开材料第二类禁句（`docs/RELEASE_NOTES_*.md` 与 `packaging/使用说明.txt`）。** 第一道 `FORBIDDEN_ADDRESS` 只拦「来源写成某某要的」这类归属句式；9 份发布说明与使用说明里还有一批把「某位用户验过几次、贴回什么、下次再贴什么」写进公开材料的句子（「你复验了一次」「你贴回来的那三行」「把那个文件也发我」），已全部改成客观写法，线上 9 个 Release 正文用 `gh release edit --notes-file` 重推；`tests/test_public_material.py` 加 `FORBIDDEN_USER_STORY`（发布说明 + 使用说明）与 `FORBIDDEN_USER_STORY_EXTRA`（「你把」，只扫发布说明），仍挂在原用例上。扫线上正文用 `_scratch/dump_release_bodies.py`（直接从用例里 import 那几个正则）。
+  **三、基线。** 收集 **1875 项**、本机 **1868 passed / 7 skipped**（`test_build_zip.py` 22 → 23）。
 - **v0.13.51**（「登录读不到 userhash」的现场取证：现场行 + 提前落详单 + 按命令行问准真正在用的资料目录 + 页面本地存储里再找一次；另修 `罐路径=` 误报常驻罐）：
   **一、症状（真机 m43212，v0.13.50）。** 用户在程序自己起的那扇窗（横条「窗口号 C925 · 端口50459」）里登录，F12 → 应用程序 → Cookie 里三条：`memberUsers…`、`PHPSESSID`、70 字节的 `userhash`；程序四条读法（按地址读 / 整罐读 / 存储读 / 页面 JS）一条都没看见（`原始userhash=无`）。到 00:03:31 为止的日志里 `挂=…login.html`、`页=1（…login.html#）`、`别路=上下文2C8811：PHPSESSID`、`罐路径=C:\Users\你\AppData\Roaming\xdao-export\browser-profile`，对话框状态是「已经等了 68 秒」。
   **二、本机已排除的两条。** ①「分区饼干对读法隐身」：新探针 `_scratch/probe_chips_response.py`（真 Edge + 本机 http.server，用**响应头** `Set-Cookie: chips-real=2; Path=/; SameSite=None; Secure; Partitioned` 在跨站 iframe 里种真 CHIPS 饼干）跑下来，`Network.getCookies`（按地址）、`Network.getAllCookies`、`Storage.getCookies`、`read_all_cookies()` **四条全看得见**（`["chips-real+分区"]`）⇒ 假设不成立；顺带证实 `Target.getTargets` 里默认上下文也带一个随机 id（`别路=上下文…` 不能当成「多出来的一份罐」）。②`罐路径=` 报的那只常驻罐自 2026/10/1 起再没被碰过（`Default\Network\Cookies` 20480 字节、mtime 2026/10/1 14:30，`Cookies-journal` 0 字节、里面一行都没有）⇒ 那几轮用的都是一次性 %TEMP% 目录，诊断报错了罐。
