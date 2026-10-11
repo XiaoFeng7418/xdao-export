@@ -7,7 +7,11 @@
 2026-10-02 起改成机器把关：谁把真串号、本机路径，或把用户当来源的句子抄进文档、
 测试、发布说明里，CI 直接红，红的位置和改法都打在失败信息里。
 （第二人称那几条是 2026-10-11 补的：v0.13.49 的发布说明里漏了一句「按你 2026-10-07
-要的那份……」，线上正文照着它发出去了，事后用 ``gh release edit`` 才改回来。）
+要的那份……」，线上正文照着它发出去了，事后用 ``gh release edit`` 才改回来。
+同一天又补了一道只管 ``docs/RELEASE_NOTES_*.md`` 与 ``packaging/使用说明.txt`` 的：
+v0.13.49/50/51 三版正文里还留着「你复验了一次」「你贴回来的那三行」「把那个文件也发我」
+这类句子 —— 第二人称那几条拦不住它们，而 Release 正文与包里的说明是给所有读者看的，
+谁验的、验过几次、下次贴什么，都不该写进去。）
 
 被扫的是 ``git ls-files`` 那批文件 —— 那就是「公开材料」的定义（仓库外还有
 GitHub 的 Release 正文与标签信息，那两处得另外扫，做法见 ``MAINTENANCE.md``）。
@@ -61,6 +65,28 @@ FORBIDDEN_ADDRESS = re.compile(
         ]
     )
 )
+
+#: 发布说明与打包里的使用说明额外禁的一类：把「某一位用户的经历」写进正文（复验了几次、
+#: 贴回来的日志、下次再贴什么、发我）。第二条规矩（``FORBIDDEN_ADDRESS``）拦不住这些 ——
+#: 「你复验了一次」既不是「按你……要的」，也没写「用户报过」，但同样是用户自己的事。
+#: 2026-10-11 翻 v0.13.49/50/51 三版 Release 正文时逮到一批，于是单独加这一道。
+RELEASE_NOTES = re.compile(r"^docs/RELEASE_NOTES_v[0-9.]+\.md$")
+USER_STORY_FILES = re.compile(r"^(?:docs/RELEASE_NOTES_v[0-9.]+\.md|packaging/使用说明\.txt)$")
+FORBIDDEN_USER_STORY = re.compile(
+    "|".join(
+        [
+            r"你(?:上次|那次|那两|那三|复验|验证|贴|发|截|手上|多半)",
+            r"发我",
+            r"我这次",
+            r"等我(?!们)",
+            r"下次[^。\n]{0,8}复验",
+        ]
+    )
+)
+
+#: 只扫发布说明的一条：使用说明里「这取决于你把文件放在哪儿」是对读者的正常称呼，
+#: 而发布说明是给所有读者看的项目文档，那里出现「你把……」就是把用户的事又写进去了。
+FORBIDDEN_USER_STORY_EXTRA = re.compile(r"你把")
 
 #: ``userhash=`` 后面这种 16 位小写十六进制看着就像真饼干；只放行经典假值。
 ALLOWED_USERHASHES = frozenset({"deadbeefdeadbeef"})
@@ -179,13 +205,24 @@ def test_no_personal_directories_in_public_material() -> None:
                 name = match.group(1)
                 if name not in ALLOWED_USER_DIRS:
                     bad.append((relative, number, line.strip()))
+    for relative, text in _tracked_text_files():
+        if relative == SELF or not USER_STORY_FILES.match(relative):
+            continue
+        patterns = [FORBIDDEN_USER_STORY]
+        if RELEASE_NOTES.match(relative):
+            patterns.append(FORBIDDEN_USER_STORY_EXTRA)
+        for number, line in enumerate(text.splitlines(), 1):
+            if any(pattern.search(line) for pattern in patterns):
+                bad.append((relative, number, line.strip()))
     for relative, number, line in _lines(FORBIDDEN_ADDRESS, skip_self=True):
         bad.append((relative, number, line))
     assert not bad, (
         "公开材料里出现了本机个人目录/用户名，或把用户写成了来源：\n"
         f"{_where(bad)}\n"
         "路径写 <工作目录>、<本机 Python>，用户目录写 C:\\Users\\你 这种占位符；"
-        "来源一律写成客观事实（「2026-10-04 真机复验」这种），别写「按你……要的」「你说」「用户报过」。"
+        "来源一律写成客观事实（「2026-10-04 真机复验」这种），别写「按你……要的」「你说」「用户报过」；"
+        "发布说明里也别写「你复验了一次」「你贴回来的那三行」「把那个文件也发我」这类"
+        "（谁验的、验过几次、下次贴什么，读者不需要知道）。"
     )
 
 
