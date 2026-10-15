@@ -23,6 +23,34 @@
 - **致谢**：数据来源与内容规范以 X岛揭示板为准；「用途与声明」的写法参考了 Rcrwrate/Xdnmb_downer；
   本工具只用 Python 标准库写成（没有第三方运行时依赖，打包用 PyInstaller）。谢谢这些项目的作者。
 
+## 开源协议与版权
+
+- **许可**：MIT License。全文见仓库根目录的 [`LICENSE`](LICENSE)；随包发出的 zip 里是同一份，
+  文件名 `LICENSE.txt`。
+- **版权**：Copyright (c) 2026 晓风（GitHub [@XiaoFeng7418](https://github.com/XiaoFeng7418)）。
+- **可以做什么**：免费使用、复制、修改、合并、发布、分发、再许可与出售，包括商业用途；
+  唯一的条件是保留上面那行版权声明与这份许可声明。
+- **第三方组件**：打包版里带着 Python 解释器（PSF 许可）、Tcl/Tk 图形库（BSD 风格许可）与
+  PyInstaller 启动器（GPL，另带「可用作商业程序启动器」的例外条款）；它们各自的许可随包保留。
+  工具本身只用 Python 标准库写成，没有别的第三方运行时依赖。
+
+## 免责声明
+
+- **非官方**：本工具由个人独立开发，与 X岛揭示板（nmbxd.com / nmbxd1.com）及其运营方没有任何
+  隶属、合作、赞助、认可或授权关系；「X岛」等名称与内容的相关权利属于其各自权利人。
+- **按「现状」提供**：软件不带任何明示或暗示的担保，包括但不限于可用性、不中断、无错误、
+  适销性或适合特定用途。用不用、怎么用，由使用者自己判断，风险自负。
+- **合法使用**：请只导出自己有权查看、用于个人备份与阅读的内容；不要用于违法用途，
+  不要侵犯他人的著作权、隐私或其他权利，也不要用它骚扰、跟踪或批量收集他人信息。
+- **爱惜站点**：请遵守岛规与站方公告，保持默认抓取频率（请求间隔 0.08 秒、失败最多重试 2 次并
+  听服务端的 `Retry-After`、监控 5 分钟一轮），不要绕过限流或成规模地抓取。
+- **内容版权**：导出的文字、图片与其中一切内容，版权属于 X岛平台与原作者；本工具只做下载、
+  格式转换与本地保存，对这些内容不主张任何权利。
+- **责任限制**：在适用法律允许的范围内，作者不对因使用或无法使用本软件而产生的任何直接、
+  间接、附带或后果性损失（例如数据丢失、账号受限、设备损坏或第三方索赔）承担责任。
+- **权利主张**：若认为本工具或某份导出侵犯了相关权利，或站方要求调整，可在仓库提 issue 说明，
+  作者会尽快处理。
+
 ## 代码签名政策（Code signing policy）
 
 发布者：**晓风**（GitHub [@XiaoFeng7418](https://github.com/XiaoFeng7418)）。
@@ -107,26 +135,26 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.14.0** 提供免安装包：
+最新版 **v0.14.1** 提供免安装包：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.14.0-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位）。 |
-| `xdao-export-v0.14.0-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
+| `xdao-export-v0.14.1-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位），以及协议全文 `LICENSE.txt`。 |
+| `xdao-export-v0.14.1-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
 
 
 **下载后核对一下**（v0.13.28 起，每个 Release 都附一份 `.sha256`）：把 zip 和 `.sha256` 放同一个
 文件夹，在 PowerShell 里跑
 
 ```powershell
-Get-FileHash .\xdao-export-v0.14.0-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.14.0-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.14.1-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.14.1-win64.zip.sha256
 ```
 
 第一行输出的字符串应当和 .sha256 里那串一模一样。只想看结论就一条命令：
 
 ```powershell
-$f = 'xdao-export-v0.14.0-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
+$f = 'xdao-export-v0.14.1-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
 ```
 
 回 `True` 就是原件。（`certutil -hashfile $f SHA256` 也能算，只是它输出大写、还多一行说明。）
@@ -570,6 +598,7 @@ python main.py --version
 ```
 xdao-export/
 ├─ main.py                 入口：图形界面 / 命令行导出 / 监控 / 自检
+├─ LICENSE                 MIT 许可全文（版权声明在里面；打包时作为 LICENSE.txt 一起发出）
 ├─ pytest.ini              测试配置
 ├─ xdao/
 │  ├─ client.py            网络：登录、取串、翻页、下载图片、重试与代理
@@ -595,7 +624,7 @@ xdao-export/
 ├─ tools/build_zip.py      打免安装包 + 写 .sha256（本机与 CI 都用它）
 ├─ 诊断写入.ps1            导出目录写不进去时用来定位（随免安装包一起发出）
 ├─ 诊断写入-双击运行.cmd   不会用命令行就双击它，跑完留下诊断结果报告
-└─ tests/                  1927 个离线单元测试（1920 通过，另 7 个真机用例默认跳过）
+└─ tests/                  1931 个离线单元测试（1924 通过，另 7 个真机用例默认跳过）
 ```
 
 ## 开发
