@@ -54,11 +54,14 @@ from xdao.appinfo import (  # noqa: E402  （必须在上面那段 sys.path 之�
 )
 
 #: 打进包里的几个仓库文件（源文件 -> 包内文件名）。使用说明要给用户看，
-#: 两个 .ps1/.cmd 是「把抓取与导出的每一步写进日志」的诊断脚本，出问题时让用户跑它。
+#: 两个 .ps1/.cmd 是「把抓取与导出的每一步写进日志」的诊断脚本，出问题时让用户跑它，
+#: LICENSE 是 MIT 协议全文 —— MIT 要求「版权声明与许可声明」随副本一起走，
+#: 所以它必须跟着 exe 一起发出去（使用说明里也点明了包内有这一份）。
 EXTRA_FILES: tuple[tuple[str, str], ...] = (
     ("packaging/使用说明.txt", "使用说明.txt"),
     ("诊断写入.ps1", "诊断写入.ps1"),
     ("诊断写入-双击运行.cmd", "诊断写入-双击运行.cmd"),
+    ("LICENSE", "LICENSE.txt"),
 )
 
 #: 这两个是给 Windows 自己的工具打开的，BOM 掉了中文会乱码（`tests/test_text_hygiene.py`

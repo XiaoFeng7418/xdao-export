@@ -122,7 +122,7 @@ def test_zip_members_are_sorted_and_keep_the_top_folder(tmp_path: Path) -> None:
 
 
 def test_every_extra_file_exists_in_the_repo() -> None:
-    """包内那三个文件（使用说明 + 两个诊断脚本）在仓库里得真的在。"""
+    """包内那几个文件（使用说明 + 两个诊断脚本 + LICENSE）在仓库里得真的在。"""
     for source, _ in build_zip.EXTRA_FILES:
         assert (ROOT / source).is_file(), f"{source} 不在仓库里，打包时会 FileNotFoundError"
 

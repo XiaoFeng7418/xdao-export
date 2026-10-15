@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1927 项（2026-10-04 数出来的一共这么多；本机 Windows 上 1920 通过、7 项跳过）、
+单元测试 1931 项（2026-10-04 数出来的一共这么多；本机 Windows 上 1924 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 147 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -85,6 +85,7 @@ xdao-export/
 │  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update（57）
 │  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变（8）
 │  ├─ test_public_material.py 公开材料：真串号 / 本机个人目录 / 凭据（5）
+│  ├─ test_license_docs.py 开源协议 / 版权 / 免责都在，且随包发出（4）
 │  ├─ test_version_consistency.py 版本号四处一致（5）
 │  ├─ test_cli_docs.py     文档里的命令行开关与解析器互相覆盖（3）
 │  ├─ test_docs_facts.py   HANDOFF/README 里写死的用例数与真实收集数一致（3）
