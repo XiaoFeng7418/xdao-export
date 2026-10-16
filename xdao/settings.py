@@ -42,6 +42,16 @@ DEFAULT_MAX_PAGES = 0
 # 串号截止：空串表示不截止；「含它」的语义见 cache.filter_until_thread_id。
 DEFAULT_UNTIL_THREAD_ID = ""
 
+# ---------- 字号的默认值 ----------
+# 导出成品的正文字号（px）。14 是 v0.15.0 之前写死在 xdao/exporters/html.py
+# 里的值，**默认必须仍是它**：老配置里没有这个键，默认值一变，老用户升级后
+# 成品的字号就跟着变（和 PDF 那组默认值同一个道理）。
+DEFAULT_EXPORT_FONT_SIZE = 14
+EXPORT_FONT_SIZE_MIN = 10
+EXPORT_FONT_SIZE_MAX = 28
+# 界面字号比例：1.0 ＝ xdao/theme.py 里各 SIZE_* 的原值。
+DEFAULT_UI_FONT_SCALE = 1.0
+
 
 def app_config_dir() -> Path:
     """本机配置目录。"""
@@ -84,6 +94,13 @@ class AppSettings:
     max_pages: int = DEFAULT_MAX_PAGES
     # 抓到该串号为止（**含它**）；空串＝不截止。串号从网址里解析。
     until_thread_id: str = DEFAULT_UNTIL_THREAD_ID
+
+    # ---------- 字号 ----------
+    # 导出成品的正文字号（px）：HTML / PDF / EPUB 读它；TXT 与 Markdown 是
+    # 纯文本，没有字号可言（发布说明与界面提示里都这么写）。
+    export_font_size: int = DEFAULT_EXPORT_FONT_SIZE
+    # 界面字号比例（档位见 theme.FONT_SCALE_CHOICES），改完立刻重建界面生效。
+    ui_font_scale: float = DEFAULT_UI_FONT_SCALE
 
     # ---------- PDF 纸张 / 页边距 ----------
     # 归一化全部交给 xdao/pdf_opts.py（界面与命令行同一套规则）；
@@ -153,6 +170,13 @@ class AppSettings:
         self.until_thread_id = _until_thread_id(
             data.get("until_thread_id"), DEFAULT_UNTIL_THREAD_ID
         )
+        # 字号：坏值一律回落默认（导出的默认值必须与老版本写死的 14px 一致）
+        self.export_font_size = _export_font_size(
+            data.get("export_font_size"), DEFAULT_EXPORT_FONT_SIZE
+        )
+        self.ui_font_scale = _ui_font_scale(
+            data.get("ui_font_scale"), DEFAULT_UI_FONT_SCALE
+        )
         # 逐字段解析：老配置没有这些键 → 取默认值（＝ v0.7.0 的成品外观）；
         # 有键但值坏 → 同样回落默认，绝不让读配置抛异常。
         self.pdf_paper = _pdf_choice(data.get("pdf_paper"), DEFAULT_PDF_PAPER, "normalize_paper")
@@ -213,6 +237,8 @@ class AppSettings:
                 "pdf_browser": self.pdf_browser,
                 "max_pages": self.max_pages,
                 "until_thread_id": self.until_thread_id,
+                "export_font_size": self.export_font_size,
+                "ui_font_scale": self.ui_font_scale,
                 "pdf_paper": self.pdf_paper,
                 "pdf_orientation": self.pdf_orientation,
                 "pdf_margin": self.pdf_margin,
@@ -315,6 +341,31 @@ def _until_thread_id(value, fallback: str) -> str:
     except Exception:  # noqa: BLE001 —— 解析模块出问题也不该让读配置失败
         return fallback
     return text if thread_id is not None else fallback
+
+
+def _export_font_size(value, fallback: int) -> int:
+    """导出成品的正文字号：整数，且收在 ``EXPORT_FONT_SIZE_MIN~MAX`` 之间。
+
+    坏值（非数字、0、负数、超出范围）一律回落默认 —— 默认必须是 14，理由见
+    ``DEFAULT_EXPORT_FONT_SIZE`` 那段注释。
+    """
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not EXPORT_FONT_SIZE_MIN <= result <= EXPORT_FONT_SIZE_MAX:
+        return fallback
+    return result
+
+
+def _ui_font_scale(value, fallback: float) -> float:
+    """界面字号比例：收口交给 :func:`xdao.theme.normalize_font_scale`。
+
+    那边已经有 0.7~2.0 的上下限与「认不出来就回落」的规则，这里不重写一份。
+    """
+    from .theme import normalize_font_scale
+
+    return normalize_font_scale(value, fallback)
 
 
 def _as_bool(value, fallback: bool) -> bool:

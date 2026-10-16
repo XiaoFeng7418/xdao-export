@@ -559,6 +559,168 @@ def test_settings_dialog_keeps_good_values_when_the_input_is_bad(dialog_root, ar
 
 
 # ---------------------------------------------------------------------------
+# 正文字号：设置对话框那一个框（导出成品的一半）
+# ---------------------------------------------------------------------------
+
+
+def test_settings_dialog_starts_from_the_saved_font_size(dialog_root, artifacts_dir):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.export_font_size = 20
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        assert dialog.export_font_var.get() == "20"
+    finally:
+        _close(dialog)
+
+
+def test_settings_dialog_saves_the_font_size(dialog_root, artifacts_dir):
+    """改了字号要写进配置——不然用户拖完重启又回到 14。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.export_font_var.set("22")
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.export_font_size == 22
+    saved = json.loads((artifacts_dir / "config.json").read_text(encoding="utf-8"))
+    assert saved["export_font_size"] == 22
+
+
+@pytest.mark.parametrize("bad", ("abc", "", "9", "29", "0", "-4"))
+def test_settings_dialog_keeps_a_good_font_size_when_the_input_is_bad(
+    dialog_root, artifacts_dir, bad
+):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.export_font_size = 16
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.export_font_var.set(bad)
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.export_font_size == 16
+
+
+# ---------------------------------------------------------------------------
+# 正文字号：导出主流程（界面这条路）
+# ---------------------------------------------------------------------------
+
+
+def test_gui_export_passes_font_size_to_the_exporter(artifacts_dir, monkeypatch):
+    """界面导出要把配置里的字号交给导出器，并在日志里说一声。"""
+    _patch_gui_export(monkeypatch)
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        gui, "create_exporter", lambda *a, **k: recorded.append(k) or _RecordingExporter()
+    )
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+    settings.export_font_size = 20
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert [kwargs["font_size"] for kwargs in recorded] == [20]
+    assert any("正文字号：20 磅" in line for line in app.logs)
+
+
+def test_gui_export_keeps_quiet_about_the_font_size_for_plain_text(
+    artifacts_dir, monkeypatch
+):
+    """TXT / Markdown 是纯文本，没有字号可言 —— 别打那一行误导人。"""
+    _patch_gui_export(monkeypatch)
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        gui, "create_exporter", lambda *a, **k: recorded.append(k) or _RecordingExporter()
+    )
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    monkeypatch.setattr(_FakeApp, "current_format", lambda self: "txt")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert recorded, "导出主流程没跑起来"
+    assert not any("正文字号" in line for line in app.logs)
+
+
+# ---------------------------------------------------------------------------
+# 界面字号：顶栏那档 + 重建界面
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def live_app(dialog_root, artifacts_dir, monkeypatch):
+    """真的把主界面建起来（隐藏窗口），用完拆掉并把全局比例还原。"""
+    from xdao import theme
+
+    _isolate_settings(monkeypatch, artifacts_dir)
+    original = theme.FONT_SCALE
+    try:
+        app = gui.App(dialog_root)
+    except tk.TclError as exc:  # pragma: no cover - 取决于运行环境
+        pytest.skip(f"没有可用的显示环境：{exc}")
+    try:
+        yield app
+    finally:
+        theme.set_font_scale(original)
+        try:
+            app.root.destroy()
+        except tk.TclError:  # pragma: no cover - 已经拆了
+            pass
+
+
+def test_header_offers_every_font_scale_choice(live_app):
+    from xdao import theme
+
+    assert live_app._font_scale_var.get() == "标准"
+    box = live_app._font_scale_box
+    assert tuple(box.cget("values")) == tuple(label for label, _ in theme.FONT_SCALE_CHOICES)
+
+
+def test_switching_the_font_scale_rebuilds_the_window(live_app):
+    """换档要立刻生效：全局比例、下拉框显示、配置、日志、左栏宽度都得跟上。"""
+    from xdao import theme
+
+    live_app.urls_text.insert("1.0", "https://www.nmbxd1.com/t/50000001")
+
+    assert live_app.switch_font_scale(theme.font_scale_for_label("更大")) is True
+
+    assert theme.FONT_SCALE == pytest.approx(1.3)
+    assert live_app.settings.ui_font_scale == pytest.approx(1.3)
+    assert live_app._font_scale_var.get() == "更大"
+    assert theme.settings_column_width() > theme.SETTINGS_COLUMN_WIDTH
+    assert "界面字号已切换为「更大」" in live_app.log_text.get("1.0", "end-1c")
+    # 重建界面时输入框里的串网址要还在（不然换个字号就得重贴一遍）。
+    assert "50000001" in live_app.urls_text.get("1.0", "end-1c")
+
+
+def test_switching_to_the_same_scale_changes_nothing(live_app):
+    assert live_app.switch_font_scale(1.0) is False
+
+
+def test_font_scale_switch_is_refused_while_exporting(live_app, monkeypatch):
+    """导出/监控进行中不许重建界面：进度与日志会错位。"""
+    from xdao import theme
+
+    calls = _messagebox_calls(monkeypatch)
+    live_app._exporting = True
+    live_app._font_scale_var.set("特大")
+
+    live_app._on_font_scale_selected()
+
+    assert calls and calls[0][0] == "showinfo"
+    assert live_app._font_scale_var.get() == "标准"  # 选项回滚
+    assert theme.FONT_SCALE == 1.0
+
+
+# ---------------------------------------------------------------------------
 # 导出主流程：跑真的 ``App.start()``，但线程/抓取/导出全换替身（不用开窗口）
 # ---------------------------------------------------------------------------
 

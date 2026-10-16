@@ -412,7 +412,13 @@ class PdfBuilder(Exporter):
         # 纸张/页边距这些打印选项；没给或全默认时走命令行，输出与老版本一致。
         self.pdf_options = pdf_options
         # 复用 HTML 导出器：图片内嵌、正文渲染这些逻辑不再重复实现。
-        self._html = HtmlBuilder(client, progress=progress, filename_template=filename_template)
+        # 字号得跟着递过去：PDF 是把这份 HTML 打印出来的，正文字号就来自它的 CSS。
+        self._html = HtmlBuilder(
+            client,
+            progress=progress,
+            filename_template=filename_template,
+            font_size=options.get("font_size"),
+        )
 
     def render_pdf(self, html: str, _work_dir: Path, output_pdf: Path) -> Path:
         return render_html_to_pdf(

@@ -291,6 +291,65 @@ def test_html_scope_po_excludes_others():
     assert "回复正文" not in html
 
 
+# ---------------------------------------------------------------- 正文字号
+# 2026-10-16 岛上回帖「可以设置调节字号大小吗，这个字我是真看不清」的一半：
+# 这一半是导出成品（HTML / PDF / EPUB）的字号。默认值必须与旧版逐字节一致 ——
+# 老配置里没有 font_size，不能因为"顺手把默认值挪了"就让成品外观变样。
+
+
+def test_html_font_size_defaults_to_the_old_hardcoded_css():
+    """不传字号时，CSS 里的 px 值与 v0.15.0 之前写死的那些**完全一致**。"""
+    html = HtmlBuilder(FakeClient()).build(sample_thread(), "all")
+
+    assert "h1 { font-size: 18px;" in html
+    assert ".sub { color: var(--muted); font-size: 12px;" in html
+    assert ".meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 11px;" in html
+    assert ".content { margin-top: 3px; font-size: 14px;" in html
+    assert "body { font-size: 13px; line-height: 1.3; }" in html
+
+
+def test_html_font_size_scales_the_whole_sheet():
+    """给了字号就按它换算：正文照抄，其余几处按 18/14、12/14、11/14、13/14 缩放。"""
+    html = HtmlBuilder(FakeClient(), font_size=20).build(sample_thread(), "all")
+
+    assert ".content { margin-top: 3px; font-size: 20px;" in html
+    assert "h1 { font-size: 26px;" in html  # round(20 * 18 / 14)
+    assert ".sub { color: var(--muted); font-size: 17px;" in html  # round(20 * 12 / 14)
+    assert "align-items: center; font-size: 16px;" in html  # round(20 * 11 / 14)
+    assert "body { font-size: 19px; line-height: 1.3; }" in html  # round(20 * 13 / 14)
+    assert "font-size: 14px" not in html
+
+
+def test_every_font_size_in_range_produces_a_full_sheet():
+    """整个允许范围（10~28）都得能渲染，且正文那一条一定在。"""
+    for size in range(10, 29):
+        html = HtmlBuilder(FakeClient(), font_size=size).build(sample_thread(), "all")
+        assert f".content {{ margin-top: 3px; font-size: {size}px;" in html
+
+
+def test_bad_font_size_falls_back_to_the_default():
+    """坏字号（0 / 负数 / 非数字）不许把 CSS 变成 0px 或者崩掉。"""
+    for bad in (0, -5, "abc", None, ""):
+        html = HtmlBuilder(FakeClient(), font_size=bad).build(sample_thread(), "all")
+        assert ".content { margin-top: 3px; font-size: 14px;" in html
+
+
+def test_create_exporter_passes_font_size_to_the_html_builder():
+    exporter = create_exporter("html", FakeClient(), font_size=22)
+    assert isinstance(exporter, HtmlBuilder)
+    assert exporter.font_size == 22
+
+
+def test_create_exporter_without_font_size_keeps_the_default():
+    assert create_exporter("html", FakeClient()).font_size == 14
+
+
+def test_pdf_builder_hands_the_font_size_to_its_html():
+    """PDF 就是把 HTML 打印出来 —— 字号必须递到它内部那个 HtmlBuilder 上。"""
+    exporter = create_exporter("pdf", FakeClient(), font_size=18)
+    assert exporter._html.font_size == 18
+
+
 def test_html_include_hashes_filters_posts():
     client = FakeClient()
     html = HtmlBuilder(client).build(sample_thread(), "all", include_hashes=["other999"])

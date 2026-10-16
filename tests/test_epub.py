@@ -397,3 +397,55 @@ def test_include_hashes_save_passes_through(artifacts_dir: Path):
     with zipfile.ZipFile(path) as archive:
         pages = [name for name in archive.namelist() if name.startswith("OEBPS/text/")]
     assert len(pages) == 2
+
+
+# ---------- 正文字号 ----------
+# 2026-10-16 岛上回帖「可以设置调节字号大小吗，这个字我是真看不清」的另一半：
+# 阅读器里 EPUB 的字号。默认必须与旧版逐字节一致 —— 老配置里没有这个键。
+
+
+def test_style_css_without_a_size_is_the_original():
+    """没设字号时，返回的就是那份原样常量（升级上来的老配置不该变样）。"""
+    from xdao.exporters.epub import STYLE_CSS, _style_css
+
+    assert _style_css(None) is STYLE_CSS
+    # 老样式表里 body 没有绝对字号，只有那几条相对单位（em）的。
+    assert "body { font-family:" in STYLE_CSS
+    assert "px" not in STYLE_CSS
+
+
+def test_style_css_puts_the_size_on_the_body():
+    from xdao.exporters.epub import STYLE_CSS, _style_css
+
+    css = _style_css(20)
+    assert "body { font-size: 20px; font-family:" in css
+    # 只动 body 这一条：其余三处 em 字号原样保留。
+    assert css.count("font-size") == STYLE_CSS.count("font-size") + 1
+
+
+def test_build_writes_the_size_into_the_packaged_stylesheet(artifacts_dir: Path):
+    """字号要真的落进包里的 ``OEBPS/style.css``，不只是构造函数里存着。"""
+    path = build_epub(artifacts_dir)
+    with zipfile.ZipFile(path) as archive:
+        default_css = archive.read("OEBPS/style.css").decode("utf-8")
+    assert "body { font-family:" in default_css
+    assert "px" not in default_css
+
+    bigger = artifacts_dir / "big.epub"
+    from xdao.exporters import create_exporter
+
+    create_exporter("epub", FakeClient(), font_size=22).build(
+        sample_thread(), "all", bigger
+    )
+    with zipfile.ZipFile(bigger) as archive:
+        sized_css = archive.read("OEBPS/style.css").decode("utf-8")
+    assert "body { font-size: 22px; font-family:" in sized_css
+
+
+def test_bad_epub_font_size_keeps_the_original_stylesheet(artifacts_dir: Path):
+    """坏字号不许把 style.css 写成 ``font-size: 0px``。"""
+    from xdao.exporters import create_exporter
+
+    for bad in (0, -5, "abc", None):
+        builder = create_exporter("epub", FakeClient(), font_size=bad)
+        assert builder.font_size is None
