@@ -31,7 +31,11 @@ from .exporters import EXPORTERS, ThreadData, create_exporter
 from .notifications import Notifier
 from .paths import OutputDirNotWritable, choose_writable_dir, ensure_writable
 from . import pdf_opts, theme, watch_list
-from .settings import AppSettings
+from .settings import (
+    EXPORT_FONT_SIZE_MAX,
+    EXPORT_FONT_SIZE_MIN,
+    AppSettings,
+)
 from .theme import apply_theme, font, mono, resolve_fonts
 from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
 from .widgets import Card, ModernProgress, SectionHeading, StatusPill
@@ -2744,6 +2748,36 @@ class SettingsDialog(tk.Toplevel):
         browser_hint.grid(row=3, column=0, columnspan=2, sticky="ew")
         wrap_to_width(browser_hint, minimum=220)
 
+        # 导出成品的正文字号：这是「字看不清」那条反馈的一半 —— 另外一半是界面
+        # 字号（顶栏那档）。TXT 与 Markdown 是纯文本、没有字号可言，所以提示里
+        # 明说只影响 HTML / PDF / EPUB。
+        font_row = ttk.Frame(export_card.body, style="Card.TFrame")
+        font_row.pack(fill="x", pady=(theme.gap(2), 0))
+        ttk.Label(font_row, text="正文字号", style="Card.TLabel").pack(side="left")
+        self.export_font_var = tk.StringVar(value=str(settings.export_font_size))
+        ttk.Spinbox(
+            font_row,
+            from_=EXPORT_FONT_SIZE_MIN,
+            to=EXPORT_FONT_SIZE_MAX,
+            textvariable=self.export_font_var,
+            width=4,
+        ).pack(side="left", padx=(theme.gap(2), 0))
+        ttk.Label(font_row, text="磅", style="Card.TLabel").pack(
+            side="left", padx=(theme.gap(0.5), 0)
+        )
+        font_hint = ttk.Label(
+            export_card.body,
+            text=(
+                f"导出成品的正文字号（{EXPORT_FONT_SIZE_MIN}~{EXPORT_FONT_SIZE_MAX}，默认 14）。"
+                "只影响 HTML / PDF / EPUB；TXT 与 Markdown 是纯文本，没有字号。"
+            ),
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
+            justify="left",
+        )
+        font_hint.pack(fill="x", pady=(theme.gap(1), 0))
+        wrap_to_width(font_hint, minimum=220)
+
         # ④ PDF 页面：默认「跟随网页样式」，导出效果与浏览器打印完全一致 ——
         # 老配置（没有这几个键）升级后行为不变，靠的就是这个默认值。
         pdf_row = ttk.Frame(export, style="Card.TFrame")
@@ -2875,6 +2909,13 @@ class SettingsDialog(tk.Toplevel):
         settings.cache_dir = self.cache_var.get().strip()
         settings.filename_template = self.template_var.get().strip()
         settings.pdf_browser = self.browser_var.get().strip()
+        # 导出的正文字号：坏值（非数字、越界）保留原值，不把好设置抹掉。
+        try:
+            wanted = int(float(self.export_font_var.get()))
+        except (TypeError, ValueError):
+            wanted = settings.export_font_size
+        if EXPORT_FONT_SIZE_MIN <= wanted <= EXPORT_FONT_SIZE_MAX:
+            settings.export_font_size = wanted
         # PDF 页面：写回的都是 pdf_opts 认得的取值键；坏值保留原值（不把好设置抹掉）。
         settings.pdf_paper = _choice_key(
             pdf_opts.PAPER_LABELS, self._paper_keys, self.pdf_paper_var.get()
@@ -3549,6 +3590,9 @@ class App:
         self.root = root
         resolve_fonts(root)
         self.settings = AppSettings.load()
+        # 界面字号比例也要在第一笔画下去之前定下来：尺寸都由 theme.font()/mono()
+        # 乘好比例再交给控件，等窗口建好再改就只能重建界面了（见 switch_font_scale）。
+        self._font_scale = theme.set_font_scale(self.settings.ui_font_scale)
         # 配色要在画任何控件之前定下来：ttk 样式归 apply_theme，
         # 模块级的颜色别名归 refresh_colors（自绘卡片/文本域走的是后者）。
         self._theme_name = theme.palette(self.settings.theme_name).name
@@ -3606,8 +3650,8 @@ class App:
         # 窗口标题的真源是 xdao/appinfo.WINDOW_TITLE：tools/gui_probe.py 就是拿它
         # 核对「主窗口到底起没起来」的，两处不许各写一份字面量。
         root.title(WINDOW_TITLE)
-        root.geometry("1060x760")
-        root.minsize(940, 680)
+        root.geometry("%dx%d" % self._scaled_window_size(1060, 760))
+        root.minsize(*self._scaled_window_size(940, 680))
 
         self._build_ui()
         self.refresh_watch_status()
@@ -3677,7 +3721,7 @@ class App:
         """
         outer = ttk.Frame(self.root, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
-        outer.columnconfigure(0, minsize=theme.SETTINGS_COLUMN_WIDTH)
+        outer.columnconfigure(0, minsize=theme.settings_column_width())
         outer.columnconfigure(1, weight=1)
         outer.rowconfigure(1, weight=1)
         self._remember_theme_widget(outer)
@@ -3692,6 +3736,7 @@ class App:
             self.log_text.insert("1.0", log_text)
             self.log_text.config(state="disabled")
         self.sync_theme_selector()
+        self.sync_font_selector()
 
     def switch_theme(self, name: str, *, persist: bool = True) -> bool:
         """换配色并立刻重画界面。返回是否真的换了（同一个主题返回 False）。
@@ -3770,6 +3815,97 @@ class App:
 
     # ---------- 界面搭建 ----------
 
+    def _scaled_window_size(self, width: int, height: int) -> tuple[int, int]:
+        """把窗口尺寸按当前界面字号比例放大，但不许大过屏幕。
+
+        字号调大后控件跟着变大，窗口不放大就会满屏滚动条；可窗口比屏幕还大又
+        根本没法用（1366x768 的笔记本很常见）。所以放大之后跟屏幕比一次，
+        取小的那个 —— 宁可滚动，也不给一个点不到的窗口。
+        """
+        scale = theme.font_scale()
+        scaled = (int(round(width * scale)), int(round(height * scale)))
+        try:
+            max_width = self.root.winfo_screenwidth() - 40
+            max_height = self.root.winfo_screenheight() - 80
+        except tk.TclError:  # pragma: no cover - 没有显示环境
+            return scaled
+        return min(scaled[0], max_width), min(scaled[1], max_height)
+
+    def switch_font_scale(self, scale, *, persist: bool = True) -> bool:
+        """换界面字号比例并立刻重画界面。返回是否真的换了。
+
+        为什么要重建整个界面：Tk 的全局 scaling 只对**之后**新建的控件生效，
+        已经建好的控件不会重新排版（2026-10-16 实测：把 ``tk scaling`` 调到
+        2.0，原控件的请求尺寸一个像素都没变）。所以换字号和换配色是同一件事 ——
+        改全局比例 → 销毁旧控件 → 按新尺寸重画一遍。
+
+        注意：**已经打开的对话框不会跟着变**（它们的控件也是旧尺寸），换完字号
+        再打开一次就对了 —— 和换配色时的处理一致。
+        """
+        value = theme.set_font_scale(scale)
+        if abs(value - float(self._font_scale or 1.0)) < 1e-9:
+            self.sync_font_selector()
+            return False
+
+        self._font_scale = value
+        self.settings.ui_font_scale = value
+        if persist:
+            self.persist_prefs()
+
+        keep_log = ""
+        keep_urls = ""
+        try:
+            keep_log = self.log_text.get("1.0", "end-1c")
+        except (AttributeError, tk.TclError):  # pragma: no cover - 没建起来过
+            pass
+        try:
+            keep_urls = self.urls_text.get("1.0", "end-1c")
+        except (AttributeError, tk.TclError):  # pragma: no cover - 没建起来过
+            pass
+
+        # 字体别名（模块级）→ ttk 样式 → 重建控件，顺序与启动时一致。
+        refresh_fonts(self.root)
+        self.style = apply_theme(self.root, theme.palette(self._theme_name))
+        # 窗口下限跟着字号走：字大了窗口却卡在旧下限，内容会被挤成滚动条。
+        self.root.minsize(*self._scaled_window_size(940, 680))
+
+        for widget in self._widget_roots:
+            try:
+                widget.destroy()
+            except tk.TclError:  # pragma: no cover - 已被销毁
+                pass
+        self._widget_roots.clear()
+
+        self._build_ui(keep_log)
+        if keep_urls:
+            self.urls_text.insert("1.0", keep_urls)
+        self.log(f"界面字号已切换为「{theme.font_scale_label()}」。")
+        return True
+
+    def sync_font_selector(self) -> None:
+        """把字号下拉框的显示值对齐当前比例（切换后要回写，否则显示不同步）。"""
+        var = getattr(self, "_font_scale_var", None)
+        label = theme.font_scale_label()
+        if var is not None and var.get() != label:
+            var.set(label)
+
+    def _on_font_scale_selected(self, _event: object = None) -> None:
+        var = getattr(self, "_font_scale_var", None)
+        if var is None:
+            return
+        chosen = var.get()
+        if chosen == theme.font_scale_label():
+            return
+        if self._exporting or self._watching:
+            messagebox.showinfo(
+                "正在忙",
+                "导出或监控正在跑，等它结束再换字号吧。\n"
+                "（中途换字号会重建界面，进度和日志容易错位。）",
+            )
+            self.sync_font_selector()
+            return
+        self.switch_font_scale(theme.font_scale_for_label(chosen))
+
     def _build_header(self, parent: ttk.Frame) -> None:
         """顶栏：标题 + 一句话说明 + 状态胶囊 + 三个入口按钮。"""
         header = ttk.Frame(parent)
@@ -3812,6 +3948,25 @@ class App:
         theme_box.pack(side="left")
         theme_box.bind("<<ComboboxSelected>>", self._on_theme_selected)
 
+        # 字号开关：和配色一样是"改了立刻重建界面"，忙的时候不让切。
+        # 档位存在 theme.FONT_SCALE_CHOICES —— 那里是界面字号的唯一真源。
+        ttk.Label(actions, text="字号", style="Faint.TLabel").pack(
+            side="left", padx=(theme.gap(1.5), theme.gap(0.5))
+        )
+        self._font_scale_var = tk.StringVar(value=theme.font_scale_label())
+        font_box = ttk.Combobox(
+            actions,
+            textvariable=self._font_scale_var,
+            values=[label for label, _ in theme.FONT_SCALE_CHOICES],
+            state="readonly",
+            width=4,
+        )
+        font_box.pack(side="left")
+        font_box.bind("<<ComboboxSelected>>", self._on_font_scale_selected)
+        # 存一份：重建界面后用例（tests/test_gui_entry.py）要核对档位表本身，
+        # 而不只是核对那个 StringVar 的当前值。
+        self._font_scale_box = font_box
+
         status_row = ttk.Frame(header)
         status_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(theme.gap(2.5), 0))
         self.status_var = tk.StringVar(value="已登录" if self.settings.userhash else "未登录")
@@ -3840,7 +3995,7 @@ class App:
         窗口太矮时左栏可以滚动（小屏笔记本上 1366x768 很常见），
         所以内容放在 :meth:`_scroll_area` 里，而不是直接挂在 ``parent`` 上。
         """
-        column = ttk.Frame(parent, width=theme.SETTINGS_COLUMN_WIDTH)
+        column = ttk.Frame(parent, width=theme.settings_column_width())
         column.grid(row=1, column=0, sticky="nsew", padx=(0, theme.gap(2)))
         column.pack_propagate(False)  # 见 theme.SETTINGS_COLUMN_WIDTH 的注释
         column.columnconfigure(0, weight=1)
@@ -4080,7 +4235,7 @@ class App:
             highlightthickness=0,
             borderwidth=0,
             takefocus=False,
-            width=theme.SETTINGS_COLUMN_WIDTH,
+            width=theme.settings_column_width(),
             height=theme.SETTINGS_VIEWPORT_HEIGHT,
         )
         canvas.pack(side="left", fill="both", expand=True)
@@ -4952,6 +5107,9 @@ class App:
         )
         self.log(f"导出目录：{output_dir}")
         self.log(_describe_export_range(max_pages, until_thread_id, skipped))
+        if self.current_format() in ("html", "pdf", "epub"):
+            # TXT / Markdown 是纯文本，没有字号可言 —— 那种格式下不提这一行。
+            self.log(f"正文字号：{self.settings.export_font_size} 磅。")
         if self.current_format() == "pdf":
             # 只在真的改过纸张/边距/背景/页码时说一声，全默认不必占一行。
             pdf_options = pdf_opts.from_settings(self.settings)
@@ -4982,6 +5140,7 @@ class App:
                 image_mode=self.current_image_mode(),
                 browser_path=self.settings.pdf_browser or None,
                 pdf_options=pdf_opts.from_settings(self.settings),
+                font_size=self.settings.export_font_size,
             )
 
             succeeded = 0
@@ -5202,6 +5361,7 @@ class App:
                     notifier=notifier,
                     browser_path=self.settings.pdf_browser or None,
                     pdf_options=pdf_opts.from_settings(self.settings),
+                    font_size=self.settings.export_font_size,
                 )
             except Exception as exc:  # noqa: BLE001 —— 监控线程也不能把 traceback 弹给用户
                 self.watch_queue.put(f"监控出错：{type(exc).__name__}: {exc}")
@@ -5252,6 +5412,7 @@ class App:
                     verify_cached=verify,
                     browser_path=self.settings.pdf_browser or None,
                     pdf_options=pdf_opts.from_settings(self.settings),
+                    font_size=self.settings.export_font_size,
                 )
                 self.watch_queue.put(result)
 

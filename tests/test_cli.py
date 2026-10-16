@@ -1167,3 +1167,107 @@ def test_max_pages_falls_back_to_the_saved_setting(out_dir, monkeypatch):
 
     assert code == 0
     assert [kwargs["max_pages"] for _, kwargs in calls] == [5]
+
+
+# ---------- 正文字号：--font-size ----------
+# 2026-10-16 岛上回帖提的「这个字我是真看不清」：命令行也要能调成品的字号。
+
+
+def test_parser_font_size_accepts_the_range_and_rejects_junk():
+    """``--font-size`` 只收 10~28；写错当场报错（他正是为"看不清"才来调的）。"""
+    assert build_parser().parse_args(["50000001", "--font-size", "10"]).font_size == 10
+    assert build_parser().parse_args(["50000001", "--font-size", "28"]).font_size == 28
+    assert build_parser().parse_args(["50000001"]).font_size is None  # 没给就用配置
+
+    for bad in ("9", "29", "0", "abc", "14.5", ""):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["50000001", "--font-size", bad])
+
+
+def test_help_mentions_font_size(capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--help"])
+    assert "--font-size" in capsys.readouterr().out
+
+
+def test_font_size_reaches_the_exporter(out_dir, monkeypatch):
+    """字号要原样交给导出器，并写进日志头。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    code = main(["50000001", "--font-size", "20", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["font_size"] for kwargs in seen] == [20]
+    log = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
+    assert "正文字号：20px" in log
+
+
+def test_font_size_defaults_to_fourteen(out_dir, monkeypatch):
+    """没给开关、配置里也没有这个键 → 14（＝旧版写死的值，成品外观不变）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["font_size"] for kwargs in seen] == [14]
+
+
+def test_font_size_falls_back_to_the_saved_setting(out_dir, monkeypatch):
+    """命令行没写时用配置里存的那条字号（界面里拖过就能在这条路上生效）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    class SettingsWithFont(OfflineSettings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.export_font_size = 18
+
+    import xdao.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "AppSettings", SettingsWithFont)
+
+    assert main(["50000001", "-f", "html", "-o", str(out_dir)]) == 0
+    assert [kwargs["font_size"] for kwargs in seen] == [18]
+
+
+def test_font_size_flag_wins_over_the_saved_setting(out_dir, monkeypatch):
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    class SettingsWithFont(OfflineSettings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.export_font_size = 18
+
+    import xdao.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "AppSettings", SettingsWithFont)
+
+    assert main(["50000001", "--font-size", "24", "-f", "html", "-o", str(out_dir)]) == 0
+    assert [kwargs["font_size"] for kwargs in seen] == [24]

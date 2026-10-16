@@ -17,6 +17,28 @@ from ._shared import (
 )
 from .base import Exporter
 
+#: 正文的默认字号（px）。v0.15.0 之前它写死在下面的 CSS 里，**默认必须还是 14** ——
+#: 老配置里没有 ``font_size`` 这个键，成品要和以前逐字节一致（有专门的用例钉着）。
+DEFAULT_FONT_SIZE = 14
+
+
+def _font_size(value, fallback: int = DEFAULT_FONT_SIZE) -> int:
+    """认一下传进来的字号；非数字、0、负数一律回落默认。"""
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return size if size > 0 else fallback
+
+
+def _font_px(font_size: int, base: int) -> int:
+    """把原本写死的 ``base`` 号字，按 ``font_size`` / 默认字号 的比例换算。
+
+    分母是默认字号（14）而不是某个魔数：字号为默认时，每个换算结果都原样等于
+    以前写死的那个 px 值，CSS 一个字节都不变。
+    """
+    return max(1, int(round(font_size * base / DEFAULT_FONT_SIZE)))
+
 
 class HtmlBuilder(Exporter):
     """生成图片内嵌的 HTML。
@@ -43,6 +65,8 @@ class HtmlBuilder(Exporter):
     ) -> None:
         super().__init__(client, progress, filename_template, **options)
         self._image_cache: dict[str, str] = {}
+        # 正文字号（px）：用户设的那个值；没设过就是 14（＝v0.15.0 之前的写死值）
+        self.font_size = _font_size(options.get("font_size"))
 
     # ---------- 图片 ----------
 
@@ -186,6 +210,13 @@ class HtmlBuilder(Exporter):
         if include_hashes:
             scope_label = "指定饼干：" + "、".join(include_hashes)
 
+        # 字号：正文用用户设的值，其余几处照正文等比换算（默认字号时结果与旧版一致）。
+        body_px = self.font_size
+        h1_px = _font_px(body_px, 18)
+        sub_px = _font_px(body_px, 12)
+        meta_px = _font_px(body_px, 11)
+        print_px = _font_px(body_px, 13)
+
         return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -197,26 +228,26 @@ class HtmlBuilder(Exporter):
   * {{ box-sizing: border-box; }}
   body {{ margin: 0; background: #f4f6fa; color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; line-height: 1.35; }}
   .wrap {{ max-width: 920px; margin: 0 auto; padding: 16px 14px 24px; }}
-  h1 {{ font-size: 18px; margin: 0 0 4px; word-break: break-word; }}
-  .sub {{ color: var(--muted); font-size: 12px; margin-bottom: 12px; }}
+  h1 {{ font-size: {h1_px}px; margin: 0 0 4px; word-break: break-word; }}
+  .sub {{ color: var(--muted); font-size: {sub_px}px; margin-bottom: 12px; }}
   article.post {{ background: #fff; border: 1px solid var(--line); border-left: 4px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; margin: 5px 0; }}
   article.post.po {{ border-left-color: var(--po); background: var(--po-bg); }}
-  .meta {{ display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 11px; color: var(--muted); }}
+  .meta {{ display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: {meta_px}px; color: var(--muted); }}
   .floor {{ color: #cbd5e1; font-family: Consolas, monospace; }}
   .cookie {{ font-weight: 700; color: #15803d; font-family: Consolas, monospace; }}
   .aname {{ font-weight: 600; color: #334155; }}
-  .badge-po {{ background: var(--po); color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: 11px; }}
-  .badge-admin {{ background: #b91c1c; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: 11px; }}
-  .badge-sage {{ background: #6366f1; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: 11px; }}
+  .badge-po {{ background: var(--po); color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
+  .badge-admin {{ background: #b91c1c; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
+  .badge-sage {{ background: #6366f1; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
   .ptitle {{ font-weight: 600; color: #334155; }}
   .time, .no {{ color: #94a3b8; }}
-  .content {{ margin-top: 3px; font-size: 14px; word-break: break-word; white-space: normal; }}
+  .content {{ margin-top: 3px; font-size: {body_px}px; word-break: break-word; white-space: normal; }}
   .content br {{ display: block; content: ""; margin: 1px 0; }}
   .post-img {{ max-width: 100%; height: auto; display: block; margin: 5px 0 0; border-radius: 4px; }}
   @media print {{
     body {{ background: #fff; }}
     .wrap {{ max-width: none; padding: 0; }}
-    body {{ font-size: 13px; line-height: 1.3; }}
+    body {{ font-size: {print_px}px; line-height: 1.3; }}
     article.post {{ break-inside: avoid; margin: 3px 0; padding: 5px 8px; }}
   }}
 </style>

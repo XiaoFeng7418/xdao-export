@@ -69,6 +69,29 @@ h1 { font-size: 1.2em; }
 """
 
 
+def _font_size(value, fallback=None):
+    """认一下传进来的字号；非数字、0、负数一律回落（回落值默认是 None＝没设）。"""
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return size if size > 0 else fallback
+
+
+def _style_css(font_size) -> str:
+    """按字号生成样式表。
+
+    没设字号时原样返回 :data:`STYLE_CSS` —— 老配置升级上来，EPUB 内部的
+    ``style.css`` 与 v0.15.0 之前逐字节一致（用例钉着这一点）；设了就只在
+    body 规则里多一条 ``font-size``，其余样式交给阅读器。
+    """
+    if font_size is None:
+        return STYLE_CSS
+    return STYLE_CSS.replace(
+        "body { font-family:", f"body {{ font-size: {font_size}px; font-family:", 1
+    )
+
+
 def _now_utc() -> _datetime.datetime:
     """当前 UTC 时间（秒级）。"""
     return _datetime.datetime.now(_datetime.timezone.utc).replace(microsecond=0)
@@ -113,6 +136,8 @@ class EpubBuilder(Exporter):
         super().__init__(client, progress, filename_template, **options)
         # 构造函数里的设置作为 build()/save() 未显式传参时的默认值。
         self.image_mode = image_mode if image_mode in ("embed", "url", "drop") else "embed"
+        # 正文字号（px）；None ＝ 没设过，此时 style.css 保持旧样子（见 _style_css）。
+        self.font_size = _font_size(options.get("font_size"))
         # url -> 图片原始字节；None 表示下载失败，不再重试。
         self._data_cache: dict[str, bytes | None] = {}
         # url -> data URI。
@@ -438,7 +463,7 @@ class EpubBuilder(Exporter):
         archive.writestr(info, EPUB_MIMETYPE.encode("ascii"))
 
         self._write(archive, "META-INF/container.xml", CONTAINER_XML, moment)
-        self._write(archive, "OEBPS/style.css", STYLE_CSS, moment)
+        self._write(archive, "OEBPS/style.css", _style_css(self.font_size), moment)
 
         entries = self._entries(posts, thread)
         for index, post in enumerate(posts, start=1):

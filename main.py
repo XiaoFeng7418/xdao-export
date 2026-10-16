@@ -310,6 +310,13 @@ def build_parser() -> argparse.ArgumentParser:
         "没写这个串号时，列表里串号不超过它的串都导",
     )
     parser.add_argument(
+        "--font-size",
+        type=_font_size,
+        default=None,
+        metavar="磅值",
+        help="导出成品的正文字号（10~28，默认 14）；只影响 HTML / PDF / EPUB",
+    )
+    parser.add_argument(
         "--hashes",
         default=None,
         metavar="饼干",
@@ -506,6 +513,51 @@ def _page_limit(raw: str) -> int:
     return value
 
 
+def _font_size(raw: str) -> int:
+    """``--font-size`` 的取值校验：10~28 之间的整数。
+
+    和 ``--max-pages`` 同一个理由：写错的值若不报错，用户会以为字号生效了，
+    实际还是默认的 14 —— 而他多半是因为"看不清"才来调这个开关的。
+    """
+    from xdao.settings import EXPORT_FONT_SIZE_MAX, EXPORT_FONT_SIZE_MIN
+
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"字号得填一个整数（{EXPORT_FONT_SIZE_MIN}~{EXPORT_FONT_SIZE_MAX}），"
+            f"现在填的是 {raw!r}"
+        ) from None
+    if not EXPORT_FONT_SIZE_MIN <= value <= EXPORT_FONT_SIZE_MAX:
+        raise argparse.ArgumentTypeError(
+            f"字号要在 {EXPORT_FONT_SIZE_MIN}~{EXPORT_FONT_SIZE_MAX} 之间，现在填的是 {value}"
+        )
+    return value
+
+
+def _effective_font_size(args: argparse.Namespace, settings) -> int:
+    """这次导出实际用的正文字号：命令行优先，其次配置，都没给就是 14。
+
+    默认值必须是 14（＝v0.15.0 之前写死在 HTML 里的值）：老配置里没有这个键，
+    默认一变，老用户升级后成品字号就跟着变。
+    """
+    from xdao.settings import (
+        DEFAULT_EXPORT_FONT_SIZE,
+        EXPORT_FONT_SIZE_MAX,
+        EXPORT_FONT_SIZE_MIN,
+    )
+
+    if args.font_size is not None:
+        return int(args.font_size)
+    try:
+        value = int(getattr(settings, "export_font_size", DEFAULT_EXPORT_FONT_SIZE) or 0)
+    except (TypeError, ValueError):
+        return DEFAULT_EXPORT_FONT_SIZE
+    if not EXPORT_FONT_SIZE_MIN <= value <= EXPORT_FONT_SIZE_MAX:
+        return DEFAULT_EXPORT_FONT_SIZE
+    return value
+
+
 def _effective_max_pages(args: argparse.Namespace, settings) -> int:
     """这次导出实际用的页数上限：命令行给了就用它，否则用配置，都没给就是 0（不限）。
 
@@ -609,6 +661,8 @@ def run_cli(args: argparse.Namespace) -> int:
     # 且"一个串都不用导"这件事要在建目录、连网络之前就报出来。
     max_pages = _effective_max_pages(args, settings)
     until_thread_id = _effective_until(args, settings)
+    # 正文字号同理：命令行优先、其次配置，默认 14（＝老版本写死的值）。
+    font_size = _effective_font_size(args, settings)
     export_urls, skipped_urls = filter_until_thread_id(args.threads, until_thread_id)
     if not export_urls:
         # 不是错误：列表被截止挡光了。说清楚规则，用户改一个数就能重来。
@@ -743,7 +797,8 @@ def run_cli(args: argparse.Namespace) -> int:
                 result = check_once(client, target, output_dir, cache_dir=cache_dir,
                                     progress=progress, verify_cached=args.verify,
                                     browser_path=args.pdf_browser or settings.pdf_browser or None,
-                                    pdf_options=pdf_options)
+                                    pdf_options=pdf_options,
+                                    font_size=font_size)
                 notify_result(notifier, result)
             watch_forever(
                 client, targets, output_dir, max(15.0, interval),
@@ -751,6 +806,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 notifier=notifier,
                 browser_path=args.pdf_browser or settings.pdf_browser or None,
                 pdf_options=pdf_options,
+                font_size=font_size,
             )
         except KeyboardInterrupt:
             print("\n已停止监控。")
@@ -766,6 +822,7 @@ def run_cli(args: argparse.Namespace) -> int:
         browser_path=args.pdf_browser or settings.pdf_browser or None,
         pdf_timeout=args.pdf_timeout,
         pdf_options=pdf_options,
+        font_size=font_size,
     )
 
     succeeded = 0
@@ -776,6 +833,7 @@ def run_cli(args: argparse.Namespace) -> int:
         f"导出目录：{output_dir}",
         f"格式：{format_key}｜范围：{scope}｜缓存：{'启用' if use_cache else '关闭'}",
         f"导出范围：{range_text}；{until_text}",
+        f"正文字号：{font_size}px（只影响 HTML / PDF / EPUB）",
         "",
     ]
     for index, raw in enumerate(export_urls, start=1):

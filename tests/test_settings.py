@@ -28,6 +28,7 @@ import pytest
 from xdao import settings as settings_module
 from xdao.pdf_opts import PdfOptions, from_settings
 from xdao.settings import (
+    DEFAULT_EXPORT_FONT_SIZE,
     DEFAULT_MAX_PAGES,
     DEFAULT_PDF_BACKGROUND,
     DEFAULT_PDF_MARGIN,
@@ -36,6 +37,7 @@ from xdao.settings import (
     DEFAULT_PDF_PAGE_RANGES,
     DEFAULT_PDF_PAPER,
     DEFAULT_PDF_SCALE,
+    DEFAULT_UI_FONT_SCALE,
     DEFAULT_UNTIL_THREAD_ID,
     AppSettings,
 )
@@ -56,6 +58,14 @@ RANGE_FIELDS = ("max_pages", "until_thread_id")
 RANGE_DEFAULTS = {
     "max_pages": DEFAULT_MAX_PAGES,
     "until_thread_id": DEFAULT_UNTIL_THREAD_ID,
+}
+
+#: 「字号」那两个键：导出成品的正文字号（px）与界面字号比例。
+FONT_FIELDS = ("export_font_size", "ui_font_scale")
+
+FONT_DEFAULTS = {
+    "export_font_size": DEFAULT_EXPORT_FONT_SIZE,
+    "ui_font_scale": DEFAULT_UI_FONT_SCALE,
 }
 
 DEFAULTS = {
@@ -177,7 +187,7 @@ def test_legacy_config_still_renders_like_v070(legacy_config: Path) -> None:
 def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
     """存回去只是多出这些新键：老键与老值一个字都不许变。
 
-    「新键」= PDF 那 7 个 + 导出范围的 2 个（页数上限、串号截止）。
+    「新键」= PDF 那 7 个 + 导出范围的 2 个（页数上限、串号截止）+ 字号的 2 个。
     """
     load_config(legacy_config).save()
 
@@ -188,7 +198,12 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         assert data[name] == DEFAULTS[name]
     for name in RANGE_FIELDS:
         assert data[name] == RANGE_DEFAULTS[name]
-    assert set(data) - set(LEGACY_V070) == set(PDF_FIELDS) | set(RANGE_FIELDS)
+    for name in FONT_FIELDS:
+        assert data[name] == FONT_DEFAULTS[name]
+    assert (
+        set(data) - set(LEGACY_V070)
+        == set(PDF_FIELDS) | set(RANGE_FIELDS) | set(FONT_FIELDS)
+    )
 
 
 # ---------------------------------------------------------------- 有效值
@@ -378,6 +393,71 @@ def test_until_thread_id_keeps_anything_parseable(
     write_config(config_path, {"until_thread_id": good})
 
     assert load_config(config_path).until_thread_id == expected
+
+
+# ---------------------------------------------------------------- 字号
+# 字号是 v0.15.0 新开出来的：同一份文档，有人看得清 10 点正文，有人得 15 点才顺眼。
+# 这里钉住两个键的默认值与坏值回落 —— 尤其是默认导出字号必须
+# 还是 14，否则老用户升级后成品的字号会自己变。
+
+
+def test_font_defaults_keep_the_old_look(config_path: Path) -> None:
+    """全新配置：导出正文 14px（＝写死值）、界面比例 1.0（＝原尺寸）。"""
+    settings = fresh_config(config_path)
+    assert {name: getattr(settings, name) for name in FONT_FIELDS} == FONT_DEFAULTS
+    assert settings.export_font_size == 14
+    assert settings.ui_font_scale == 1.0
+
+
+def test_font_round_trip(config_path: Path) -> None:
+    settings = fresh_config(config_path)
+    settings.export_font_size = 20
+    settings.ui_font_scale = 1.3
+    settings.save()
+
+    loaded = load_config(config_path)
+    assert loaded.export_font_size == 20
+    assert loaded.ui_font_scale == pytest.approx(1.3)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    (None, "", "abc", 0, -3, 9, 29, 1e9, [], {}),
+)
+def test_bad_export_font_size_falls_back_to_fourteen(config_path: Path, bad: object) -> None:
+    """坏值（包括越界的 9 / 29）回落 14；另一个字号键不受牵连。"""
+    write_config(config_path, {"export_font_size": bad, "ui_font_scale": 1.15})
+
+    loaded = load_config(config_path)
+
+    assert loaded.export_font_size == DEFAULT_EXPORT_FONT_SIZE
+    assert loaded.ui_font_scale == pytest.approx(1.15)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    (
+        (1.15, 1.15),
+        ("1.3", 1.3),
+        (5.0, 2.0),  # 越界往回收，而不是丢掉用户的选择
+        (0.1, 0.7),
+    ),
+)
+def test_ui_font_scale_is_clamped(config_path: Path, raw: object, expected: float) -> None:
+    """比例合法但越界时收进 [0.7, 2.0]；这比"回落到标准"更贴近用户的意思。"""
+    write_config(config_path, {"ui_font_scale": raw})
+
+    assert load_config(config_path).ui_font_scale == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("bad", (None, "", "特大", [], {}))
+def test_bad_ui_font_scale_falls_back_to_standard(config_path: Path, bad: object) -> None:
+    write_config(config_path, {"ui_font_scale": bad, "export_font_size": 18})
+
+    loaded = load_config(config_path)
+
+    assert loaded.ui_font_scale == DEFAULT_UI_FONT_SCALE
+    assert loaded.export_font_size == 18
 
 
 # ---------------------------------------------------------------- 路径守卫

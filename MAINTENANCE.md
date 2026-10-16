@@ -681,6 +681,10 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.15.0**（新功能：界面字号与导出成品的字号都能调）：
+  **一、界面字号。** `xdao/theme.py` 新增 `FONT_SCALE`（默认 1.0）、`FONT_SCALE_CHOICES`（小 0.85 / 标准 1.0 / 大 1.15 / 更大 1.3 / 特大 1.5）、`FONT_SCALE_MIN = 0.7` 与 `FONT_SCALE_MAX = 2.0`，以及 `normalize_font_scale()` / `set_font_scale()` / `font_scale()` / `scaled()` / `font_scale_label()` / `font_scale_for_label()` / `settings_column_width()`；`font()` 与 `mono()` 内部改走 `scaled(size)`（`max(7, round(size × FONT_SCALE))`），左栏宽度 `SETTINGS_COLUMN_WIDTH = 452` 也跟着比例走。`xdao/gui.py` 顶栏在「配色」后面加「字号」下拉框；`App.__init__` 里先把配置里的比例装进 `theme`，再按比例放大窗口（`_scaled_window_size(1060, 760)`，用屏幕尺寸收口，`root.minsize` 同步），`switch_font_scale()` 会重画整个界面并保住日志与填好的地址；正在导出或监控时拒绝切换（与配色同规矩）。
+  **二、导出字号。** 新配置键 `export_font_size`（默认 14，范围 10~28）。`xdao/exporters/html.py` 的 CSS 六处 px 改成按字号插值（`_font_px(font_size, base)`；14 磅时与原值逐字节相同），`epub.py` 的 `_style_css(font_size)` 只在给了字号时才往 `body` 上加一条（不给就原样返回 `STYLE_CSS`），`pdf.py` 把字号透传给内部那个 `HtmlBuilder`；`create_exporter(..., font_size=None)`、`main.py --font-size`（`_font_size` 校验范围、`_effective_font_size` 命令行优先于配置）、`xdao/watcher.py` 的 `check_once` / `watch_forever` 都把它带下去；界面「设置 → ③ 导出」新增「正文字号」数字框，导出开始时日志写一行「正文字号：N 磅。」。**默认值必须还是 14**：老配置里没有这个键，默认一变老用户的成品外观就跟着变。
+  **三、用例与基线。** `tests/test_settings.py` 46→67、`tests/test_theme.py` 27→34、`tests/test_exporters.py` 81→88、`tests/test_epub.py` 31→35、`tests/test_cli.py` 57→63、`tests/test_gui_entry.py` 70→84。收集 **1990 项**、本机 **1983 passed / 7 skipped**。
 - **v0.14.1**（补齐开源协议、版权声明与免责声明；免安装包开始随包发出 LICENSE.txt）：
   **一、协议与版权。** `LICENSE` 本来就有一份 MIT 全文，这一版把版权行补成 `Copyright (c) 2026 晓风 (XiaoFeng7418)`（原先只有 GitHub 账号）。`README.md` 在「用途与声明」之后新增 `## 开源协议与版权`（是 MIT、点明可自由使用/修改/再分发含商用、第三方组件是 Python PSF / Tcl-Tk BSD / PyInstaller 的 GPL 加启动器例外）与 `## 免责声明`（非官方、按「现状」提供、合法使用、爱惜站点、内容版权属 X岛与原作者、责任限制、权利主张），下载表与目录树同步提到 `LICENSE`。`packaging/使用说明.txt` 的「用途与声明」补上对应的两条。
   **二、随包发出。** `tools/build_zip.py` 的 `EXTRA_FILES` 加 `("LICENSE", "LICENSE.txt")` —— MIT 要求「版权声明与许可声明」随软件的每一份副本一起走，所以它必须跟着 exe 发出去；使用说明与 README 都点明了包里有这一份。`tests/test_build_zip.py` 的 docstring 同步。

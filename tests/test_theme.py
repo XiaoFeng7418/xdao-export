@@ -327,3 +327,74 @@ def test_card_stretch_lets_the_body_fill_the_card(window: tk.Tk) -> None:
     window.withdraw()
 
     assert height > 400, f"卡片 {card_height} 高，内容只有 {height}"
+
+
+# ---------------------------------------------------------------- 界面字号档位
+
+
+@pytest.fixture
+def restore_font_scale():
+    """每个用例跑完把界面字号比例放回 1.0。
+
+    ``theme.FONT_SCALE`` 是模块级全局量（字体尺寸的真源），被用例改过之后
+    不还原，后面的用例就会在"特大"字号下建控件 —— 那种串味最难查。
+    """
+    original = theme.FONT_SCALE
+    yield
+    theme.set_font_scale(original)
+
+
+def test_font_scale_defaults_to_standard() -> None:
+    assert theme.FONT_SCALE == 1.0
+    assert theme.font_scale_label() == "标准"
+    assert theme.scaled(theme.SIZE_BODY) == theme.SIZE_BODY
+
+
+def test_font_scale_makes_fonts_bigger_and_smaller(restore_font_scale) -> None:
+    """换档之后，``font()`` / ``mono()`` 拿到的字号要真的跟着变。"""
+    base = theme.font(theme.SIZE_BODY)
+    theme.set_font_scale(1.5)
+    assert theme.font(theme.SIZE_BODY)[1] > base[1]
+    assert theme.mono(theme.SIZE_SMALL)[1] > theme.scaled(theme.SIZE_SMALL) - 1
+    assert theme.font(theme.SIZE_BODY, bold=True)[2] == "bold"
+
+    theme.set_font_scale(0.85)
+    assert theme.font(theme.SIZE_BODY)[1] < base[1]
+
+
+def test_font_scale_is_clamped_and_bad_values_fall_back(restore_font_scale) -> None:
+    """坏值回落、越界收口 —— 配置是纯文本，用户会手改。"""
+    assert theme.set_font_scale("1.3") == pytest.approx(1.3)
+    assert theme.set_font_scale(5.0) == theme.FONT_SCALE_MAX
+    assert theme.set_font_scale(0.1) == theme.FONT_SCALE_MIN
+    assert theme.set_font_scale("大") == 1.0  # 认不出来 → 回落标准
+    assert theme.set_font_scale(float("nan")) == 1.0
+
+
+def test_font_scale_never_shrinks_below_seven_points(restore_font_scale) -> None:
+    """再小的档位也不许把字缩到看不清（7 点是下限）。"""
+    theme.set_font_scale(theme.FONT_SCALE_MIN)
+    assert theme.scaled(theme.SIZE_SMALL) >= 7
+
+
+def test_every_choice_label_round_trips(restore_font_scale) -> None:
+    """每个档位名都能换回它自己的比例，且显示回来还是这个名字。"""
+    assert len(theme.FONT_SCALE_CHOICES) >= 3
+    for label, value in theme.FONT_SCALE_CHOICES:
+        theme.set_font_scale(value)
+        assert theme.font_scale_label() == label
+
+
+def test_unknown_label_falls_back(restore_font_scale) -> None:
+    assert theme.font_scale_for_label("超大杯", fallback=1.0) == 1.0
+    assert theme.font_scale_for_label("特大") == 1.5
+
+
+def test_settings_column_grows_with_the_font(restore_font_scale) -> None:
+    """左栏宽度跟着字号放大：不放大，字大了那一栏的提示会被截断。"""
+    theme.set_font_scale(1.0)
+    standard = theme.settings_column_width()
+    assert standard == theme.SETTINGS_COLUMN_WIDTH
+
+    theme.set_font_scale(1.5)
+    assert theme.settings_column_width() > standard

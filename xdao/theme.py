@@ -225,15 +225,87 @@ SIZE_SUBHEAD = 11
 SIZE_BODY = 10
 SIZE_SMALL = 9
 
+# ---------------------------------------------------------------- 界面字号档位
+#
+# 为什么比例放在这里、而不是在每个 ``font(...)`` 调用点写不同尺寸：
+# 「字太小」是个体差异（有人 10 点正合适，有人得 15 点），而字号散落在
+# 几十处调用点上时，加一档就得改几十行、还必然漏几处（角落里的提示、
+# 日志框、对话框标题……）。现在所有尺寸都过 :func:`scaled`，只有一个真源：
+# ``gui.App.switch_font_scale`` 改一次比例、重建一遍界面，全窗口一起换档。
+FONT_SCALE_CHOICES: tuple[tuple[str, float], ...] = (
+    ("小", 0.85),
+    ("标准", 1.0),
+    ("大", 1.15),
+    ("更大", 1.3),
+    ("特大", 1.5),
+)
+#: 比例的许可范围：配置里手写的值也收在这里面。
+FONT_SCALE_MIN = 0.7
+FONT_SCALE_MAX = 2.0
+#: 当前界面字号比例（``1.0`` ＝ 下面各 ``SIZE_*`` 的原值）
+FONT_SCALE = 1.0
+
+
+def normalize_font_scale(value: object, fallback: float = 1.0) -> float:
+    """把读来的比例收进 ``[FONT_SCALE_MIN, FONT_SCALE_MAX]``。
+
+    认不出来（``None``／空串／非数字／``NaN``）时给 ``fallback`` —— 配置是纯
+    文本、用户会手改，坏值只该回落，不该让程序起不来。
+    """
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+    if number != number:  # NaN
+        return fallback
+    return min(max(number, FONT_SCALE_MIN), FONT_SCALE_MAX)
+
+
+def set_font_scale(scale: object) -> float:
+    """设定界面字号比例，返回真正生效的值。"""
+    global FONT_SCALE
+    FONT_SCALE = normalize_font_scale(scale)
+    return FONT_SCALE
+
+
+def font_scale() -> float:
+    """当前界面字号比例（``1.0`` ＝ 各 ``SIZE_*`` 的原值）。
+
+    界面那边要拿它算窗口尺寸（字号大了窗口也得跟着放大），所以给一个读口，
+    而不是让它直接摸模块全局量。
+    """
+    return FONT_SCALE
+
+
+def scaled(size: int) -> int:
+    """把基础字号乘上当前比例（下限 7 点，免得小得看不清）。"""
+    return max(7, int(round(size * FONT_SCALE)))
+
+
+def font_scale_label(scale: object = None) -> str:
+    """按（给定的或当前的）比例找最接近的档位名。"""
+    value = FONT_SCALE if scale is None else normalize_font_scale(scale)
+    return min(FONT_SCALE_CHOICES, key=lambda item: abs(item[1] - value))[0]
+
+
+def font_scale_for_label(label: str, fallback: float = 1.0) -> float:
+    """档位名 → 比例；不认识的档位名给 ``fallback``。"""
+    for name, value in FONT_SCALE_CHOICES:
+        if name == label:
+            return value
+    return fallback
+
 
 def font(size: int = SIZE_BODY, *, bold: bool = False) -> tuple:
-    """常规字体（按当前 FONT_UI）。"""
-    return (FONT_UI, size, "bold") if bold else (FONT_UI, size)
+    """常规字体（按当前 FONT_UI 与当前界面字号比例）。"""
+    point = scaled(size)
+    return (FONT_UI, point, "bold") if bold else (FONT_UI, point)
 
 
 def mono(size: int = SIZE_SMALL, *, bold: bool = False) -> tuple:
     """等宽字体（日志用）。"""
-    return (FONT_MONO, size, "bold") if bold else (FONT_MONO, size)
+    point = scaled(size)
+    return (FONT_MONO, point, "bold") if bold else (FONT_MONO, point)
 
 
 # ---------------------------------------------------------------- 间距与圆角
@@ -250,6 +322,15 @@ RADIUS_SMALL = 6
 #: 挤成一条缝（实测右栏只剩 39px）。关掉传播 + 固定宽度最稳，窗口拉宽时
 #: 多出来的宽度全部给日志栏。
 SETTINGS_COLUMN_WIDTH = 452
+
+
+def settings_column_width() -> int:
+    """左栏实际用的固定宽度：跟着界面字号一起放大。
+
+    字号调大后 452px 装不下「导出目录」那一行的小字提示与输入框，会被截断；
+    跟着比例放大才能保持版面比例不变。
+    """
+    return int(round(SETTINGS_COLUMN_WIDTH * FONT_SCALE))
 
 #: 左栏滚动区的初始高度（窗口刚打开、还没拿到真实高度时用）。
 #: 只是个起点：真实可视高度由布局决定，内容更高时会出现滚动条。
@@ -641,12 +722,21 @@ __all__ = [
     "Palette",
     "apply_theme",
     "font",
+    "font_scale",
+    "font_scale_for_label",
+    "font_scale_label",
     "gap",
     "mono",
+    "normalize_font_scale",
     "palette",
     "resolve_fonts",
+    "scaled",
+    "set_font_scale",
+    "settings_column_width",
     "style_colors",
     "FONT_MONO",
+    "FONT_SCALE",
+    "FONT_SCALE_CHOICES",
     "FONT_UI",
     "STYLE_NAMES",
 ]
