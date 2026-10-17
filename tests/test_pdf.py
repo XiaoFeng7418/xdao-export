@@ -10,11 +10,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 from tests import FakeClient, sample_thread
+from xdao.cancel import ExportCancelled
 from xdao.exporters import EXPORTERS, create_exporter
 from xdao.exporters.pdf import (
     PdfBuilder,
@@ -264,15 +266,68 @@ def test_render_rejects_non_pdf_output(out_dir, artifacts_dir):
         render_html_to_pdf("<html></html>", out_dir / "x.pdf", browser_path=browser)
 
 
+class _HangingBrowser:
+    """假 Popen：没被 kill 之前永远不结束（拿来试超时与取消）。"""
+
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        self.returncode = None
+        self.killed = False
+
+    def communicate(self, timeout=None):
+        if self.killed:
+            self.returncode = -9
+            return "", ""
+        if timeout is not None:
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+        self.returncode = 0
+        return "", ""
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+
+
 def test_render_reports_timeout(out_dir, artifacts_dir, monkeypatch):
     browser = make_fake_browser(artifacts_dir)
+    processes: list[_HangingBrowser] = []
 
-    def fake_run(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="fake", timeout=1)
+    def fake_popen(*args, **kwargs):
+        process = _HangingBrowser()
+        processes.append(process)
+        return process
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     with pytest.raises(PdfError, match="超时"):
-        render_html_to_pdf("<html></html>", out_dir / "x.pdf", browser_path=browser, timeout=1)
+        render_html_to_pdf("<html></html>", out_dir / "x.pdf", browser_path=browser, timeout=0)
+    # 超时之后必须把那个还挂着的浏览器进程收掉，别留在后台。
+    assert processes and processes[0].killed
+
+
+def test_render_can_be_cancelled_mid_way(out_dir, artifacts_dir, monkeypatch):
+    """命令行渲染期间点「取消导出」要真的收手，而不是干等到超时（v0.17.0）。
+
+    以前这里用 ``subprocess.run(timeout=…)``：一口气阻塞到底，用户点了取消也得等
+    浏览器把长串渲完。现在改成轮询 ``Popen``，每 0.2 秒看一眼停止位。
+    """
+    browser = make_fake_browser(artifacts_dir)
+    stop = threading.Event()
+    processes: list[_HangingBrowser] = []
+
+    def fake_popen(*args, **kwargs):
+        process = _HangingBrowser()
+        processes.append(process)
+        # 浏览器已经在渲染了，用户这时点了「取消导出」。
+        stop.set()
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    with pytest.raises(ExportCancelled):
+        render_html_to_pdf(
+            "<html></html>", out_dir / "x.pdf", browser_path=browser, timeout=30, stop=stop
+        )
+    assert processes and processes[0].killed
 
 
 def test_render_cleans_up_temp_dir(out_dir, artifacts_dir):

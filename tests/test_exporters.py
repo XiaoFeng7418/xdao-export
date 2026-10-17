@@ -928,3 +928,68 @@ def test_base_class_covers_every_registered_exporter():
     for _, (_, _, cls) in EXPORTERS.items():
         assert issubclass(cls, Exporter)
         assert cls is not Exporter
+
+
+# ---------- 取消（v0.17.0）----------
+
+
+def test_preload_reports_progress_for_many_images(out_dir):
+    """图多的串下载期间要报进度，否则界面看起来像卡住。"""
+    images = {f"img{i}": SAMPLE_JPEG for i in range(12)}
+    client = FakeClient(images=images)
+    posts = [make_post(7000 + i, f"第 {i} 楼", img=f"img{i}", ext=".jpg") for i in range(12)]
+    thread = ThreadData(thread_id=7001, title="测试串", po_hash="", posts=posts)
+    messages: list[str] = []
+    builder = HtmlBuilder(client, messages.append)
+
+    builder._preload_images(thread, posts)
+
+    assert messages[0] == "正在下载 12 张图片…"
+    progress = [m for m in messages if m.startswith("正在下载图片：")]
+    assert progress, "至少要报一次进度"
+    assert progress[-1] == "正在下载图片：12/12"
+    # 进度必须单调上升，不能倒回去
+    numbers = [int(m.rsplit("：", 1)[1].split("/")[0]) for m in progress]
+    assert numbers == sorted(numbers)
+
+
+def test_preload_does_nothing_when_images_are_not_embedded(out_dir):
+    """只留链接 / 丢图片时不该下任何一张图。"""
+    client = FakeClient(images={"abc": SAMPLE_JPEG})
+    posts = [make_post(7001, "带图", img="abc", ext=".jpg")]
+    thread = ThreadData(thread_id=7001, title="测试串", po_hash="", posts=posts)
+    messages: list[str] = []
+    builder = HtmlBuilder(client, messages.append, image_mode="url")
+
+    builder._preload_images(thread, posts)
+
+    assert client.downloaded == []
+    assert messages == []
+
+
+def test_save_refuses_to_write_after_cancel(out_dir):
+    """已经点了取消，就不要把半份产物写出去。"""
+    import threading
+
+    from xdao.cancel import ExportCancelled
+
+    client = FakeClient(images={"abc": SAMPLE_JPEG})
+    thread = sample_thread()
+    stop = threading.Event()
+    stop.set()
+    builder = TxtBuilder(client, stop=stop)
+
+    with pytest.raises(ExportCancelled):
+        builder.save(thread, "all", out_dir)
+
+    assert list(out_dir.glob("*.txt")) == []
+
+
+def test_create_exporter_hands_the_stop_flag_to_the_builder():
+    """命令行 / 界面都把取消位交给导出器，导出器要原样收下。"""
+    import threading
+
+    stop = threading.Event()
+    exporter = create_exporter("txt", FakeClient(), stop=stop)
+
+    assert exporter.stop is stop

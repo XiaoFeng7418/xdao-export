@@ -19,6 +19,7 @@ import base64
 import concurrent.futures
 import datetime as _datetime
 import html as html_lib
+import threading
 import uuid
 import zipfile
 from pathlib import Path
@@ -148,6 +149,8 @@ class EpubBuilder(Exporter):
         self._uri_cache: dict[str, str] = {}
         # 没下到的图片地址（按出现顺序），build 结束时汇总成一句告诉用户。
         self.missing_images: list[str] = []
+        # 并发预取期间进度由 _collect_images 统一报，_load 不再逐张刷 URL。
+        self._preloading = False
 
     # ---------- 基础工具 ----------
 
@@ -164,6 +167,8 @@ class EpubBuilder(Exporter):
         image_mode = image_mode or self.image_mode
         posts = thread.filter_posts(scope, include_hashes)
         images = self._collect_images(posts, image_mode)
+        # 图都下完了才检查取消：取消之后不再往磁盘写半本电子书。
+        self.check_cancel()
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +215,8 @@ class EpubBuilder(Exporter):
             return None
         if url in self._data_cache:
             return self._data_cache[url]
-        self._notify(f"正在下载图片：{url}")
+        if not self._preloading:
+            self._notify(f"正在下载图片：{url}")
         data = fetch_image(self._client, url)
         self._data_cache[url] = data
         return data
@@ -246,9 +252,28 @@ class EpubBuilder(Exporter):
         if not urls:
             return []
         self._notify(f"正在下载 {len(urls)} 张图片…")
+        total = len(urls)
+        step = max(1, total // 10)
+        lock = threading.Lock()
+        done = 0
+
+        def load(url: str) -> None:
+            nonlocal done
+            self.check_cancel()
+            self._load(url)
+            with lock:
+                done += 1
+                finished = done
+            if finished % step == 0 or finished == total:
+                self._notify(f"正在下载图片：{finished}/{total}")
+
         # _load 自己负责写 _data_cache（失败记 None），这里只等它们回来。
-        with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as executor:
-            list(executor.map(self._load, urls))
+        self._preloading = True
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as executor:
+                list(executor.map(load, urls))
+        finally:
+            self._preloading = False
 
         images: list[tuple[str, bytes]] = []
         for url in urls:

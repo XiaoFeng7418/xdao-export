@@ -34,6 +34,7 @@ from pathlib import Path
 
 from .. import browser_flags
 from ..browser_flags import launch_flags
+from ..cancel import check as check_cancel
 from ..cdp import CDPSession, CdpError
 from ..client import XdaoClient
 from ..pdf_opts import DEFAULT_PAPER, PdfOptions
@@ -51,6 +52,9 @@ BROWSER_CANDIDATES = (
 
 # 单次渲染的等待上限。图多的大串需要更久，留足余量。
 DEFAULT_TIMEOUT = 900
+
+# 等浏览器子进程时每隔多久回来看一眼取消位。
+_POLL_INTERVAL = 0.2
 
 
 class PdfError(Exception):
@@ -127,6 +131,7 @@ def render_html_to_pdf(
     timeout: int = DEFAULT_TIMEOUT,
     progress=None,
     work_dir: Path | None = None,
+    stop=None,
 ) -> Path:
     """把一段 HTML 渲染成 PDF，返回写入的路径。
 
@@ -148,6 +153,7 @@ def render_html_to_pdf(
             timeout=timeout,
             progress=progress,
             work_dir=work_dir,
+            stop=stop,
         )
     return print_html_to_pdf(
         html,
@@ -157,6 +163,7 @@ def render_html_to_pdf(
         timeout=timeout,
         progress=progress,
         work_dir=work_dir,
+        stop=stop,
     )
 
 
@@ -200,8 +207,13 @@ def _render_with_command_line(
     timeout: int = DEFAULT_TIMEOUT,
     progress=None,
     work_dir: Path | None = None,
+    stop=None,
 ) -> Path:
-    """命令行渲染路径（``--print-to-pdf``）：默认走这条，纸张沿用网页样式。"""
+    """命令行渲染路径（``--print-to-pdf``）：默认走这条，纸张沿用网页样式。
+
+    超时是**整趟共用**的一个截止时刻，不再每条目各自计时；轮询过程中也看取消位，
+    用户可以中途停掉一个已经开始渲染的长串（以前这条路只能干等到超时）。
+    """
     output_pdf = Path(output_pdf)
     browser = find_browser(browser_path)
     if progress:
@@ -232,26 +244,39 @@ def _render_with_command_line(
             env.pop(key, None)
 
         started = time.monotonic()
+        deadline = started + float(timeout)
+        # 用 Popen 轮询而不是 subprocess.run(timeout=…)：后者会一口气阻塞到超时，
+        # 期间看不见取消位，用户点了「取消导出」也得等浏览器慢慢渲染完。
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
         try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                env=env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise PdfError(
-                f"渲染 PDF 超时（超过 {timeout} 秒）。"
-                "串太长或图片太多时可能发生，可以改用 HTML 格式。"
-            ) from exc
+            while True:
+                try:
+                    stdout, stderr = process.communicate(timeout=_POLL_INTERVAL)
+                    break
+                except subprocess.TimeoutExpired:
+                    check_cancel(stop)
+                    if time.monotonic() >= deadline:
+                        raise PdfError(
+                            f"渲染 PDF 超时（超过 {timeout} 秒）。"
+                            "串太长或图片太多时可能发生，可以改用 HTML 格式。"
+                        )
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
 
         if not target.exists() or target.stat().st_size == 0:
-            detail = (completed.stderr or completed.stdout or "").strip()[-400:]
+            detail = (stderr or stdout or "").strip()[-400:]
             raise PdfError(
-                f"{browser.name} 没有生成 PDF（退出码 {completed.returncode}）。\n{detail}{browser_launch_failure_hint(completed.returncode)}"
+                f"{browser.name} 没有生成 PDF（退出码 {process.returncode}）。\n{detail}{browser_launch_failure_hint(process.returncode)}"
             )
 
         # 校验确实是 PDF，避免把错误页当成结果交出去。
@@ -282,12 +307,16 @@ def print_html_to_pdf(
     timeout: int = DEFAULT_TIMEOUT,
     progress=None,
     work_dir: Path | None = None,
+    stop=None,
 ) -> Path:
     """用 CDP 的 ``Page.printToPDF`` 渲染：只有这条路能设纸张与页边距。
 
     为什么不用命令行：``--print-to-pdf`` 没有任何纸张/边距开关，选项只能从 CDP 传。
     走 CDP 要先起浏览器（复用浏览器登录那条 ``LoginBrowser``），再连上它的调试端口；
     页面里的 ``document.readyState`` 变成 ``complete`` 之后才打印，否则会打出空白页。
+
+    ``timeout`` 是整趟共用的截止时刻：起浏览器、等加载、打印三段的等待都从同一个
+    预算里扣，以前三段各给一份 ``timeout``，实际最坏能拖到三倍。
     """
     from ..browser_login import LoginBrowser, find_browser as find_login_browser
 
@@ -295,6 +324,18 @@ def print_html_to_pdf(
     opts = options or PdfOptions()
     info = find_browser(browser_path)
     started = time.monotonic()
+    deadline = started + float(timeout)
+
+    def remaining(cap: float = float("inf")) -> float:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise PdfError(
+                f"渲染 PDF 超时（超过 {timeout} 秒）。"
+                "串太长或图片太多时可能发生，可以改用 HTML 格式。"
+            )
+        return min(left, cap)
+
+    check_cancel(stop)
     if progress:
         progress(f"正在用 {info.name} 渲染 PDF（{opts.describe()}）…")
 
@@ -307,18 +348,19 @@ def print_html_to_pdf(
         if login_info is None:  # pragma: no cover - find_browser 刚确认过它存在
             raise PdfError(f"指定的浏览器不存在：{info.path}")
         browser = LoginBrowser(
-            login_info, profile, timeout=min(60.0, float(timeout)), start_url=source.as_uri()
+            login_info, profile, timeout=remaining(60.0), start_url=source.as_uri()
         )
         with browser:
             session = CDPSession(
-                browser.browser_ws_url, timeout=min(60.0, float(timeout)), site_urls=["file://"]
+                browser.browser_ws_url, timeout=remaining(60.0), site_urls=["file://"]
             )
             with session:
                 session.connect()
-                _wait_for_load(session, timeout)
+                _wait_for_load(session, remaining(30.0))
+                check_cancel(stop)
                 params = _cdp_params(opts)
                 try:
-                    result = session.call("Page.printToPDF", params, timeout=float(timeout))
+                    result = session.call("Page.printToPDF", params, timeout=remaining())
                 except CdpError as exc:
                     raise PdfError(f"浏览器没能生成 PDF：{exc}") from exc
         data = _decode_pdf_data(result)
@@ -353,7 +395,7 @@ def _cdp_params(options: PdfOptions) -> dict:
     return params
 
 
-def _wait_for_load(session: CDPSession, timeout: int) -> None:
+def _wait_for_load(session: CDPSession, timeout: float) -> None:
     """等页面加载完成；等不到也给一枪（CDP 自己会按当前状态打印）。"""
     deadline = time.monotonic() + min(30.0, float(timeout))
     while time.monotonic() < deadline:
@@ -419,11 +461,13 @@ class PdfBuilder(Exporter):
             filename_template=filename_template,
             font_size=options.get("font_size"),
             image_mode=options.get("image_mode"),
+            stop=options.get("stop"),
         )
         # 图片模式以内部 HTML 导出器归一化后的值为准（认不出的值在那里会退回 embed）。
         self.image_mode = self._html.image_mode
 
     def render_pdf(self, html: str, _work_dir: Path, output_pdf: Path) -> Path:
+        self.check_cancel()
         return render_html_to_pdf(
             html,
             output_pdf,
@@ -431,6 +475,7 @@ class PdfBuilder(Exporter):
             options=self.pdf_options,
             timeout=self.timeout,
             progress=self._progress,
+            stop=self.stop,
         )
 
     def build(

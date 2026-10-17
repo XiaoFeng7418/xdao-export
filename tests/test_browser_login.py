@@ -5601,3 +5601,20 @@ def test_userhash_is_looked_for_in_the_page_storage():
     assert bl.userhash_from_page_storage(_Session(_json.dumps({"l": {"a": "1 2 3"}}))) == ""
     assert bl.userhash_from_page_storage(_Session("", boom=True)) == ""
     assert bl.userhash_from_page_storage(_Session("不是 JSON")) == ""
+
+
+def test_decode_ps_output_falls_back_to_the_system_code_page():
+    """powershell 被重定向时可能按系统代码页（中文 Windows 是 GBK）回话。
+
+    v0.13.51 真机详单里带中文的资料目录回来是 ``D:\С����\…`` 这种乱码；
+    脚本里钉 ``[Console]::OutputEncoding`` 不总被 5.1 听（stdout 重定向时），
+    所以解码这一侧再兜一手：UTF-8 解出替换符就按 GBK 再解一次。
+    """
+    raw = "D:\\罐路径\\x".encode("gbk")
+    assert bl._decode_ps_output(raw) == "D:\\罐路径\\x"
+
+
+def test_decode_ps_output_keeps_utf8_and_plain_text():
+    assert bl._decode_ps_output("D:\\中文\\正常".encode("utf-8")) == "D:\\中文\\正常"
+    # 用例里的替身回字母串，不该为了这一手把替身也改成 bytes
+    assert bl._decode_ps_output("已经是文本") == "已经是文本"
