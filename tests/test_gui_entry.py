@@ -755,8 +755,17 @@ class _FakeWidget:
     def config(self, **kwargs) -> None:
         self.calls.append(("config", kwargs))
 
+    def configure(self, **kwargs) -> None:
+        self.calls.append(("configure", kwargs))
+
     def start(self, interval=None) -> None:
         self.calls.append(("start", interval))
+
+    def stop(self) -> None:
+        self.calls.append(("stop", None))
+
+    def set_value(self, value, maximum) -> None:
+        self.calls.append(("set_value", value, maximum))
 
 
 class _FakeVar:
@@ -781,6 +790,8 @@ class _FakeApp:
         self._last_failed: list[str] = []
         self.client = SimpleNamespace(image_cache_dir=None)
         self.start_button = _FakeWidget()
+        self.retry_button = _FakeWidget()
+        self._export_stop = None
         self.progress_bar = _FakeWidget()
         self.progress_var = _FakeVar("")
         self.scope_var = _FakeVar("all")
@@ -820,6 +831,25 @@ class _FakeApp:
 
     def current_image_mode(self) -> str:
         return "embed"
+
+    def _resolved_output_dir(self) -> Path:
+        """``App._finish()`` 要把「文件在哪」写进汇总弹窗。"""
+        return self._output
+
+    def cancel_export(self) -> None:
+        """``App._set_export_controls()`` 会把按钮指到 ``self.cancel_export``。"""
+        pass
+
+    def start(self, urls=None) -> None:
+        """``App._set_export_controls()`` 收尾时会把按钮指回 ``self.start``。"""
+        pass
+
+    def refresh_cache_info(self) -> None:
+        pass
+
+    def _set_export_controls(self, *, running: bool) -> None:
+        """``App.start()`` 会切换按钮文案；假窗口里只记下状态，按钮语义另有用例。"""
+        self._exporting = running
 
     def _poll_export(self) -> None:
         """``App.start()`` 结尾会 ``root.after(50, self._poll_export)``；这里什么都不做。"""
@@ -2186,3 +2216,159 @@ def test_upgrade_finish_does_not_end_the_process_when_it_failed(
 
     assert exited == [], "没成功就别退，用户还得接着用"
     assert app._update_button.text == "有新版本", "没换成，按钮得回到「有新版本」让人再试"
+
+
+# ---------- 导出可取消（v0.17.0）----------
+
+
+def _fake_app(tmp_path: Path) -> _FakeApp:
+    settings = AppSettings(_path=tmp_path / "config.json")
+    return _FakeApp(settings, tmp_path)
+
+
+def test_cancel_export_lifts_the_stop_flag(tmp_path):
+    """点「取消导出」：举起停止位，按钮先变成「正在取消…」。"""
+    app = _fake_app(tmp_path)
+    event = threading.Event()
+    app._exporting = True
+    app._export_stop = event
+
+    gui.App.cancel_export(app)
+
+    assert event.is_set(), "停止位没举起来，后台根本看不见这次取消"
+    assert app.progress_var.get() == "正在取消…"
+    assert app.start_button.calls[-1] == (
+        "config",
+        {"state": "disabled", "text": "正在取消…"},
+    )
+    assert "正在取消" in app.logs[-1]
+    assert "已经导出的文件会保留" in app.logs[-1]
+
+
+def test_cancel_export_does_nothing_when_nothing_is_running(tmp_path):
+    app = _fake_app(tmp_path)
+    event = threading.Event()
+    app._exporting = False
+    app._export_stop = event
+
+    gui.App.cancel_export(app)
+
+    assert not event.is_set()
+    assert app.logs == []
+
+
+def test_set_export_controls_swaps_start_into_cancel(tmp_path):
+    """导出期间同一个按钮变「取消导出」，结束后变回「开始导出」。"""
+    app = _fake_app(tmp_path)
+
+    gui.App._set_export_controls(app, running=True)
+    kwargs = app.start_button.calls[-1][1]
+    assert kwargs["text"] == "取消导出"
+    assert kwargs["command"].__self__ is app, "按钮要指回这个窗口自己的取消方法"
+    assert kwargs["command"].__func__.__name__ == "cancel_export"
+    assert app.retry_button.calls[-1] == ("configure", {"state": "disabled"})
+
+    app._last_failed = ["https://www.nmbxd1.com/t/7001234"]
+    gui.App._set_export_controls(app, running=False)
+    assert app.start_button.calls[-1][1]["text"] == "开始导出"
+    assert app.start_button.calls[-1][1]["command"].__func__.__name__ == "start"
+    assert app.retry_button.calls[-1] == ("configure", {"state": "normal"})
+
+
+def test_finish_after_cancel_says_what_was_kept(tmp_path, monkeypatch):
+    """取消后的汇总：说清「完成几个 / 一共几个」以及已经导出的文件在哪。"""
+    app = _fake_app(tmp_path)
+    app._last_failed = ["https://www.nmbxd1.com/t/7001"]
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, text: shown.append((title, text))
+    )
+
+    gui.App._finish(app, 2, 5, [], 63.0, None, cancelled=True)
+
+    assert shown and shown[0][0] == "已取消导出"
+    assert "取消前完成 2 / 5 个串" in shown[0][1]
+    assert "已经导出的文件" in shown[0][1]
+    assert app.progress_var.get() == "已取消：完成 2 / 5 个串，用时 63 秒"
+    assert app._exporting is False
+    assert app._export_stop is None
+    assert app.progress_bar.calls == [("stop", None), ("set_value", 2, 5)]
+    assert any("已导出的文件都还在" in line for line in app.logs)
+
+
+# ---------- 监控条目可编辑（v0.17.0）----------
+
+
+def _open_watch_edit(dialog_root, artifacts_dir, targets):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _AddTargetApp(settings, list(targets), dialog_root)
+    dialog = _open_watch(dialog_root, app)
+    target = app.watch_targets[0]
+    edit = gui.WatchEditDialog(dialog, target)
+    dialog_root.update()
+    return app, dialog, edit, target
+
+
+def test_watch_edit_dialog_saves_scope_format_image_and_pages(dialog_root, artifacts_dir):
+    """编辑一条监控：范围、格式、图片处理、页数上限都要落到目标上并存盘。"""
+    target = gui.WatchTarget("7001234", format_key="txt", image_mode="embed")
+    app, dialog, edit, target = _open_watch_edit(dialog_root, artifacts_dir, [target])
+    try:
+        edit.scope_box.current(1)  # 仅 PO 发言
+        edit.format_box.current(edit._format_keys.index("html"))
+        edit.image_box.current(1)  # 仅保留链接
+        edit.pages_var.set("6")
+
+        edit._save()
+
+        assert target.scope == "po"
+        assert target.format_key == "html"
+        assert target.image_mode == "url"
+        assert target.max_pages == 6
+        assert target.thread_id == 7001234, "串号不该被编辑改动"
+        assert app.persisted == 1, "改完要立刻存盘"
+    finally:
+        _close(edit)
+        _close(dialog)
+
+
+def test_watch_edit_dialog_rejects_a_bad_page_cap(dialog_root, artifacts_dir, monkeypatch):
+    """页数上限填坏值时不许存盘，窗口也要留着让人改。"""
+    target = gui.WatchTarget("7001234", format_key="html", max_pages=3)
+    app, dialog, edit, target = _open_watch_edit(dialog_root, artifacts_dir, [target])
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda *a, **kw: warnings.append(a)
+    )
+    try:
+        edit.pages_var.set("很多")
+
+        edit._save()
+
+        assert warnings, "填坏了要提示，不能悄悄忽略"
+        assert "页数上限认不出" in warnings[0][1]
+        assert target.max_pages == 3, "坏值不该写进目标"
+        assert app.persisted == 0
+        assert edit.winfo_exists(), "窗口要留着，别把人填的其它项一起丢掉"
+    finally:
+        _close(edit)
+        _close(dialog)
+
+
+def test_watch_edit_dialog_greys_the_image_box_for_formats_without_images(
+    dialog_root, artifacts_dir
+):
+    """TXT / Markdown 用不上图片处理：下拉框灰掉，免得用户以为能选。"""
+    target = gui.WatchTarget("7001234", format_key="txt")
+    app, dialog, edit, target = _open_watch_edit(dialog_root, artifacts_dir, [target])
+    try:
+        assert str(edit.image_box.cget("state")) == "disabled"
+
+        edit.format_box.current(edit._format_keys.index("epub"))
+        edit.format_box.event_generate("<<ComboboxSelected>>")
+        dialog_root.update()
+
+        assert str(edit.image_box.cget("state")) == "readonly"
+    finally:
+        _close(edit)
+        _close(dialog)

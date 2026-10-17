@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .cancel import check as check_cancel
 from .client import Post, XdaoClient, XdaoError, reply_count
 from .paths import OutputDirNotWritable, can_write_dir, ensure_writable
 
@@ -382,10 +383,14 @@ class CachedThreadFetcher:
         use_cache: bool = True,
         retry_attempts: int | None = None,
         retry_delay: float | None = None,
+        stop=None,
     ) -> None:
         self._client = client
         self._progress = progress
         self.use_cache = use_cache
+        # 用户在界面上点「取消导出」时，这里举起停止位；每抓一页、每次补抓前都会看一眼
+        # （见 cancel.check）。None ＝ 不响应取消（命令行与监控都没有这个按钮）。
+        self.stop = stop
         # 补抓次数/间隔可在构造时覆盖（测试里调成 0 或 0 秒，免得白等）。
         self.retry_attempts = (
             self.RETRY_ATTEMPTS if retry_attempts is None else max(0, int(retry_attempts))
@@ -455,6 +460,7 @@ class CachedThreadFetcher:
         thread_id = parse_thread_id(url_or_id)
         if thread_id is None:
             raise XdaoError(f"无法识别串号：{url_or_id}")
+        check_cancel(self.stop)
 
         # 抓一个长串可能要几分钟，靠的就是缓存能续上；所以先确认缓存目录可写，
         # 写不进去就当场停下说清楚，而不是让用户白抓一场。
@@ -634,6 +640,7 @@ class CachedThreadFetcher:
         failed: set[int] = set()
         attempted = 0
         for page in pages_to_fetch:
+            check_cancel(self.stop)
             if page > upper_bound:
                 # 撞上页数上限：剩下的页一个都没抓。这里什么都不用记 ——
                 # 产物是否不完整由 `_assemble` 拿最后一页与要抓的页数比出来。
@@ -757,6 +764,7 @@ class CachedThreadFetcher:
         fetched = 0
         reach = 0
         for round_no in range(1, self.retry_attempts + 1):
+            check_cancel(self.stop)
             pending = sorted(page for page in failed if page <= page_count)
             if not pending:
                 break

@@ -77,6 +77,34 @@ TEMP_PROFILE_WAIT = 3.0
 #: 这种乱码（v0.13.51 真机详单里的「罐路径」段就是这样）。在脚本开头钉一句输出编码，
 #: 解码那侧不用动。
 _PS_UTF8 = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+
+
+def _decode_ps_output(raw: bytes | str) -> str:
+    """解 powershell 的回话：先按 UTF-8，解出替换符再按系统代码页解一次。
+
+    脚本里已经钉了 ``[Console]::OutputEncoding``，但 Windows PowerShell 5.1 在
+    **stdout 被重定向**时并不总听这一句（真机反馈：带中文的资料目录回来仍是乱码，
+    也就是技术债里那条「``profile_of_process`` 中文乱码待真机复验」）。只钉脚本是
+    「指望对方听话」，这里再补一手「不管对方按什么编码回，都尽量解对」：
+
+    * UTF-8 能干净解出来 → 就是它；
+    * 出现 ``\\ufffd``（替换符）说明其实不是 UTF-8，按 ``gbk``（中文 Windows 的
+      系统代码页）再解一次；``mbcs`` 在非 Windows 上不存在，解不到就退回 UTF-8 的结果。
+
+    ``str`` 直接原样返回：用例里的替身回话是字符串，不必为了这一手把替身也改成 bytes。
+    """
+    if isinstance(raw, str):
+        return raw
+    text = raw.decode("utf-8", errors="replace")
+    if "\ufffd" not in text:
+        return text
+    for encoding in ("gbk", "mbcs"):
+        try:
+            return raw.decode(encoding, errors="replace")
+        except LookupError:  # pragma: no cover —— 只有非 Windows 上会走到
+            continue
+    return text
+
 _KILL_PROFILE_PROCESSES = _IS_WINDOWS
 #: 普查要不要再问操作系统一遍「谁此刻用着我们家的资料目录」（见 :func:`program_profile_dirs`）。
 #: 端口普查只认「名字猜得到」的目录（:func:`live_browser_dirs`）：备用目录的名字带着
@@ -835,15 +863,12 @@ def program_profile_dirs(profile: Path) -> list[Path]:
         done = _subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_UTF8 + script],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=20.0,
             creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
         return []
-    return _parse_program_profile_lines(done.stdout or "", profile)
+    return _parse_program_profile_lines(_decode_ps_output(done.stdout or b""), profile)
 
 
 def _parse_profile_process_pids(text: str, profile: Path) -> list[int]:
@@ -902,15 +927,12 @@ def profile_process_pids(profile: Path) -> list[int]:
         done = _subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_UTF8 + script],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=20.0,
             creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
         return []
-    return _parse_profile_process_pids(done.stdout or "", profile)
+    return _parse_profile_process_pids(_decode_ps_output(done.stdout or b""), profile)
 
 
 def _parse_user_data_dir(text: str) -> str:
@@ -948,15 +970,12 @@ def profile_of_process(pid: int, *, timeout: float = 20.0) -> str:
         done = _subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_UTF8 + script],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
             creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, _subprocess.SubprocessError):  # pragma: no cover —— 尽力而为
         return ""
-    return _parse_user_data_dir(done.stdout or "")
+    return _parse_user_data_dir(_decode_ps_output(done.stdout or b""))
 
 
 def _profile_failure(exc: BaseException) -> bool:

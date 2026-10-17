@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from xdao.cache import (
     post_fingerprint,
     resolve_cache_dir,
 )
+from xdao.cancel import ExportCancelled
 from xdao.client import Post, XdaoError
 
 PO_HASH = "POCOOKIE"
@@ -954,3 +956,54 @@ def test_fatal_api_error_still_raises(artifacts_dir):
     with pytest.raises(XdaoError, match="该串不存在"):
         missing.fetch(7001)
     assert fetcher is not None
+
+
+# ---------- 取消（v0.17.0）----------
+
+
+def test_stop_already_set_drops_the_fetch_before_any_request(artifacts_dir):
+    """点「取消导出」后不该再发出任何一页请求。
+
+    抓取这条路以前完全看不见停止位：用户点了取消，后台还会把整串抓完
+    才开始收手 —— 长串上要等好几分钟。
+    """
+    api = build_three_page_api()
+    stop = threading.Event()
+    stop.set()
+    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir, stop=stop)
+
+    with pytest.raises(ExportCancelled):
+        fetcher.fetch(7001)
+
+    assert api.requests == [], "停止位已经举起，一个请求都不该发"
+
+
+def test_cancel_between_pages_stops_the_page_loop(artifacts_dir):
+    """第 1 页回来时用户点了取消：后面的页不要再抓。"""
+    api = build_three_page_api()
+    stop = threading.Event()
+    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir, stop=stop)
+    real_fetch = api.fetch_thread_page
+
+    def fetch_and_cancel(thread_id: int, page: int = 1) -> dict:
+        data = real_fetch(thread_id, page)
+        if page == 1:
+            stop.set()
+        return data
+
+    api.fetch_thread_page = fetch_and_cancel  # type: ignore[method-assign]
+
+    with pytest.raises(ExportCancelled):
+        fetcher.fetch(7001)
+
+    assert api.requests == [(7001, 1)], "取消之后不该再请求第 2 页"
+
+
+def test_fetch_without_stop_still_works(artifacts_dir):
+    """不传 stop 时行为与以前一致（命令行不带取消位）。"""
+    api = build_three_page_api()
+    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir)
+
+    result = fetcher.fetch(7001)
+
+    assert len(result.posts) == 7

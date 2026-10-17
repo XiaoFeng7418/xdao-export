@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..cancel import check as check_cancel
 from ..client import XdaoClient
 from ..paths import ensure_writable
 from ._shared import ThreadData, derive_filename, render_filename, sanitize_filename
@@ -48,11 +49,18 @@ class Exporter:
         self._client = client
         self._progress = progress
         self.filename_template = filename_template
+        # 取消用的停止位（threading.Event）：界面点「取消导出」时举起来。
+        # 没传就是 None，等于这趟导出不可取消（命令行、监控都走这条）。
+        self.stop = options.get("stop")
         # 不认识的参数留在这里，不炸构造：调用方可以把所有参数一次性交给每个导出器，
         # 由各自取用（这正是 ``create_exporter`` 能删掉那条回退阶梯的原因）。
         self.options: dict = dict(options)
 
     # ---------- 基础工具 ----------
+
+    def check_cancel(self) -> None:
+        """停止位举起来了就抛 :class:`~xdao.cancel.ExportCancelled`。"""
+        check_cancel(self.stop)
 
     def _notify(self, message: str) -> None:
         if self._progress:
@@ -102,5 +110,9 @@ class Exporter:
         if self.save_message:
             self._notify(self.save_message)
         path = self.target_path(thread, output_dir)
-        self.write_text(path, self.build(thread, scope, include_hashes))
+        content = self.build(thread, scope, include_hashes)
+        # 内容都做好了才检查取消：真的被取消就不落盘，免得留下一份半成品
+        # 混在导出目录里（用户取消之后不会再去核对哪几份是完整的）。
+        self.check_cancel()
+        self.write_text(path, content)
         return path

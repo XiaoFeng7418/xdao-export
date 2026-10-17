@@ -26,6 +26,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .appinfo import WINDOW_TITLE
 from .cache import CachedThreadFetcher, filter_until_thread_id, parse_thread_id, resolve_cache_dir
+from .cancel import ExportCancelled
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
 from .notifications import Notifier
@@ -76,6 +77,8 @@ UNTIL_THREAD_ID_UNIT = "（含它）"
 #: 哪几种导出格式认「图片」这一项（内嵌 / 只留链接 / 丢掉）。TXT 与 Markdown 是纯文本，
 #: 图片本来就只是链接或干脆没有，所以不给它们这一行。
 IMAGE_MODE_FORMATS = ("html", "pdf", "epub")
+#: 「图片」下拉框的显示名，与 ``exporters.html.IMAGE_MODES`` 同序（主窗口与编辑监控共用）。
+IMAGE_MODE_LABELS = ("内嵌图片", "仅保留链接", "丢弃图片")
 
 
 def _describe_export_range(
@@ -3099,6 +3102,8 @@ class WatchDialog(tk.Toplevel):
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         scroll.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=scroll.set)
+        # 双击一行也能改：列表里的条目常常是加完之后才发现格式/页数选错了。
+        self.tree.bind("<Double-1>", lambda _event: self._edit_selected())
 
         controls = ttk.Frame(card.body, style="Card.TFrame")
         controls.pack(fill="x", pady=(theme.gap(2), 0))
@@ -3110,6 +3115,9 @@ class WatchDialog(tk.Toplevel):
         ).pack(side="left")
         ttk.Button(
             controls, text="移除选中", style="Secondary.TButton", command=self._remove_selected
+        ).pack(side="left", padx=(theme.gap(1.5), 0))
+        ttk.Button(
+            controls, text="编辑选中", style="Secondary.TButton", command=self._edit_selected
         ).pack(side="left", padx=(theme.gap(1.5), 0))
         ttk.Label(controls, text="检查间隔（秒）", style="CardMuted.TLabel").pack(
             side="left", padx=(theme.gap(3.5), theme.gap(1))
@@ -3214,6 +3222,18 @@ class WatchDialog(tk.Toplevel):
         self._refresh()
         if not added:
             messagebox.showinfo("提示", "没有新增（可能已存在，或网址无法识别）。", parent=self)
+
+    def _edit_selected(self) -> None:
+        """改选中那一条的设置（串号本身不能改，见 WatchEditDialog 的说明）。"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo("提示", "请先选中一条要修改的监控。", parent=self)
+            return
+        chosen = str(selected[0])
+        target = next((t for t in self.app.watch_targets if str(id(t)) == chosen), None)
+        if target is None:
+            return
+        WatchEditDialog(self, target)
 
     def _remove_selected(self) -> None:
         selected = {str(iid) for iid in self.tree.selection()}
@@ -3331,6 +3351,167 @@ class WatchDialog(tk.Toplevel):
             self.status_var.set(f"监控进行中（{len(self.app.watch_targets)} 个串）")
         self._refresh()
         self.after(1500, self._poll)
+
+
+class WatchEditDialog(tk.Toplevel):
+    """改一条监控的设置：范围、导出格式、图片处理、页数上限。
+
+    串号本身不给改：换串就是另一条监控 —— 删了重加比"原地换地址"清楚。
+    原地换地址还会把上一次的 ``state`` / ``last_check`` / ``exports`` 带过去，
+    列表里看起来像新串"已经检查过了"，反而误导。
+    """
+
+    #: 范围三选一：(scope 字段, include_hashes 是否非空) 的组合。
+    SCOPES = (("all", "全部"), ("po", "仅 PO 发言"), ("hashes", "指定饼干"))
+    IMAGE_KEYS = ("embed", "url", "drop")
+
+    def __init__(self, dialog: "WatchDialog", target: WatchTarget) -> None:
+        super().__init__(dialog)
+        self.configure(bg=BG)
+        self.app = dialog.app
+        self.list_dialog = dialog
+        self.target = target
+        self.title(f"编辑监控 · No.{target.label}")
+        self.geometry("560x340")
+        self.minsize(520, 320)
+        self.transient(dialog)
+
+        outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
+        outer.pack(fill="both", expand=True)
+        card = Card(outer)
+        card.pack(fill="both", expand=True)
+        body = card.body
+
+        # 串号：只读。label 是"从网址里认出来的串号"，不是用户输入。
+        header = ttk.Frame(body, style="Card.TFrame")
+        header.pack(fill="x")
+        ttk.Label(header, text=f"No.{target.label}", style="Card.TLabel").pack(side="left")
+        ttk.Label(
+            header,
+            text="串号不能在这里改（换串请移除后重加）",
+            style="CardMuted.TLabel",
+        ).pack(side="left", padx=(theme.gap(1.5), 0))
+
+        form = ttk.Frame(body, style="Card.TFrame")
+        form.pack(fill="x", pady=(theme.gap(2), 0))
+        form.columnconfigure(1, weight=1)
+
+        def label(row: int, text: str) -> None:
+            ttk.Label(form, text=text, style="Card.TLabel").grid(
+                row=row, column=0, sticky="w", pady=(0, theme.gap(1.25))
+            )
+
+        label(0, "抓取范围")
+        self.scope_box = ttk.Combobox(
+            form,
+            state="readonly",
+            values=[text for _, text in self.SCOPES],
+        )
+        self.scope_box.grid(row=0, column=1, sticky="ew", pady=(0, theme.gap(1.25)))
+        include_hashes = bool(target.include_hashes)
+        if include_hashes:
+            self.scope_box.current(2)
+        elif target.scope == "po":
+            self.scope_box.current(1)
+        else:
+            self.scope_box.current(0)
+
+        label(1, "导出格式")
+        self._format_keys = list(EXPORTERS)
+        self.format_box = ttk.Combobox(
+            form,
+            state="readonly",
+            values=[EXPORTERS[key][0] for key in self._format_keys],
+        )
+        self.format_box.grid(row=1, column=1, sticky="ew", pady=(0, theme.gap(1.25)))
+        self.format_box.current(
+            self._format_keys.index(target.format_key)
+            if target.format_key in self._format_keys
+            else 0
+        )
+        self.format_box.bind("<<ComboboxSelected>>", lambda _event: self._sync_image_mode())
+
+        label(2, "图片处理")
+        self.image_box = ttk.Combobox(
+            form,
+            state="readonly",
+            values=list(IMAGE_MODE_LABELS),
+        )
+        self.image_box.grid(row=2, column=1, sticky="ew", pady=(0, theme.gap(1.25)))
+        self.image_box.current(
+            self.IMAGE_KEYS.index(target.image_mode)
+            if target.image_mode in self.IMAGE_KEYS
+            else 0
+        )
+
+        label(3, "最多抓几页")
+        self.pages_var = tk.StringVar(value=str(target.max_pages) if target.max_pages else "")
+        pages_row = ttk.Frame(form, style="Card.TFrame")
+        pages_row.grid(row=3, column=1, sticky="ew")
+        ttk.Entry(pages_row, textvariable=self.pages_var, width=8).pack(side="left")
+        ttk.Label(
+            pages_row, text=MAX_PAGES_HINT, style="CardMuted.TLabel"
+        ).pack(side="left", padx=(theme.gap(1.5), 0))
+
+        note = ttk.Label(
+            body,
+            text="「指定饼干」用的是主窗口「只看指定饼干」里那串号；监控每隔一段检查一次，"
+            "检查间隔在主窗口的监控页里调。",
+            style="CardMuted.TLabel",
+            justify="left",
+            wraplength=theme.gap(84),
+        )
+        note.pack(anchor="w", pady=(theme.gap(2), 0))
+
+        buttons = ttk.Frame(body, style="Card.TFrame")
+        buttons.pack(fill="x", pady=(theme.gap(2), 0))
+        ttk.Button(buttons, text="保存", command=self._save).pack(side="right")
+        ttk.Button(
+            buttons, text="取消", style="Secondary.TButton", command=self.destroy
+        ).pack(side="right", padx=(0, theme.gap(1.5)))
+
+        self._sync_image_mode()
+
+    # ---------- 内部 ----------
+
+    def _sync_image_mode(self) -> None:
+        """TXT / Markdown 用不上图片处理：那种格式下把下拉框灰掉，免得用户以为能选。"""
+        index = self.format_box.current()
+        enabled = index >= 0 and self._format_keys[index] in IMAGE_MODE_FORMATS
+        self.image_box.configure(state="readonly" if enabled else "disabled")
+
+    def _save(self) -> None:
+        scope_key, _ = self.SCOPES[self.scope_box.current()]
+        if scope_key == "hashes" and not self.app.parse_hashes():
+            messagebox.showwarning(
+                "提示",
+                "「指定饼干」要用主窗口「只看指定饼干」里填的串号。\n"
+                "先在那里填好，再回来选这一项。",
+                parent=self,
+            )
+            return
+
+        raw_pages = self.pages_var.get().strip()
+        try:
+            max_pages = int(raw_pages) if raw_pages else 0
+        except ValueError:
+            messagebox.showwarning(
+                "提示", f"页数上限认不出：{raw_pages}（只能是 0 或正整数；0 表示不限）", parent=self
+            )
+            return
+        if max_pages < 0:
+            messagebox.showwarning("提示", "页数上限不能是负数（0 表示不限）。", parent=self)
+            return
+
+        target = self.target
+        target.scope = "po" if scope_key == "po" else "all"
+        target.include_hashes = self.app.parse_hashes() if scope_key == "hashes" else []
+        target.format_key = self._format_keys[self.format_box.current()]
+        target.image_mode = self.IMAGE_KEYS[self.image_box.current()]
+        target.max_pages = max_pages
+        self.app.persist_watch_targets()
+        self.list_dialog._refresh()
+        self.destroy()
 
 
 class SelftestDialog(tk.Toplevel):
@@ -3621,6 +3802,8 @@ class App:
 
         self._export_queue: queue.Queue = queue.Queue()
         self._exporting = False
+        # 本轮导出的停止位：点「取消导出」时举起来，抓取层与导出器都会看它。
+        self._export_stop: threading.Event | None = None
         self._last_failed: list[str] = []
         # 本次导出真正用的目录（prepare_export_dir 的结果），收尾提示要用
         self._output_dir = ""
@@ -4150,7 +4333,7 @@ class App:
             self.image_mode_frame,
             state="readonly",
             width=12,
-            values=["内嵌图片", "仅保留链接", "丢弃图片"],
+            values=list(IMAGE_MODE_LABELS),
         )
         self.image_mode_box.pack(side="left", padx=(theme.gap(1), 0))
         self.image_mode_box.current(
@@ -5109,7 +5292,10 @@ class App:
         self.apply_settings_to_client()
 
         self._exporting = True
-        self.start_button.config(state="disabled")
+        # 本轮导出的停止位：传给抓取层与导出器，点「取消」时举起来。
+        stop_event = threading.Event()
+        self._export_stop = stop_event
+        self._set_export_controls(running=True)
         self.progress_bar.start(12)
         self.progress_var.set("开始导出…")
         self.log(
@@ -5142,6 +5328,7 @@ class App:
                 cache_dir=cache_dir,
                 progress=lambda msg: self._export_queue.put(("log", msg)),
                 use_cache=use_cache,
+                stop=stop_event,
             )
             exporter = create_exporter(
                 format_key,
@@ -5152,6 +5339,7 @@ class App:
                 browser_path=self.settings.pdf_browser or None,
                 pdf_options=pdf_opts.from_settings(self.settings),
                 font_size=self.settings.export_font_size,
+                stop=stop_event,
             )
 
             succeeded = 0
@@ -5159,8 +5347,12 @@ class App:
             # 抓下来但明确不完整的串（缺页/撞上页数上限）：产物已经写出去了，
             # 所以要单独收集，在结束时的汇总里提醒用户"这几份别当全的用"。
             incomplete: list[str] = []
+            cancelled = False
             started = time.time()
             for index, url in enumerate(urls, start=1):
+                if stop_event.is_set():
+                    cancelled = True
+                    break
                 self._export_queue.put(
                     ("progress", (index - 1, len(urls), f"[{index}/{len(urls)}] {url}"))
                 )
@@ -5205,6 +5397,13 @@ class App:
                     )
                     succeeded += 1
                     self._export_queue.put(("log", f"[{index}/{len(urls)}] 完成：{path.name}"))
+                except ExportCancelled:
+                    # 取消不是失败：已经导出的文件保留，剩下的串不再处理。
+                    cancelled = True
+                    self._export_queue.put(
+                        ("log", f"[{index}/{len(urls)}] 已取消，这一项没导完")
+                    )
+                    break
                 except XdaoError as exc:
                     failed.append(url)
                     self._export_queue.put(("log", f"[{index}/{len(urls)}] 失败：{exc}"))
@@ -5215,7 +5414,7 @@ class App:
                     )
 
             self._export_queue.put(
-                ("done", (succeeded, len(urls), failed, time.time() - started, incomplete))
+                ("done", (succeeded, len(urls), failed, time.time() - started, incomplete, cancelled))
             )
 
         def worker() -> None:
@@ -5228,11 +5427,32 @@ class App:
                     ("log", f"导出没能开始/继续：{type(exc).__name__}: {exc}")
                 )
                 self._export_queue.put(
-                    ("done", (0, len(urls), list(urls), 0.0, []))
+                    ("done", (0, len(urls), list(urls), 0.0, [], False))
                 )
 
         threading.Thread(target=worker, daemon=True).start()
         self.root.after(50, self._poll_export)
+
+    def cancel_export(self) -> None:
+        """点「取消导出」：举起停止位，等当前这一页/这张图收手。"""
+        stop = self._export_stop
+        if not self._exporting or stop is None:
+            return
+        stop.set()
+        self.start_button.config(state="disabled", text="正在取消…")
+        self.progress_var.set("正在取消…")
+        self.log("正在取消：当前这一页或这张图收手就停，已经导出的文件会保留。")
+
+    def _set_export_controls(self, *, running: bool) -> None:
+        """导出期间「开始导出」变成「取消导出」，结束后再变回来。"""
+        if running:
+            self.start_button.configure(
+                text="取消导出", command=self.cancel_export, state="normal"
+            )
+            self.retry_button.configure(state="disabled")
+            return
+        self.start_button.configure(text="开始导出", command=self.start, state="normal")
+        self.retry_button.configure(state="normal" if self._last_failed else "disabled")
 
     def retry_failed(self) -> None:
         if not self._last_failed:
@@ -5270,8 +5490,10 @@ class App:
         failed: list[str],
         elapsed: float,
         incomplete: list[str] | None = None,
+        cancelled: bool = False,
     ) -> None:
         self._exporting = False
+        self._export_stop = None
         self._last_failed = list(failed)
         # 汇总弹窗里要报"文件在哪"。这个值由 start() 落在实例上，这里再兜一层：
         # 万一哪条路径漏了赋值，也只丢一句话，不能让整个收尾崩掉（曾经的 NameError
@@ -5279,9 +5501,20 @@ class App:
         output_dir = self._resolved_output_dir()
         self.progress_bar.stop()
         self.progress_bar.set_value(succeeded, total)
-        self.start_button.config(state="normal")
-        self.retry_button.config(state="normal" if failed else "disabled")
+        self._set_export_controls(running=False)
         self.progress_var.set(f"完成：成功 {succeeded} / {total} 个串，用时 {elapsed:.0f} 秒")
+        if cancelled:
+            self.progress_var.set(f"已取消：完成 {succeeded} / {total} 个串，用时 {elapsed:.0f} 秒")
+            self.log(f"已取消：完成 {succeeded} / {total} 个串，用时 {elapsed:.1f} 秒。")
+            self.log("已导出的文件都还在，剩下的串没有处理。")
+            self.refresh_cache_info()
+            messagebox.showinfo(
+                "已取消导出",
+                f"已取消。取消前完成 {succeeded} / {total} 个串。\n\n"
+                f"已经导出的文件在：\n{output_dir}\n\n"
+                "没导的串下次可以重来（抓下来的页都在缓存里，会接着续）。",
+            )
+            return
         self.log(f"全部处理完毕：成功 {succeeded} / {total} 个，用时 {elapsed:.1f} 秒。")
         if failed:
             self.log("失败清单：" + "、".join(failed))
