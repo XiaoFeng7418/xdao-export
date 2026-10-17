@@ -22,7 +22,9 @@
 - CI 三个 job 全绿。
 - 打包后 `--version` 与界面启动都验过。
 
-## 附件
+## 附件（下这两个）
 
-- `xdao-export-v0.17.0-win64.zip`
-- `xdao-export-v0.17.0-win64.zip.sha256`
+免安装包，解压后双击 `xdao-export.exe` 就能用：
+
+- `xdao-export-v0.17.0-win64.zip` —— 免安装包本体
+- `xdao-export-v0.17.0-win64.zip.sha256` —— 校验文件，用来核对下载有没有坏
