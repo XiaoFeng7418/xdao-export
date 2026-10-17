@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 1990 项（2026-10-16 数出来的一共这么多；本机 Windows 上 1983 通过、7 项跳过）、
+单元测试 2012 项（2026-10-17 数出来的一共这么多；本机 Windows 上 2005 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 154 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -105,12 +105,12 @@ xdao-export/
 │  ├─ test_repo_info.py    仓库门面：写之前先验、写完再读回来核对（38）
 │  ├─ test_gui_probe.py    GUI 探针：看见主窗口才算起来，收尾要杀进程树（41）
 │  ├─ test_gui_shot.py     GUI 截图：一片同色不算截好，收尾要还 GDI 句柄（48）
-│  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级、启动清扫两种资料目录（84）
+│  ├─ test_gui_entry.py    界面入口、错误文案、监控列表导入导出、自检、更新与一键升级、启动清扫两种资料目录（86）
 │  ├─ test_gui_browser_login.py 「用浏览器登录」对话框（79，需真 Tk）
-│  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（88；v0.13.49 起多 4 条钉住五个导出器共用的底座`Exporter`：构造签名统一、显示名与扩展名来自类属性、保存骨架由模板方法接管）
-│  ├─ test_watcher.py      监控与配置（30）
-│  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（33）
-│  ├─ test_epub.py         EPUB（35）
+│  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板（95；v0.13.49 起多 4 条钉住五个导出器共用的底座`Exporter`：构造签名统一、显示名与扩展名来自类属性、保存骨架由模板方法接管）
+│  ├─ test_watcher.py      监控与配置（32）
+│  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（41）
+│  ├─ test_epub.py         EPUB（38）
 │  ├─ test_markdown.py     Markdown（41）
 │  ├─ test_notifications.py 桌面通知（28）
 │  ├─ test_pdf.py          PDF 渲染与路由（37）

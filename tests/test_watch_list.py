@@ -55,6 +55,17 @@ def test_export_then_read_gives_back_the_same_settings(tmp_path, list_file):
     assert back[2].include_hashes == ["AAA", "BBB"]
 
 
+def test_export_then_read_keeps_max_pages(list_file):
+    """「最多页数」是 v0.16.0 新加进条目的设置：导出再导入必须原样保留。"""
+    targets = [
+        target(url_or_id="7001234", max_pages=2),
+        target(url_or_id="7002000", max_pages=0),  # 0＝不限，也是有意义的值
+    ]
+    watch_list.export_targets(targets, list_file)
+    back = watch_list.read_targets(list_file)
+    assert [t.max_pages for t in back] == [2, 0]
+
+
 def test_export_does_not_carry_runtime_state(list_file):
     """跑出来的状态不跟着走。
 
@@ -235,6 +246,35 @@ def test_entry_without_url_uses_the_thread_id_alone(list_file):
     result = watch_list.import_targets([], list_file)
     assert result.added[0].thread_id == 7001234
     assert result.added[0].url_or_id == "7001234"
+
+
+def test_missing_max_pages_means_unlimited(list_file):
+    """老版本导出的文件没有 max_pages —— 读回来按「不限」处理，不能当成坏条目。"""
+    write_payload(list_file, {"targets": [{"url_or_id": "7001234"}]})
+    assert watch_list.import_targets([], list_file).added[0].max_pages == 0
+
+
+def test_max_pages_accepts_digits_as_text(list_file):
+    """手改文件时页数常被写成字符串；能认的就认。"""
+    write_payload(
+        list_file,
+        {
+            "targets": [
+                {"url_or_id": "7001234", "max_pages": "3"},
+                {"url_or_id": "7002000", "max_pages": " 0 "},
+            ]
+        },
+    )
+    result = watch_list.import_targets([], list_file)
+    assert [t.max_pages for t in result.added] == [3, 0]
+
+
+@pytest.mark.parametrize("bad", ["很多", -1, 2.5, True, [2]])
+def test_bad_max_pages_is_skipped_with_a_reason(list_file, bad):
+    write_payload(list_file, {"targets": [{"url_or_id": "7001234", "max_pages": bad}]})
+    result = watch_list.import_targets([], list_file)
+    assert not result.added
+    assert "页数上限认不出" in result.skipped[0][0]
 
 
 def test_bare_number_as_url_is_kept_as_is(list_file):

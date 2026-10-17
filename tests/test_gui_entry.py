@@ -1175,6 +1175,68 @@ def _open_watch(root, app) -> gui.WatchDialog:
     return dialog
 
 
+class _AddTargetApp(_WatchApp):
+    """给「添加输入框中的串」用的：带上取当前设置的那几个方法。"""
+
+    def __init__(self, settings, targets, root=None, max_pages: int = 5) -> None:
+        super().__init__(settings, targets, root)
+        self._max_pages = max_pages
+        self.scope_var = _FakeVar("all")
+
+    def _collect_urls(self):
+        return ["https://www.nmbxd1.com/t/7001337"]
+
+    def current_format(self) -> str:
+        return "html"
+
+    def parse_hashes(self):
+        return []
+
+    def current_image_mode(self) -> str:
+        return "url"
+
+    def max_pages_limit(self) -> int:
+        return self._max_pages
+
+
+def test_watch_dialog_add_from_input_snapshots_current_settings(dialog_root, artifacts_dir):
+    """加进监控列表的那一条要把「此刻」的格式/图片/页数存下来。
+
+    以前页数上限根本没地方存：用户在输入框填了「最多 5 页」再加进列表，
+    后台每轮还是整串抓完 —— 页数上限只对手动导出生效。
+    """
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _AddTargetApp(settings, [], dialog_root, max_pages=5)
+    dialog = _open_watch(dialog_root, app)
+    dialog._add_from_input()
+    dialog_root.update_idletasks()
+
+    assert len(app.watch_targets) == 1
+    target = app.watch_targets[0]
+    assert target.thread_id == 7001337
+    assert target.max_pages == 5
+    assert target.image_mode == "url"
+    assert app.persisted == 1  # 加完要立刻存盘
+
+
+def test_watch_dialog_shows_the_page_cap_in_the_table(dialog_root, artifacts_dir):
+    """列表里得看得见「最多 N 页」：不然用户没法确认这一条到底抓多少页。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(
+        settings,
+        [
+            gui.WatchTarget("7001234", format_key="html", max_pages=7),
+            gui.WatchTarget("7002000", format_key="html"),
+        ],
+        dialog_root,
+    )
+    dialog = _open_watch(dialog_root, app)
+    dialog_root.update_idletasks()
+    rows = [dialog.tree.item(iid, "values") for iid in dialog.tree.get_children()]
+    assert "最多 7 页" in rows[0][1]
+    assert "最多" not in rows[1][1]
+
+
 def test_watch_dialog_exports_the_list_to_the_chosen_file(dialog_root, artifacts_dir, monkeypatch):
     settings = AppSettings(_path=artifacts_dir / "config.json")
     app = _WatchApp(

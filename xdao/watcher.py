@@ -24,6 +24,15 @@ from .exporters import EXPORTERS, ThreadData, create_exporter
 from .notifications import Notifier, message_for
 
 
+def _target_max_pages(value) -> int:
+    """监控条目的页数上限：非数字、负数一律当「不限」（0）。"""
+    try:
+        pages = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return pages if pages > 0 else 0
+
+
 @dataclass
 class WatchTarget:
     """一个被监控的串。"""
@@ -33,6 +42,8 @@ class WatchTarget:
     format_key: str = "html"
     include_hashes: list[str] = field(default_factory=list)
     image_mode: str = "embed"
+    #: 每轮只抓前 N 页（0 ＝ 不限）。跟设置里「最多页数」同一套语义。
+    max_pages: int = 0
     state: str = "unknown"
     last_check: float = 0.0
     last_error: str = ""
@@ -60,6 +71,7 @@ class WatchTarget:
             "format_key": self.format_key,
             "hashes": list(self.include_hashes),
             "image_mode": self.image_mode,
+            "max_pages": self.max_pages,
         }
 
     @classmethod
@@ -72,6 +84,7 @@ class WatchTarget:
             format_key=str(data.get("format_key") or "html"),
             include_hashes=[str(h) for h in (raw_hashes or [])],
             image_mode=image_mode if image_mode in ("embed", "url", "drop") else "embed",
+            max_pages=_target_max_pages(data.get("max_pages")),
         )
 
 
@@ -157,6 +170,8 @@ def check_once(
     ``browser_path`` / ``pdf_options`` / ``font_size`` 是给导出器用的：不传时就是
     浏览器的默认纸张与页边距、以及默认正文字号。**必须由调用方显式带进来** ——
     监控是长期后台跑的功能，用户改了设置却只在手动导出生效，会看起来像「设置没保存」。
+
+    每轮抓多少页由 ``target.max_pages`` 决定（0 ＝ 不限，与设置里的「最多页数」同一套语义）。
     """
     result = WatchResult(target=target)
     cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
@@ -166,7 +181,11 @@ def check_once(
             cache_dir=cache_dir,
             progress=progress,
         )
-        fetched = fetcher.fetch(target.url_or_id, verify_cached=verify_cached)
+        fetched = fetcher.fetch(
+            target.url_or_id,
+            max_pages=target.max_pages,
+            verify_cached=verify_cached,
+        )
         thread: ThreadData = ThreadData(
             thread_id=fetched.meta.thread_id,
             title=fetched.meta.title,

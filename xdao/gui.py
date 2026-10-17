@@ -73,6 +73,9 @@ UNTIL_THREAD_ID_HINT = "串号截止含它本身，它后面的串跳过。"
 MAX_PAGES_UNIT = "页"
 #: 串号截止输入框旁边的提示：那三个字必须出现（见上）。
 UNTIL_THREAD_ID_UNIT = "（含它）"
+#: 哪几种导出格式认「图片」这一项（内嵌 / 只留链接 / 丢掉）。TXT 与 Markdown 是纯文本，
+#: 图片本来就只是链接或干脆没有，所以不给它们这一行。
+IMAGE_MODE_FORMATS = ("html", "pdf", "epub")
 
 
 def _describe_export_range(
@@ -3085,7 +3088,7 @@ class WatchDialog(tk.Toplevel):
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=9)
         for key, text, width in (
             ("thread", "串号", 110),
-            ("scope", "范围", 90),
+            ("scope", "范围", 120),
             ("format", "格式", 70),
             ("state", "状态", 260),
             ("checked", "最近检查", 100),
@@ -3169,6 +3172,9 @@ class WatchDialog(tk.Toplevel):
                 scope = "仅 PO"
             else:
                 scope = "全部"
+            if target.max_pages:
+                # 页数上限跟着这一条走（跟「最多页数」输入框同一套语义，0＝不限）。
+                scope += f" · 最多 {target.max_pages} 页"
             checked = (
                 time.strftime("%H:%M:%S", time.localtime(target.last_check))
                 if target.last_check
@@ -3199,6 +3205,8 @@ class WatchDialog(tk.Toplevel):
                     format_key=self.app.current_format(),
                     include_hashes=self.app.parse_hashes(),
                     image_mode=self.app.current_image_mode(),
+                    # 这一条以后每轮都按当前「最多页数」抓（0＝不限）；想改就删了重加。
+                    max_pages=self.app.max_pages_limit(),
                 )
             )
             added += 1
@@ -4131,24 +4139,27 @@ class App:
             style="Card.TCheckbutton",
         ).pack(side="left", padx=(theme.gap(2), 0))
 
-        # EPUB 的图片处理方式（只在选 EPUB 时可用；非 EPUB 时整行收起来）
-        self.image_mode_frame = ttk.Frame(input_card.body, style="Card.TFrame")
-        ttk.Label(self.image_mode_frame, text="EPUB 图片", style="Card.TLabel").pack(side="left")
+        # 图片处理方式（HTML / PDF / EPUB 都认；纯文本格式用不上，选它们时整块收起来）。
+        # 它跟「导出格式」并成一行：左栏在最小窗口（940x680）下放不下额外一整行 ——
+        # v0.16.0 让它对 HTML 也露出来时，test_layout_fits_at_the_minimum_window_size
+        # 当场量出多了一行就要出滚动条。
+        self.image_mode_frame = ttk.Frame(format_row, style="Card.TFrame")
+        ttk.Label(self.image_mode_frame, text="图片", style="Card.TLabel").pack(side="left")
         self._image_mode_keys = ["embed", "url", "drop"]
         self.image_mode_box = ttk.Combobox(
             self.image_mode_frame,
             state="readonly",
-            width=26,
-            values=["内嵌到文件（体积大，离线可看）", "仅保留图片链接（体积小）", "丢弃图片"],
+            width=12,
+            values=["内嵌图片", "仅保留链接", "丢弃图片"],
         )
-        self.image_mode_box.pack(side="left", padx=(theme.gap(2), 0))
+        self.image_mode_box.pack(side="left", padx=(theme.gap(1), 0))
         self.image_mode_box.current(
             self._image_mode_keys.index(self.settings.image_mode)
             if self.settings.image_mode in self._image_mode_keys
             else 0
         )
-        if self.current_format() == "epub":
-            self.image_mode_frame.pack(fill="x", pady=(theme.gap(1), 0))
+        if self.current_format() in IMAGE_MODE_FORMATS:
+            self.image_mode_frame.pack(side="left", padx=(theme.gap(2), 0))
 
         # ② 导出目录
         folder_card = Card(inner)
@@ -4372,13 +4383,13 @@ class App:
         return "embed"
 
     def _sync_image_mode(self) -> None:
-        """图片模式只对 EPUB 有意义：选 EPUB 时露出来，其它格式直接收起来。"""
-        enabled = self.current_format() == "epub"
+        """图片模式对 HTML / PDF / EPUB 有意义：选它们时露出来，其它格式收起来。"""
+        enabled = self.current_format() in IMAGE_MODE_FORMATS
         self.image_mode_box.configure(state="readonly" if enabled else "disabled")
         if not hasattr(self, "_scroll_needed"):
             return  # 界面还没搭完（构造过程中会调用一次）
         if enabled:
-            self.image_mode_frame.pack(fill="x", pady=(theme.gap(1), 0))
+            self.image_mode_frame.pack(side="left", padx=(theme.gap(2), 0))
         else:
             self.image_mode_frame.pack_forget()
 

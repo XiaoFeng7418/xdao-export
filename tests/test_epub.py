@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -261,6 +263,77 @@ def test_image_download_failure_is_silently_skipped(artifacts_dir: Path):
     with zipfile.ZipFile(path) as archive:
         assert archive.read("OEBPS/text/post-0001.xhtml")  # 页面照样生成
     assert path.exists()
+
+
+class ParallelClient(FakeClient):
+    """记录「同时正在下载几张图」：开了线程池就应该大于 1。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._inflight = 0
+        self.max_inflight = 0
+        self.calls = 0
+
+    def download_image(self, url: str) -> bytes:
+        with self._lock:
+            self._inflight += 1
+            self.max_inflight = max(self.max_inflight, self._inflight)
+            self.calls += 1
+        try:
+            time.sleep(0.02)  # 放大重叠窗口，串行实现下这个值永远是 1
+            return super().download_image(url)
+        finally:
+            with self._lock:
+                self._inflight -= 1
+
+
+def many_image_thread(count: int = 8) -> ThreadData:
+    posts = [
+        make_post(
+            5000 + i,
+            f'第 {i} 楼<br><img src="/image/in{i}.jpg">',
+            user_hash="POCOOKIE",
+            is_po=True,
+        )
+        for i in range(count)
+    ]
+    return ThreadData(thread_id=5000, title="多图串", po_hash="POCOOKIE", posts=posts)
+
+
+def test_images_are_downloaded_in_parallel(artifacts_dir: Path):
+    # 原来是 for 循环逐张下：图多的时候比 HTML（早就 6 线程）慢好几倍。
+    client = ParallelClient()
+    build_epub(artifacts_dir, many_image_thread(8), client=client, image_mode="embed")
+    assert client.calls == 8
+    assert client.max_inflight > 1, "图片下载还是串行的"
+
+
+def test_parallel_download_keeps_the_original_image_order(artifacts_dir: Path):
+    client = ParallelClient()
+    path = build_epub(artifacts_dir, many_image_thread(8), client=client, image_mode="embed")
+    with zipfile.ZipFile(path) as archive:
+        stored = sorted(name for name in archive.namelist() if name.startswith("OEBPS/images/"))
+    # 并发只影响下载快慢；落盘编号必须仍按正文出现顺序
+    assert [Path(name).name for name in stored] == [f"img-{i:04d}.jpg" for i in range(1, 9)]
+
+
+def test_missing_images_are_reported_in_one_line(artifacts_dir: Path):
+    messages: list[str] = []
+    fail = {f"https://image.nmb.best/image/in{i}.jpg" for i in range(5)}
+    client = FakeClient(fail_urls=fail)
+    build_epub(
+        artifacts_dir,
+        many_image_thread(5),
+        client=client,
+        progress=messages.append,
+        image_mode="embed",
+    )
+    notes = [m for m in messages if m.startswith("有 5 张图片没下到")]
+    assert len(notes) == 1
+    assert "日志只列前三张" in notes[0]
+    # 单张失败以前是静默的；现在只在最后汇总一句，绝不逐张刷屏
+    assert not [m for m in messages if "失败" in m]
 
 
 def test_progress_messages_are_reported(artifacts_dir: Path):

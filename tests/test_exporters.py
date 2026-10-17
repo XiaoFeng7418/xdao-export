@@ -291,6 +291,61 @@ def test_html_scope_po_excludes_others():
     assert "回复正文" not in html
 
 
+# ------------------------------------------------------------ 图片三选一（v0.16.0）
+# 「图片」下拉以前只对 EPUB 生效，HTML / PDF 一律 base64 内嵌（文件大、PDF 因此失败）。
+# 现在三种模式对 HTML / PDF 也生效：embed＝内嵌、url＝只留链接、drop＝去掉图。
+
+
+def test_html_image_mode_embed_is_the_default():
+    client = FakeClient()
+    html = HtmlBuilder(client).build(sample_thread(), "all")
+    assert "data:image/jpeg;base64," in html
+    assert client.downloaded  # 默认模式会真的去下图
+
+
+def test_html_image_mode_url_keeps_links_without_downloading():
+    client = FakeClient()
+    html = HtmlBuilder(client, image_mode="url").build(sample_thread(), "all")
+    # 图换成可点的链接（图床地址），但一张都不下载 —— 文件才小得下来
+    assert client.downloaded == []
+    assert "https://image.nmb.best/image/abcdef.jpg" in html
+    assert "data:image/jpeg;base64," not in html
+
+
+def test_html_image_mode_drop_removes_images():
+    client = FakeClient()
+    html = HtmlBuilder(client, image_mode="drop").build(sample_thread(), "all")
+    assert client.downloaded == []
+    assert "data:image/jpeg;base64," not in html
+    # 正文里不许再出现图床地址（图被整张去掉，而不是留个裂图）
+    assert "image.nmb.best" not in html
+
+
+def test_html_image_mode_unknown_value_falls_back_to_embed():
+    html = HtmlBuilder(FakeClient(), image_mode="随便写的").build(sample_thread(), "all")
+    assert "data:image/jpeg;base64," in html
+
+
+def test_html_missing_images_summarized_in_one_line():
+    # 12 张图全下失败：日志里只逐条报前 10 张，剩下的合并成一句（不刷屏），
+    # HTML 里 12 张都保留成链接，不影响看图。
+    messages: list[str] = []
+    fail = {f"https://image.nmb.best/image/x{i}.jpg" for i in range(12)}
+    client = FakeClient(fail_urls=fail)
+    thread = sample_thread()
+    thread.posts = [
+        make_post(2000 + i, f"第 {i} 楼", img=f"x{i}", ext=".jpg") for i in range(12)
+    ]
+    html = HtmlBuilder(client, messages.append).build(thread, "all")
+
+    per_image = [m for m in messages if m.startswith("图片下载失败，已保留链接")]
+    assert len(per_image) == 10  # 只逐条报前 10 张
+    summary = [m for m in messages if m.startswith("一共 12 张图片没下到")]
+    assert len(summary) == 1  # 剩下的合成一句
+    assert "前三张是" in summary[0]
+    assert html.count("https://image.nmb.best/image/x") >= 12
+
+
 # ---------------------------------------------------------------- 正文字号
 # 2026-10-16 岛上回帖「可以设置调节字号大小吗，这个字我是真看不清」的一半：
 # 这一半是导出成品（HTML / PDF / EPUB）的字号。默认值必须与旧版逐字节一致 ——
@@ -348,6 +403,21 @@ def test_pdf_builder_hands_the_font_size_to_its_html():
     """PDF 就是把 HTML 打印出来 —— 字号必须递到它内部那个 HtmlBuilder 上。"""
     exporter = create_exporter("pdf", FakeClient(), font_size=18)
     assert exporter._html.font_size == 18
+
+
+def test_create_exporter_passes_image_mode_to_html_and_pdf():
+    """「图片」下拉以前只对 EPUB 生效；现在 HTML / PDF 也认这三种模式。"""
+    assert create_exporter("html", FakeClient(), image_mode="url").image_mode == "url"
+    assert create_exporter("html", FakeClient(), image_mode="drop").image_mode == "drop"
+    assert create_exporter("pdf", FakeClient(), image_mode="url").image_mode == "url"
+    # 没传就是老行为（内嵌），旧配置不受影响
+    assert create_exporter("html", FakeClient()).image_mode == "embed"
+
+
+def test_create_exporter_txt_ignores_image_mode():
+    exporter = create_exporter("txt", FakeClient(), image_mode="url")
+    assert isinstance(exporter, TxtBuilder)
+    assert not hasattr(exporter, "image_mode")
 
 
 def test_html_include_hashes_filters_posts():

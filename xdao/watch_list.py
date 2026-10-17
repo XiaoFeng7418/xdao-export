@@ -122,6 +122,17 @@ def _clean_hashes(raw: object) -> list[str] | None:
     return None
 
 
+def _clean_max_pages(raw: object) -> int | None:
+    """页数上限：缺省＝不限（0）；写了但不是 0/正整数就返回 None（判为坏条目）。"""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return 0
+    try:
+        pages = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return pages if pages >= 0 else None
+
+
 def target_from_entry(entry: dict) -> WatchTarget:
     """把文件里的一条记录变成 :class:`WatchTarget`，坏的就抛 :class:`WatchListError`。
 
@@ -157,12 +168,20 @@ def target_from_entry(entry: dict) -> WatchTarget:
     if hashes is None:
         raise WatchListError("饼干筛选（hashes）应该是一个列表")
 
+    max_pages = _clean_max_pages(entry.get("max_pages"))
+    if max_pages is None:
+        raise WatchListError(
+            f"页数上限认不出：{_normalize_text(entry.get('max_pages'))}"
+            "（只能是 0 或正整数；0 表示不限）"
+        )
+
     return WatchTarget(
         url_or_id=_clean_url(entry.get("url_or_id"), thread_id),
         scope=scope,
         format_key=format_key,
         include_hashes=hashes,
         image_mode=image_mode,
+        max_pages=max_pages,
     )
 
 

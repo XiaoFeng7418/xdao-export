@@ -348,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--image-mode",
         default=None,
         choices=["embed", "url", "drop"],
-        help="EPUB 的图片处理：embed 内嵌（默认）、url 仅链接、drop 丢弃",
+        help="图片处理（HTML / PDF / EPUB）：embed 内嵌（默认）、url 仅链接、drop 丢弃",
     )
     parser.add_argument(
         "--pdf-browser",
@@ -764,6 +764,8 @@ def run_cli(args: argparse.Namespace) -> int:
                 format_key=format_key,
                 include_hashes=hashes,
                 image_mode=image_mode,
+                # 每轮都按命令行的「最多页数」抓（0＝不限），和单次导出同一套语义。
+                max_pages=max_pages,
             )
             for url in args.threads
         ]
