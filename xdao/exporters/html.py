@@ -40,16 +40,27 @@ def _font_px(font_size: int, base: int) -> int:
     return max(1, int(round(font_size * base / DEFAULT_FONT_SIZE)))
 
 
-class HtmlBuilder(Exporter):
-    """生成图片内嵌的 HTML。
+#: 正文里图片的处理方式（与 EPUB 一致）：内嵌 / 只留链接 / 丢掉。
+IMAGE_MODES = ("embed", "url", "drop")
 
-    - 图片以 data URI 内嵌，导出的文件可以单独转发、离线打开、直接打印成 PDF。
+
+def _image_mode(value, fallback: str = "embed") -> str:
+    """认一下图片处理方式；认不出就回落默认（内嵌）。"""
+    mode = str(value or "").strip().lower()
+    return mode if mode in IMAGE_MODES else fallback
+
+
+class HtmlBuilder(Exporter):
+    """生成单文件 HTML（图片怎么处理由 image_mode 决定）。
+
+    - 图片默认以 data URI 内嵌，导出的文件可以单独转发、离线打开、直接打印成 PDF。
+    - ``image_mode="url"`` 只留外链、``"drop"`` 直接丢掉，大图串的体积能降一个量级。
     - 单张图片失败时退回原始链接，不让整个串导出失败。
     - 同一张图片在多个楼层出现只下载一次。
     """
 
     key = "html"
-    display = "HTML（图片嵌入）"
+    display = "HTML（单文件）"
     suffix = ".html"
     save_message = "正在整理并保存 HTML 文件…"
 
@@ -65,8 +76,16 @@ class HtmlBuilder(Exporter):
     ) -> None:
         super().__init__(client, progress, filename_template, **options)
         self._image_cache: dict[str, str] = {}
+        # 图片怎么处理：embed＝内嵌（默认）、url＝只留外链、drop＝丢掉。
+        self.image_mode = _image_mode(options.get("image_mode"))
         # 正文字号（px）：用户设的那个值；没设过就是 14（＝v0.15.0 之前的写死值）
         self.font_size = _font_size(options.get("font_size"))
+        # 没下到的图片地址（按出现顺序）：单张失败只在日志里提一次，
+        # 截到 MAX_MISSING_LOGS 条为止，剩下留到 build 结束时汇总成一句。
+        self.missing_images: list[str] = []
+
+    #: 日志里逐张列出失败图片的上限，超过就只报总数（图多的串不至于刷屏）。
+    MAX_MISSING_LOGS = 10
 
     # ---------- 图片 ----------
 
@@ -74,10 +93,14 @@ class HtmlBuilder(Exporter):
         return resolve_image_url(self._client, src)
 
     def embed_image(self, url: str) -> str:
-        """把图片转成 data URI；失败时返回原始 URL。"""
+        """按 image_mode 给出正文里这张图的 src；返回空串表示丢掉。"""
         if not url:
             return ""
         if url.startswith("data:"):
+            return url
+        if self.image_mode == "drop":
+            return ""
+        if self.image_mode == "url":
             return url
         cached = self._image_cache.get(url)
         if cached is not None:
@@ -90,13 +113,27 @@ class HtmlBuilder(Exporter):
             b64 = base64.b64encode(data).decode("ascii")
             value = f"data:{mime};base64,{b64}"
         else:
-            # 单张图下载失败时保留原链接，仅提示一次。
-            self._notify(f"图片下载失败，已保留链接：{url}")
+            # 单张图下载失败时保留原链接；日志里前几张逐条提，再多就汇总。
+            if url not in self.missing_images:
+                self.missing_images.append(url)
+            if len(self.missing_images) <= self.MAX_MISSING_LOGS:
+                self._notify(f"图片下载失败，已保留链接：{url}")
             value = url
 
         if len(self._image_cache) < self.MAX_CACHE_ENTRIES:
             self._image_cache[url] = value
         return value
+
+    def _report_missing_images(self) -> None:
+        """把没下到的图片汇总成一句（失败很多时日志不再逐条刷）。"""
+        count = len(self.missing_images)
+        if count <= self.MAX_MISSING_LOGS:
+            return
+        urls = "、".join(self.missing_images[:3])
+        self._notify(
+            f"一共 {count} 张图片没下到，已保留原链接（逐条日志只列了前 {self.MAX_MISSING_LOGS} 张）；"
+            f"前三张是：{urls}"
+        )
 
     # ---------- 正文 ----------
 
@@ -217,7 +254,7 @@ class HtmlBuilder(Exporter):
         meta_px = _font_px(body_px, 11)
         print_px = _font_px(body_px, 13)
 
-        return f"""<!DOCTYPE html>
+        document = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -261,11 +298,16 @@ class HtmlBuilder(Exporter):
 </body>
 </html>
 """
+        self._report_missing_images()
+        return document
 
     # ---------- 图片预取 ----------
 
     def _preload_images(self, thread: ThreadData, posts: list[Post]) -> None:
         """并发预取图片，让后续渲染阶段不必串行等待。"""
+        if self.image_mode != "embed":
+            # 只留外链 / 丢掉图片时根本不用下载，省掉整趟网络。
+            return
         wanted: list[str] = []
         for post in posts:
             for url in iter_post_image_urls(self._client, post):

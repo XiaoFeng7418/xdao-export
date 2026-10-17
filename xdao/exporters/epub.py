@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import datetime as _datetime
 import html as html_lib
 import uuid
@@ -44,6 +45,9 @@ EPUB_MIMETYPE = "application/epub+zip"
 LANGUAGE = "zh-CN"
 TEXT_DIR = "OEBPS/text"
 IMAGE_DIR = "OEBPS/images"
+
+#: 图片下载的并发数，和 HTML 导出器那边保持一致：图多的串串行下会慢好几倍。
+IMAGE_WORKERS = 6
 
 # EPUB 3 的固定外壳。
 CONTAINER_XML = """<?xml version="1.0" encoding="utf-8"?>
@@ -142,6 +146,8 @@ class EpubBuilder(Exporter):
         self._data_cache: dict[str, bytes | None] = {}
         # url -> data URI。
         self._uri_cache: dict[str, str] = {}
+        # 没下到的图片地址（按出现顺序），build 结束时汇总成一句告诉用户。
+        self.missing_images: list[str] = []
 
     # ---------- 基础工具 ----------
 
@@ -164,6 +170,7 @@ class EpubBuilder(Exporter):
         self._notify("正在生成 EPUB 文件…")
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             self._write_epub(archive, thread, posts, images, image_mode)
+        self._report_missing_images()
         return output_path
 
     def save(
@@ -187,6 +194,15 @@ class EpubBuilder(Exporter):
         )
 
     # ---------- 图片 ----------
+
+    def _report_missing_images(self) -> None:
+        """把没下到的图片汇总成一句（单张失败不再刷屏）。"""
+        count = len(self.missing_images)
+        if not count:
+            return
+        urls = "、".join(self.missing_images[:3])
+        tail = "" if count <= 3 else "（日志只列前三张）"
+        self._notify(f"有 {count} 张图片没下到，已从电子书里去掉：{urls}{tail}")
 
     def _load(self, url: str) -> bytes | None:
         """下载并缓存图片，失败返回 None。"""
@@ -213,23 +229,37 @@ class EpubBuilder(Exporter):
     def _collect_images(
         self, posts: list[Post], image_mode: str
     ) -> list[tuple[str, bytes]]:
-        """按出现顺序收集要落盘的图片：(entry_name, 数据)。"""
+        """按出现顺序收集要落盘的图片：(entry_name, 数据)。
+
+        和 HTML 一样开几个线程并行下载：图多的串串行下会慢好几倍。
+        落盘顺序仍按正文里第一次出现的先后，成品可重复。
+        """
         if image_mode != "embed":
             return []
-        images: list[tuple[str, bytes]] = []
+        urls: list[str] = []
         seen: set[str] = set()
         for post in posts:
             for url in iter_post_image_urls(self._client, post):
-                if url in seen:
-                    continue
-                seen.add(url)
-                data = self._load(url)
-                if not data:
-                    # 下载失败静默跳过，绝不让导出整体失败。
-                    continue
-                suffix = mime_to_ext(guess_mime(url, data))
-                name = f"{IMAGE_DIR}/img-{len(images) + 1:04d}{suffix}"
-                images.append((name, data))
+                if url and url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+        if not urls:
+            return []
+        self._notify(f"正在下载 {len(urls)} 张图片…")
+        # _load 自己负责写 _data_cache（失败记 None），这里只等它们回来。
+        with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as executor:
+            list(executor.map(self._load, urls))
+
+        images: list[tuple[str, bytes]] = []
+        for url in urls:
+            data = self._data_cache.get(url)
+            if not data:
+                # 下载失败静默跳过，绝不让导出整体失败；build 结束再汇总一句。
+                self.missing_images.append(url)
+                continue
+            suffix = mime_to_ext(guess_mime(url, data))
+            name = f"{IMAGE_DIR}/img-{len(images) + 1:04d}{suffix}"
+            images.append((name, data))
         return images
 
     def _image_src(self, url: str, image_mode: str) -> str:

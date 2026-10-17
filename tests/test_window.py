@@ -390,25 +390,24 @@ def test_log_widget_is_wired_to_the_log_method(app: gui.App) -> None:
     assert "测试用的一行日志" in content
 
 
-# ---------------------------------------------------------------- EPUB 图片行
+# ---------------------------------------------------------------- 图片行
+# v0.16.0 之前「图片」下拉只对 EPUB 显示（别的格式永远 base64 内嵌）。
+# 现在三种模式对 HTML / PDF 也生效，这一行就得跟着格式出现；纯文字格式不显示。
 
 
-def test_epub_image_row_follows_the_format(app: gui.App) -> None:
-    app.format_box.current(app._format_keys.index("html"))  # noqa: SLF001
-    app._sync_image_mode()  # noqa: SLF001
-    app.root.update_idletasks()
-    assert not app.image_mode_frame.winfo_ismapped()
+def test_image_row_follows_the_format(app: gui.App) -> None:
+    for key in ("html", "pdf", "epub"):
+        app.format_box.current(app._format_keys.index(key))  # noqa: SLF001
+        app._sync_image_mode()  # noqa: SLF001
+        app.root.update_idletasks()
+        assert app.image_mode_frame.winfo_ismapped(), key
+        assert app.current_format() == key
 
-    app.format_box.current(app._format_keys.index("epub"))  # noqa: SLF001
-    app._sync_image_mode()  # noqa: SLF001
-    app.root.update_idletasks()
-    assert app.image_mode_frame.winfo_ismapped()
-    assert app.current_format() == "epub"
-
-    app.format_box.current(app._format_keys.index("html"))  # noqa: SLF001
-    app._sync_image_mode()  # noqa: SLF001
-    app.root.update_idletasks()
-    assert not app.image_mode_frame.winfo_ismapped()
+    for key in ("txt", "markdown"):
+        app.format_box.current(app._format_keys.index(key))  # noqa: SLF001
+        app._sync_image_mode()  # noqa: SLF001
+        app.root.update_idletasks()
+        assert not app.image_mode_frame.winfo_ismapped(), key
 
 
 # ------------------------------------------------- 导出目录写不进去时的自动换地方

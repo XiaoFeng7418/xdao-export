@@ -482,6 +482,40 @@ def test_check_once_defaults_keep_the_old_behaviour(monkeypatch):
     assert seen[0]["pdf_options"] is None
 
 
+def test_check_once_passes_target_max_pages_to_the_fetcher(monkeypatch):
+    """监控的「最多页数」以前没接上：勾了 2 页，后台每轮还是把整串抓完。
+
+    现在每个目标自己记着页数上限（0＝不限），check_once 必须把它交给抓取层。
+    """
+    import xdao.watcher as watcher_module
+
+    _, out, cache = prepare_dirs("watcher-max-pages")
+    api = build_three_page_api()
+    calls: list[dict] = []
+    real_fetcher = watcher_module.CachedThreadFetcher
+
+    class SpyFetcher(real_fetcher):
+        def fetch(self, *args, **kwargs):
+            calls.append(kwargs)
+            return super().fetch(*args, **kwargs)
+
+    monkeypatch.setattr(watcher_module, "CachedThreadFetcher", SpyFetcher)
+
+    assert check_once(api, WatchTarget("7001", max_pages=2), out, cache_dir=cache).ok
+    assert calls[0]["max_pages"] == 2
+
+    # 老目标（没设过上限）＝ 0，抓取层按「不限」处理，不会凭空截断整串
+    assert check_once(api, WatchTarget("7001"), out, cache_dir=cache).ok
+    assert calls[1]["max_pages"] == 0
+
+
+def test_watch_target_max_pages_roundtrips_through_dict():
+    """页数上限要跟着列表一起存盘/读回，重开程序不能丢。"""
+    target = WatchTarget("7001", max_pages=3)
+    again = WatchTarget.from_dict(target.to_dict())
+    assert again.max_pages == 3
+
+
 def test_watch_forever_passes_pdf_options_into_every_check(monkeypatch):
     """后台循环的每一轮检查都要带上 PDF 选项与浏览器路径。"""
     import xdao.watcher as watcher_module

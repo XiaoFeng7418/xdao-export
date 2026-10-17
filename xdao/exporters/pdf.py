@@ -390,7 +390,7 @@ class PdfBuilder(Exporter):
     key = "pdf"
     display = "PDF（浏览器渲染）"
     suffix = ".pdf"
-    save_message = "正在整理 HTML（图片内嵌）…"
+    save_message = "正在整理 HTML…"
 
     def __init__(
         self,
@@ -418,7 +418,10 @@ class PdfBuilder(Exporter):
             progress=progress,
             filename_template=filename_template,
             font_size=options.get("font_size"),
+            image_mode=options.get("image_mode"),
         )
+        # 图片模式以内部 HTML 导出器归一化后的值为准（认不出的值在那里会退回 embed）。
+        self.image_mode = self._html.image_mode
 
     def render_pdf(self, html: str, _work_dir: Path, output_pdf: Path) -> Path:
         return render_html_to_pdf(
