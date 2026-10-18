@@ -348,7 +348,15 @@ def print_html_to_pdf(
         if login_info is None:  # pragma: no cover - find_browser 刚确认过它存在
             raise PdfError(f"指定的浏览器不存在：{info.path}")
         browser = LoginBrowser(
-            login_info, profile, timeout=remaining(60.0), start_url=source.as_uri()
+            login_info,
+            profile,
+            timeout=remaining(60.0),
+            start_url=source.as_uri(),
+            # v0.17.3：PDF 只要渲染结果，不显示窗口，也不接手用户开着的窗 ——
+            # 真机上这条路的窗口被当成「程序乱弹浏览器」投诉过；接手别人的窗还会
+            # 把它正在看的页面抢去导航成本地文件。
+            headless=True,
+            attach_live=False,
         )
         with browser:
             session = CDPSession(

@@ -640,14 +640,18 @@ def test_check_and_move_rejects_non_pdf(out_dir):
 # ---------- 超时预算：整趟共用一个截止时刻（v0.17.1） ----------
 
 class _FakeLoginBrowserForBudget:
-    """假浏览器句柄：只记下起它时拿到了多少秒预算。"""
+    """假浏览器句柄：只记下起它时拿到了多少秒预算、以及收没收到 headless。"""
 
     def __init__(self) -> None:
         self.granted: list[float] = []
+        self.headless: list[bool] = []
+        self.attach_live: list[bool] = []
         self.browser_ws_url = "ws://fake"
 
-    def __call__(self, info, profile, *, timeout, start_url=None):
+    def __call__(self, info, profile, *, timeout, start_url=None, headless=False, attach_live=True):
         self.granted.append(timeout)
+        self.headless.append(headless)
+        self.attach_live.append(attach_live)
         self._profile = profile
         return self
 
@@ -735,6 +739,8 @@ def test_cdp_render_grants_each_phase_from_one_budget(out_dir, monkeypatch):
     print_html_to_pdf("<html></html>", target, timeout=900)
 
     assert login_browser.granted == [pytest.approx(20.0)]
+    assert login_browser.headless == [True], "PDF 渲染不许在人眼前弹窗（v0.17.3）"
+    assert login_browser.attach_live == [False], "PDF 不许蹭用户开着的窗（v0.17.3）"
     assert session.granted == [pytest.approx(15.0)]
     assert session.call_granted == [pytest.approx(5.0)]
     assert target.read_bytes().startswith(b"%PDF")

@@ -2442,3 +2442,138 @@ def test_watch_edit_dialog_greys_the_image_box_for_formats_without_images(
     finally:
         _close(edit)
         _close(dialog)
+
+
+# ---------------------------------------------------------------------------
+# v0.17.3：主窗口关掉时，登录对话框与它开的浏览器一起收掉
+# ---------------------------------------------------------------------------
+
+
+def _open_browser_login(live_app):
+    """在主窗口下开一个「用浏览器登录」对话框（不会真的起浏览器：没有事件循环）。"""
+    live_app.root.app = live_app  # 生产里这一层是 LoginDialog；这里用主窗口顶替
+    return gui.BrowserLoginDialog(
+        live_app.root, client=None, settings=live_app.settings
+    )
+
+
+def test_run_binds_the_close_button_to_the_app_close_handler(monkeypatch):
+    """点 × 要走 App.on_close（先收活再退），不是直接退出进程。"""
+    closed: list[int] = []
+
+    class ClosingRoot(FakeRoot):
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocol_calls: list[tuple] = []
+
+        def protocol(self, name, func=None):
+            self.protocol_calls.append((name, func))
+
+    class ClosingApp:
+        def __init__(self, root) -> None:
+            pass
+
+        def on_close(self) -> None:
+            closed.append(1)
+
+    root = ClosingRoot()
+    monkeypatch.setattr(gui.tk, "Tk", lambda: root)
+    monkeypatch.setattr(gui, "App", ClosingApp)
+
+    gui.run()
+
+    assert root.protocol_calls and root.protocol_calls[0][0] == "WM_DELETE_WINDOW"
+    assert callable(root.protocol_calls[0][1])
+
+
+def test_browser_login_dialog_registers_itself_on_the_app(live_app):
+    """对话框要把自己登记到主窗口：主窗口被关掉时才有机会喊它收尾（v0.17.3）。"""
+    dialog = _open_browser_login(live_app)
+    try:
+        assert dialog in live_app._login_dialogs
+        dialog.destroy()
+        assert dialog not in live_app._login_dialogs, "销毁后要摘掉，别留死引用"
+    finally:
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except tk.TclError:  # pragma: no cover
+            pass
+
+
+def test_on_close_cancels_login_dialogs_and_defers_destroy(live_app, monkeypatch):
+    """关主窗口：先让登录对话框走正常收尾（停线程 + 关浏览器），再延后销毁主窗。"""
+    dialog = _open_browser_login(live_app)
+    scheduled: list[tuple] = []
+    monkeypatch.setattr(
+        live_app.root, "after", lambda ms, func=None, *a: scheduled.append((ms, func))
+    )
+    try:
+        live_app.on_close()
+        assert dialog._closing is True, "对话框要按「取消」这条正路收尾"
+        assert dialog not in live_app._login_dialogs
+        assert live_app._closing is True
+        assert scheduled and scheduled[0][0] == 1200, "给导出线程留一点收手时间再销毁"
+    finally:
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except tk.TclError:  # pragma: no cover
+            pass
+        live_app._closing = False
+
+
+def test_login_worker_releases_the_browser_when_starting_fails(live_app, monkeypatch):
+    """启动失败也要把已经建出来的浏览器句柄收掉 —— 否则那扇窗留在屏幕上（v0.17.3）。"""
+    from types import SimpleNamespace
+
+    from xdao import browser_login as bl
+
+    dialog = _open_browser_login(live_app)
+    created: list = []
+
+    class FailingBrowser:
+        def __init__(self, *args, **kwargs):
+            self.stopped = False
+            created.append(self)
+
+        def start(self) -> None:
+            raise RuntimeError("端口一直没接上")
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def cleanup_temp_profile(self) -> None:
+            pass
+
+    backend = SimpleNamespace(
+        user_data_dir=lambda base: Path(base) / "browser-profile",
+        LoginBrowser=FailingBrowser,
+    )
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: backend)
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: bl.BrowserInfo("假浏览器", "C:/假.exe"),
+    )
+    try:
+        gui.BrowserLoginDialog._worker(dialog)
+        assert created and created[0].stopped is True, "失败分支必须释放浏览器"
+        assert dialog._browser is None
+        queued = []
+        while True:
+            try:
+                queued.append(dialog._queue.get_nowait())
+            except queue.Empty:
+                break
+        assert ("error", "打开浏览器失败：端口一直没接上") in queued
+    finally:
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except tk.TclError:  # pragma: no cover
+            pass
+
+def test_app_registers_itself_on_the_root_window(live_app):
+    """子窗口靠 master.app 找到主窗口（v0.17.3）：这条断了登录窗就不再登记。"""
+    assert live_app.root.app is live_app
