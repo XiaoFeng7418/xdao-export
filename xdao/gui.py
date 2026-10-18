@@ -1522,6 +1522,7 @@ class BrowserLoginDialog(tk.Toplevel):
             for note in (
                 getattr(browser, "profile_note", ""),
                 getattr(browser, "browser_note", ""),
+                getattr(browser, "handoff_note", ""),
             ):
                 if note:
                     self._queue.put(("note", note))
