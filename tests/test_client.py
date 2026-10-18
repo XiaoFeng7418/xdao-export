@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import gzip
+import io
+import urllib.error
 
 import pytest
 
+from xdao import client as client_module
 from xdao.client import LoginError, XdaoClient, XdaoError, _decode_response_body
 
 # 线上抓到的真实「跳转提示」页（HTTP 200 + JS 跳转，urllib 不会自己跟）。
@@ -391,4 +394,167 @@ def test_import_cookies_keeps_a_session_cookie_alive_within_this_client() -> Non
     assert cookie.expires is None
     assert cookie.is_expired() is False
     assert cookie.discard is True
+
+
+# ---------------------------------------------------------------- 错误与兜底路径
+#
+# 覆盖率体检（2026-10-18）发现 client.py 有一大段没被任何用例走过：429/500/超时/断网
+# 的重试与报错文案、响应体大小上限、接口前缀探测的失败分支、userhash 的三种导出形状。
+# 这些都是用户真能撞上的路径（限流、服务端 502、连不上），却只靠手测过，所以补在这里。
+
+
+class _RaisingOpener:
+    """按顺序抛预设异常；用完之后一直抛最后一个。"""
+
+    def __init__(self, *errors: BaseException) -> None:
+        self.errors = list(errors)
+        self.calls = 0
+
+    def open(self, req, timeout=None):  # 只求签名兼容，不看请求内容
+        self.calls += 1
+        index = min(self.calls, len(self.errors)) - 1
+        raise self.errors[index]
+
+
+def _http_error(code: int, body: bytes = b"", retry_after: str | None = None):
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    return urllib.error.HTTPError(
+        "https://www.nmbxd1.com/Api/thread", code, "boom", headers, io.BytesIO(body)
+    )
+
+
+def _quiet_client() -> XdaoClient:
+    """不真睡的客户端：退避改成空转，限速关掉。"""
+    client = XdaoClient(throttle=0.0)
+    client._backoff = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    return client
+
+
+def test_request_reports_the_rate_limit_and_stops_retrying():
+    """429 是接口明确说「你太快了」，重试到最后一轮后要给人一句能照做的提示。"""
+    client = _quiet_client()
+    client._opener = _RaisingOpener(_http_error(429), _http_error(429))  # type: ignore[assignment]
+
+    with pytest.raises(XdaoError, match="限流（429）") as excinfo:
+        client._request("https://www.nmbxd1.com/Api/thread", retries=1)
+
+    assert client._opener.calls == 2, "429 属于可重试错误，应该试满两轮再放弃"
+    assert "请求间隔" in str(excinfo.value), "提示里要告诉用户去调大请求间隔"
+
+
+def test_request_keeps_a_snippet_of_a_500_body_for_diagnosis():
+    """服务端 5xx 时把响应体开头带上，回帖求助时能直接贴出来。"""
+    client = _quiet_client()
+    client._opener = _RaisingOpener(  # type: ignore[assignment]
+        _http_error(500, "<h1>数据库连接失败</h1>".encode("utf-8"))
+    )
+
+    with pytest.raises(XdaoError, match="请求失败 500") as excinfo:
+        client._request("https://www.nmbxd1.com/Api/thread", retries=0)
+
+    assert "数据库连接失败" in str(excinfo.value)
+
+
+def test_request_does_not_retry_a_plain_404():
+    """4xx（除 429）是确定性错误：页面就是没有，重试只浪费时间。"""
+    client = _quiet_client()
+    client._opener = _RaisingOpener(_http_error(404, b"not found"))  # type: ignore[assignment]
+
+    with pytest.raises(XdaoError, match="请求失败 404"):
+        client._request("https://www.nmbxd1.com/Api/thread", retries=3)
+
+    assert client._opener.calls == 1
+
+
+def test_request_reports_a_timeout_after_the_last_retry():
+    client = _quiet_client()
+    client._opener = _RaisingOpener(TimeoutError(), TimeoutError())  # type: ignore[assignment]
+
+    with pytest.raises(XdaoError, match="请求超时") as excinfo:
+        client._request("https://www.nmbxd1.com/Api/thread", retries=1)
+
+    assert client._opener.calls == 2
+    assert "秒" in str(excinfo.value), "超时文案里要带上等了多久"
+
+
+def test_request_reports_a_network_error_after_the_last_retry():
+    client = _quiet_client()
+    client._opener = _RaisingOpener(  # type: ignore[assignment]
+        ConnectionResetError("reset"), ConnectionResetError("reset")
+    )
+
+    with pytest.raises(XdaoError, match="网络错误"):
+        client._request("https://www.nmbxd1.com/Api/thread", retries=1)
+
+    assert client._opener.calls == 2
+
+
+def test_request_stops_reading_a_body_over_the_size_cap():
+    """图片/HTML 接口都带 max_bytes：超过上限立刻失败，别把内存吃光。"""
+    client = _quiet_client()
+    client._opener = _FakeOpener(_FakeResponse(b"x" * 5000, {}))  # type: ignore[assignment]
+
+    with pytest.raises(XdaoError, match="KB 上限"):
+        client._request("https://www.nmbxd1.com/Api/thread", max_bytes=4096)
+
+
+def test_backoff_honours_retry_after_and_caps_it(monkeypatch):
+    """服务器给了 Retry-After 就听它的（夹在 0~30 秒），给了乱码才走指数退避。"""
+    slept: list[float] = []
+    monkeypatch.setattr(client_module.time, "sleep", slept.append)
+
+    XdaoClient._backoff(0, retry_after="2")
+    XdaoClient._backoff(0, retry_after="300")
+    XdaoClient._backoff(2, retry_after="不是数字")
+
+    assert slept == [2.0, 30.0, 3.2], f"退避秒数不对：{slept}"
+
+
+def test_api_get_json_reports_when_every_prefix_is_dead():
+    """两个接口前缀都连不上时，报的是最后那次错误，不能只丢一个空异常。"""
+    client = _quiet_client()
+
+    def dead_request(url, data=None, **kwargs):
+        raise XdaoError(f"连不上：{url}")
+
+    client._request = dead_request  # type: ignore[method-assign]
+
+    with pytest.raises(XdaoError, match="无法连接 X 岛接口"):
+        client._api_get_json("thread", {"id": 1})
+
+
+def test_api_get_json_moves_to_the_backup_prefix_when_the_first_one_fails():
+    """首选前缀整个连不上时，自动换备用前缀把数据取回来。"""
+    client = _quiet_client()
+    client._api_base = client.API_BASES[0]
+    primary = client.API_BASES[0]
+
+    def flaky_request(url, data=None, **kwargs):
+        if url.startswith(primary):
+            raise XdaoError("首选前缀连不上")
+        if "/getCDNPath" in url:
+            return b"[]"
+        return b'{"isOK": true, "id": 1}'
+
+    client._request = flaky_request  # type: ignore[method-assign]
+
+    assert client._api_get_json("thread", {"id": 1}) == {"isOK": True, "id": 1}
+    assert client._api_base == client.API_BASES[1], "换过前缀之后要把新前缀记下来"
+
+
+def test_extract_userhash_reads_the_three_export_shapes():
+    """「导出资料」三种形状都见过：JSON 的 cookie 字段、userhash= 参数、坏 JSON 里的字面量。"""
+    assert XdaoClient._extract_userhash_from_export('{"cookie": "abc123"}') == "abc123"
+    assert XdaoClient._extract_userhash_from_export("userhash=xyz789; path=/") == "xyz789"
+    assert XdaoClient._extract_userhash_from_export('{ "cookie": "qqq111", 这后面是坏的 }') == "qqq111"
+    assert XdaoClient._extract_userhash_from_export("这里没有饼干") is None
+
+
+def test_page_count_prefers_the_explicit_field_then_falls_back_to_the_reply_count():
+    """接口有时不给页数：给了 PageCount 就信它，没给则按每页 19 条折算。"""
+    client = XdaoClient()
+    assert client._extract_page_count({"PageCount": "7"}) == 7
+    assert client._extract_page_count({"ReplyCount": 38}) == 3  # 38 // 19 + 1
+    assert client._extract_page_count({}) == 1
+    assert client._extract_page_count(None) == 1
 
