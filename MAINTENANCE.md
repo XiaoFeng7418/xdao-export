@@ -681,6 +681,11 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.17.1**（导出与监控不再同时跑；PDF 超时预算补上用例）：
+  **一、忙闲互斥（`xdao/gui.py`）。** 导出与监控都会往同一个导出目录写成品、往同一份缓存 jsonl 里追加页，同时跑会互相踩（同名产物互删、缓存半行、进度条按错的数字跳）。新增模块级判断 `App.is_busy()`（只看 `_exporting` / `_watching` 两个标志）、`_busy_reason()`、`_refuse_when_busy(doing)`（在忙就弹「正在忙」并返回 True）；`start()`、`start_watching()`、`check_watch_once()` 三处入口都先过它（原来只挡 `_exporting`）；配色/字号切换改用 `is_busy()`，与「正在忙」文案统一。
+  **二、监控状态唯一收口。** 新增模块级哨兵 `_WATCH_STOPPED = object()`；监控线程 `finally` 里先 `put("监控已停止。")`、再 `put(_WATCH_STOPPED)`，`_poll_watch()` 收到哨兵（按对象身份判 `item is _WATCH_STOPPED`，不会跟日志字符串撞车）才把 `_watching` / `_watch_notifier` 落回 False。原先只有「用户点停止」与「线程抛异常」两处会清标志，线程自己正常结束时会留下假「监控中」（界面写着监控中、后台没人跑、再点还是停止监控）。`stop_watching()` 改成先把 `_watch_stop` 取出来再置 None 并立刻清标志（按钮马上能再点），线程真正收手由哨兵再确认一次。
+  **三、PDF 超时预算补用例（并更正一处记错的账）。** 整趟共用一个截止时刻的预算在 v0.17.0 的提交 9376227 里就已经做进 `xdao/exporters/pdf.py` 了（`git log -S'def remaining(cap' -- xdao/exporters/pdf.py` 指向它），不是那一版漏做；这次补的是钉住行为的用例：`tests/test_pdf.py` 新增 3 条（每段等待秒数不超过剩余预算与该段自身上限；预算用完下一步立刻报超时；预算充裕时正常走完）。
+  **四、用例与基线。** `tests/test_gui_entry.py` 93→98（互斥两条、监控收手清标志一条、忙闲判定一条、检查一轮被挡一条）、`tests/test_pdf.py` 38→41。收集 **2037 项**、本机 **2030 passed / 7 skipped**（跳过的是真机用例）。
 - **v0.17.0**（导出可随时取消、监控条目能原地改）：
   **一、导出可取消。** 新建 `xdao/cancel.py`：`ExportCancelled`（异常）与 `check(stop)`（停止位一举起就抛）。`xdao/cache.py` 的 `CachedThreadFetcher` 收 `stop=`，每抓一页前 `check_cancel()`，取消时整趟 `fetch` 立刻退出（不再把整串抓完）；`xdao/exporters/base.py` 的 `Exporter` 从 `options["stop"]` 取停止位，模板方法 `save()` 与各导出器的循环/并发下图都调 `check_cancel()`，已经写出去的文件不动；`xdao/exporters/pdf.py` 把 `subprocess.run(timeout=…)` 换成 `subprocess.Popen` + 每 `_POLL_INTERVAL` 秒轮询一次，取消位一举起就 `kill()` 掉浏览器、`finally` 里收尾（超时判断改成看 `deadline`，杀进程不再靠 `run` 的内部实现）。`xdao/gui.py`：`App` 新增 `_export_stop`（`threading.Event`）与 `cancel_export()`，`_set_export_controls(running=…)` 让「开始导出」在导出期间变成「取消导出」、结束后变回并把「重试失败项」恢复；`_finish(..., cancelled=True)` 单独走一路汇总（"已取消：完成 N / M 个串"、弹窗说明文件都在哪）。命令行导出不传停止位，行为与以前一致。
   **二、监控条目可编辑。** `xdao/gui.py` 新增 `WatchEditDialog`（改范围 / 导出格式 / 图片处理 / 最多页数；串号只读——换串等于另一条监控，删了重加更清楚）；`WatchDialog` 多一个「编辑选中」按钮，列表 `<<Double-1>>` 也进同一入口（`_edit_selected()`）。
