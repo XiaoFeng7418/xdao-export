@@ -681,6 +681,10 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.17.2**（补测试；推送工具不再说假话）：
+  **一、覆盖率体检与补漏。** 2026-10-18 做了一次全量体检（`coverage run -m pytest`，两个小脚本放在 <工作目录> 里，不进仓库）：全项目行覆盖 **8114/9408 = 86.25%**，低于 85% 的只剩 `xdao/cdp.py`、`xdao/gui.py`、`xdao/widgets.py` 一类「要么是 Tk 画界面、要么只能真机验」的文件。按「低风险、能被离线用例钉住」挑了四段几乎没被走到的代码补用例：`xdao/update_check.py` 的 `_pick_asset()`（按标签拼出的名字优先、标签大小写与有无 v 都认、退到第一个 zip、没有 zip 返回空、脏数据跳过）、`xdao/updater.py` 的 `can_write_dir()`（能写且不留探针、写不进、探针删不掉仍算能写、目录不存在）、`xdao/client.py` 的 `download_image()` / `_cache_path()`（写了缓存下次直接用、缓存坏了重下、缓存写不进不影响这次、没配目录或 `data:` 不缓存、图片超时放宽且带大小上限）、`xdao/cdp.py` 的 `_describe_exception()`（优先 `description`、退到 `value`、退到 `text`、拿到非字典也不能崩）。
+  **二、推送工具的自保。** `tools/push_via_api.py` 以前更新完分支就打印本地算出来的 sha —— PATCH 没生效（权限不足、并发、令牌被撤）时也照样报「推上去了」，2026-10-18 真的踩到了。现在更新后 `GET /repos/<repo>/git/ref/heads/<branch>` 回读一次，对比不上就 `return 1` 并在 stderr 写明「提交对象可能已经上传，但分支没动」。`tests/test_push_via_api.py` 加两条（回读一致才算成功、PATCH 被吞必须报错退出），`_FakeApi` 加 `stick=True` 用来模拟「没生效」。
+  **三、用例与基线。** `tests/test_update_check.py` 62→72、`tests/test_updater.py` 38→42、`tests/test_client.py` 34→39、`tests/test_browser_login.py` 339→343、`tests/test_push_via_api.py` 32→34。收集 **2073 项**、本机 **2066 passed / 7 skipped**。
 - **v0.17.1**（导出与监控不再同时跑；PDF 超时预算补上用例）：
   **一、忙闲互斥（`xdao/gui.py`）。** 导出与监控都会往同一个导出目录写成品、往同一份缓存 jsonl 里追加页，同时跑会互相踩（同名产物互删、缓存半行、进度条按错的数字跳）。新增模块级判断 `App.is_busy()`（只看 `_exporting` / `_watching` 两个标志）、`_busy_reason()`、`_refuse_when_busy(doing)`（在忙就弹「正在忙」并返回 True）；`start()`、`start_watching()`、`check_watch_once()` 三处入口都先过它（原来只挡 `_exporting`）；配色/字号切换改用 `is_busy()`，与「正在忙」文案统一。
   **二、监控状态唯一收口。** 新增模块级哨兵 `_WATCH_STOPPED = object()`；监控线程 `finally` 里先 `put("监控已停止。")`、再 `put(_WATCH_STOPPED)`，`_poll_watch()` 收到哨兵（按对象身份判 `item is _WATCH_STOPPED`，不会跟日志字符串撞车）才把 `_watching` / `_watch_notifier` 落回 False。原先只有「用户点停止」与「线程抛异常」两处会清标志，线程自己正常结束时会留下假「监控中」（界面写着监控中、后台没人跑、再点还是停止监控）。`stop_watching()` 改成先把 `_watch_stop` 取出来再置 None 并立刻清标志（按钮马上能再点），线程真正收手由哨兵再确认一次。

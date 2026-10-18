@@ -558,3 +558,91 @@ def test_page_count_prefers_the_explicit_field_then_falls_back_to_the_reply_coun
     assert client._extract_page_count({}) == 1
     assert client._extract_page_count(None) == 1
 
+
+# ---------------------------------------------------------------- 图片缓存
+#
+# 覆盖率体检（2026-10-18）：``download_image`` 与 ``_cache_path`` 也没被走过。
+# 这两段在真导出里天天跑（每张图片一次），出错的表现是「图片下载两遍」或
+# 「缓存坏一张就整趟失败」，所以把命中、坏了、写不进去三种情况都钉住。
+
+
+class _FakeImageDownloader:
+    """只记账、不联网的 ``_request``。"""
+
+    def __init__(self, data: bytes = b"\x89PNG-data") -> None:
+        self.data = data
+        self.calls: list[dict] = []
+
+    def __call__(self, url: str, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        return self.data
+
+
+def test_download_image_writes_the_cache_and_reuses_it(tmp_path):
+    """第一次下载后写进缓存；第二次同 URL 直接读文件，不再发请求。"""
+    client = XdaoClient()
+    client.image_cache_dir = tmp_path / "images"
+    fake = _FakeImageDownloader()
+    client._request = fake  # type: ignore[method-assign]
+
+    first = client.download_image("https://img.example/a.png")
+    second = client.download_image("https://img.example/a.png")
+
+    assert first == second == b"\x89PNG-data"
+    assert len(fake.calls) == 1, "第二次应当命中缓存，不该再请求"
+    cached = list((tmp_path / "images").rglob("*"))
+    assert [p for p in cached if p.is_file()], "缓存文件应当落在 image_cache_dir 下"
+    assert not [p for p in cached if p.suffix == ".part"], "临时文件写完要换名，不该留下"
+
+
+def test_download_image_redownloads_when_the_cache_file_is_broken(tmp_path):
+    """缓存文件读不出来（被占、坏了）不能拖垮导出：重新下载即可。"""
+    client = XdaoClient()
+    client.image_cache_dir = tmp_path / "images"
+    path = client._cache_path("https://img.example/b.png")
+    path.parent.mkdir(parents=True)
+    path.mkdir()  # 同名目录 → read_bytes 抛 OSError
+    fake = _FakeImageDownloader(b"\x89PNG-fresh")
+    client._request = fake  # type: ignore[method-assign]
+
+    assert client.download_image("https://img.example/b.png") == b"\x89PNG-fresh"
+    assert len(fake.calls) == 1
+
+
+def test_download_image_survives_a_cache_write_failure(tmp_path, monkeypatch):
+    """缓存目录写不进去（只读、满了）也只影响下次要不要重下，不影响这次导出。"""
+    client = XdaoClient()
+    client.image_cache_dir = tmp_path / "images"
+    client._request = _FakeImageDownloader()  # type: ignore[method-assign]
+
+    def refuse(self, *args, **kwargs):  # noqa: ANN001
+        raise OSError(28, "磁盘满了")
+
+    monkeypatch.setattr(type(tmp_path), "write_bytes", refuse, raising=False)
+
+    assert client.download_image("https://img.example/c.png") == b"\x89PNG-data"
+
+
+def test_download_image_skips_the_cache_without_a_directory_or_for_data_urls(tmp_path):
+    """没配缓存目录、或者是 ``data:`` 内嵌图时，根本不该算缓存路径。"""
+    client = XdaoClient()
+    assert client._cache_path("https://img.example/d.png") is None
+
+    client.image_cache_dir = tmp_path / "images"
+    assert client._cache_path("data:image/png;base64,AAAA") is None
+    assert client._cache_path("") is None
+
+
+def test_download_image_relaxes_the_timeout_and_caps_the_size(tmp_path):
+    """图片是「大、慢、可重试」的：超时按客户端默认值放宽，大小另有一个上限。"""
+    client = XdaoClient(timeout=5.0)
+    fake = _FakeImageDownloader()
+    client._request = fake  # type: ignore[method-assign]
+
+    client.download_image("https://img.example/e.png", use_cache=False)
+
+    call = fake.calls[0]
+    assert call["timeout"] >= 30.0, "图片服务器偶尔很慢，5 秒太紧"
+    assert call["max_bytes"] == client_module.MAX_IMAGE_BYTES
+    assert call["url"] == "https://img.example/e.png"
+

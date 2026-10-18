@@ -474,3 +474,98 @@ def test_cache_path_lives_next_to_the_config() -> None:
     # 只比路径，不碰真实文件系统：CI 的 Linux 机器上配置目录还没建，
     # 断言 path.parent.exists() 会红（本机 Windows 因为跑过程序所以是绿的）。
     assert path.parent == app_config_dir()
+
+
+# ---------------------------------------------------------------- 挑附件
+#
+# 覆盖率体检（2026-10-18）发现 ``_pick_asset`` 一行都没被走过。它决定「一键升级」
+# 去下哪个附件：挑错就是让用户下到别的包（旧版本、单文件版、校验文件），所以把
+# 每条分支都钉住 —— 这一段的成本很低，收益却是「升级不会下错东西」。
+
+
+def _asset(name: str, url: str = "https://example.invalid/a", size: int = 1) -> dict:
+    return {"name": name, "browser_download_url": url, "size": size}
+
+
+def test_pick_asset_prefers_the_name_the_tag_implies() -> None:
+    """按标签算出来的名字命中时，就算别的 zip 排在前面也挑它。"""
+    assets = [
+        _asset("xdao-export-v0.17.0-win64.zip", "old", 11),
+        _asset("xdao-export-v0.17.1-win64.zip", "new", 22),
+    ]
+
+    assert update_check._pick_asset(assets, "v0.17.1") == (
+        "new",
+        "xdao-export-v0.17.1-win64.zip",
+        22,
+    )
+
+
+@pytest.mark.parametrize("tag", ["v0.17.1", "0.17.1", "V0.17.1", "  v0.17.1  "])
+def test_pick_asset_accepts_the_usual_tag_spellings(tag: str) -> None:
+    """标签带不带 v、大写小写、前后空格，都得算成同一个版本。"""
+    assets = [
+        _asset("xdao-export-v0.17.0-win64.zip", "old", 11),
+        _asset("xdao-export-v0.17.1-win64.zip", "new", 22),
+    ]
+
+    url, name, size = update_check._pick_asset(assets, tag)
+
+    assert (url, name, size) == ("new", "xdao-export-v0.17.1-win64.zip", 22)
+
+
+def test_pick_asset_falls_back_to_the_first_zip() -> None:
+    """标签对不上（比如手工传的包名不规范）就退一步：拿第一个 zip。"""
+    assets = [
+        _asset("notes.txt", "txt", 1),
+        _asset("xdao-export-custom-win64.ZIP", "zip", 33),
+        _asset("xdao-export-v0.17.1-win64.zip", "second-zip", 44),
+    ]
+
+    assert update_check._pick_asset(assets, "v9.9.9") == (
+        "zip",
+        "xdao-export-custom-win64.ZIP",
+        33,
+    )
+
+
+def test_pick_asset_returns_nothing_when_there_is_no_zip() -> None:
+    """只有说明文件和校验文件时，返回三个空值，上层退化成「打开下载页」。"""
+    assets = [_asset("README.txt"), _asset("xdao-export-v0.17.1-win64.zip.sha256")]
+
+    assert update_check._pick_asset(assets, "v0.17.1") == ("", "", 0)
+
+
+def test_pick_asset_ignores_useless_entries() -> None:
+    """不是列表、不是字典、缺名字或缺直链的条目一律跳过；size 读不出来按 0 算。"""
+    assert update_check._pick_asset(None, "v0.17.1") == ("", "", 0)
+    assert update_check._pick_asset({"name": "x.zip"}, "v0.17.1") == ("", "", 0)
+
+    assets = [
+        "不是字典",
+        {"name": "", "browser_download_url": "https://example.invalid/empty-name"},
+        {"name": "no-url.zip"},
+        {"name": "xdao-export-v0.17.1-win64.zip", "browser_download_url": "good", "size": "很大"},
+    ]
+
+    assert update_check._pick_asset(assets, "v0.17.1") == (
+        "good",
+        "xdao-export-v0.17.1-win64.zip",
+        0,
+    )
+
+
+def test_pick_asset_without_a_tag_takes_the_first_zip() -> None:
+    """标签是空的（少数接口返回）时算不出名字，只能拿第一个 zip。"""
+    assets = [_asset("a.zip", "a", 5), _asset("b.zip", "b", 6)]
+
+    assert update_check._pick_asset(assets, "") == ("a", "a.zip", 5)
+
+
+def test_pick_asset_names_the_file_the_way_the_release_does() -> None:
+    """钉住「标签 → 文件名」的拼法：升级包名字的真源是 ``appinfo.asset_name``。"""
+    from xdao.appinfo import asset_name
+
+    assets = [_asset(asset_name("0.17.1"), "want", 12345678)]
+
+    assert update_check._pick_asset(assets, "v0.17.1")[1] == "xdao-export-v0.17.1-win64.zip"

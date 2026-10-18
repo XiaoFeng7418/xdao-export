@@ -670,3 +670,46 @@ def test_wait_for_exit_sees_a_live_process() -> None:
 def test_is_frozen_is_false_when_running_from_source() -> None:
     assert updater.is_frozen() is False
     assert updater.app_dir() == Path(updater.__file__).resolve().parent.parent
+
+
+# ---------------------------------------------------------------- 能不能写
+#
+# 覆盖率体检（2026-10-18）：``can_write_dir`` 一行都没走过。它的结论决定「能不能
+# 原地升级」，判断错一次的代价是升级到一半写不进去。三条分支各钉一条。
+
+
+def test_can_write_dir_returns_true_and_leaves_no_probe(tmp_path: Path) -> None:
+    """能写就返回真，并且把探针文件删掉（别在用户目录里留垃圾）。"""
+    assert updater.can_write_dir(tmp_path) is True
+    assert list(tmp_path.glob(".xdao-write-probe-*")) == []
+
+
+def test_can_write_dir_returns_false_when_the_probe_cannot_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """只读介质、系统目录：写探针会抛 OSError，只能返回假。"""
+
+    def refuse(self, *args, **kwargs):  # noqa: ANN001
+        raise PermissionError(13, "拒绝访问")
+
+    monkeypatch.setattr(Path, "write_text", refuse)
+
+    assert updater.can_write_dir(tmp_path) is False
+
+
+def test_can_write_dir_returns_true_even_when_the_probe_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """探针删不掉（被占用、权限怪）不算「不能写」：写得进去才是结论。"""
+
+    def refuse(self, *args, **kwargs):  # noqa: ANN001
+        raise PermissionError(13, "拒绝访问")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    assert updater.can_write_dir(tmp_path) is True
+
+
+def test_can_write_dir_returns_false_for_a_missing_directory(tmp_path: Path) -> None:
+    """目录本身都不存在时写探针会报「找不到路径」，同样返回假。"""
+    assert updater.can_write_dir(tmp_path / "还没有这个目录") is False

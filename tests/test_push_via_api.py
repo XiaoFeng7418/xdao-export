@@ -540,15 +540,18 @@ def test_unknown_excludes_looks_at_the_whole_history():
 class _FakeApi:
     """记下每个请求的假 API；没准备的路径直接报错，避免用例悄悄放过。"""
 
-    def __init__(self, *, head: str = "", remote_tree: dict | None = None):
+    def __init__(self, *, head: str = "", remote_tree: dict | None = None,
+                 stick: bool = False):
         self.head = head
+        self.ref = head
+        self.stick = stick
         self.remote_tree = {"tree": []} if remote_tree is None else remote_tree
         self.calls: list[tuple[str, str]] = []
 
     def __call__(self, token, method, path, payload=None, retries=4):
         self.calls.append((method, path))
         if method == "GET" and "/git/ref/heads/" in path:
-            return {"object": {"sha": self.head}}
+            return {"object": {"sha": self.ref}}
         if method == "GET" and "/git/trees/" in path:
             return self.remote_tree
         if method == "GET" and "/git/commits/" in path:
@@ -562,6 +565,8 @@ class _FakeApi:
         if method == "POST" and path.endswith("/git/commits"):
             return {"sha": "c" * 40}
         if method in ("PATCH", "POST") and "/git/refs" in path:
+            if not self.stick:  # stick=True 用来模拟「PATCH 没生效」
+                self.ref = str(payload.get("sha") or "")
             return {}
         raise AssertionError(f"用例没准备这个请求：{method} {path}")
 
@@ -594,14 +599,15 @@ def run_main(monkeypatch, capsys, *, api: _FakeApi, commits: list[dict], args: l
     monkeypatch.setattr(push_via_api, "blob_content", lambda sha: CONTENT)
     monkeypatch.setattr(push_via_api, "api", api)
     code = push_via_api.main(args)
-    return code, capsys.readouterr().out
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
 
 
 def test_a_dry_run_creates_no_commits_and_moves_no_ref(monkeypatch, capsys, back_to_root):
     api = _FakeApi(head="d" * 40)
     commits = [fake_commit("第一条\n", "t" * 40, sha="a" * 40),
                fake_commit("第二条\n", "t" * 40, sha="b" * 40, path="b.txt")]
-    code, out = run_main(
+    code, out, err = run_main(
         monkeypatch, capsys, api=api, commits=commits,
         args=["--repo", "owner/name", "--branch", "master", "--dry-run"],
     )
@@ -616,7 +622,7 @@ def test_a_dry_run_creates_no_commits_and_moves_no_ref(monkeypatch, capsys, back
 def test_a_typo_in_exclude_stops_before_any_request(monkeypatch, capsys, back_to_root):
     api = _FakeApi(head="")
     commits = [fake_commit("第一条\n", "t" * 40)]
-    code, out = run_main(
+    code, out, err = run_main(
         monkeypatch, capsys, api=api, commits=commits,
         args=["--repo", "owner/name", "--branch", "master", "--exclude", "dir/b.txtx"],
     )
@@ -629,7 +635,7 @@ def test_an_up_to_date_branch_needs_no_push(monkeypatch, capsys, back_to_root):
     head = "e" * 40
     api = _FakeApi(head=head)
     commits = [fake_commit("第一条\n", "t" * 40, sha=head)]
-    code, out = run_main(
+    code, out, err = run_main(
         monkeypatch, capsys, api=api, commits=commits,
         args=["--repo", "owner/name", "--branch", "master"],
     )
@@ -640,6 +646,37 @@ def test_an_up_to_date_branch_needs_no_push(monkeypatch, capsys, back_to_root):
         ("GET", "/repos/owner/name/git/ref/heads/master"),
         ("GET", f"/repos/owner/name/git/trees/{head}?recursive=1"),
     ]
+
+
+def test_a_successful_push_reports_the_ref_it_read_back(
+    monkeypatch, capsys, back_to_root
+):
+    """推完必须回读分支引用，并用回读到的 sha 说话。"""
+    api = _FakeApi(head="d" * 40)
+    commits = [fake_commit("第一条\n", "t" * 40, sha="a" * 40)]
+    code, out, err = run_main(
+        monkeypatch, capsys, api=api, commits=commits,
+        args=["--repo", "owner/name", "--branch", "master"],
+    )
+    assert code == 0
+    assert ("PATCH", "/repos/owner/name/git/refs/heads/master") in api.calls
+    assert api.calls[-1] == ("GET", "/repos/owner/name/git/ref/heads/master")
+    assert "已回读确认" in out
+
+
+def test_a_ref_update_that_did_not_take_effect_is_an_error(
+    monkeypatch, capsys, back_to_root
+):
+    """PATCH 没生效（权限、并发）时不能报成功：退出码 1，并说清分支没动。"""
+    api = _FakeApi(head="d" * 40, stick=True)
+    commits = [fake_commit("第一条\n", "t" * 40, sha="a" * 40)]
+    code, out, err = run_main(
+        monkeypatch, capsys, api=api, commits=commits,
+        args=["--repo", "owner/name", "--branch", "master"],
+    )
+    assert code == 1
+    assert "分支没动" in err, err
+    assert "已回读确认" not in out
 
 
 # --------------------------------------------------------------------------- API 重试
