@@ -518,6 +518,20 @@ def _is_fallback_profile_dir(path: Path, profile: Path) -> bool:
     return path.parent == profile.parent and bool(_FALLBACK_DIR_RE.match(path.name))
 
 
+def _first_line_of(exc: BaseException, limit: int = 90) -> str:
+    """把异常压成一行，放进运行日志（v0.17.5）。
+
+    日志是给「事后对账」看的：一行一句、意思完整，比 traceback 好读。
+    太长的说一半就够 —— 后半截通常是重复的提示。
+    """
+
+    text = str(exc).strip()
+    text = text.splitlines()[0].strip() if text else type(exc).__name__
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return text
+
+
 def _is_our_profile_dir(path: Path, profile: Path) -> bool:
     """这个资料目录是不是我们**自己建出来、该由我们收尾删掉**的那种。
 
@@ -1457,6 +1471,10 @@ class LoginBrowser:
         self._census_note = ""
         #: 启动进程先退出、窗口留下来时认下那扇窗的一句话（见 :attr:`handoff_note`）。
         self._handoff_note = ""
+        #: 这一次启动逐个候选试下来，每一次失败各留一句话（v0.17.5）。
+        #: 只进运行日志，不改任何行为 —— 真机上「一次点击弹出好几扇窗」时，
+        #: 这几行是唯一能对出「哪一扇试过、为什么放弃」的证据。
+        self._attempt_notes: list[str] = []
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
@@ -1503,6 +1521,18 @@ class LoginBrowser:
         时，它是唯一的一手证据。
         """
         return self._handoff_note
+
+    @property
+    def attempt_notes(self) -> tuple[str, ...]:
+        """这一次启动里每个失败候选各留一句话（v0.17.5）。
+
+        为什么要有：真机 2026-10-18 的用户**只点了一次**「用浏览器登录」，桌上却
+        17 秒里多出四扇窗。而日志里只有最后成功那一句 —— 候选表试了几个目录、
+        每一扇为什么被放弃，全被内部消化掉了，事后无从对账。这些行只写日志，
+        不占登录对话框、也不改重试节奏：看得见的东西归界面，查案用的归日志。
+        """
+
+        return tuple(self._attempt_notes)
 
     @property
     def census_note(self) -> str:
@@ -1581,6 +1611,7 @@ class LoginBrowser:
         #: 「刚起来就退出」。只有它中招才值得记账 / 让位 —— 临时目录是这一轮新建的，
         #: 坏了删掉再建一份就是（见 v0.13.41 的 :meth:`_quarantine_dead_persistent`）。
         dead_persistent = False
+        attempt_no = 0  # 第几扇窗（v0.17.5：失败也留一行进日志）
         for browser in browsers:
             if browser != self.info:
                 # 上一个浏览器起不来：换一个（用户机器上通常 Edge 与 Chrome 都有）。
@@ -1600,6 +1631,15 @@ class LoginBrowser:
                 try:
                     return self._launch(chosen)
                 except Exception as exc:  # noqa: BLE001 —— 下面按错误码决定要不要继续试
+                    attempt_no += 1
+                    # v0.17.5：失败先记账再收拾现场。候选表最多五个目录 ×
+                    # 两个浏览器，每一次尝试都记一句 —— 这是事后判断「桌上多出来
+                    # 的那几扇是哪一步开的」唯一的依据。
+                    self._attempt_notes.append(
+                        f"第 {attempt_no} 扇没成：{self.info.name} 开在 "
+                        f"{self._attempt_profile_label(chosen)}，"
+                        f"{_first_line_of(exc)}"
+                    )
                     self._reset_process()
                     if _is_our_profile_dir(chosen, self.profile):
                         # v0.17.4：这一轮起的窗可能还活着（启动进程先退、窗口留了
@@ -1879,6 +1919,17 @@ class LoginBrowser:
             self.stop()
         except Exception:  # noqa: BLE001 —— 收尾失败不该盖住启动的真正错误
             self.process = None
+
+    def _attempt_profile_label(self, chosen: Path) -> str:
+        """这一扇窗开在哪种资料目录上，写日志用（v0.17.5）。"""
+
+        if chosen == self.profile:
+            return f"持久资料目录 {chosen}"
+        if _is_our_profile_dir(chosen, self.profile):
+            # 临时目录、以及配置目录里那些 browser-profile-<PID>-<时间戳> 都算这一族；
+            # 名字本来就带着来历，日志里不必再细分是哪一种。
+            return f"临时资料目录 {chosen.name}"
+        return f"目录 {chosen}"
 
     def _profile_note_for(self, chosen: Path) -> str:
         """这次用的是哪一份资料目录，往界面上写一句（v0.13.37 / v0.17.4 收拢）。"""

@@ -5932,3 +5932,53 @@ def test_launch_does_not_adopt_a_window_whose_port_stays_mute(
     )
     assert browser._adopt_a_window_that_outlived_the_launcher(profile, None, None) is None
     assert browser.port == 0
+
+
+# ---------------------------------------------------------------- v0.17.5
+# 「一次点击弹出好几扇窗」的取证：候选表里每一次失败都该在日志里留一行。
+# 这几条用例钉的是「记不记得住」，不是「行为变没变」—— v0.17.5 只加记录。
+
+
+def test_every_failed_attempt_leaves_a_line_for_the_log(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Edge 每个候选都起不来：每一扇窗各留一行，编号从 1 开始连着排。"""
+
+    edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    chrome = _fake_browser_info(artifacts_dir, "Chrome", "chrome.exe")
+    profile = artifacts_dir / "browser-profile"
+
+    def fake_popen(args: list[str], **kwargs: object):
+        if args[0] == edge.path:
+            return _DeadBrowserPopen(args)
+        return _PortWritingPopen(args, **kwargs)
+
+    monkeypatch.setattr(bl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    monkeypatch.setattr(bl, "browser_candidates", lambda info=None, env=None: [edge, chrome])
+    with bl.LoginBrowser(edge, profile, timeout=2.0, attach_live=False) as browser:
+        notes = browser.attempt_notes
+
+    expected = 1 + 1 + len(bl.fallback_profile_dirs(profile))
+    assert len(notes) == expected, "Edge 试了几个候选，就该留几行（一扇一行）"
+    assert notes[0].startswith("第 1 扇没成：Edge 开在"), notes[0]
+    assert notes[-1].startswith(f"第 {expected} 扇没成：Edge 开在"), notes[-1]
+    assert any("退出码 21" in note for note in notes), "原因要写清楚，别只写「失败」"
+    assert "临时资料目录" in notes[0], "第一扇开在新建的临时目录上"
+    assert str(profile) in notes[1], "第二扇开在配置目录那份持久资料目录上"
+
+
+def test_a_good_launch_leaves_no_attempt_notes(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """头一次就起来：不留任何「没成」的行，日志保持干净。"""
+
+    info = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    monkeypatch.setattr(
+        bl.subprocess, "Popen", lambda args, **kwargs: _PortWritingPopen(args, **kwargs)
+    )
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    with bl.LoginBrowser(
+        info, artifacts_dir / "browser-profile", timeout=5.0, attach_live=False
+    ) as browser:
+        assert browser.attempt_notes == ()
