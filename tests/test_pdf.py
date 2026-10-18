@@ -636,3 +636,141 @@ def test_check_and_move_rejects_non_pdf(out_dir):
     with pytest.raises(PdfError, match="不是有效"):
         _check_and_move(target, out_dir / "结果.pdf")
 
+
+# ---------- 超时预算：整趟共用一个截止时刻（v0.17.1） ----------
+
+class _FakeLoginBrowserForBudget:
+    """假浏览器句柄：只记下起它时拿到了多少秒预算。"""
+
+    def __init__(self) -> None:
+        self.granted: list[float] = []
+        self.browser_ws_url = "ws://fake"
+
+    def __call__(self, info, profile, *, timeout, start_url=None):
+        self.granted.append(timeout)
+        self._profile = profile
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeSessionForBudget:
+    """假 CDP 会话：记下连上时与打印时各自拿到多少秒预算。"""
+
+    def __init__(self) -> None:
+        self.granted: list[float] = []
+        self.call_granted: list[float] = []
+
+    def __call__(self, ws_url, *, timeout, site_urls=None):
+        self.granted.append(timeout)
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def connect(self) -> None:
+        pass
+
+    def evaluate(self, expression: str):
+        return "complete"
+
+    def call(self, method: str, params=None, *, timeout=None):
+        import base64
+
+        self.call_granted.append(timeout)
+        return {"data": base64.b64encode(b"%PDF-1.4 fake").decode("ascii")}
+
+
+class _FakeClock:
+    """把 ``time.monotonic()`` 变成一串写好的读数，让「预算还剩多少」可控。"""
+
+    def __init__(self, readings: list[float]) -> None:
+        self._readings = readings
+        self._index = 0
+
+    def monotonic(self) -> float:
+        index = min(self._index, len(self._readings) - 1)
+        self._index += 1
+        return self._readings[index]
+
+    def sleep(self, seconds: float) -> None:
+        """真睡会把用例拖成 30 秒，这里直接跳过（读数自己会往前走）。"""
+
+
+def _prepare_budget_fakes(monkeypatch, readings: list[float]):
+    """把 ``print_html_to_pdf`` 依赖的浏览器、会话、时钟全换成替身。"""
+    import xdao.browser_login as browser_login
+    import xdao.exporters.pdf as pdf_module
+
+    info = type("假浏览器信息", (), {"name": "假浏览器", "path": "C:/假浏览器.exe"})()
+    monkeypatch.setattr(pdf_module, "find_browser", lambda path=None: info)
+    monkeypatch.setattr(browser_login, "find_browser", lambda explicit=None: info)
+    login_browser = _FakeLoginBrowserForBudget()
+    session = _FakeSessionForBudget()
+    monkeypatch.setattr(browser_login, "LoginBrowser", login_browser)
+    monkeypatch.setattr(pdf_module, "CDPSession", session)
+    monkeypatch.setattr(pdf_module, "time", _FakeClock(readings))
+    return login_browser, session
+
+
+def test_cdp_render_grants_each_phase_from_one_budget(out_dir, monkeypatch):
+    """起浏览器/连会话/等加载/打印四段都从同一个截止时刻里扣。
+
+    以前每段各给一份 ``timeout``（60/60/30/全部），最坏能拖到设定值的近三倍。
+    这里用假时钟把剩余预算一步步压下去，钉住「拿到的秒数＝剩余且不超过该段上限」。
+    """
+    from xdao.exporters.pdf import print_html_to_pdf
+
+    # 起点 0；之后每次问时间依次是 880 / 885 / 890 / 895 —— 900 秒的预算快用完了。
+    login_browser, session = _prepare_budget_fakes(monkeypatch, [0.0, 880.0, 885.0, 890.0, 895.0])
+    target = out_dir / "预算.pdf"
+
+    print_html_to_pdf("<html></html>", target, timeout=900)
+
+    assert login_browser.granted == [pytest.approx(20.0)]
+    assert session.granted == [pytest.approx(15.0)]
+    assert session.call_granted == [pytest.approx(5.0)]
+    assert target.read_bytes().startswith(b"%PDF")
+
+
+def test_cdp_render_stops_as_soon_as_the_budget_runs_out(out_dir, monkeypatch):
+    """预算已经用完时，下一步必须立刻报超时，而不是再给一段完整等待。"""
+    from xdao.exporters.pdf import print_html_to_pdf
+
+    login_browser, _ = _prepare_budget_fakes(monkeypatch, [0.0, 901.0])
+    target = out_dir / "超时.pdf"
+
+    with pytest.raises(PdfError, match="超时"):
+        print_html_to_pdf("<html></html>", target, timeout=900)
+
+    # 连浏览器都不该被拉起来：先查预算再动手。
+    assert login_browser.granted == []
+
+
+def test_cdp_render_caps_the_wait_for_load_at_thirty_seconds(out_dir, monkeypatch):
+    """等加载那一段的上限是 30 秒，但预算不足时按预算走（不能两者取大的）。"""
+    import xdao.exporters.pdf as pdf_module
+    from xdao.exporters.pdf import print_html_to_pdf
+
+    seen: list[float] = []
+    real_wait = pdf_module._wait_for_load
+
+    def fake_wait(session, timeout):
+        seen.append(timeout)
+        real_wait(session, timeout)
+
+    monkeypatch.setattr(pdf_module, "_wait_for_load", fake_wait)
+    _prepare_budget_fakes(monkeypatch, [0.0, 800.0, 800.0, 860.0, 860.0])
+
+    print_html_to_pdf("<html></html>", out_dir / "等加载.pdf", timeout=900)
+
+    # 读到 800 时剩 100 秒，上限 30 秒 —— 取小的那个。
+    assert seen == [pytest.approx(30.0)]
+

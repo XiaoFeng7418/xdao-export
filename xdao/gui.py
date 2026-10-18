@@ -80,6 +80,13 @@ IMAGE_MODE_FORMATS = ("html", "pdf", "epub")
 #: 「图片」下拉框的显示名，与 ``exporters.html.IMAGE_MODES`` 同序（主窗口与编辑监控共用）。
 IMAGE_MODE_LABELS = ("内嵌图片", "仅保留链接", "丢弃图片")
 
+#: 监控线程收尾时往 ``watch_queue`` 里塞的哨兵：主线程收到它就把 ``_watching`` 落回 False。
+#: 为什么要这条：以前只有「用户点停止」和「监控线程抛异常」两处会清这个标志，
+#: 线程自己正常结束（例如监控循环到点退出）时标志还留在 True —— 界面写着「监控中」、
+#: 再点一次还是「停止监控」，可后台其实早就没人在跑了。
+#: 用对象本身判断身份，不会跟日志字符串或检查结果撞车。
+_WATCH_STOPPED = object()
+
 
 def _describe_export_range(
     max_pages: int, until_thread_id: int | None, skipped: list[str]
@@ -3994,7 +4001,7 @@ class App:
         chosen = var.get()
         if chosen == self._theme_name:
             return
-        if self._exporting or self._watching:
+        if self.is_busy():
             messagebox.showinfo(
                 "正在忙",
                 "导出或监控正在跑，等它结束再换配色吧。\n"
@@ -4087,7 +4094,7 @@ class App:
         chosen = var.get()
         if chosen == theme.font_scale_label():
             return
-        if self._exporting or self._watching:
+        if self.is_busy():
             messagebox.showinfo(
                 "正在忙",
                 "导出或监控正在跑，等它结束再换字号吧。\n"
@@ -5247,8 +5254,34 @@ class App:
             )
         return output_dir
 
+    # ---------- 忙闲 ----------
+    #
+    # 导出与监控都会往同一个导出目录写文件、往同一份缓存里追加页，同时来就会互相踩：
+    # 两份产物同名互删、缓存 jsonl 半行、进度条按错误的数字跳。所以这两件事互斥，
+    # 「谁在跑」只认 ``_exporting`` / ``_watching`` 两个标志，判断统一走 is_busy()。
+
+    def is_busy(self) -> bool:
+        """导出或监控正在跑。"""
+        return self._exporting or self._watching
+
+    def _busy_reason(self) -> str:
+        return "导出" if self._exporting else "监控"
+
+    def _refuse_when_busy(self, doing: str) -> bool:
+        """正在导出/监控就弹一句并返回 True（调用方应直接收手）。"""
+        if not self.is_busy():
+            return False
+        what = self._busy_reason()
+        messagebox.showinfo(
+            "正在忙",
+            f"正在{what}，先停下来再{doing}。\n"
+            "（导出与监控会写同一份缓存和同一个导出目录，同时跑会互相踩。）",
+        )
+        return True
+
     def start(self, urls: list[str] | None = None) -> None:
-        if self._exporting:
+        # 导出或监控在跑时不许再开：两个线程会同时往缓存与导出目录里写。
+        if self._refuse_when_busy("开始导出"):
             return
         if not self.settings.userhash:
             messagebox.showwarning("提示", "请先登录或设置饼干。")
@@ -5561,6 +5594,9 @@ class App:
     def start_watching(self, interval: float, verify_cached: bool = False) -> None:
         if self._watching:
             return
+        # 导出在跑时不许开监控：同上，两条写盘的路只能有一条。
+        if self._refuse_when_busy("开始监控"):
+            return
         if not self.watch_targets:
             messagebox.showwarning("提示", "请先添加要监控的串。")
             return
@@ -5609,9 +5645,11 @@ class App:
                 )
             except Exception as exc:  # noqa: BLE001 —— 监控线程也不能把 traceback 弹给用户
                 self.watch_queue.put(f"监控出错：{type(exc).__name__}: {exc}")
-                self._watching = False
             finally:
+                # 「已经没人跑了」由线程自己上报：主线程收到哨兵才把 _watching 落回 False。
+                # 这样正常退出、出错、点停止三条路走的是同一个收口，不会留下假「监控中」。
                 self.watch_queue.put("监控已停止。")
+                self.watch_queue.put(_WATCH_STOPPED)
 
         threading.Thread(target=worker, daemon=True).start()
         self.log(f"监控已启动：每 {int(interval)} 秒检查 {len(targets)} 个串。")
@@ -5621,8 +5659,11 @@ class App:
     def stop_watching(self) -> None:
         if not self._watching:
             return
-        if self._watch_stop:
-            self._watch_stop.set()
+        stop_event = self._watch_stop
+        if stop_event:
+            stop_event.set()
+        # 标志立刻落回 False：按钮要马上能再点（线程真正收手由哨兵再确认一次）。
+        self._watch_stop = None
         self._watching = False
         self._watch_notifier = None
         self.log("已请求停止监控。")
@@ -5630,6 +5671,8 @@ class App:
 
     def check_watch_once(self) -> None:
         """立即后台检查一轮（不影响正在运行的监控循环）。"""
+        if self._refuse_when_busy("检查一轮"):
+            return
         if not self.watch_targets:
             messagebox.showwarning("提示", "请先添加要监控的串。")
             return
@@ -5673,6 +5716,12 @@ class App:
             except queue.Empty:
                 break
             got = True
+            if item is _WATCH_STOPPED:
+                # 监控线程真的收手了（正常结束、出错、用户点停止三条路都会走到这里）。
+                # 这就是「监控状态」的唯一收口：线程没在跑，标志就一定不能是 True。
+                self._watching = False
+                self._watch_notifier = None
+                continue
             if isinstance(item, str):
                 self.log(item)
                 continue

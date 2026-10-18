@@ -721,6 +721,68 @@ def test_font_scale_switch_is_refused_while_exporting(live_app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 忙闲：导出与监控互斥（v0.17.1）
+# ---------------------------------------------------------------------------
+
+
+def test_is_busy_tracks_both_flags(live_app):
+    assert live_app.is_busy() is False
+    live_app._exporting = True
+    assert live_app.is_busy() is True
+    live_app._exporting = False
+    live_app._watching = True
+    assert live_app.is_busy() is True
+
+
+def test_start_is_refused_while_watching(live_app, monkeypatch):
+    """监控在跑时点「开始导出」要直接拦下，不能两条写盘的路同时走。"""
+    calls = _messagebox_calls(monkeypatch)
+    live_app._watching = True
+    live_app.urls_text.insert("1.0", "https://www.nmbxd1.com/t/50000001")
+
+    live_app.start()
+
+    assert calls and calls[0][0] == "showinfo"
+    assert calls[0][1] == "正在忙"
+    assert "监控" in calls[0][2]
+    # 一点都没开：没有停止位、没有线程、界面也没被切到「取消导出」。
+    assert live_app._exporting is False
+    assert live_app._export_stop is None
+
+
+def test_watching_is_refused_while_exporting(live_app, monkeypatch):
+    calls = _messagebox_calls(monkeypatch)
+    live_app._exporting = True
+
+    live_app.start_watching(60.0)
+
+    assert calls and calls[0][1] == "正在忙"
+    assert "导出" in calls[0][2]
+    assert live_app._watching is False
+
+
+def test_checking_watch_once_is_refused_while_exporting(live_app, monkeypatch):
+    calls = _messagebox_calls(monkeypatch)
+    live_app._exporting = True
+
+    live_app.check_watch_once()
+
+    assert calls and calls[0][1] == "正在忙"
+
+
+def test_watch_thread_end_clears_the_watching_flag(live_app):
+    """监控线程收手后必须有人把标志落回 False，否则界面一直写着「监控中」。"""
+    live_app._watching = True
+    live_app._watch_notifier = object()  # 收尾时应该被清掉
+
+    live_app.watch_queue.put(gui._WATCH_STOPPED)
+    live_app._poll_watch()
+
+    assert live_app._watching is False
+    assert live_app._watch_notifier is None
+
+
+# ---------------------------------------------------------------------------
 # 导出主流程：跑真的 ``App.start()``，但线程/抓取/导出全换替身（不用开窗口）
 # ---------------------------------------------------------------------------
 
@@ -839,6 +901,10 @@ class _FakeApp:
     def cancel_export(self) -> None:
         """``App._set_export_controls()`` 会把按钮指到 ``self.cancel_export``。"""
         pass
+
+    def _refuse_when_busy(self, doing: str) -> bool:
+        """真 ``App`` 上这条会弹「正在忙」；假窗口永远不忙，放行。"""
+        return False
 
     def start(self, urls=None) -> None:
         """``App._set_export_controls()`` 收尾时会把按钮指回 ``self.start``。"""
@@ -1139,6 +1205,10 @@ class _FakeWatchApp:
 
     def log(self, message: str) -> None:
         pass
+
+    def _refuse_when_busy(self, doing: str) -> bool:
+        """真 ``App`` 上这条会弹「正在忙」；假窗口永远不忙，放行。"""
+        return False
 
     def _poll_watch(self) -> None:
         """真实现会 ``after`` 排一次轮询；这里什么都不做。"""
