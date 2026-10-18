@@ -2577,3 +2577,75 @@ def test_login_worker_releases_the_browser_when_starting_fails(live_app, monkeyp
 def test_app_registers_itself_on_the_root_window(live_app):
     """子窗口靠 master.app 找到主窗口（v0.17.3）：这条断了登录窗就不再登记。"""
     assert live_app.root.app is live_app
+
+
+def test_login_worker_writes_each_failed_attempt_into_the_log(live_app, monkeypatch):
+    """v0.17.5：登录线程要把「哪几扇没成」逐行写进运行日志。
+
+    真机上「一次点击弹出好几扇窗」时，界面上只有最后成的那扇；没有这几行，
+    事后对不出候选表里试过几个目录、每一扇为什么被放弃。
+    """
+    from types import SimpleNamespace
+
+    from xdao import browser_login as bl
+
+    dialog = _open_browser_login(live_app)
+
+    class NotesBrowser:
+        def __init__(self, *args, **kwargs):
+            self.attempt_notes = (
+                "第 1 扇没成：Edge 开在 临时资料目录 A，刚起来就退出了（退出码 21）",
+                "第 2 扇没成：Edge 开在 持久资料目录 B，调试端口一直没写出来",
+            )
+            self.census_note = ""
+            self.profile_note = ""
+            self.browser_note = ""
+            self.handoff_note = ""
+            self.browser_ws_url = "ws://127.0.0.1:9/devtools/browser/x"
+            self.devtools_failure_hint = ""
+
+        def start(self) -> None:
+            # 起得来：候选表里的失败行在 start() 返回之后才入队（v0.17.5），
+            # 所以这里要让流程走到「日志行已入队、后一步才坏」。
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def cleanup_temp_profile(self) -> None:
+            pass
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("连不上调试接口")
+
+    backend = SimpleNamespace(
+        user_data_dir=lambda base: Path(base) / "browser-profile",
+        LoginBrowser=NotesBrowser,
+        _new_session=_boom,
+    )
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: backend)
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: bl.BrowserInfo("假浏览器", "C:/假.exe"),
+    )
+    try:
+        gui.BrowserLoginDialog._worker(dialog)
+        queued = []
+        while True:
+            try:
+                queued.append(dialog._queue.get_nowait())
+            except queue.Empty:
+                break
+        notes = [text for kind, text in queued if kind == "note"]
+        assert (
+            "第 1 扇没成：Edge 开在 临时资料目录 A，刚起来就退出了（退出码 21）" in notes
+        ), "每一扇失败的窗都要落进运行日志"
+        assert "第 2 扇没成：Edge 开在 持久资料目录 B，调试端口一直没写出来" in notes
+        assert any(kind == "error" for kind, _ in queued)
+    finally:
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except tk.TclError:  # pragma: no cover
+            pass

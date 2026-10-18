@@ -1519,6 +1519,11 @@ class BrowserLoginDialog(tk.Toplevel):
             # 配置目录里的浏览器资料要是用不了，库会自己换一个临时目录再试；
             # 默认那个浏览器起不来，库还会换一个浏览器再试。这两件事都得让用户看见，
             # 不然他会以为登录态还落在老地方、或者纳闷「我明明用的是 Chrome」。
+            # v0.17.5：候选表里每一次失败各记一行。写在「这次用哪份目录」之前，
+            # 读日志时的顺序就是真发生的顺序：先看到哪几扇没成，最后才是成的那扇。
+            for note in getattr(browser, "attempt_notes", ()) or ():
+                if note:
+                    self._queue.put(("note", note))
             for note in (
                 getattr(browser, "profile_note", ""),
                 getattr(browser, "browser_note", ""),
