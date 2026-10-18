@@ -681,6 +681,26 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.17.4**（点一次「用浏览器登录」不再冒出一串窗口：窗口活过启动进程时认下它）：
+  **一、真机现场。** v0.17.3 装上后用户仍然一次点击冒出好几扇窗（2026-10-18 日志：
+  `[19:43:27] 开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。`，16 秒后
+  `[19:43:43] 读罐对账：… 逐窗=端口54912 xdao-export-browser-profile-20120；端口54825 _new；
+  端口54725 browser-profile｜同罐进程=11`）。三扇窗正好是 `start()` 候选表的前三份目录，
+  说明它们被**逐个启动**过，且前面几扇都没被收掉。
+  **二、根因。** `_launch()` 只认「`Popen` 记下的那个进程还活着」。Edge/Chromium 常把页面
+  交给真正承载窗口的进程、启动进程自己以退出码 0 干净退出 —— 这时窗口活着、端口答话，
+  但 `self.process.poll()` 已非 None，于是被判成「刚起来就退出」，换下一个候选目录再开。
+  v0.17.3 的宽限重探（`wait_for_attachable_window`）只在**开窗前**起作用，管不到这一步。
+  **三、修法。** 新增 `LoginBrowser._adopt_a_window_that_outlived_the_launcher(chosen,
+  stale_text, stale_mtime)`：进程退出那一刻先看 `chosen/DevToolsActivePort` ——
+  这次启动之后写的（`_port_file_fresh`）或启动前就有、现在还答话（交棒给已开着的窗），
+  且 `_profile_in_use(chosen)` 为真，就把端口/ws/资料目录注记接过来、置 `self._attached = True`
+  （收尾按资料目录杀，和接手别人的窗同一条路），不再换候选。端口不答话则立刻返回 None
+  （启动前没有端口文件、启动后也没有时直接返回，不为真起不来的情况白等 `RELAUNCH_GRACE = 8.0` 秒）。
+  **四、用例。** `tests/test_browser_login.py` 新增 3 条：`_HandOverPopen` 造「退出码 0 +
+  端口答话」→ `_launch` 只开一扇且 `_attached is True`；旧端口文件没变、端口哑掉 → 立刻回 None；
+  新端口文件但端口一直哑 → 宽限到头回 None。该文件 353 → 356 条。
+  **五、账。** 全量 2091 收集 / 2084 通过 / 7 跳过。界面、导出格式、配置文件、命令行开关未动。
 - **v0.17.3**（一次点「用浏览器登录」冒出好几扇窗：四个根因一起修）：
   **一、宽限重探。** `xdao/browser_login.py` 新增 `STARTING_GRACE = 120.0` / `STARTING_WAIT = 12.0` /
   `STARTING_POLL = 0.5`、`starting_window_dirs()`、`_is_starting_window()`、

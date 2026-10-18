@@ -5834,3 +5834,101 @@ def test_sweep_orphan_profiles_kills_quiet_temp_windows_and_keeps_logged_in_ones
     assert kept == [logged_in]
     assert killed == [orphan]
     assert not orphan.exists() and logged_in.exists()
+
+
+
+# ------------------------------------------- v0.17.4：窗口活过了启动进程
+
+
+class _HandOverPopen:
+    """假 Popen：启动进程立刻以退出码 0 退出，窗口交给别的进程，端口照样答话。
+
+    真机 2026-10-18 现场（用户只点了一次、16 秒里桌上起了 5 扇窗）：Edge 把页面
+    交给真正承载窗口的那个进程、``Popen`` 记下的启动进程先干净退出 —— 而
+    ``_launch`` 只认「进程还活着」，于是换下一个候选目录又开一扇。候选表有五个，
+    桌上就有五扇。
+    """
+
+    starts: "list[_HandOverPopen]" = []
+
+    def __init__(self, args: list[str], **kwargs: object) -> None:
+        self.args = list(args)
+        self.kwargs = dict(kwargs)
+        self.pid = 4321
+        self.returncode: int | None = 0
+        profile = Path(
+            next(a.split("=", 1)[1] for a in self.args if a.startswith("--user-data-dir="))
+        )
+        (profile / "DevToolsActivePort").write_text(
+            "9555\n/devtools/browser/handover\n", encoding="utf-8"
+        )
+        type(self).starts.append(self)
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode or 0
+
+    def kill(self) -> None:
+        self.returncode = -1
+
+
+def test_launch_adopts_the_window_that_outlived_the_launcher(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """启动进程退了、窗口还在且端口答话：认下这扇，别再开下一扇（v0.17.4）。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    _HandOverPopen.starts = []
+    monkeypatch.setattr(bl.subprocess, "Popen", _HandOverPopen)
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: path == profile)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=5.0)
+    browser._launch(profile)
+    assert len(_HandOverPopen.starts) == 1, "认下这扇之后不许再开第二扇"
+    assert browser.port == 9555
+    assert browser.browser_ws_url == "ws://127.0.0.1:9555/devtools/browser/handover"
+    assert browser.process is not None and browser.process.returncode == 0
+    assert browser._attached is True, "窗口不归 Popen 那个进程管，收尾要按资料目录收"
+    assert "没有再开第二扇" in browser.handoff_note, "运行日志里要说清这一扇是认下来的"
+
+
+def test_launch_treats_a_mute_old_port_file_as_no_handover(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """启动前那份端口文件没变、端口又不答话：不是交棒，立刻回空、别白等宽限。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "DevToolsActivePort").write_text(
+        "49714\n/devtools/browser/gone\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(bl.subprocess, "Popen", _TakeoverPopen)
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: False)
+    monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=1.0)
+    stale_mtime = (profile / "DevToolsActivePort").stat().st_mtime
+    started = time.monotonic()
+    assert browser._adopt_a_window_that_outlived_the_launcher(
+        profile, "49714\n/devtools/browser/gone\n", stale_mtime
+    ) is None
+    assert time.monotonic() - started < bl.RELAUNCH_GRACE / 2, "哑掉的老端口不该等满宽限"
+
+
+def test_launch_does_not_adopt_a_window_whose_port_stays_mute(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写了新端口文件、端口却一直不答话：那是真起不来，宽限到头回空。"""
+    profile = artifacts_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: False)
+    monkeypatch.setattr(bl, "RELAUNCH_GRACE", 0.05)
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), profile, timeout=1.0)
+    (profile / "DevToolsActivePort").write_text(
+        "9555\n/devtools/browser/handover\n", encoding="utf-8"
+    )
+    assert browser._adopt_a_window_that_outlived_the_launcher(profile, None, None) is None
+    assert browser.port == 0

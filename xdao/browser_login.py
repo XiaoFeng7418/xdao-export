@@ -76,6 +76,10 @@ STARTING_GRACE = 120.0
 STARTING_WAIT = 12.0
 #: 宽限重探的轮询间隔（秒）。
 STARTING_POLL = 0.5
+#: 启动进程先退出、窗口留下来时，最多等多久让它把端口接上（秒，v0.17.4）。
+#: 真机 2026-10-18：一次点击 16 秒里起了五扇窗 —— 每次都被判成「刚起来就退出」，
+#: 而窗口其实活着，只是被 Popen 记下的那个进程先行交棒退出了。
+RELAUNCH_GRACE = 8.0
 #: 删临时目录前要不要先把「命令行里带这个目录」的浏览器进程收掉（见
 #: :func:`_kill_processes_using_profile`）。用例会把它改成 False —— 那一手要真起
 #: 一个 powershell，不该在每个用例里跑一遍。
@@ -848,6 +852,9 @@ def wait_for_attachable_window(
 
     ``expect`` 是进程侧普查已经点名的「正在启动」窗数：有它时即便端口文件还没写出来，
     也值得等一等。
+
+    普查本身走 :func:`live_browser_dirs`（模块级，用例会把它钉成空表，免得真去读
+    开发机 ``%TEMP%`` 里遗留的窗）；只在用例显式传 ``probe`` 时才就地扫。
     """
     ask = probe if probe is not None else _profile_in_use
     clock = now if now is not None else time.monotonic
@@ -856,21 +863,24 @@ def wait_for_attachable_window(
         return []
     deadline = clock() + max(0.0, float(wait))
     while True:
-        found: list[tuple[float, Path]] = []
-        for candidate in _window_candidates(profile):
-            try:
-                mtime = (candidate / "DevToolsActivePort").stat().st_mtime
-            except OSError:
-                continue
-            if ask(candidate):
-                found.append((mtime, candidate))
+        if probe is None:
+            found = list(live_browser_dirs(profile))
+        else:
+            stamped: list[tuple[float, Path]] = []
+            for candidate in _window_candidates(profile):
+                try:
+                    mtime = (candidate / "DevToolsActivePort").stat().st_mtime
+                except OSError:
+                    continue
+                if ask(candidate):
+                    stamped.append((mtime, candidate))
+            stamped.sort(key=lambda item: item[0], reverse=True)
+            found = [candidate for _, candidate in stamped]
         if found:
-            found.sort(key=lambda item: item[0], reverse=True)
-            return [candidate for _, candidate in found]
+            return found
         if clock() >= deadline:
             return []
         nap(poll)
-
 
 
 def kill_profile_processes(profile: Path) -> None:
@@ -1445,6 +1455,8 @@ class LoginBrowser:
         self._browser_note = ""
         #: 开窗前「活着的程序窗口普查」结果一句话（见 :attr:`census_note`）。
         self._census_note = ""
+        #: 启动进程先退出、窗口留下来时认下那扇窗的一句话（见 :attr:`handoff_note`）。
+        self._handoff_note = ""
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
@@ -1481,6 +1493,16 @@ class LoginBrowser:
     def browser_note(self) -> str:
         """启动时若换了一个浏览器，这里记着一句给用户看的话。"""
         return self._browser_note
+
+    @property
+    def handoff_note(self) -> str:
+        """启动进程先退出、窗口被交到别的进程时，记一句给用户看的话（v0.17.4）。
+
+        为什么要说：用户看到的只是「窗口出来了」，而程序这边差一点就把这扇窗判成
+        「刚起来就退出」再开一扇。这句话写进运行日志，事后核对「到底开没开第二扇」
+        时，它是唯一的一手证据。
+        """
+        return self._handoff_note
 
     @property
     def census_note(self) -> str:
@@ -1579,6 +1601,11 @@ class LoginBrowser:
                     return self._launch(chosen)
                 except Exception as exc:  # noqa: BLE001 —— 下面按错误码决定要不要继续试
                     self._reset_process()
+                    if _is_our_profile_dir(chosen, self.profile):
+                        # v0.17.4：这一轮起的窗可能还活着（启动进程先退、窗口留了
+                        # 下来），按目录收干净再试下一个候选。不收的话，候选表里每
+                        # 试一个就在桌上多一扇 —— 真机 2026-10-18 就是这么堆出五扇的。
+                        kill_profile_processes(chosen)
                     if first_error is None:
                         first_error = exc
                     if _dead_on_startup(exc):
@@ -1853,6 +1880,98 @@ class LoginBrowser:
         except Exception:  # noqa: BLE001 —— 收尾失败不该盖住启动的真正错误
             self.process = None
 
+    def _profile_note_for(self, chosen: Path) -> str:
+        """这次用的是哪一份资料目录，往界面上写一句（v0.13.37 / v0.17.4 收拢）。"""
+        if chosen == self.temp_profile:
+            # 登录这条路现在先试新建的临时目录（见 start()）。要在界面上
+            # 说一句，否则用户会以为「我上次登录的痕迹怎么没了」。
+            return (
+                f"这次用的是临时资料目录（{chosen}），"
+                "关掉登录窗口后会自动清掉，不影响你自己的浏览器。"
+            )
+        if chosen == self.profile:
+            # v0.13.37：落到配置目录那份**持久**资料目录时不能一声不吭。
+            # 真机案例（2026-10-03 深夜）：临时目录在这台机器上起不来
+            # （Edge 退出码 21 一族），每次都悄悄退到 browser-profile；
+            # Edge 用同一份目录会把**上一次登录窗口那一页**原样恢复出来，
+            # 用户看到的「已经登录的饼干列表」其实是上回留下的画面，
+            # 罐里这时候只剩 PHPSESSID（见 MAINTENANCE.md 同日条目）。
+            # 不说清这一句，用户只会更困惑：「不是说每次都开全新目录吗？」
+            return (
+                f"这次用的是程序自己存的浏览器资料目录（{chosen}），"
+                "它留着我们以前用这扇窗登录时打开过的页面——你在窗口里"
+                "看到旧的『饼干列表』就是这么来的，跟你自己平时上网的"
+                "浏览器无关。这一份的饼干会跨窗口留着，登录成功一次之后"
+                "再开一般不用重登；要让这扇窗回到全新状态，关掉所有程序"
+                "开的登录窗口后删掉这个文件夹即可（只动程序自己这份）。"
+            )
+        return f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
+
+    def _adopt_a_window_that_outlived_the_launcher(
+        self,
+        chosen: Path,
+        stale_text: str | None,
+        stale_mtime: float | None,
+    ) -> "LoginBrowser | None":
+        """启动进程先退了、窗口却留下来时，直接把那扇窗认下来（v0.17.4）。
+
+        为什么要有这一手：真机 2026-10-18 现场，用户**只点了一次**「用浏览器
+        登录」，16 秒里桌上起了 5 扇窗，最后接上的是第 5 扇。日志里前面每一扇
+        都被判成「刚起来就退出了（退出码 0）」—— 但它们的窗口都活着、端口都
+        答话（19:43:43 那句「逐窗=端口54725 browser-profile …」正是它们）。
+        浏览器把页面交给真正承载窗口的那个进程、被 ``Popen`` 记下的启动进程先
+        干净退出，这是 Edge/Chromium 的家常；而 ``_launch`` 只认「进程还活着」，
+        于是换下一个候选目录再开一扇。候选表有五个，桌上就有五扇。
+
+        判据只有一条：``chosen`` 的 ``DevToolsActivePort`` 是这次启动之后写的
+        （或者启动前就有、现在还答话 —— 那是「交给已经开着的那扇」，同样该接），
+        而且那个端口此刻真答话。认下来就把 port/ws 直接设好，和正常启动的
+        收尾走同一条路。
+        """
+        port_file = chosen / "DevToolsActivePort"
+        deadline = time.monotonic() + RELAUNCH_GRACE
+        while True:
+            try:
+                text = port_file.read_text(encoding="utf-8", errors="replace")
+                text_mtime = port_file.stat().st_mtime
+            except OSError:
+                text, text_mtime = "", 0.0
+            if not text and stale_text is None:
+                # 启动前没有端口文件、启动后也没有：这不是「交了棒」，是真没起来。
+                # 立刻回 None，交给 outer 循环去报「刚起来就退出」—— 别为它白等八秒。
+                return None
+            if text:
+                fresh = _port_file_fresh(text, text_mtime, stale_text, stale_mtime)
+                handed_over = stale_text is not None and not fresh
+                if fresh or handed_over:
+                    try:
+                        port, ws_path = _parse_devtools_file(text)
+                    except CdpError:
+                        port, ws_path = 0, ""
+                    if port and _profile_in_use(chosen):
+                        if chosen == self.profile:
+                            _clear_dead_profile_strikes(chosen)
+                        self.port, self.ws_path = port, ws_path
+                        self.browser_ws_url = f"ws://127.0.0.1:{port}{ws_path}"
+                        self._profile_note = self._profile_note_for(chosen)
+                        # 这扇窗不归我们 Popen 记的那个进程管（它已经退出、把窗口交了
+                        # 出去），收尾只能按资料目录收 —— 和接手别人的窗同一条路。
+                        self._attached = True
+                        self._handoff_note = (
+                            "启动进程把窗口交给了另一个进程、自己先退出了；"
+                            "程序回头看见端口答话，直接认下这扇窗，没有再开第二扇。"
+                        )
+                        self._discard_stderr_log()
+                        return self
+                    if handed_over:
+                        # 启动前那份端口文件没变、那个端口也不答话：说明它属于一扇
+                        # 早就关掉的窗，这一趟并没有「交棒」成功，别为它白等宽限。
+                        return None
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(_POLL_INTERVAL)
+        return None
+
     def _launch(self, chosen: Path) -> "LoginBrowser":
         """真正启一次浏览器（``chosen`` 这次要用的 profile 目录）。"""
         try:
@@ -1941,6 +2060,14 @@ class LoginBrowser:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
+                # v0.17.4：先看一眼「窗口是不是被交给了一个已经起来的进程」——
+                # 是的话这一扇就是好的，别当失败再开下一扇（真机 2026-10-18
+                # 一次点击五扇窗，全是这条判错了）。
+                adopted = self._adopt_a_window_that_outlived_the_launcher(
+                    chosen, stale_text, stale_mtime
+                )
+                if adopted is not None:
+                    return adopted
                 # 先把真退出码抠出来再 stop()：stop() 会 terminate / taskkill，
                 # 之后 returncode 就不是浏览器自己的死因了（真机上那句
                 # 「刚起来就退出了（退出码 21）」里的 21 就是这么来的）。
@@ -1994,31 +2121,7 @@ class LoginBrowser:
                         # 一笔勾销 —— 账必须跟着**最近**的事实走，不能攒旧账。
                         _clear_dead_profile_strikes(chosen)
                     self.browser_ws_url = f"ws://127.0.0.1:{self.port}{self.ws_path}"
-                    if chosen == self.temp_profile:
-                        # 登录这条路现在先试新建的临时目录（见 start()）。要在界面上
-                        # 说一句，否则用户会以为「我上次登录的痕迹怎么没了」。
-                        self._profile_note = (
-                            f"这次用的是临时资料目录（{chosen}），"
-                            "关掉登录窗口后会自动清掉，不影响你自己的浏览器。"
-                        )
-                    elif chosen == self.profile:
-                        # v0.13.37：落到配置目录那份**持久**资料目录时不能一声不吭。
-                        # 真机案例（2026-10-03 深夜）：临时目录在这台机器上起不来
-                        # （Edge 退出码 21 一族），每次都悄悄退到 browser-profile；
-                        # Edge 用同一份目录会把**上一次登录窗口那一页**原样恢复出来，
-                        # 用户看到的「已经登录的饼干列表」其实是上回留下的画面，
-                        # 罐里这时候只剩 PHPSESSID（见 MAINTENANCE.md 同日条目）。
-                        # 不说清这一句，用户只会更困惑：「不是说每次都开全新目录吗？」
-                        self._profile_note = (
-                            f"这次用的是程序自己存的浏览器资料目录（{chosen}），"
-                            "它留着我们以前用这扇窗登录时打开过的页面——你在窗口里"
-                            "看到旧的『饼干列表』就是这么来的，跟你自己平时上网的"
-                            "浏览器无关。这一份的饼干会跨窗口留着，登录成功一次之后"
-                            "再开一般不用重登；要让这扇窗回到全新状态，关掉所有程序"
-                            "开的登录窗口后删掉这个文件夹即可（只动程序自己这份）。"
-                        )
-                    else:
-                        self._profile_note = f"配置目录里的浏览器资料用不了，这次改用了 {chosen}。"
+                    self._profile_note = self._profile_note_for(chosen)
                     # 起好了，浏览器 stderr 那几行就用不上了（v0.13.40）。
                     self._discard_stderr_log()
                     return self
