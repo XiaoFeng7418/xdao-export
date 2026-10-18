@@ -1218,6 +1218,45 @@ def test_retryable_read_failure_looks_at_both_the_windows_code_and_errno(
     assert cdp._retryable_read_failure(refused), "只认 errno 的话，Linux 上这条会漏"
 
 
+# ---------------------------------------------------------------- 报错文案
+#
+# 覆盖率体检（2026-10-18）：``_describe_exception`` 一行都没走过。它把
+# ``Runtime.evaluate`` 的 exceptionDetails 挖成一句话 —— 页面里那段 JS 出错时，
+# 用户看到的就是这句，所以三种常见形状都钉住。
+
+
+def test_describe_exception_prefers_the_javascript_description() -> None:
+    """正常情况：Chrome 给的是 ``exception.description``（带 JS 栈）。"""
+    details = {
+        "exception": {"description": "TypeError: 读不到 title", "value": "坏值"},
+        "text": "Uncaught",
+    }
+
+    assert cdp._describe_exception(details) == "TypeError: 读不到 title"
+
+
+def test_describe_exception_falls_back_to_the_thrown_value() -> None:
+    """抛的是字符串时只有 ``value``，没有 description。"""
+    assert cdp._describe_exception({"exception": {"value": "boom"}}) == "boom"
+    # 0 是假值，会被当成「没给」而退到 str(details)。真实协议里很少见，但把它钉住，
+    # 免得哪天顺手改成 `is not None` 却没想过这一支。
+    assert cdp._describe_exception({"exception": {"value": 0}}) == str(
+        {"exception": {"value": 0}}
+    )
+
+
+def test_describe_exception_falls_back_to_the_protocol_text() -> None:
+    """连 exception 都没有（比如「执行超时」）时，用报文自带的 text。"""
+    assert cdp._describe_exception({"text": "执行被中断"}) == "执行被中断"
+
+
+def test_describe_exception_handles_shapes_it_cannot_parse() -> None:
+    """拿到的不是字典（或字典里什么也没有）也不能把异常变成另一处崩溃。"""
+    assert cdp._describe_exception("直接就是字符串") == "直接就是字符串"
+    assert cdp._describe_exception(None) == "None"
+    assert cdp._describe_exception({}) == "{}"
+
+
 def test_session_passes_the_hint_through_to_the_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

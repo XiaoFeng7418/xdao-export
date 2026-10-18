@@ -603,7 +603,22 @@ def main(argv: list[str]) -> int:
     else:
         api(token, "POST", f"/repos/{args.repo}/git/refs",
             {"ref": f"refs/heads/{args.branch}", "sha": final})
-    print(f"   {args.branch} -> {final[:8]}")
+    # 更新之后必须回读一次再报成功。以前这里直接打印本地算出来的 sha，PATCH 没
+    # 生效（权限不足、并发、令牌被撤）时它照样说「推上去了」，人就被骗过去了。
+    check = api(token, "GET", f"/repos/{args.repo}/git/ref/heads/{args.branch}")
+    actual = ""
+    if isinstance(check, dict):
+        obj = check.get("object")
+        if isinstance(obj, dict):
+            actual = str(obj.get("sha") or "")
+    if actual != final:
+        print(
+            f"错误：{args.branch} 回读指向 {actual[:8] or '（没拿到）'}，"
+            f"不是刚推的 {final[:8]}。提交对象可能已经上传，但分支没动。",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"   {args.branch} -> {actual[:8]}（已回读确认）")
     if sha_mismatch:
         print(
             "警告：有提交的 sha 与本地不一致（原因见上）。这会让本地与远端的提交"
