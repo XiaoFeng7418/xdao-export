@@ -5376,7 +5376,10 @@ def test_public_api_surface_matches_the_ui_contract() -> None:
         "profile",
         "proxy",
         "start_url",
+        # v0.17.3：PDF 渲染不再弹可见窗（headless=True）；默认仍是可见窗。
+        "headless",
     }
+    assert inspect.signature(bl.build_args).parameters["headless"].default is False
     assert inspect.signature(bl.build_args).parameters["proxy"].default == ""
     assert inspect.signature(bl.build_args).parameters["start_url"].default == bl.LOGIN_URL
     # 按名字建会话（``_new_session``）会把本站点前缀带进去，界面层走的就是这条路；
@@ -5657,3 +5660,177 @@ def test_decode_ps_output_keeps_utf8_and_plain_text():
     assert bl._decode_ps_output("D:\\中文\\正常".encode("utf-8")) == "D:\\中文\\正常"
     # 用例里的替身回字母串，不该为了这一手把替身也改成 bytes
     assert bl._decode_ps_output("已经是文本") == "已经是文本"
+
+# ---------------------------------------------------------------- v0.17.3：一次点击开出好几扇窗
+
+
+def _fake_window(root: Path, name: str, *, port: int = 9666, age: float = 0.0) -> Path:
+    """在 ``root`` 下造一个「像我们开的浏览器资料目录」（端口文件 + 可选年龄）。"""
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    port_file = path / "DevToolsActivePort"
+    port_file.write_text(f"{port}\n/devtools/browser/x\n", encoding="utf-8")
+    if age:
+        stamp = time.time() - age
+        os.utime(port_file, (stamp, stamp))
+    return path
+
+
+def test_build_args_adds_headless_flags_only_when_asked(tmp_path: Path) -> None:
+    """PDF 渲染那条路（``headless=True``）不许在人眼前弹窗；登录那条路照旧可见。"""
+    info = bl.BrowserInfo("Edge", "msedge.exe")
+    pdf_args = bl.build_args(info, tmp_path / "p", headless=True, start_url="file:///a.html")
+    assert "--headless=new" in pdf_args and "--headless" in pdf_args
+    assert pdf_args[-1] == "file:///a.html"
+    login_args = bl.build_args(info, tmp_path / "p", start_url=bl.LOGIN_URL)
+    assert not any(arg.startswith("--headless") for arg in login_args)
+
+
+def test_starting_window_dirs_spares_only_fresh_mute_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """「刚写端口文件、端口还不答话」的目录算正在启动；端口答话的、老的不算（v0.17.3）。"""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    fresh = _fake_window(temp, "xdao-export-browser-profile-fresh", age=1.0)
+    mute = _fake_window(temp, "xdao-export-browser-profile-mute", age=5.0)
+    live = _fake_window(temp, "xdao-export-browser-profile-live", age=1.0)
+    stale = _fake_window(temp, "xdao-export-browser-profile-stale", age=600.0)
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: path == live)
+    got = bl.starting_window_dirs(tmp_path / "profile", grace=120.0)
+    assert got == [fresh, mute], "新的排前面；活的、老的都不算正在启动"
+    assert live not in got and stale not in got
+
+
+def test_wait_for_attachable_window_gives_a_starting_window_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """宽限重探：端口过几拍才答话时，等到它答话为止（v0.17.3）。"""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    window = _fake_window(temp, "xdao-export-browser-profile-starting", age=1.0)
+    left = {"n": 3}
+
+    def probe(path: Path) -> bool:
+        if path != window:
+            return False
+        left["n"] -= 1
+        return left["n"] < 0
+
+    naps: list[float] = []
+    got = bl.wait_for_attachable_window(
+        tmp_path / "profile", wait=10.0, poll=0.5, probe=probe, sleep=naps.append
+    )
+    assert got == [window]
+    # 开等之前先看一眼「有没有正在启动的窗」（那一次也问了端口，吃掉一拍），
+    # 之后每拍问一次：两次「还没接上」各睡一次，第三次接上了就直接返回。
+    assert naps == [0.5, 0.5]
+
+
+def test_wait_for_attachable_window_returns_at_once_when_nothing_is_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没有「正在启动」的窗时一秒都不等 —— 正常路径不能被它拖慢（v0.17.3）。"""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    naps: list[float] = []
+    got = bl.wait_for_attachable_window(
+        tmp_path / "profile", expect=0, probe=lambda path: False, sleep=naps.append
+    )
+    assert got == [] and naps == []
+
+
+def test_wait_for_attachable_window_gives_up_at_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """进程侧点名了「有窗在起」但没有端口文件：等满预算就照常新开，别卡死（v0.17.3）。"""
+    readings = iter([0.0, 0.5, 1.0, 2.0, 5.5])
+    naps: list[float] = []
+    got = bl.wait_for_attachable_window(
+        tmp_path / "profile",
+        wait=5.0,
+        poll=0.5,
+        expect=1,
+        probe=lambda path: False,
+        sleep=naps.append,
+        now=lambda: next(readings),
+    )
+    assert got == []
+    assert naps == [0.5, 0.5, 0.5]
+
+
+def test_process_side_census_does_not_reap_a_window_that_is_still_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """刚启动、端口还没答话的窗不许当僵尸收掉（真机「第一扇莫名关掉」的根因，v0.17.3）。"""
+    starting = _fake_window(tmp_path, "browser-profile-11-22", age=1.0)
+    monkeypatch.setattr(bl, "program_profile_dirs", lambda profile: [starting])
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: False)
+    killed: list = []
+    monkeypatch.setattr(bl, "_kill_processes_using_profile", lambda path: killed.append(path))
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
+    live: list[Path] = []
+    reaped = browser._adopt_process_side_findings(live)
+    assert reaped == [] and killed == []
+    assert live == [starting], "正在启动的窗补进接手名单，交给宽限重探去等"
+
+
+def test_stop_reaps_an_adopted_window_by_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """接手的窗不是我们 Popen 出来的：收尾要按资料目录把进程收掉（v0.17.3）。"""
+    killed: list[Path] = []
+    monkeypatch.setattr(bl, "kill_profile_processes", lambda path: killed.append(path))
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
+    browser._attached = True
+    browser._profile = tmp_path / "adopted"
+    browser.stop()
+    assert killed == [tmp_path / "adopted"]
+    assert browser._attached is False
+
+
+def test_start_skips_the_live_window_census_when_attach_live_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PDF 渲染（``attach_live=False``）不许蹭用户正开着的窗：普查都不跑（v0.17.3）。"""
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile", attach_live=False
+    )
+    called: list[int] = []
+    monkeypatch.setattr(browser, "_try_attach_live", lambda: called.append(1))
+    monkeypatch.setattr(browser, "_launch", lambda chosen: browser)
+    assert browser.start() is browser
+    assert called == []
+
+
+def test_start_attaches_to_a_live_window_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """登录这条路默认仍然先找活着的程序窗口接手（v0.13.33 的行为不变）。"""
+    browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
+    monkeypatch.setattr(browser, "_try_attach_live", lambda: browser)
+    assert browser.start() is browser
+
+
+def test_sweep_orphan_profiles_kills_quiet_temp_windows_and_keeps_logged_in_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """启动清扫：孤儿临时窗收掉，罐里有登录痕迹的留着（v0.17.3）。"""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    profile = tmp_path / "config" / "browser-profile"
+    orphan = _fake_window(temp, "xdao-export-browser-profile-orphan", age=600.0)
+    logged_in = _fake_window(temp, "xdao-export-browser-profile-logged", age=600.0)
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: path == logged_in)
+    monkeypatch.setattr(bl, "window_userhash", lambda ws_url: "HASH")
+    killed: list[Path] = []
+    monkeypatch.setattr(bl, "kill_profile_processes", lambda path: killed.append(path))
+    cleaned, kept = bl.sweep_orphan_profiles(profile, grace=120.0)
+    assert cleaned == [orphan]
+    assert kept == [logged_in]
+    assert killed == [orphan]
+    assert not orphan.exists() and logged_in.exists()

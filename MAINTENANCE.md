@@ -681,6 +681,34 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.17.3**（一次点「用浏览器登录」冒出好几扇窗：四个根因一起修）：
+  **一、宽限重探。** `xdao/browser_login.py` 新增 `STARTING_GRACE = 120.0` / `STARTING_WAIT = 12.0` /
+  `STARTING_POLL = 0.5`、`starting_window_dirs()`、`_is_starting_window()`、
+  `wait_for_attachable_window(profile, *, wait, poll, grace, expect, probe, sleep, now)`；
+  `_try_attach_live()` 先接「端口答话」的窗，接不到再按「有自家进程 + `DevToolsActivePort`
+  120 秒内写过」宽限等最多 12 秒（0.5 秒一探）。修的是实测过的时序：Edge 首次启动装扩展、
+  拉组件要十几秒，这段时间普查数出「没探到窗口」又开一扇 —— 用户日志里 `17:49:31` 的普查
+  与 `17:49:49` 的「读罐对账」三个同族目录就是这么来的。
+  **二、普查放过启动中的窗。** `_adopt_process_side_findings()` 以前对「进程活着、端口没答话」
+  的目录直接 `_kill_processes_using_profile()`（把正在启动的窗杀在摇篮里，下一扇就弹
+  「Edge 意外关闭 / 还原页面」）；现在这类目录 `_is_starting_window()` 为真时补进候选窗口，
+  交给上面的宽限重探去接。`live_browser_dirs()` 也改成内层探针可替换（`probe=`）。
+  **三、收尾必杀与孤儿清扫。** `LoginBrowser` 新增 `attach_live` / `headless` 两个构造参数
+  （`attach_live=False` 时跳过接活窗口，PDF 用）；`stop()` 在自己 `Popen` 的进程之外，再按
+  `self._profile` 调 `_kill_processes_using_profile()` 兜底 —— 接手的窗口 `process` 是 `None`，
+  以前根本收不到（实测留下过 598 MB、23 个进程、端口还活着的孤儿窗）。新增
+  `sweep_orphan_profiles()`：程序启动与退出时各扫一次 `%TEMP%` 下自家 `xdao-export-browser-profile-*`
+  的残留窗。
+  **四、界面收尾。** `xdao/gui.py`：`BrowserLoginDialog` 登记进 `App._login_dialogs`（初始在
+  `App.__init__`，对话框 `destroy` 时摘掉）；新增 `App.on_close()`（先让每个对话框走「取消」，
+  再 `after(1200, destroy)` 延后销毁主窗），`run()` 里用
+  `root.protocol("WM_DELETE_WINDOW", app.on_close)` 接管 ×（`getattr` 取值，测试里的假 App
+  没有这个方法也能跑）；`_worker()` 的异常分支改成 `_release_browser(browser)` 再报错。
+  **五、PDF 无头。** `xdao/exporters/pdf.py` 起浏览器时 `attach_live=False, headless=True`
+  （`build_args()` 多拼一个 `--headless=new`），渲染 PDF 不再顺手弹一扇可见窗；`--selftest
+  --check-browser` 这种显式检查仍然可见（`check_browser()` 不传 headless）。
+  **六、用例与基线。** `tests/test_browser_login.py` 343→353、`tests/test_gui_entry.py` 98→103。
+  收集 **2088 项**、本机 **2081 passed / 7 skipped**（跳过的是真机用例）。
 - **v0.17.2**（补测试；推送工具不再说假话）：
   **一、覆盖率体检与补漏。** 2026-10-18 做了一次全量体检（`coverage run -m pytest`，两个小脚本放在 <工作目录> 里，不进仓库）：全项目行覆盖 **8114/9408 = 86.25%**，低于 85% 的只剩 `xdao/cdp.py`、`xdao/gui.py`、`xdao/widgets.py` 一类「要么是 Tk 画界面、要么只能真机验」的文件。按「低风险、能被离线用例钉住」挑了四段几乎没被走到的代码补用例：`xdao/update_check.py` 的 `_pick_asset()`（按标签拼出的名字优先、标签大小写与有无 v 都认、退到第一个 zip、没有 zip 返回空、脏数据跳过）、`xdao/updater.py` 的 `can_write_dir()`（能写且不留探针、写不进、探针删不掉仍算能写、目录不存在）、`xdao/client.py` 的 `download_image()` / `_cache_path()`（写了缓存下次直接用、缓存坏了重下、缓存写不进不影响这次、没配目录或 `data:` 不缓存、图片超时放宽且带大小上限）、`xdao/cdp.py` 的 `_describe_exception()`（优先 `description`、退到 `value`、退到 `text`、拿到非字典也不能崩）。
   **二、推送工具的自保。** `tools/push_via_api.py` 以前更新完分支就打印本地算出来的 sha —— PATCH 没生效（权限不足、并发、令牌被撤）时也照样报「推上去了」，2026-10-18 真的踩到了。现在更新后 `GET /repos/<repo>/git/ref/heads/<branch>` 回读一次，对比不上就 `return 1` 并在 stderr 写明「提交对象可能已经上传，但分支没动」。`tests/test_push_via_api.py` 加两条（回读一致才算成功、PATCH 被吞必须报错退出），`_FakeApi` 加 `stick=True` 用来模拟「没生效」。

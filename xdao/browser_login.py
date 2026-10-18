@@ -69,6 +69,13 @@ _STOP_GRACE = 8.0
 # 删临时资料目录时最多等多久（浏览器刚退出时句柄还没松，删不掉就再试）。
 # 和 updater._remove_tree 一样：删掉就立刻返回，只有真删不掉才耗满。
 TEMP_PROFILE_WAIT = 3.0
+#: 「刚开出来、调试端口还没开始收连接」的宽限（秒）：端口文件是这次启动写的、
+#: 或者浏览器进程是我们家的，就等等它，别再开一扇（v0.17.3）。
+STARTING_GRACE = 120.0
+#: 宽限重探最多等多久（秒）。等不到端口答话，才照常新开一扇。
+STARTING_WAIT = 12.0
+#: 宽限重探的轮询间隔（秒）。
+STARTING_POLL = 0.5
 #: 删临时目录前要不要先把「命令行里带这个目录」的浏览器进程收掉（见
 #: :func:`_kill_processes_using_profile`）。用例会把它改成 False —— 那一手要真起
 #: 一个 powershell，不该在每个用例里跑一遍。
@@ -745,24 +752,206 @@ def _window_candidates(profile: Path) -> list[Path]:
     return unique
 
 
-def live_browser_dirs(profile: Path) -> list[Path]:
+def live_browser_dirs(profile: Path, *, probe=None) -> list[Path]:
     """把「浏览器还开着的」资料目录列出来，新的排前面（v0.13.33）。
 
     要问的地方见 :func:`_window_candidates`。每个目录按 ``DevToolsActivePort``
     的端口答不答话判死活（见 :func:`_profile_in_use`）：答话的就是还开着的窗口。
     按端口文件的修改时间倒序 —— 最晚开的那个才是用户眼前看着的那扇窗。
+
+    ``probe`` 只在用例里换：它得是「这个目录的端口答不答话」那个判据。
     """
+    ask = probe if probe is not None else _profile_in_use
     live: list[tuple[float, Path]] = []
     for candidate in _window_candidates(profile):
         try:
             mtime = (candidate / "DevToolsActivePort").stat().st_mtime
         except OSError:
             continue
-        if not _profile_in_use(candidate):
+        if not ask(candidate):
             continue
         live.append((mtime, candidate))
     live.sort(key=lambda item: item[0], reverse=True)
     return [candidate for _, candidate in live]
+
+
+def starting_window_dirs(
+    profile: Path, *, grace: float = STARTING_GRACE, probe=None
+) -> list[Path]:
+    """刚开出来、调试端口还没开始收连接的那几扇窗口的资料目录（v0.17.3）。
+
+    为什么需要它（真机 2026-10-18 现场）：用户点一次「用浏览器登录」，屏幕上留下
+    四扇 Edge、一扇 Chrome，全停在登录页。日志里 ``[17:49:31] 开窗前普查：没探到
+    活着的程序窗口，这次是全新开的一扇`` 与 18 秒后的
+    ``逐窗=端口60463 …browser-profile-15884：PHPSESSID`` 直接矛盾 —— 普查那一刻
+    窗口**已经起来**（端口文件写了），可调试服务还没开始收连接（首次启动要装扩展、
+    下载组件），:func:`_profile_in_use` 问不到，就被当成「没有活窗口」，于是又开一扇。
+
+    判据只有两条、都很保守：``DevToolsActivePort`` 是 ``grace`` 秒内写的，而且
+    端口此刻不答话。**正在启动**和**已经死掉**没法完全分清，这里偏向前者 ——
+    多等几秒的代价，比再开一扇窗引起「两扇窗两个罐」小得多。
+    """
+    ask = probe if probe is not None else _profile_in_use
+    now = time.time()
+    found: list[tuple[float, Path]] = []
+    for candidate in _window_candidates(profile):
+        try:
+            mtime = (candidate / "DevToolsActivePort").stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime > grace:
+            continue
+        if ask(candidate):
+            continue  # 端口答话：那是活窗，归 live_browser_dirs 管
+        found.append((mtime, candidate))
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [candidate for _, candidate in found]
+
+
+def _is_starting_window(profile: Path, *, grace: float = STARTING_GRACE) -> bool:
+    """这扇窗是「刚开出来、端口还没接上」吗（端口文件够新，但端口不答话）。
+
+    「正在启动」和「已经死掉」单看端口分不出来；这里偏向前者 —— 多等几秒的代价，
+    比在它旁边再开一扇窗小得多（见 :func:`starting_window_dirs`）。
+    """
+    try:
+        mtime = (Path(profile) / "DevToolsActivePort").stat().st_mtime
+    except OSError:
+        return False
+    if time.time() - mtime > grace:
+        return False
+    return not _profile_in_use(profile)
+
+
+def wait_for_attachable_window(
+    profile: Path,
+    *,
+    wait: float = STARTING_WAIT,
+    poll: float = STARTING_POLL,
+    grace: float = STARTING_GRACE,
+    expect: int = 0,
+    probe=None,
+    sleep=None,
+    now=None,
+) -> list[Path]:
+    """等「正在启动的那扇窗」把端口接上，返回活着的目录表；等不到回空表（v0.17.3）。
+
+    为什么要有这一步：开窗前普查只能问端口，端口答不话的窗在它眼里等于不存在。
+    真机上那几秒里浏览器还在装扩展、还没把调试服务拉起来，于是程序又开一扇 ——
+    一次点击开出好几扇窗的现场就是这么来的。这里先给它 :data:`STARTING_WAIT` 秒。
+
+    返回空表有两种意思，调用方要分清：
+
+    * 根本没有「正在启动」的窗（``expect`` 为 0 且没有新鲜的端口文件）—— 正常路径，
+      立刻返回，一秒都不等；
+    * 等了 ``wait`` 秒它还是没答话 —— 那多半是启动失败留下的半截目录，照常新开一扇。
+
+    ``expect`` 是进程侧普查已经点名的「正在启动」窗数：有它时即便端口文件还没写出来，
+    也值得等一等。
+    """
+    ask = probe if probe is not None else _profile_in_use
+    clock = now if now is not None else time.monotonic
+    nap = sleep if sleep is not None else time.sleep
+    if expect <= 0 and not starting_window_dirs(profile, grace=grace, probe=ask):
+        return []
+    deadline = clock() + max(0.0, float(wait))
+    while True:
+        found: list[tuple[float, Path]] = []
+        for candidate in _window_candidates(profile):
+            try:
+                mtime = (candidate / "DevToolsActivePort").stat().st_mtime
+            except OSError:
+                continue
+            if ask(candidate):
+                found.append((mtime, candidate))
+        if found:
+            found.sort(key=lambda item: item[0], reverse=True)
+            return [candidate for _, candidate in found]
+        if clock() >= deadline:
+            return []
+        nap(poll)
+
+
+
+def kill_profile_processes(profile: Path) -> None:
+    """把用着这份资料目录的浏览器进程收掉（收尾兜底用，v0.17.3）。
+
+    和 :func:`_kill_processes_using_profile` 是同一手，只是给外面一个明确的名字：
+    程序关窗、退出时要能对**不属于本次对象**的那扇窗动手（接手的窗口 ``process``
+    是 ``None``，只终结 process 会把它漏下来）。
+    """
+    _kill_processes_using_profile(Path(profile))
+
+
+def _remove_dir(path: Path) -> bool:
+    """尽力删掉一个目录，返回删没删掉（被占着时再试两下）。"""
+    for attempt in range(3):
+        try:
+            shutil.rmtree(path)
+            return True
+        except OSError:
+            if attempt == 2:
+                return False
+            time.sleep(0.2)
+    return False  # pragma: no cover —— 循环里已经返回
+
+
+def sweep_orphan_profiles(
+    profile: Path,
+    *,
+    probe=None,
+    kill=None,
+    grace: float = STARTING_GRACE,
+) -> tuple[list[Path], list[Path]]:
+    """收掉上一轮程序退出时留下的孤儿窗口与临时目录（v0.17.3）。
+
+    真机 2026-10-18 现场：程序退出后 ``%TEMP%\\xdao-export-browser-profile-15884``
+    里那扇 Edge 还开着（端口 60463 还答话，占了 598 MB）。第二天用户重开程序，
+    端口普查把它认成「还活着的程序窗口」—— 可它没有登录痕迹、横幅也早没了，用户
+    根本不会去用它。这类孤儿窗还会让普查在「两扇窗两个罐」之间来回挑。
+
+    规则只有两条：
+
+    * 只动手清**临时/备用**资料目录（:func:`_is_our_profile_dir` 认的那两族）；
+      持久目录 ``browser-profile`` 里的登录状态是用户下次还要用的，不碰；
+    * 端口还答话的先问罐（:func:`window_userhash`）：有 userhash 的留着 —— 那是用户
+      真登过的窗，可能正开在屏幕上；没有的才算孤儿，杀进程 + 删目录。
+
+    ``grace`` 秒内刚写过端口文件的目录跳过：那可能是这一轮正在启动的窗。
+    返回 ``(清掉的目录, 留下的目录)``，调用方拿去写一行日志。
+    """
+    ask = probe if probe is not None else _profile_in_use
+    killer = kill if kill is not None else kill_profile_processes
+    cleaned: list[Path] = []
+    kept: list[Path] = []
+    now = time.time()
+    for candidate in _window_candidates(profile):
+        if not _is_our_profile_dir(candidate, Path(profile)):
+            continue
+        try:
+            mtime = (candidate / "DevToolsActivePort").stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime <= grace:
+            continue  # 刚起来的：可能是这一轮正在开的窗
+        if ask(candidate):
+            try:
+                port, ws_path = _parse_devtools_file(
+                    (candidate / "DevToolsActivePort").read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                )
+            except (OSError, CdpError):
+                port, ws_path = 0, ""
+            if port and window_userhash(f"ws://127.0.0.1:{port}{ws_path}"):
+                kept.append(candidate)
+                continue
+        killer(candidate)
+        if _remove_dir(candidate):
+            cleaned.append(candidate)
+        else:
+            kept.append(candidate)
+    return cleaned, kept
 
 
 def stale_window_dirs(profile: Path) -> list[str]:
@@ -1067,13 +1256,19 @@ def build_args(
     profile: Path,
     proxy: str = "",
     start_url: str = LOGIN_URL,
+    *,
+    headless: bool = False,
 ) -> list[str]:
     """拼启动参数。
 
-    刻意不加的几项都有原因：``--headless`` 用户看不见窗口就没法登录；
-    ``--guest`` / ``--incognito`` 用完即弃，留不住登录态，下次还得重来。
+    刻意不加的几项都有原因：``--guest`` / ``--incognito`` 用完即弃，留不住
+    登录态，下次还得重来。
 
     ``start_url`` 默认是登录页；PDF 渲染这类「不需要人看」的场景会传本地文件地址。
+
+    ``headless=True`` 给 PDF 用（v0.17.3）：那条路只要页面渲染结果，不需要人看窗口。
+    真机 2026-10-18 的教训是它也会被用户当成「浏览器窗口乱弹」投诉，所以 PDF 一律
+    不显示窗口。登录那条路必须看得见窗口，所以默认是 False。
 
     打包好的 exe 里还要补 ``--no-sandbox``（冻结环境里浏览器会以 STATUS_BREAKPOINT
     直接退出），补哪几个由 ``browser_flags`` 决定 —— 源码运行不带这个开关。
@@ -1087,6 +1282,9 @@ def build_args(
         "--disable-features=Translate",
         *launch_flags(),
     ]
+    if headless:
+        # 新版的写法；旧版 Chrome 只认 --headless。两个都给，认哪个算哪个。
+        args.extend(["--headless=new", "--headless"])
     if proxy:
         args.append(f"--proxy-server={proxy}")
     args.append(start_url)
@@ -1233,6 +1431,9 @@ class LoginBrowser:
         proxy: str = "",
         timeout: float = 20.0,
         start_url: str = LOGIN_URL,
+        *,
+        headless: bool = False,
+        attach_live: bool = True,
     ) -> None:
         self.info = info
         self.profile = Path(profile)
@@ -1247,6 +1448,13 @@ class LoginBrowser:
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
+        #: 不显示窗口（v0.17.3：PDF 渲染用）。登录那条路必须看得见窗口。
+        self.headless = bool(headless)
+        #: 启动时要不要接手之前开着的程序窗口（v0.17.3 收口成参数）。
+        #: PDF 渲染不能接 —— 它要的是干净的一次性页面，不是用户正在用的那扇窗。
+        self.attach_live = bool(attach_live)
+        #: 这次是**接手**了别人开着的窗口、而不是自己 Popen 出来的（见 :meth:`stop`）。
+        self._attached = False
         #: 现场目录起不来时要不要换备用资料目录 / 换浏览器。登录那条路要（见 :meth:`start`），
         #: 但 ``--check-browser`` 那种「如实回答这一个浏览器行不行」的探测里必须关掉。
         self.fallback_profiles = True
@@ -1322,14 +1530,20 @@ class LoginBrowser:
         用户下次点还是同一个下场、读同一句错。所以攒够
         :data:`DEAD_PROFILE_STRIKES` 次就把它改名让位，见
         :meth:`_quarantine_dead_persistent`。
+
+        v0.17.3：开窗前那次普查之后多了**宽限重探**（见 :meth:`_try_attach_live`）——
+        刚弹出来、调试服务还在起步的那扇窗在端口普查眼里等于不存在，不等它就会
+        在它旁边再开一扇，一次点击开出好几扇窗（真机 2026-10-18 的现场）。
         """
         if self.process is not None:
             return self
         # 先找「还开着的程序窗口」直接接上（v0.13.33，见 :meth:`_try_attach_live`）。
         # 只有登录这条路有「多扇窗互相错认」的问题；``--check-browser`` 那种
         # （fallback_profiles 为假）要如实回答现场目录行不行，不能去蹭别人的窗。
+        # PDF 渲染（v0.17.3 起 ``attach_live`` 为假）也不能接：它要的是一次性的
+        # 干净页面，蹭用户正在看的窗会把那个窗的页面抢走。
         # 探测必须赶在 :meth:`_launch` 里删旧端口文件之前 —— 删了就没处问死活。
-        if self.fallback_profiles:
+        if self.fallback_profiles and self.attach_live:
             attached = self._try_attach_live()
             if attached is not None:
                 return attached
@@ -1446,6 +1660,12 @@ class LoginBrowser:
         返回真正被点去收掉的僵尸目录（活目录就地追加进 ``live``）。只读不改端口
         逻辑；杀进程复用 :func:`_kill_processes_using_profile`（受它的开关保护，
         测试里两个都能替身）。
+
+        v0.17.3：**正在启动**的那扇窗不许收 —— 端口文件刚写出来、调试服务还没开始
+        收连接时，它在端口普查眼里和「僵尸窗」长得一模一样，但它是活的正要用的那扇。
+        收掉它等于把用户眼前刚弹出来的窗当场掐死（真机 2026-10-18 现场「第一扇莫名
+        关掉、第二扇报 Edge 意外关闭」）。这一类一律补进 ``live``，交给
+        :func:`wait_for_attachable_window` 去等它把端口接上。
         """
         known = {str(path).lower() for path in live}
         reaped: list[Path] = []
@@ -1454,8 +1674,9 @@ class LoginBrowser:
             if key in known:
                 continue
             known.add(key)
-            if _profile_in_use(found):
-                live.append(found)  # 端口还答话：只是名字猜不到，补进接手名单
+            if _profile_in_use(found) or _is_starting_window(found):
+                # 端口还答话（只是名字猜不到）或者刚启动还没答话：都补进接手名单。
+                live.append(found)
                 continue
             _kill_processes_using_profile(found)
             reaped.append(found)
@@ -1491,6 +1712,12 @@ class LoginBrowser:
         userhash 的那扇优先接手（见 :meth:`_order_by_login`），普查句里也点名
         「几扇里几扇留着登录痕迹」。真机 m38110 那种「用户在 A 窗登录、程序接 B 窗
         空罐」的错认，从这一版起要么不发生、要么在日志里一眼看得见。
+
+        v0.17.3：**宽限重探**。端口普查只问「端口答不答话」，刚弹出来、调试服务还在
+        起步的那扇在它眼里等于不存在。真机 2026-10-18 的日志里
+        ``[17:49:31] 开窗前普查：没探到活着的程序窗口`` 与 18 秒后的
+        ``逐窗=端口60463 …`` 直接矛盾 —— 那一次点击开出了好几扇窗。现在普查完要是
+        没接上，先用 :func:`wait_for_attachable_window` 给正在启动的那扇一点时间。
         """
         live = live_browser_dirs(self.profile)
         reaped = self._adopt_process_side_findings(live)
@@ -1508,16 +1735,15 @@ class LoginBrowser:
                 "免得它和这一轮程序用的窗口混在一起。"
             )
         # 端口文件读得动、里面真有端口的，才算能接上的候选（读不动＝探测和读之间它退了）。
-        attachable: list[tuple[Path, int, str]] = []
-        for chosen in live:
-            try:
-                port, ws_path = _parse_devtools_file(
-                    (chosen / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace")
+        attachable = self._attachable_from(live)
+        if not attachable:
+            # v0.17.3 宽限重探：正在启动的那扇还没把端口接上，等它，别在旁边再开一扇。
+            waited = wait_for_attachable_window(self.profile, expect=len(live))
+            if waited:
+                self._census_note += (
+                    f"宽限重探：等了一下，「{waited[0].name}」把调试端口接上了，直接接手。"
                 )
-            except (OSError, CdpError):  # pragma: no cover —— 探测和读之间它退了
-                continue
-            if port:
-                attachable.append((chosen, port, ws_path))
+                attachable = self._attachable_from(waited)
         # v0.13.38：多扇窗时先问罐、把有登录痕迹的那扇排前面（见 :meth:`_order_by_login`）。
         if len(attachable) > 1:
             attachable = self._order_by_login(attachable)
@@ -1526,6 +1752,10 @@ class LoginBrowser:
             self.port = port
             self.ws_path = ws_path
             self.browser_ws_url = f"ws://127.0.0.1:{port}{ws_path}"
+            # v0.17.3：这扇窗不是我们 Popen 出来的，stop() 只终结 process 就会漏掉它 ——
+            # 真机上「程序退了、Edge 还开着」那一族就是这么留下的。记一笔，收尾时按
+            # 资料目录把进程收掉（见 kill_profile_processes）。
+            self._attached = True
             self._profile_note = (
                 f"接到之前开着的程序窗口上了（资料目录 {chosen}）。"
                 "那个窗口里登录过就接着用；要重新登录也请在【这个】窗口里做。"
@@ -1535,6 +1765,21 @@ class LoginBrowser:
         if live:
             self._census_note += "挨个问了一遍都没接上，照常新开一扇。"
         return None
+
+    @staticmethod
+    def _attachable_from(candidates: list[Path]) -> list[tuple[Path, int, str]]:
+        """从资料目录表里挑出「端口文件读得动、且真有端口」的那些（v0.17.3 抽出）。"""
+        attachable: list[tuple[Path, int, str]] = []
+        for chosen in candidates:
+            try:
+                port, ws_path = _parse_devtools_file(
+                    (chosen / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace")
+                )
+            except (OSError, CdpError):  # pragma: no cover —— 探测和读之间它退了
+                continue
+            if port:
+                attachable.append((chosen, port, ws_path))
+        return attachable
 
     def _order_by_login(
         self, candidates: list[tuple[Path, int, str]]
@@ -1658,7 +1903,13 @@ class LoginBrowser:
         self._stderr_log = stderr_log
         try:
             self.process = subprocess.Popen(
-                build_args(self.info, chosen, self.proxy, self.start_url),
+                build_args(
+                    self.info,
+                    chosen,
+                    self.proxy,
+                    self.start_url,
+                    headless=self.headless,
+                ),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL if stderr_handle is None else stderr_handle,
@@ -1828,6 +2079,12 @@ class LoginBrowser:
                     process.wait(timeout=5.0)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+        if self._attached:
+            # v0.17.3：接手的窗口不是我们 Popen 出来的（``process`` 是 None），只终结
+            # process 收不到它。真机上「程序退了、Edge 还开着」留下 598 MB 孤儿窗
+            # 那一族就是这么来的 —— 按资料目录把进程收掉，尽力而为。
+            kill_profile_processes(self._profile)
+            self._attached = False
         # 临时资料目录**建出来过就一定要收掉**（不管这次起没起来）：失败尝试也会在里面
         # 落下一二十个文件，真机上量到「一连失败几次，%TEMP% 里就攒一堆空壳」。
         self._discard_stderr_log()

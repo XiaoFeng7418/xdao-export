@@ -982,6 +982,15 @@ class BrowserLoginDialog(tk.Toplevel):
         self.configure(bg=BG)
         self.client = client
         self.settings = settings if settings is not None else AppSettings.load()
+        # v0.17.3：登记到主窗口上。主窗口被关掉（× / Alt+F4）时 Tk 会直接销毁子窗口，
+        # 这里的后台线程和浏览器进程就没人收尾了 —— 真机上那族孤儿窗有一部分就是这么
+        # 留下的。App.on_close 会挨个调 _on_cancel()。
+        self._app = getattr(master, "app", None)
+        registry = getattr(self._app, "_login_dialogs", None)
+        if isinstance(registry, list):
+            registry.append(self)
+        else:
+            self._app = None
         # 写运行日志的回调（v0.13.26）。以前只有「这一轮没成」时外面才补一笔，
         # 于是等待中的那次尝试在日志里一点痕迹都没有（m32057：日志只有两行与登录无关
         # 的话）；现在每一条领饼干的结论都当场写进去。
@@ -1336,6 +1345,14 @@ class BrowserLoginDialog(tk.Toplevel):
         self._shutdown()
         self.destroy()
 
+    def destroy(self) -> None:
+        """销毁时从主窗口的登记处摘掉（v0.17.3，见 :meth:`App.on_close`）。"""
+        app = getattr(self, "_app", None)
+        registry = getattr(app, "_login_dialogs", None)
+        if isinstance(registry, list) and self in registry:
+            registry.remove(self)
+        super().destroy()
+
     def _dump_jar_before_close(self) -> None:
         """关窗/取消之前，用还没被拆掉的会话落一份「读罐详单」（v0.13.52，只碰队列之外的文件）。
 
@@ -1484,6 +1501,7 @@ class BrowserLoginDialog(tk.Toplevel):
         self._stamp = stamp
         if self._stop.is_set():  # 找浏览器的功夫里用户已经取消了，别再多开一个进程
             return
+        browser = None
         try:
             profile = backend.user_data_dir(Path(self.settings.config_path).parent)
             # 先登记再 start()：用户可能在启动过程中点取消，主线程得能把它停掉。
@@ -1536,6 +1554,12 @@ class BrowserLoginDialog(tk.Toplevel):
             except Exception as exc:  # noqa: BLE001 —— 导航只是尽力而为
                 self._queue.put(("note", f"没能把浏览器窗口切到登录页（{exc}），请在窗口里手动打开。"))
         except Exception as exc:
+            # v0.17.3：**失败也要把窗口收掉**。以前这里只报错就 return —— 浏览器已经
+            # 拉起来、只是后面某步（读端口、连会话、找页面）失败时，那扇窗会留在屏幕上；
+            # 用户再点一次「用浏览器登录」就又多一扇。真机 2026-10-18「一次弹出好几扇窗」
+            # 的现场里，这就是帮凶之一（另一处是端口普查看不见刚启动的窗）。
+            if browser is not None:
+                self._release_browser(browser)
             if not self._stop.is_set():  # 取消时后台报的错没人看，不必再刷界面
                 self._queue.put(("error", f"打开浏览器失败：{exc}"))
             return
@@ -3784,6 +3808,9 @@ def _spawn(command: list[str]) -> None:
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        # v0.17.3：子窗口（BrowserLoginDialog）靠 master.app 找到主窗口，登记进
+        # _login_dialogs 才有机会在主窗口被关掉时走正常收尾（见 on_close）。
+        root.app = self
         resolve_fonts(root)
         self.settings = AppSettings.load()
         # 界面字号比例也要在第一笔画下去之前定下来：尺寸都由 theme.font()/mono()
@@ -3809,6 +3836,11 @@ class App:
 
         self._export_queue: queue.Queue = queue.Queue()
         self._exporting = False
+        #: 关窗已经开始了吗（v0.17.3，见 on_close）：防止连点两下 × 重复收尾。
+        self._closing = False
+        #: 还开着的「用浏览器登录」子窗口（v0.17.3）：主窗口被关掉时要挨个取消，
+        #: 否则它们的后台线程和浏览器进程会被直接带走、留下孤儿窗。
+        self._login_dialogs: list[BrowserLoginDialog] = []
         # 本轮导出的停止位：点「取消导出」时举起来，抓取层与导出器都会看它。
         self._export_stop: threading.Event | None = None
         self._last_failed: list[str] = []
@@ -3893,6 +3925,10 @@ class App:
             browser_login.sweep_stale_temp_profiles()
             profile = browser_login.user_data_dir(Path(self.settings.config_path).parent)
             browser_login.sweep_stale_fallback_profiles(profile)
+            # v0.17.3：上一轮程序退出时留下的**孤儿窗口**（程序没了、浏览器还开着，
+            # 真机 2026-10-18 那扇 598 MB 的 Edge 就是它）也在这里收掉：清临时/备用
+            # 目录，其中罐里有 userhash 的（用户真登过的窗）一律留着不碰。
+            browser_login.sweep_orphan_profiles(profile)
         except Exception:  # noqa: BLE001 —— 清不干净也不该影响启动
             pass
 
@@ -5476,6 +5512,40 @@ class App:
         self.progress_var.set("正在取消…")
         self.log("正在取消：当前这一页或这张图收手就停，已经导出的文件会保留。")
 
+    def on_close(self) -> None:
+        """关主窗口：先把还在跑的活收掉，再真的关（v0.17.3）。
+
+        以前主窗口没接管关闭 —— 点 × 就直接进程退出：导出/监控线程手里那个浏览器
+        还开着，成了 ``%TEMP%`` 里的孤儿窗（真机 2026-10-18 那扇 598 MB 的 Edge
+        就是这么留下的），下一次启动还会被端口普查当成「还活着的程序窗口」认领。
+        这里按「先举手停 → 再给一点收手时间 → 再销毁」的顺序来。
+        """
+        if self._closing:
+            return
+        self._closing = True
+        try:
+            self.cancel_export()
+        except Exception:  # pragma: no cover —— 收尾不许挡着关窗
+            pass
+        try:
+            self.stop_watching()
+        except Exception:  # pragma: no cover
+            pass
+        for dialog in list(self._login_dialogs):
+            try:
+                dialog._on_cancel()  # 它会自己 _shutdown()（停线程 + 关浏览器）
+            except Exception:  # pragma: no cover
+                pass
+        # 给导出线程一点收手时间：它手里可能正开着一个 PDF 用的浏览器，进程直接退出
+        # 会把它留成孤儿窗。1.2 秒足够走到「下一轮检查停止位」，用户几乎感觉不到。
+        self.root.after(1200, self._destroy_root)
+
+    def _destroy_root(self) -> None:  # pragma: no cover - 需要真实事件循环
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+
     def _set_export_controls(self, *, running: bool) -> None:
         """导出期间「开始导出」变成「取消导出」，结束后再变回来。"""
         if running:
@@ -5767,6 +5837,12 @@ def run() -> None:
     except Exception as exc:  # noqa: BLE001
         _report_fatal("启动界面失败", exc)
         raise SystemExit(1) from None
+
+    # v0.17.3：主窗口的 × 交给 App.on_close —— 先把导出/监控/登录的活收掉再退出。
+    # 不接管的话点 × 就是直接进程退出，子浏览器会成为孤儿窗（见 App.on_close）。
+    on_close = getattr(app, "on_close", None)
+    if callable(on_close):
+        root.protocol("WM_DELETE_WINDOW", on_close)
 
     try:
         root.mainloop()
