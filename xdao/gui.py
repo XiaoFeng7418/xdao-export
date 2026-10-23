@@ -1565,6 +1565,15 @@ class BrowserLoginDialog(tk.Toplevel):
             # 用户再点一次「用浏览器登录」就又多一扇。真机 2026-10-18「一次弹出好几扇窗」
             # 的现场里，这就是帮凶之一（另一处是端口普查看不见刚启动的窗）。
             if browser is not None:
+                # v0.17.6：失败时更要把这两段吐出来 —— 候选表全栽了，日志里唯一能
+                # 说明「刚才发生了什么」的就是普查看到了什么、每一扇各是什么死因。
+                # 以前它们只在成功路径上入队，越是失败越是看不见（v0.17.5 的漏项）。
+                census = str(getattr(browser, "census_note", "") or "")
+                if census:
+                    self._queue.put(("census", census))
+                for note in getattr(browser, "attempt_notes", ()) or ():
+                    if note:
+                        self._queue.put(("note", note))
                 self._release_browser(browser)
             if not self._stop.is_set():  # 取消时后台报的错没人看，不必再刷界面
                 self._queue.put(("error", f"打开浏览器失败：{exc}"))

@@ -407,6 +407,11 @@ def install_browser_shim(monkeypatch, artifacts_dir):
     ) -> _FakeSubprocess:
         shim = _FakeSubprocess(exit_immediately=exit_immediately, popen_release=popen_release)
         monkeypatch.setattr(browser_login, "subprocess", shim)
+        # 候选失败后的收尾会真的拉起 powershell 扫全机进程（每次两三秒，真机 2026-10-23
+        # 量到）。这里的浏览器本来就是假的、桌上不会有窗，跑这一手只会让用例干等 ——
+        # 「启动失败要报出可读错误」那条 20 秒预算就是这么被挤爆的。纯逻辑用例
+        # （tests/test_browser_login.py）早就把它关了，这里也一并关掉。
+        monkeypatch.setattr(browser_login, "_KILL_PROFILE_PROCESSES", False)
         monkeypatch.setattr(browser_login, "CDPSession", _FakeSession)
         # find_browser 走真实现，只是把候选换成一个真实存在的假可执行文件。
         # explicit 原样传下去：界面层现在会把设置里那个「PDF 浏览器」交给它。
