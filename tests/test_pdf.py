@@ -30,6 +30,20 @@ ARTIFACTS = Path(__file__).resolve().parent.parent / ".test-artifacts"
 IS_WINDOWS = os.name == "nt"
 
 
+def _batch_bytes(text: str) -> bytes:
+    """把批处理内容编成 cmd.exe 认得的字节。
+
+    cmd.exe 读批处理用的是系统 ANSI 代码页（中文系统是 GBK），不认 UTF-8：
+    脚本内容里只要带了中文路径，UTF-8 写出来就会在命令行里变成乱码。
+    本机仓库路径含中文，2026-10-23 十二条 PDF 用例一起栽在这里
+    （子进程报 ``can't open file ...fake_browser_impl.py``）。
+    """
+    try:
+        return text.encode("mbcs")
+    except (LookupError, UnicodeEncodeError):  # pragma: no cover —— 只有非 Windows / 生僻字会走到
+        return text.encode("utf-8")
+
+
 @pytest.fixture
 def out_dir() -> Path:
     import shutil
@@ -103,9 +117,14 @@ def make_fake_browser(
     )
     if is_windows:
         wrapper = artifacts_dir / "fake_browser.cmd"
-        wrapper.write_text(
-            "@echo off\r\n" f'"{exe}" "{script}" %*\r\n' "exit /b %ERRORLEVEL%\r\n",
-            encoding="utf-8",
+        # 直接写字节：①cmd.exe 按 ANSI 代码页读批处理，中文路径必须同码（见 _batch_bytes）；
+        # ②write_text 会把 "\r\n" 再翻一次，变成 "\r\r\n"。
+        wrapper.write_bytes(
+            _batch_bytes(
+                "@echo off\r\n"
+                f'"{exe}" "{script}" %*\r\n'
+                "exit /b %ERRORLEVEL%\r\n"
+            )
         )
     else:
         wrapper = artifacts_dir / "fake_browser.sh"
@@ -163,6 +182,22 @@ def test_fake_browser_is_actually_executable(artifacts_dir):
     )
     assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
     assert (artifacts_dir / "flags.txt").exists()
+
+
+def test_fake_browser_batch_file_is_written_in_the_cmd_code_page(artifacts_dir):
+    """批处理要按 cmd.exe 的代码页写、CRLF 只能有一个 CR（2026-10-23 的坑）。
+
+    不用 skipif —— 仓库的「不许意外跳过」闸会把带条件的整条用例判红（CI 2026-10-23
+    实测）：非 Windows 上就只钉「字节里的 CRLF 没被翻成双 CR」，代码页那段跳过不看。
+    """
+    batch = make_fake_browser(artifacts_dir, is_windows=True)
+    raw = batch.read_bytes()
+    assert b"\r\r" not in raw, "CRLF 被 write_text 又翻了一遍，cmd 会读到空行"
+    assert raw.count(b"\r\n") == 3
+    if IS_WINDOWS:
+        # 本机仓库路径带中文：解不开就说明是按别的编码写的
+        assert str(artifacts_dir) in raw.decode("mbcs")
+    # POSIX 包装脚本由 tools/posix_check.py 覆盖，这里只管 Windows 的批处理。
 
 
 # ---------- render_html_to_pdf ----------

@@ -681,6 +681,25 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.17.6**（失败时也把对账日志落进运行日志；测试两处稳定化）：
+  **一、为什么。** v0.17.5 把候选失败逐条记进 `LoginBrowser.attempt_notes`，但 `xdao/gui.py`
+  只在 `browser.start()` 成功之后才把这些行入队；候选全部失败时走 `except` 分支，只弹对话框
+  —— 而对话框一关就没了，最该对账的那一次恰恰什么都没留下。
+  **二、修法（只补日志落点，不改行为）。** `xdao/gui.py` 的登录线程
+  `except` 分支里、释放浏览器之前：有 `census_note` 就入队一行；`attempt_notes` 逐条入队
+  （`LoginBrowser` 记的本来就是一行一条「第 N 扇没成：…」，顺序即真发生的顺序）。随后照旧
+  释放浏览器、写错误行、置错误状态、重开重试按钮（取消期间不刷界面）。
+  **三、测试侧两处**（都是真机/本机暴露的问题，不是产品逻辑）：
+  1. `tests/test_pdf.py` 的假浏览器 `.cmd` 原来按 UTF-8 写、`write_text` 还把 CRLF 翻成
+     `\r\r\n`；cmd.exe 按系统 ANSI 代码页读批处理，本机仓库路径含中文 ⇒ 十二条 PDF 用例在
+     本机全红（CI 的 ASCII 路径看不见这个坑）。改成 `_batch_bytes()` 用 `mbcs` 编码 +
+     `write_bytes()` 写字节，并补一条回归用例钉编码与 CRLF。
+  2. `tests/test_gui_browser_login.py` 的浏览器替身没关 `_KILL_PROFILE_PROCESSES`，候选失败
+     后真去拉起 powershell 扫全机进程（每次两三秒，最多十项）⇒「启动失败要报可读错误」那条
+     20 秒预算被挤爆（25 秒超时）。在替身 fixture 里关掉，纯逻辑用例早就这么做了。
+  **四、用例与基线。** 全量 **2096 收集 / 2089 passed / 7 skipped**；本版新增
+  `tests/test_gui_entry.py::test_login_worker_writes_the_attempt_notes_when_every_candidate_fails` 与
+  `tests/test_pdf.py::test_fake_browser_batch_file_is_written_in_the_cmd_code_page`。
 - **v0.17.5**（多扇窗再出现时，运行日志能对账：每次候选失败留一行）：
   **一、为什么加。** v0.17.4 修的是「窗口活过启动进程、程序没认下它」这条根因，但真机
   一时难以复现（用户 2026-10-18 回验时只开出一扇），没法当场证明已经修好。候选表里的

@@ -2649,3 +2649,76 @@ def test_login_worker_writes_each_failed_attempt_into_the_log(live_app, monkeypa
                 dialog.destroy()
         except tk.TclError:  # pragma: no cover
             pass
+
+
+# ------------------------------------------- v0.17.6：失败时也要吐日志
+
+
+def test_login_worker_writes_the_attempt_notes_when_every_candidate_fails(
+    live_app, monkeypatch
+):
+    """v0.17.6：候选表全栽的时候，日志里更要有「哪几扇没成」和普查看到了什么。
+
+    v0.17.5 只把这些行放在成功路径上调队 —— 越是整条路都失败，日志里反而越空，
+    恰好丢掉事后定位最需要的那段（哪一步、第几个目录、什么死因）。
+    """
+    from types import SimpleNamespace
+
+    from xdao import browser_login as bl
+
+    dialog = _open_browser_login(live_app)
+    created: list = []
+
+    class DeadAllBrowser:
+        def __init__(self, *args, **kwargs):
+            self.attempt_notes = (
+                "第 1 扇没成：Edge 开在 临时资料目录 A，刚起来就退出了（退出码 21）",
+                "第 2 扇没成：Chrome 开在 持久资料目录 B，调试端口一直没写出来",
+            )
+            self.census_note = "开窗前普查：探到 1 扇还活着的程序窗口（A），挨个问了一遍都没接上。"
+            self.stopped = False
+            created.append(self)
+
+        def start(self) -> None:
+            raise RuntimeError("每个候选目录都没起来")
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def cleanup_temp_profile(self) -> None:
+            pass
+
+    backend = SimpleNamespace(
+        user_data_dir=lambda base: Path(base) / "browser-profile",
+        LoginBrowser=DeadAllBrowser,
+    )
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: backend)
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: bl.BrowserInfo("假浏览器", "C:/假.exe"),
+    )
+    try:
+        gui.BrowserLoginDialog._worker(dialog)
+        queued = []
+        while True:
+            try:
+                queued.append(dialog._queue.get_nowait())
+            except queue.Empty:
+                break
+        notes = [payload for kind, payload in queued if kind == "note"]
+        assert created and created[0].stopped is True, "失败分支仍要释放浏览器"
+        first = next(n for n in notes if n.startswith("第 1 扇没成"))
+        second = next(n for n in notes if n.startswith("第 2 扇没成"))
+        assert notes.index(first) < notes.index(second), "顺序要与真发生的顺序一致"
+        assert (
+            "census",
+            "开窗前普查：探到 1 扇还活着的程序窗口（A），挨个问了一遍都没接上。",
+        ) in queued
+        assert any(kind == "error" for kind, _ in queued)
+    finally:
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except tk.TclError:  # pragma: no cover
+            pass
