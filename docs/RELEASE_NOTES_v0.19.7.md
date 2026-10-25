@@ -36,6 +36,9 @@
 
 ## 附件
 
+这是**免安装包**：下载下面那个 zip，解压后双击 xdao-export.exe 就能用，不用装 Python。校验值用来确认文件没下坏。
+
+
 - `xdao-export-v0.19.7-win64.zip`（12,208,698 字节，约 11.6 MB，957 个条目）
 - `xdao-export-v0.19.7-win64.zip.sha256`
 
