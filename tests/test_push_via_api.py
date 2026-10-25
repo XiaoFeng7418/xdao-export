@@ -330,6 +330,176 @@ def test_no_match_when_either_side_is_empty():
     assert push_via_api.find_pushed_prefix([local_of("x\n")], []) == 0
 
 
+# --------------------------------------------------- 长历史：从顶端往回数（v0.19.3）
+
+
+def _chain(monkeypatch, local, *, include=None, break_at=None):
+    """把 local 的前 include 条造成一条远端链，并装好假 api。
+
+    返回 (远端链 sha 列表, 被请求过的 sha 列表)。`break_at` 让那条的父提交
+    指向一个「别人的提交」，用来模拟历史被改写。
+    """
+    count = len(local) if include is None else include
+    shas = [f"{index + 1:040x}" for index in range(count)]
+    nodes = {}
+    for index in range(count):
+        remote = remote_of(local[index])
+        remote["sha"] = shas[index]
+        remote["parents"] = [{"sha": shas[index - 1]}] if index else []
+        nodes[shas[index]] = remote
+    if break_at is not None:
+        foreign = "f" * 40
+        nodes[foreign] = {
+            "sha": foreign,
+            "message": "别人的提交\n",
+            "author": {"email": "other@example.com", "date": "2020-01-01T00:00:00+08:00"},
+            "committer": {"email": "other@example.com", "date": "2020-01-01T00:00:00+08:00"},
+            "parents": [],
+        }
+        nodes[shas[break_at]]["parents"] = [{"sha": foreign}]
+    calls = []
+
+    def fake(token, method, path, payload=None, **kwargs):
+        sha = path.rsplit("/", 1)[-1]
+        calls.append(sha)
+        return nodes[sha]
+
+    monkeypatch.setattr(push_via_api, "api", fake)
+    return shas, calls
+
+
+def test_pushed_count_from_git_uses_the_local_graph(tmp_path, monkeypatch):
+    """本地有远端对象时直接算，零网络请求。"""
+    repo = make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    commits = push_via_api.local_commits()
+    first, second = commits[0]["sha"], commits[1]["sha"]
+
+    assert push_via_api.pushed_count_from_git(second, 2) == 2
+    assert push_via_api.pushed_count_from_git(first, 2) == 1
+
+
+def test_pushed_count_from_git_gives_up_cleanly(tmp_path, monkeypatch):
+    """本地没有那个对象、或参数没意义时返回 None，让调用方回落到 API。"""
+    repo = make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    assert push_via_api.pushed_count_from_git("f" * 40, 2) is None
+    assert push_via_api.pushed_count_from_git("", 2) is None
+    assert push_via_api.pushed_count_from_git("HEAD", 0) is None
+
+
+def test_main_prefers_the_local_graph(monkeypatch):
+    """main 里先问本地 git；它能算就不发 API、也不重建提交。"""
+    commits = [local_of("第一条\n") for _ in range(2)]
+    for index, commit in enumerate(commits):
+        commit["sha"] = f"{index + 1:040x}"
+    calls = []
+
+    def fake_api(token, method, path, payload=None, **kwargs):
+        calls.append(path)
+        if path.endswith("/git/ref/heads/master"):
+            return {"object": {"sha": commits[1]["sha"]}}
+        if "/git/trees/" in path:
+            return {"tree": []}
+        raise AssertionError(f"不该请求 {path}")
+
+    monkeypatch.setattr(push_via_api, "gh_token", lambda: "t")
+    monkeypatch.setattr(push_via_api, "local_commits", lambda: commits)
+    monkeypatch.setattr(push_via_api, "api", fake_api)
+    monkeypatch.setattr(push_via_api, "pushed_count_from_git", lambda head, total: 2)
+    monkeypatch.setattr(push_via_api, "blob_content", lambda sha: CONTENT)
+    monkeypatch.chdir(Path(__file__).resolve().parent.parent)
+
+    code = push_via_api.main(["--repo", "o/n", "--branch", "master"])
+
+    assert code == 0
+    # 什么都推过了：不该再请求任何提交对象
+    assert not any("/git/commits/" in path for path in calls)
+
+
+def test_pushed_count_counts_the_whole_history_when_nothing_is_new(monkeypatch):
+    local = [local_of(f"第 {i} 条\n") for i in range(3)]
+    shas, _ = _chain(monkeypatch, local)
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", shas[-1], local) == 3
+
+
+def test_pushed_count_leaves_only_the_new_commit_pending(monkeypatch):
+    """本地比远端多一条时，只该把这条算成待推送（老实现会判成 0，全部重推）。"""
+    local = [local_of(f"第 {i} 条\n") for i in range(4)]
+    shas, calls = _chain(monkeypatch, local, include=3)
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", shas[-1], local) == 3
+    # 第一次请求远端顶端，之后只抽检 VERIFY_DEPTH 条父链，不逐条翻完整条历史
+    assert calls[0] == shas[-1]
+    assert len(calls) <= 1 + push_via_api.VERIFY_DEPTH
+
+
+def test_pushed_count_stops_at_the_first_difference(monkeypatch):
+    """中间被改写：只认从顶端开始连续对上的那一段。"""
+    local = [local_of(f"第 {i} 条\n") for i in range(3)]
+    # 让顶端那条的父提交变成别人的提交：顶端对上 1 条之后就断
+    shas, _ = _chain(monkeypatch, local, break_at=2)
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", shas[-1], local) == 1
+
+
+def test_pushed_count_is_cheap_on_a_long_history(monkeypatch):
+    """历史再长也只花几次请求（原来要固定 100 次取链，实测 485 秒）。"""
+    local = [local_of(f"第 {i} 条\n") for i in range(40)]
+    shas, calls = _chain(monkeypatch, local)
+
+    matched = push_via_api.pushed_count_from_head("o/n", "t", shas[-1], local)
+    assert matched == 40
+    assert len(calls) <= 1 + push_via_api.VERIFY_DEPTH
+
+
+def test_pushed_count_takes_the_fast_path_when_the_top_matches(monkeypatch):
+    """远端顶端就是本地 HEAD：一个请求都不用发。"""
+    local = [local_of(f"第 {i} 条\n") for i in range(3)]
+    local[-1] = {**local[-1], "sha": "c" * 40}
+    shas, _ = _chain(monkeypatch, local)
+    _ = shas
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", local[-1]["sha"], local) == 3
+
+
+def test_pushed_count_returns_zero_when_the_top_is_unknown(monkeypatch):
+    """远端顶端在本地找不到同一条：当作一条都没推过。"""
+    local = [local_of(f"第 {i} 条\n") for i in range(2)]
+    shas, calls = _chain(monkeypatch, [local_of("别人的提交\n")])
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", shas[-1], local) == 0
+    assert len(calls) == 1
+
+
+def test_pushed_count_survives_an_unreadable_chain(monkeypatch):
+    """读不到远端提交时不抛异常，交给调用方按完整历史重建。"""
+    def boom(*args, **kwargs):
+        raise push_via_api.ApiError("404 找不到")
+
+    monkeypatch.setattr(push_via_api, "api", boom)
+    local = [local_of("x\n")]
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", "b" * 40, local) == 0
+
+
+def test_pushed_count_with_nothing_to_compare(monkeypatch):
+    shas, calls = _chain(monkeypatch, [local_of("x\n")])
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", shas[-1], []) == 0
+    assert push_via_api.pushed_count_from_head("o/n", "t", "", [local_of("x\n")]) == 0
+    assert calls == []
+
+
+def test_pushed_count_respects_the_limit(monkeypatch):
+    local = [local_of(f"第 {i} 条\n") for i in range(4)]
+    shas, _ = _chain(monkeypatch, local)
+
+    assert push_via_api.pushed_count_from_head("o/n", "t", shas[-1], local, limit=2) == 2
+
+
 # --------------------------------------------------------------------------- 差异诊断
 
 

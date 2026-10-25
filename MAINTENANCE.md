@@ -681,6 +681,21 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.3**（备用推送工具改走本地 git 图）：
+  1. 问题：	ools/push_via_api.py 判断已推提交用 
+emote_chain(limit=100) +
+     ind_pushed_prefix，本地历史超过 100 条后恒判 0（
+epo_check.py 早在
+     2026-10-01 就踩过同一处，它改用本地 git log 绕开）。后果是每次推送都
+     重建全部提交、重传上千个 blob：2026-10-25 实测 1360 个 blob、一个多小时。
+  2. 修法：新增 pushed_count_from_git(head, total)——git merge-base --is-ancestor
+     确认是祖先，再 git rev-list --count head..HEAD 得待推条数，零请求。
+     本地没有远端对象时回落到 pushed_count_from_head()：先在本地定位远端顶端
+     对应哪一条，再抽检 VERIFY_DEPTH = 4 条父链确认没被改写，对不上只认对上那段。
+  3. 实测：远端顶端==本地 HEAD 时 0.0 秒；本地多一条待推 3.1 秒（旧实现 485 秒）。
+     	ests/test_push_via_api.py 34 → 46 条；全量 2317 收集 / 2310 通过 / 7 跳过。
+  4. 教训：给「历史比对」写窗口型算法时，窗口上限必须与「本地历史长度」解耦，
+     否则长历史会静默退化成全量重建；退化的表现是慢，而不是错，很难被发现。
 - **v0.19.2**：给 `xdao/widgets.py` 补交互与绘制用例（只动测试，不改行为）
 
   `widgets.py` 里是主界面所有自绘控件（Card / StatusPill / FlatText / LinkLabel /
