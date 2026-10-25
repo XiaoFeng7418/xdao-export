@@ -183,12 +183,20 @@ def kill_leftover_exe() -> None:
     )
 
 
-def build_pyinstaller(repo: Path, python: str, version_file: Path, work: Path, out: Path) -> Path:
-    """跑 PyInstaller，返回它产出的程序目录（`<out>/xdao-export`）。"""
-    command = [
+def pyinstaller_command(python: str, version_file: Path, work: Path, out: Path) -> list[str]:
+    """拼出这次打包要跑的 PyInstaller 命令行（纯函数，方便用例断言）。
+
+    ``--hidden-import tools.pdf_diag`` 这条是必须的（v0.19.4 起）：排障开关
+    ``--pdfdiag`` 在 ``main.py`` 里是**延迟导入**，PyInstaller 静态扫描看不到它，
+    不显式点名就不会被打进包 —— 2026-10-25 实测 v0.19.3 的免安装包里没有这个模块，
+    用户敲 ``xdao-export.exe --pdfdiag`` 直接 ModuleNotFoundError，开关等于不存在。
+    """
+    return [
         python, "-m", "PyInstaller",
         "--onedir", "--windowed", "--clean", "--noconfirm",
         "--version-file", str(version_file),
+        # 延迟导入的排障模块：不点名就不会被打进包
+        "--hidden-import", "tools.pdf_diag",
         # spec 与中间产物都放到临时目录：仓库里的 *.spec 是历史文件，别让这次打包改到它
         "--specpath", str(work),
         "--workpath", str(work / "build"),
@@ -196,6 +204,11 @@ def build_pyinstaller(repo: Path, python: str, version_file: Path, work: Path, o
         "--name", "xdao-export",
         "main.py",
     ]
+
+
+def build_pyinstaller(repo: Path, python: str, version_file: Path, work: Path, out: Path) -> Path:
+    """跑 PyInstaller，返回它产出的程序目录（`<out>/xdao-export`）。"""
+    command = pyinstaller_command(python, version_file, work, out)
     done = subprocess.run(
         command, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace"
     )

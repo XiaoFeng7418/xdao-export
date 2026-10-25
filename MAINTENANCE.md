@@ -681,6 +681,31 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.4**：排障开关 `--pdfdiag` 在免安装包里真能用了（修一个「假开关」）
+
+  2026-10-25 核对发布产物时发现：`main.py --pdfdiag` 在源码里跑得通（六种启动方式全成、
+  退出码 0），但 **v0.19.3 的免安装包里根本没有 `tools/pdf_diag.py` 这个模块** ——
+  `_internal` 下没有它，顶层也没有 `tools` 目录，用户敲 `xdao-export.exe --pdfdiag`
+  只会拿到 `ModuleNotFoundError`（窗口版连错误都看不见）。这个开关从加上那天起，
+  对打包版一直是坏的，只是没人试过。
+
+  根因：`--pdfdiag` 在 `main.py` 里是**延迟导入**（`from tools.pdf_diag import main`），
+  PyInstaller 静态扫描看不到它，不显式点名就不会被打包；而 `tools/build_zip.py`
+  是自己拼 PyInstaller 命令行的（`--onedir --windowed …`），仓库根目录那几个
+  `*.spec` 是历史文件、打包时根本不用（build_zip 的注释写明「别让这次打包改到它」）。
+
+  修法：把命令段抽成纯函数 `tools/build_zip.py::pyinstaller_command()`，并在里面加
+  `--hidden-import tools.pdf_diag`；同时新建 `tools/__init__.py`，让 `tools` 是常规包
+  而不是命名空间包。**教训：改打包参数要改 `tools/build_zip.py`，改仓库里的 `*.spec`
+  一点用都没有**（这一版一开始就白改了一处 spec，发现后已还原）。
+
+  用例：`tests/test_build_zip.py` +2（23 → 25）—— 一条断言命令里 `--hidden-import`
+  紧跟 `tools.pdf_diag`、且 `tools/__init__.py` 存在；一条钉住 `--pdfdiag` 仍是
+  `argparse.SUPPRESS` 的隐藏开关（开关与打包要成对）。
+
+  验收：用修好的打包脚本重建 v0.19.4，在解开的包目录里跑 `xdao-export.exe --pdfdiag`，
+  能看到六种方式的表与「这台机器能渲染 PDF」的结论，退出码 0。
+
 - **v0.19.3**（备用推送工具改走本地 git 图）：
   1. 问题：	ools/push_via_api.py 判断已推提交用 
 emote_chain(limit=100) +
