@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 2249 项（2026-10-25 数出来的一共这么多；本机 Windows 上 2242 通过、7 项跳过）、
+单元测试 2305 项（2026-10-25 数出来的一共这么多；本机 Windows 上 2298 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 154 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -124,6 +124,7 @@ xdao-export/
 │  ├─ test_settings.py     配置读写、成品已存在就跳过开关（85）
 │  ├─ test_live_notify.py  真机通知（1，默认跳过）
 │  ├─ test_theme.py        配色/字体/间距/ttk 样式、Card 拉伸（34，需真 Tk）
+│  ├─ test_widgets.py      自绘控件：圆角矩形、徽章、输入框、链接、进度条（56，需真 Tk）
 │  └─ test_window.py       主窗口布局回归（41，需真 Tk）
 └─ xdao/
    ├─ __init__.py          版本号
