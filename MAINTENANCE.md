@@ -681,6 +681,19 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.1**：给 `xdao/cdp.py` 补协议层用例（只动测试，不改行为）
+
+  `cdp.py` 是手写的 DevTools WebSocket 客户端，登录流程与 PDF 渲染都走它，此前只有 `test_browser_login.py` 间接覆盖（上一轮体检时 73.9%，是整项目最低的一块）。新建 `tests/test_cdp.py`（111 条），用 socketpair 造一对连接、另一端写了个假 CDP 服务端（自动回握手、按命令回话、能发事件/分片/ping/close），因此不碰真浏览器：
+
+  - 帧层：掩码、`0/126/127` 三种长度、分片 opcode、余包优先、对端关闭；
+  - 握手层：RFC 6455 的 Accept 向量、路径/查询串、非 101、Accept 不对、被关闭；
+  - 调试接口：JSON 解析、`_retryable_read_failure` 认 errno/winerror/超时/异常链、重试到成功、预算用完放弃、hint 提前报错、非重试错误不重试；
+  - 选页：`pick_page` / `pick_site_page` / `_context_ids_of*` / `_describe_exception`；
+  - 会话：命令按 id 配对（乱序也认）、事件与非整数 id 忽略、分片拼回、ping 回 pong、超时、`close()` 叫醒等待者、`retarget` 的四种去向、读饼干三条路（含一条失败时用另一条）、`evaluate` 的字符串/对象/异常/空值。
+
+  顺带记下两个 Windows 细节：①`socketpair` 关一端，另一端是 `WinError 10054` 而不是干净 EOF，所以「被对方关闭」用假 socket（`recv` 返回 `b""`）复现；②把 `read_frame` 打桩要打在**类**上，打在实例上时读线程已经阻塞在 `recv` 里，桩不会生效。
+
+  结果：`tests/test_cdp.py` 111 passed，单文件覆盖率 **99%**；全量 2249 收集 / 2242 通过 / 7 跳过。
 - **v0.19.0**：图片存到成品旁边的同名目录（只对 HTML）
   - 需求：图多的串全内嵌之后 HTML 本体几十到上百 MB，发不出去、编辑器也打不开。
   - 实现：`image_mode` 加第四种取值 `folder`。`xdao/exporters/html.py` 的
