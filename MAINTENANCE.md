@@ -681,6 +681,29 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.2**：给 `xdao/widgets.py` 补交互与绘制用例（只动测试，不改行为）
+
+  `widgets.py` 里是主界面所有自绘控件（Card / StatusPill / FlatText / LinkLabel /
+  ModernProgress），此前没有任何直接用例，覆盖率体检时是 79%。这类代码出问题的症状
+  很隐蔽：圆角画错只是「看着有点怪」，进度条取整错要跑很久才看出来。
+
+  新建 `tests/test_widgets.py`（56 条，需真 Tk）：
+
+  - `_round_rect` / `_rounded`：多段线点数与半径随尺寸变化、大半径被夹到半边、
+    同样的 (w,h,r) 命中缓存、清掉引用后能重新生成；
+  - `StatusPill`：几档状态各自的配色、文字、圆点直径；
+  - `FlatText`：焦点边框颜色切换、`set` 写回变量、宽度不足时 `xview` 会滚动；
+  - `LinkLabel`：配色与手型光标、点击回调、悬停高亮与移开还原（直接取构造函数注册
+    到事件上的回调来调，不依赖窗口是否映射）；
+  - `ModernProgress`：0 / 部分 / 满 / 超界四种取整、`configure` 改色、停止时不报错。
+
+  两个写用例时踩到的坑记在这里：①无头或隐藏窗口下部件没有映射，`event_generate`
+  送不到鼠标事件，会写成「单跑绿、连跑红」，改成截获 `bind` 注册的回调；②给
+  `_redraw` 这类替身控件的私有方法打桩之后要显式调一次，靠 `<<Configure>>` 触发
+  在无映射窗口里同样不可靠。
+
+  覆盖率：`xdao/widgets.py` 79% → **97%**（剩 7 行是平台分支与防御性 `except`）。
+
 - **v0.19.1**：给 `xdao/cdp.py` 补协议层用例（只动测试，不改行为）
 
   `cdp.py` 是手写的 DevTools WebSocket 客户端，登录流程与 PDF 渲染都走它，此前只有 `test_browser_login.py` 间接覆盖（上一轮体检时 73.9%，是整项目最低的一块）。新建 `tests/test_cdp.py`（111 条），用 socketpair 造一对连接、另一端写了个假 CDP 服务端（自动回握手、按命令回话、能发事件/分片/ping/close），因此不碰真浏览器：
