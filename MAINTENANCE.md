@@ -681,6 +681,24 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.0**：图片存到成品旁边的同名目录（只对 HTML）
+  - 需求：图多的串全内嵌之后 HTML 本体几十到上百 MB，发不出去、编辑器也打不开。
+  - 实现：`image_mode` 加第四种取值 `folder`。`xdao/exporters/html.py` 的
+    `IMAGE_MODES` 扩成四元组；`Exporter.prepare_output(path)`（`xdao/exporters/base.py`，
+    空实现）由 `save()` 在 `build()` 之前调用，HTML 覆盖它记下 `<成品名>.files/` 目录与
+    相对前缀；`embed_image()` 在 folder 且已知落盘路径时改走 `_write_image_file()`
+    （文件名取 URL 词根 + MIME 后缀、重名加序号、相对地址按 URL 规则转义），否则退回
+    base64；`_preload_images()` 把 folder 也算作「要下载」。
+  - 回落：PDF 在内存里渲染，没有成品路径 → `prepare_output()` 不被调用，自然退回内嵌；
+    EPUB 是单 zip，不适用。`main.py` 与界面在 folder + 非 HTML 时打一行说明并降为 embed。
+  - 同步点：`settings.image_mode`、`watch_list._IMAGE_MODES`、`--image-mode` 的 choices、
+    界面 `IMAGE_MODE_LABELS` / `_image_mode_keys` / `WatchEditDialog.IMAGE_KEYS`。
+  - 用例：6（导出器：写盘、相对路径、失败保留链接、无成品回落内嵌、PDF 保留设置但内嵌、
+    同图只下一次）+ 2（settings）+ 1（watch_list）+ 2（命令行）+ 5（界面）。
+  - 顺带修：`tests/test_pdf.py::_batch_bytes` 改成按「当前控制台代码页」选编码（65001 用
+    UTF-8，否则 mbcs）。2026-10-25 运行环境的控制台切到 UTF-8 之后，中文路径下的假浏览器
+    批处理按 GBK 写就会乱码，12 条 PDF 用例一起红；现在两种环境都能跑。
+
 - **v0.18.0**：批量断点续跑（成品已存在就跳过）
   - 需求：一次贴几十个串、跑到一半断了，重跑会把前面的全做一遍（长串一份要几分钟）。
   - 开关：`AppSettings.skip_existing`（默认 False；`_as_bool` 宽容解析，手改配置写

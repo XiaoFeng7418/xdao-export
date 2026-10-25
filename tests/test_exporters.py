@@ -5,6 +5,8 @@ EPUB 与 Markdown 的测试见 ``test_epub.py`` / ``test_markdown.py``。
 
 from __future__ import annotations
 
+import urllib.parse
+
 import re
 from pathlib import Path
 
@@ -1057,3 +1059,62 @@ def test_html_pdf_and_epub_all_honour_skip_existing(out_dir):
 def test_create_exporter_hands_the_skip_switch_to_the_builder():
     assert create_exporter("html", FakeClient(), skip_existing=True).skip_existing is True
     assert create_exporter("html", FakeClient()).skip_existing is False
+
+# ------------------------------------------------------ 图片存到同名目录（v0.19.0）
+# 第四种模式：图片写成成品旁边的 ``<成品名>.files/`` 目录，正文用相对路径引用。
+# 单文件不再是「单文件」，但体积小、打开快，图还能单独取用。
+
+
+def test_html_folder_mode_writes_images_next_to_the_file(out_dir):
+    client = FakeClient()
+    builder = HtmlBuilder(client, image_mode="folder")
+    path = builder.save(sample_thread("图片存目录"), "all", out_dir)
+
+    folder = path.with_name(path.stem + ".files")
+    assert folder.is_dir()
+    files = sorted(item.name for item in folder.iterdir())
+    assert files, "同名目录里应该至少有一张图"
+    assert all(item.is_file() for item in folder.iterdir())
+
+    html = path.read_text(encoding="utf-8")
+    assert "data:image/" not in html  # 不再 base64 内嵌
+    folder_uri = urllib.parse.quote(folder.name)
+    assert f'src="{folder_uri}/' in html  # 相对路径引用（空格/中文已转义）
+
+
+def test_html_folder_mode_keeps_the_file_name_of_the_image(out_dir):
+    """文件名的词根从图片地址来，方便在资源管理器里对照着翻找。"""
+    client = FakeClient()
+    path = HtmlBuilder(client, image_mode="folder").save(sample_thread(), "all", out_dir)
+    folder = path.with_name(path.stem + ".files")
+    names = [item.name for item in folder.iterdir()]
+    assert any(name.startswith("abcdef") for name in names), names
+
+
+def test_html_folder_mode_keeps_the_link_when_the_download_fails(out_dir):
+    client = FakeClient(fail_urls={"https://image.nmb.best/image/abcdef.jpg"})
+    path = HtmlBuilder(client, image_mode="folder").save(sample_thread(), "all", out_dir)
+    html = path.read_text(encoding="utf-8")
+    assert "https://image.nmb.best/image/abcdef.jpg" in html
+
+
+def test_html_folder_mode_falls_back_to_embed_without_a_target_path():
+    """PDF 在内存里渲染 HTML、没有同名成品：退回内嵌，别给出指向空目录的链接。"""
+    html = HtmlBuilder(FakeClient(), image_mode="folder").build(sample_thread(), "all")
+    assert "data:image/jpeg;base64," in html
+
+
+def test_pdf_keeps_the_folder_setting_but_renders_embedded():
+    exporter = create_exporter("pdf", FakeClient(), image_mode="folder")
+    assert exporter.image_mode == "folder"
+    html = exporter._html.build(sample_thread(), "all")
+    assert "data:image/jpeg;base64," in html
+
+
+def test_folder_mode_still_downloads_the_images_once():
+    client = FakeClient()
+    thread = sample_thread()
+    thread.posts[1].img = "abcdef"
+    thread.posts[1].ext = ".jpg"
+    HtmlBuilder(client, image_mode="folder").build(thread, "all")
+    assert client.downloaded.count("https://image.nmb.best/image/abcdef.jpg") == 1

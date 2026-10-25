@@ -39,7 +39,7 @@ FILE_SUFFIX = ".json"
 MAX_FILE_BYTES = 10 * 1024 * 1024
 
 _SCOPES = ("all", "po")
-_IMAGE_MODES = ("embed", "url", "drop")
+_IMAGE_MODES = ("embed", "url", "drop", "folder")
 
 
 class WatchListError(Exception):

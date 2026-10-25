@@ -78,7 +78,7 @@ UNTIL_THREAD_ID_UNIT = "（含它）"
 #: 图片本来就只是链接或干脆没有，所以不给它们这一行。
 IMAGE_MODE_FORMATS = ("html", "pdf", "epub")
 #: 「图片」下拉框的显示名，与 ``exporters.html.IMAGE_MODES`` 同序（主窗口与编辑监控共用）。
-IMAGE_MODE_LABELS = ("内嵌图片", "仅保留链接", "丢弃图片")
+IMAGE_MODE_LABELS = ("内嵌图片", "仅保留链接", "丢弃图片", "存到同名目录")
 
 #: 监控线程收尾时往 ``watch_queue`` 里塞的哨兵：主线程收到它就把 ``_watching`` 落回 False。
 #: 为什么要这条：以前只有「用户点停止」和「监控线程抛异常」两处会清这个标志，
@@ -3431,7 +3431,7 @@ class WatchEditDialog(tk.Toplevel):
 
     #: 范围三选一：(scope 字段, include_hashes 是否非空) 的组合。
     SCOPES = (("all", "全部"), ("po", "仅 PO 发言"), ("hashes", "指定饼干"))
-    IMAGE_KEYS = ("embed", "url", "drop")
+    IMAGE_KEYS = ("embed", "url", "drop", "folder")
 
     def __init__(self, dialog: "WatchDialog", target: WatchTarget) -> None:
         super().__init__(dialog)
@@ -4408,7 +4408,7 @@ class App:
         # 当场量出多了一行就要出滚动条。
         self.image_mode_frame = ttk.Frame(format_row, style="Card.TFrame")
         ttk.Label(self.image_mode_frame, text="图片", style="Card.TLabel").pack(side="left")
-        self._image_mode_keys = ["embed", "url", "drop"]
+        self._image_mode_keys = ["embed", "url", "drop", "folder"]
         self.image_mode_box = ttk.Combobox(
             self.image_mode_frame,
             state="readonly",
@@ -4645,8 +4645,22 @@ class App:
             return self._image_mode_keys[index]
         return "embed"
 
+    def _log_image_mode_note(self) -> None:
+        """「存到同名目录」只有 HTML 能真落盘：其它格式按内嵌处理，日志里说一句。
+
+        下拉框里四个选项对所有带图格式都露着（不按格式变来变去，好理解），
+        所以选错了不报错，只在开跑时告诉用户这一次实际是怎么处理的。
+        """
+        if self.current_image_mode() == "folder" and self.current_format() != "html":
+            self.log("「存到同名目录」只对 HTML 生效，这次按内嵌处理。")
+
     def _sync_image_mode(self) -> None:
-        """图片模式对 HTML / PDF / EPUB 有意义：选它们时露出来，其它格式收起来。"""
+        """图片模式对 HTML / PDF / EPUB 有意义：选它们时露出来，其它格式收起来。
+
+        「存到同名目录」只有 HTML 能真正落盘（PDF 在内存里渲染、EPUB 是 zip），
+        但下拉框仍然让它可选：选它之后导出 PDF / EPUB 会按内嵌处理并在日志里说一句，
+        比让界面按格式变来变去好理解。
+        """
         enabled = self.current_format() in IMAGE_MODE_FORMATS
         self.image_mode_box.configure(state="readonly" if enabled else "disabled")
         if not hasattr(self, "_scroll_needed"):
@@ -5416,6 +5430,7 @@ class App:
         if self.settings.skip_existing:
             # 开着的时候说一句：不然用户看到「成功 8 / 8」会以为全都重新导了一遍。
             self.log("已存在就跳过：同名成品非空时不重做。")
+        self._log_image_mode_note()
         if self.current_format() == "pdf":
             # 只在真的改过纸张/边距/背景/页码时说一声，全默认不必占一行。
             pdf_options = pdf_opts.from_settings(self.settings)

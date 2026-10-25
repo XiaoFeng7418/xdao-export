@@ -353,8 +353,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--image-mode",
         default=None,
-        choices=["embed", "url", "drop"],
-        help="图片处理（HTML / PDF / EPUB）：embed 内嵌（默认）、url 仅链接、drop 丢弃",
+        choices=["embed", "url", "drop", "folder"],
+        help=(
+            "图片处理（HTML / PDF / EPUB）：embed 内嵌（默认）、url 仅链接、drop 丢弃、"
+            "folder 存到成品旁边的同名目录（只对 HTML 生效，PDF / EPUB 按内嵌处理）"
+        ),
     )
     parser.add_argument(
         "--pdf-browser",
@@ -766,9 +769,15 @@ def run_cli(args: argparse.Namespace) -> int:
             until_text += f"，跳过它之后的 {len(skipped_urls)} 个串"
     print(f"导出范围：{range_text}；{until_text}。")
 
+    image_mode = args.image_mode or settings.image_mode or "embed"
+    if image_mode == "folder" and format_key != "html":
+        # 「存到同名目录」要往成品旁边写文件，只有 HTML 有同名成品；
+        # PDF 在内存里渲染、EPUB 是 zip，都按内嵌处理并说一声。
+        print("注意：「存到同名目录」只对 HTML 生效，这次按内嵌处理。")
+        image_mode = "embed"
+
     if args.watch:
         interval = args.interval or settings.watch_interval
-        image_mode = args.image_mode or settings.image_mode or "embed"
         targets = [
             WatchTarget(
                 url,
@@ -832,7 +841,7 @@ def run_cli(args: argparse.Namespace) -> int:
         format_key,
         client,
         filename_template=template,
-        image_mode=args.image_mode or settings.image_mode or "embed",
+        image_mode=image_mode,
         browser_path=args.pdf_browser or settings.pdf_browser or None,
         pdf_timeout=args.pdf_timeout,
         pdf_options=pdf_options,

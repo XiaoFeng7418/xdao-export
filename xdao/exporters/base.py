@@ -99,6 +99,9 @@ class Exporter:
 
     # ---------- 子类实现 ----------
 
+    def prepare_output(self, path: Path) -> None:
+        """build 之前告诉导出器成品落在哪；默认不需要知道（v0.19.0 给「图片存到目录」用）。"""
+
     def build(
         self,
         thread: ThreadData,
@@ -136,6 +139,7 @@ class Exporter:
         if self.save_message:
             self._notify(self.save_message)
         path = self.target_path(thread, output_dir)
+        self.prepare_output(path)
         content = self.build(thread, scope, include_hashes)
         # 内容都做好了才检查取消：真的被取消就不落盘，免得留下一份半成品
         # 混在导出目录里（用户取消之后不会再去核对哪几份是完整的）。
