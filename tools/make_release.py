@@ -220,6 +220,30 @@ def delete_asset(repo: str, asset_id: int, token: str) -> None:
     request_json("DELETE", f"/repos/{repo}/releases/assets/{asset_id}", token)
 
 
+NAME_PREFIX_HINT = "vX.Y.Z：一句话说明"
+
+
+def check_release_name(tag: str, name: str) -> str:
+    """检查 Release 标题的格式，返回错误文案（空串表示合格）。
+
+    为什么要有这道闸：标题只在这里一次写定，发出去之后 GitHub 按标题列版本，
+    格式一歪和前后十几版都排不齐。合格的形状只有一种：``<tag>：<一句话>``，
+    例如 ``v0.19.5：发版工具拒绝错误标题格式``。「免安装包」属于正文措辞，
+    放进标题会把标题挤成一串版本号以外的信息。
+    """
+    prefix = f"{tag}："
+    if not name.startswith(prefix):
+        return f"标题要以「{prefix}」开头（现在写的是「{name}」）"
+    tail = name[len(prefix) :].strip()
+    if not tail:
+        return "标题里冒号后面要写一句话说明，不能是空的"
+    if "免安装包" in name:
+        return "「免安装包」写在发布说明正文里，标题只写这一版干了什么"
+    if "（" in tail or "(" in tail:
+        return "标题会在括号里塞附加信息 —— 括号那类说明属于正文"
+    return ""
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="创建 Release 并上传附件")
     parser.add_argument("--repo", required=True)
@@ -229,6 +253,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--asset", action="append", default=[])
     parser.add_argument("--target", default="", help="该 tag 指向的提交（默认仓库默认分支）")
     args = parser.parse_args(argv)
+
+    problem = check_release_name(args.tag, args.name)
+    if problem:
+        print(f"× Release 标题格式不对：{problem}")
+        print(f"  标题照这个形状写：{NAME_PREFIX_HINT}")
+        return 2
 
     token = gh_token()
     notes = read_notes(Path(args.notes_file))

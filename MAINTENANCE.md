@@ -681,6 +681,25 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.5**：发版工具拒绝不合格的 Release 标题（补一道格式闸）
+
+  2026-10-25 连续两版（v0.19.3、v0.19.4）把 `--name` 写成了
+  「xdao-export vX.Y.Z（免安装包 · Windows 64 位）」/「vX.Y.Z（免安装包 · Windows 64 位）」，
+  与前后十几版的 `vX.Y.Z：一句话说明` 对不齐，只能事后用 API 去改。
+  根因是这一步只有一次输入机会、又没有任何校验：`tools/make_release.py` 收到什么标题
+  就建什么 Release。
+
+  修法：加纯函数 `tools/make_release.py::check_release_name(tag, name)`，
+  `main()` 在取令牌之前先校验，不合格打印「Release 标题格式不对」+ 正确形状并
+  **return 2**（一个请求都不发）。拦四种情况：前缀不是 `<tag>：`、冒号后为空、
+  标题里出现「免安装包」、标题里带括号补充说明（括号那类属于正文）。
+
+  用例：`tests/test_make_release.py` 31 → 40（好标题 2 条、坏标题 6 条参数化、
+  `main()` 词条用例断言退出码 2 且不发请求）。
+
+  附带经验：发完 Release 用 `gh api repos/<repo>/releases?per_page=N` 把最近几版的
+  `name` 打出来看一眼，比事后翻网页快；改标题用 `PATCH /releases/<id>`（按 tag 会 404）。
+
 - **v0.19.4**：排障开关 `--pdfdiag` 在免安装包里真能用了（修一个「假开关」）
 
   2026-10-25 核对发布产物时发现：`main.py --pdfdiag` 在源码里跑得通（六种启动方式全成、
