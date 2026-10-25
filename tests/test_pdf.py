@@ -30,14 +30,27 @@ ARTIFACTS = Path(__file__).resolve().parent.parent / ".test-artifacts"
 IS_WINDOWS = os.name == "nt"
 
 
+def _console_code_page() -> int:
+    """当前控制台代码页；拿不到就返回 0（当作老式 ANSI 环境）。"""
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetConsoleOutputCP())
+    except Exception:  # pragma: no cover —— 只有非 Windows 会走到
+        return 0
+
+
 def _batch_bytes(text: str) -> bytes:
     """把批处理内容编成 cmd.exe 认得的字节。
 
-    cmd.exe 读批处理用的是系统 ANSI 代码页（中文系统是 GBK），不认 UTF-8：
-    脚本内容里只要带了中文路径，UTF-8 写出来就会在命令行里变成乱码。
-    本机仓库路径含中文，2026-10-23 十二条 PDF 用例一起栽在这里
-    （子进程报 ``can't open file ...fake_browser_impl.py``）。
+    cmd.exe 读批处理用的不是固定编码：默认按系统 ANSI 代码页（中文系统是
+    GBK），但控制台被切到 65001（UTF-8）时它就按 UTF-8 读。编码猜错的表现
+    是命令行里的中文路径变成乱码，子进程报 ``can't open file ...`` ——
+    2026-10-23 十二条 PDF 用例一起栽在这里，2026-10-25 又因为控制台变成
+    UTF-8 而复发（本机仓库路径含中文）。
     """
+    if _console_code_page() == 65001:
+        return text.encode("utf-8")
     try:
         return text.encode("mbcs")
     except (LookupError, UnicodeEncodeError):  # pragma: no cover —— 只有非 Windows / 生僻字会走到
@@ -195,8 +208,9 @@ def test_fake_browser_batch_file_is_written_in_the_cmd_code_page(artifacts_dir):
     assert b"\r\r" not in raw, "CRLF 被 write_text 又翻了一遍，cmd 会读到空行"
     assert raw.count(b"\r\n") == 3
     if IS_WINDOWS:
-        # 本机仓库路径带中文：解不开就说明是按别的编码写的
-        assert str(artifacts_dir) in raw.decode("mbcs")
+        # 本机仓库路径带中文：按「当前控制台代码页」解不开就说明编码选错了
+        codec = "utf-8" if _console_code_page() == 65001 else "mbcs"
+        assert str(artifacts_dir) in raw.decode(codec)
     # POSIX 包装脚本由 tools/posix_check.py 覆盖，这里只管 Windows 的批处理。
 
 

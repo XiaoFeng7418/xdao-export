@@ -6,6 +6,8 @@ import base64
 import concurrent.futures
 import html as html_lib
 import threading
+import urllib.parse
+from pathlib import Path
 
 from ..client import Post, XdaoClient
 from ._shared import (
@@ -15,6 +17,7 @@ from ._shared import (
     iter_post_image_urls,
     plain_text,
     resolve_image_url,
+    sanitize_filename,
 )
 from .base import Exporter
 
@@ -41,8 +44,9 @@ def _font_px(font_size: int, base: int) -> int:
     return max(1, int(round(font_size * base / DEFAULT_FONT_SIZE)))
 
 
-#: 正文里图片的处理方式（与 EPUB 一致）：内嵌 / 只留链接 / 丢掉。
-IMAGE_MODES = ("embed", "url", "drop")
+#: 正文里图片的处理方式：内嵌 / 只留链接 / 丢掉 / 存到成品旁边的同名目录。
+#: ``folder`` 是 HTML 独有的：图片写成 ``<成品名>.files/`` 下的文件，正文用相对路径引用。
+IMAGE_MODES = ("embed", "url", "drop", "folder")
 
 
 def _image_mode(value, fallback: str = "embed") -> str:
@@ -56,6 +60,8 @@ class HtmlBuilder(Exporter):
 
     - 图片默认以 data URI 内嵌，导出的文件可以单独转发、离线打开、直接打印成 PDF。
     - ``image_mode="url"`` 只留外链、``"drop"`` 直接丢掉，大图串的体积能降一个量级。
+    - ``image_mode="folder"`` 把图片写成成品旁边的 ``.files`` 目录（单文件不再单文件，
+      但体积小、打开快，图片还能单独取用）；PDF 在内存里渲染，没有同名成品，退回内嵌。
     - 单张图片失败时退回原始链接，不让整个串导出失败。
     - 同一张图片在多个楼层出现只下载一次。
     """
@@ -77,8 +83,14 @@ class HtmlBuilder(Exporter):
     ) -> None:
         super().__init__(client, progress, filename_template, **options)
         self._image_cache: dict[str, str] = {}
-        # 图片怎么处理：embed＝内嵌（默认）、url＝只留外链、drop＝丢掉。
+        # 图片怎么处理：embed＝内嵌（默认）、url＝只留外链、drop＝丢掉、folder＝存到同名目录。
         self.image_mode = _image_mode(options.get("image_mode"))
+        # 存到同名目录时要用的两个值：目录本身、目录名（正文里写相对路径用）。
+        # 没经过 save()（例如 PDF 在内存里渲染 HTML）时它们是 None/空串，按内嵌处理。
+        self._image_dir: Path | None = None
+        self._image_rel = ""
+        self._folder_names: set[str] = set()
+        self._folder_serial = 0
         # 正文字号（px）：用户设的那个值；没设过就是 14（＝v0.15.0 之前的写死值）
         self.font_size = _font_size(options.get("font_size"))
         # 没下到的图片地址（按出现顺序）：单张失败只在日志里提一次，
@@ -91,7 +103,23 @@ class HtmlBuilder(Exporter):
     #: 日志里逐张列出失败图片的上限，超过就只报总数（图多的串不至于刷屏）。
     MAX_MISSING_LOGS = 10
 
+    #: 存到目录时按 MIME 给扩展名；认不出就写 .img（浏览器多半也能按内容猜出来）。
+    _IMAGE_SUFFIXES = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }
+
     # ---------- 图片 ----------
+
+    def prepare_output(self, path: Path) -> None:
+        """记下成品的落盘位置（基类的 ``save()`` 在建 build 之前调）。"""
+        if self.image_mode != "folder":
+            return
+        folder = path.with_name(path.stem + ".files")
+        self._image_dir = folder
+        self._image_rel = folder.name
 
     def resolve_image_url(self, src: str) -> str:
         return resolve_image_url(self._client, src)
@@ -106,6 +134,8 @@ class HtmlBuilder(Exporter):
             return ""
         if self.image_mode == "url":
             return url
+        # 「存到同名目录」得先有落盘位置；没有（PDF 内存渲染）就退回内嵌。
+        folder_mode = self.image_mode == "folder" and self._image_dir is not None
         cached = self._image_cache.get(url)
         if cached is not None:
             return cached
@@ -113,21 +143,59 @@ class HtmlBuilder(Exporter):
         if not self._preloading:
             self._notify(f"正在下载图片：{url}")
         data = fetch_image(self._client, url)
+        value = ""
         if data:
-            mime = guess_mime(url, data)
-            b64 = base64.b64encode(data).decode("ascii")
-            value = f"data:{mime};base64,{b64}"
-        else:
-            # 单张图下载失败时保留原链接；日志里前几张逐条提，再多就汇总。
+            if folder_mode:
+                value = self._write_image_file(url, data)
+            else:
+                mime = guess_mime(url, data)
+                b64 = base64.b64encode(data).decode("ascii")
+                value = f"data:{mime};base64,{b64}"
+        if not value:
+            # 下载失败（或图片存不进目录）时保留原链接；日志里前几张逐条提，再多就汇总。
             if url not in self.missing_images:
                 self.missing_images.append(url)
             if len(self.missing_images) <= self.MAX_MISSING_LOGS:
-                self._notify(f"图片下载失败，已保留链接：{url}")
+                reason = "图片下载失败" if data is None else "图片存不进目录"
+                self._notify(f"{reason}，已保留链接：{url}")
             value = url
 
         if len(self._image_cache) < self.MAX_CACHE_ENTRIES:
             self._image_cache[url] = value
         return value
+
+    def _image_file_name(self, url: str, data: bytes) -> str:
+        """给要落盘的图起个不重名的文件名（保留原名的词根，便于翻找）。"""
+        mime = guess_mime(url, data)
+        suffix = self._IMAGE_SUFFIXES.get(mime, ".img")
+        stem = ""
+        try:
+            stem = Path(urllib.parse.urlsplit(url).path).stem
+        except (TypeError, ValueError):
+            stem = ""
+        stem = sanitize_filename(stem, fallback="") if stem else ""
+        if not stem:
+            stem = f"img{len(self._folder_names) + 1:03d}"
+        name = f"{stem}{suffix}"
+        # 同名不同图（不同域名、带不同参数）会互相覆盖，加序号区分。
+        while name in self._folder_names:
+            self._folder_serial += 1
+            name = f"{stem}-{self._folder_serial}{suffix}"
+        self._folder_names.add(name)
+        return name
+
+    def _write_image_file(self, url: str, data: bytes) -> str:
+        """把图片写进成品旁边的同名目录，返回正文里要用的相对路径；失败返回空串。"""
+        if self._image_dir is None:
+            return ""
+        try:
+            self._image_dir.mkdir(parents=True, exist_ok=True)
+            name = self._image_file_name(url, data)
+            (self._image_dir / name).write_bytes(data)
+        except OSError:
+            return ""
+        # 相对地址一律用正斜杠，空格/中文按 URL 规则转义（浏览器才不会把空格当分隔符）。
+        return urllib.parse.quote(f"{self._image_rel}/{name}", safe="/")
 
     def _report_missing_images(self) -> None:
         """把没下到的图片汇总成一句（失败很多时日志不再逐条刷）。"""
@@ -310,7 +378,7 @@ class HtmlBuilder(Exporter):
 
     def _preload_images(self, thread: ThreadData, posts: list[Post]) -> None:
         """并发预取图片，让后续渲染阶段不必串行等待。"""
-        if self.image_mode != "embed":
+        if self.image_mode not in ("embed", "folder"):
             # 只留外链 / 丢掉图片时根本不用下载，省掉整趟网络。
             return
         wanted: list[str] = []

@@ -169,7 +169,9 @@ class AppSettings:
         self.filename_template = str(data.get("filename_template") or "")
         self.include_hashes = str(data.get("include_hashes") or "")
         image_mode = str(data.get("image_mode") or "embed")
-        self.image_mode = image_mode if image_mode in ("embed", "url", "drop") else "embed"
+        self.image_mode = (
+            image_mode if image_mode in ("embed", "url", "drop", "folder") else "embed"
+        )
         self.pdf_browser = str(data.get("pdf_browser") or "")
         # 页数上限：0 是合法值（＝不限），所以不能走 _as_int 的"非正数回落默认"。
         self.max_pages = _max_pages(data.get("max_pages"), DEFAULT_MAX_PAGES)

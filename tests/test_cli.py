@@ -1308,3 +1308,37 @@ def test_skip_existing_defaults_to_off(out_dir, monkeypatch):
     assert [kwargs["skip_existing"] for kwargs in seen] == [False]
     log = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
     assert "已存在就跳过：关闭" in log
+
+# ------------------------------------------------------ 图片模式（v0.19.0）
+
+def test_image_mode_folder_reaches_the_exporter_for_html(out_dir, monkeypatch):
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir), "--image-mode", "folder"])
+
+    assert code == 0
+    assert seen[0]["image_mode"] == "folder"
+
+
+def test_image_mode_folder_is_downgraded_for_pdf(out_dir, monkeypatch, capsys):
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    code = main(["50000001", "-f", "pdf", "-o", str(out_dir), "--image-mode", "folder"])
+
+    assert code == 0
+    assert seen[0]["image_mode"] == "embed"
+    assert "只对 HTML 生效" in capsys.readouterr().out

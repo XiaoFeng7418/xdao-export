@@ -387,3 +387,10 @@ def test_summary_mentions_skips(list_file):
     write_payload(list_file, {"targets": [{"url_or_id": "7001234"}, {"url_or_id": "坏"}]})
     result = watch_list.import_targets([], list_file)
     assert result.summary == "新增 1 条，跳过 1 条"
+
+def test_watch_entry_accepts_the_folder_image_mode() -> None:
+    """监控条目也认第四种图片模式（HTML 目标才用得上，但值本身是合法的）。"""
+    from xdao.watch_list import target_from_entry
+
+    got = target_from_entry({"url_or_id": "7001234", "image_mode": "folder"})
+    assert got.image_mode == "folder"

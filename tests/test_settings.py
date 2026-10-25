@@ -543,3 +543,16 @@ def test_truthy_skip_existing_reads_as_on(config_path: Path, yes: object) -> Non
     """手改配置写成 "1" / "开" 也算开 —— 和 pdf_background 那套宽容解析一致。"""
     write_config(config_path, {"skip_existing": yes})
     assert load_config(config_path).skip_existing is True
+
+# ------------------------------------------------------ 图片模式「存到同名目录」
+
+def test_image_mode_accepts_the_folder_mode(config_path: Path) -> None:
+    write_config(config_path, {"image_mode": "folder"})
+    assert load_config(config_path).image_mode == "folder"
+
+
+def test_image_mode_round_trips_the_folder_mode(config_path: Path) -> None:
+    settings = fresh_config(config_path)
+    settings.image_mode = "folder"
+    settings.save()
+    assert load_config(config_path).image_mode == "folder"

@@ -894,6 +894,9 @@ class _FakeApp:
     def current_image_mode(self) -> str:
         return "embed"
 
+    def _log_image_mode_note(self) -> None:
+        """真窗口在 folder + 非 HTML 时会补一句日志；假窗口里由专门用例覆盖。"""
+
     def _resolved_output_dir(self) -> Path:
         """``App._finish()`` 要把「文件在哪」写进汇总弹窗。"""
         return self._output
@@ -2776,3 +2779,42 @@ def test_gui_export_keeps_quiet_when_skip_existing_is_off(artifacts_dir, monkeyp
 
     assert [kwargs["skip_existing"] for kwargs in recorded] == [False]
     assert not any("已存在就跳过" in line for line in app.logs)
+
+# ------------------------------------------------------ 图片存到同名目录（v0.19.0）
+
+
+def test_the_image_dropdown_offers_the_folder_mode(live_app):
+    """四个选项：内嵌 / 仅链接 / 丢弃 / 存到同名目录（顺序与 IMAGE_MODES 一致）。"""
+    values = tuple(live_app.image_mode_box.cget("values"))
+    assert values == gui.IMAGE_MODE_LABELS
+    assert len(values) == 4
+    assert values[3] == "存到同名目录"
+    assert live_app._image_mode_keys[3] == "folder"
+
+
+def test_choosing_the_folder_mode_sticks_in_the_settings(live_app):
+    live_app.image_mode_box.current(3)
+    live_app.persist_prefs()
+    assert live_app.settings.image_mode == "folder"
+
+
+def test_the_edit_dialog_accepts_the_folder_mode():
+    """编辑监控的下拉框与主窗口共用一份选项，别漏了第四个。"""
+    assert "folder" in gui.WatchEditDialog.IMAGE_KEYS
+
+
+def test_folder_mode_with_a_non_html_format_says_it_falls_back(live_app):
+    """PDF / EPUB 没有同名成品可写：开跑时说清楚这次按内嵌处理。"""
+    live_app.image_mode_box.current(3)
+    live_app.format_box.current(live_app._format_keys.index("pdf"))
+    live_app._log_image_mode_note()
+    logs = live_app.log_text.get("1.0", "end-1c")
+    assert "「存到同名目录」只对 HTML 生效" in logs
+
+
+def test_folder_mode_with_html_says_nothing(live_app):
+    """HTML 是能用这个模式的格式，别多打一行废话。"""
+    live_app.image_mode_box.current(3)
+    live_app.format_box.current(live_app._format_keys.index("html"))
+    live_app._log_image_mode_note()
+    assert "只对 HTML 生效" not in live_app.log_text.get("1.0", "end-1c")
