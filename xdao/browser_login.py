@@ -43,6 +43,13 @@ from .browser_flags import launch_flags
 
 USER_DATA_DIR_NAME = "browser-profile"
 LOGIN_URL = "https://www.nmbxd1.com/Member/User/Index/login.html"
+
+#: 关掉 Edge 的「隐式登录」和同步（v0.17.7）。程序起的是全新的一次性资料目录，
+#: 可 Edge 会拿本机 Windows 账号自动登录、顺手把云端数据同步进来 —— 表现是窗口里
+#: 弹出「正在同步浏览数据」、自动填充里出现云端保存的密码，整罐里也多出 msn/bing
+#: 一堆饼干。2026-10-25 实测：不加这两个开关，新窗 9 秒内整罐 11 块里 10 块是微软
+#: 家族的；加上之后只剩站点自己的那块。
+_DISABLE_FEATURES = "Translate,msImplicitSignin"
 # 收进程树时走哪条路（taskkill / kill）。写成模块级常量、测试改它，而不是去改
 # ``os.name``：``os`` 是全局共享的模块对象，改 ``os.name`` 会顺带改掉 ``pathlib``
 # 的行为（它按 ``os.name`` 在模块级决定 ``Path`` 用哪个具体类）；Linux 上一边把
@@ -1296,6 +1303,9 @@ def build_args(
 
     打包好的 exe 里还要补 ``--no-sandbox``（冻结环境里浏览器会以 STATUS_BREAKPOINT
     直接退出），补哪几个由 ``browser_flags`` 决定 —— 源码运行不带这个开关。
+
+    ``--disable-sync`` 与 ``msImplicitSignin``（v0.17.7）盯的是隐私：窗口必须是一次性
+    的干净窗，不能拿本机账号登进 Edge、更不能把云端密码带进自动填充。
     """
     args = [
         info.path,
@@ -1303,7 +1313,8 @@ def build_args(
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
-        "--disable-features=Translate",
+        "--disable-sync",
+        f"--disable-features={_DISABLE_FEATURES}",
         *launch_flags(),
     ]
     if headless:

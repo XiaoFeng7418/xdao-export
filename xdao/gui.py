@@ -2019,6 +2019,16 @@ class BrowserLoginDialog(tk.Toplevel):
                                 drop_banner(session)
                             except Exception:  # noqa: BLE001 —— 收横幅失败不许误事
                                 pass
+                        # 取证开关（2026-10-25，本机一次性排查用）：登录**成功**那一刻
+                        # 也落一份「读罐详单」。平时不落 —— 以前详单只在失败/超时/关窗
+                        # 时才有，于是「界面说成功、可读的不是用户眼前那扇窗」这类问题
+                        # 永远没有现场可看。设了环境变量 XDAO_LOGIN_DUMP 才写。
+                        if os.environ.get("XDAO_LOGIN_DUMP"):
+                            dumped = self._write_jar_dump(
+                                backend, session, browser, self._stamp, self._jar_path
+                            )
+                            if dumped:
+                                self._queue.put(("forensics", f"详单={dumped}"))
                         self._queue.put(("ok", value))
                         return
                     if note:
