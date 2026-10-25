@@ -33,4 +33,4 @@ pytest-cache-files-*/
 # 诊断/临时产物（浏览器 profile、崩溃转储等）
 /xdao-pdfdiag-*/
 /pdfdiag-*/
-
+xdao-export-v*-win64.zip*

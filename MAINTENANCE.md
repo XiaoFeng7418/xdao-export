@@ -681,6 +681,19 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.7**：开发脚本收进仓库，顺带量了导出内存峰值（程序行为不变）。
+  - 内存峰值（`_scratch\measure_export_memory.py`，tracemalloc，无图片）：
+    2000 帖 × 800 字（正文 4.6 MB）→ txt 12.3 MB / markdown 8.6 MB / html 14.5 MB；
+    5000 帖（正文 11.4 MB）→ 30.8 / 21.2 / 35.8 MB。倍数稳定在 2.7× / 1.9× / 3.1×，
+    线性放大、没有额外复制，**不需要为内存改实现**（HTML 最大是 base64 与拼接所致）。
+  - 四个开发脚本从 `_scratch` 收进 `tools/`（路径参数化，仓库里不留本机路径）：
+    `push_one_commit.py`（只推 HEAD 一个提交；要求远端正好是父提交）、
+    `fix_tag_object.py`（本地附注标签对象对齐 GitHub 字节：穷举「偏移×结尾换行」）、
+    `cov_audit.py`（按文件读 coverage json，列未覆盖行/函数）、
+    `cov_funcs.py`（按函数汇总未覆盖行）。
+  - `tests/test_dev_tools.py`（7 条）：`parse_ident`（含负时区）、`functions_of` 行序、
+    `enclosing` 取最内层、两个脚本缺参数时只印用法不炸栈。
+  - 用例：2362 → 2369（本机 2362 通过、7 跳过）。
 - **v0.19.6**：给请求层与一键升级里的守卫分支补用例（只补测试，行为不变）。
   - 缘起：覆盖率体检（2026-10-25）里 `xdao/client.py` 80%、`xdao/updater.py` 87%，
     缺的都是“出错才走到”的分支——这类分支最怕的是没人跑过。
