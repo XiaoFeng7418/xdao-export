@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 2369 项（2026-10-26 数出来的一共这么多；本机 Windows 上 2362 通过、7 项跳过）、
+单元测试 2375 项（2026-10-26 数出来的一共这么多；本机 Windows 上 2368 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 154 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -74,6 +74,9 @@ xdao-export/
 ├─ HANDOFF.md              本文件
 ├─ tools/clean_scratch.py  清理测试残留目录（带权限问题的目录；危险目标先拦下）
 ├─ tools/build_zip.py      打免安装包 + 写 .sha256（CI 的 build.yml 也用它）
+├─ tools/push_one_commit.py 只推本地 HEAD 一个提交（代理坏掉时用）
+├─ tools/push_tag_via_api.py 把附注标签推到 GitHub（走 API），再用 fix_tag_object 对齐字节
+├─ tools/patch_release_body.py 按 release id 改已发布说明的正文
 ├─ .test-artifacts/        测试产物目录（已提交占位文件，见"踩坑"一节）
 ├─ tests/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
@@ -126,7 +129,7 @@ xdao-export/
 │  ├─ test_theme.py        配色/字体/间距/ttk 样式、Card 拉伸（34，需真 Tk）
 │  ├─ test_widgets.py      自绘控件：圆角矩形、徽章、输入框、链接、进度条（56，需真 Tk）
 │  ├─ test_window.py       主窗口布局回归（41，需真 Tk）
-│  └─ test_dev_tools.py    仓库自带开发脚本：纯函数据与用法提示（7）
+│  └─ test_dev_tools.py    仓库自带开发脚本：纯函数据与用法提示（13）
 └─ xdao/
    ├─ __init__.py          版本号
    ├─ client.py            网络层：登录、应用饼干、取串、翻页、下图、重试、代理、响应体解包

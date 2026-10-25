@@ -681,6 +681,17 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.7 之后的仓库整理（不升版本号）**：再收两个开发脚本进 `tools/`。
+  - `tools/push_tag_via_api.py`：从本地 `git cat-file tag` 取 tagger 与正文，
+    走 API 建标签对象与 ref；新增 `split_tag()` 把「对象/标签头/正文」拆开，
+    正文去掉结尾换行（GitHub 建对象时就是这么干的，否则 sha 永远对不上）。
+  - `tools/patch_release_body.py`：`PATCH /releases/{id}` 改已发布的说明正文。
+    教训：GitHub 只给了 `GET /releases/tags/{tag}`，**用 tag 去 PATCH 是 404**，
+    必须先用 GET 拿到 id；另外正文里没有「免安装包」时 `repo_check` 会报
+    「没有说明该下哪个附件」，改说明后要重新 PATCH 一次。
+  - 两个脚本都改成按文件位置找仓库根目录，不再写死本机路径；`tests/test_dev_tools.py`
+    7 → 13（新增 `split_tag` 拆解、坏标签头、`read_notes` 与缺文件报错、用法提示）。
+  - 用例：2369 → 2375（本机 2368 通过、7 跳过）。
 - **v0.19.7**：开发脚本收进仓库，顺带量了导出内存峰值（程序行为不变）。
   - 内存峰值（`_scratch\measure_export_memory.py`，tracemalloc，无图片）：
     2000 帖 × 800 字（正文 4.6 MB）→ txt 12.3 MB / markdown 8.6 MB / html 14.5 MB；
