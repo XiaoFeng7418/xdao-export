@@ -333,6 +333,91 @@ def _same_commit(local_commit: dict, remote_commit: dict) -> bool:
     )
 
 
+def pushed_count_from_git(head: str, total: int) -> int | None:
+    """用本地 git 图算「远端推上去了几条」；本地没有远端那个对象时返回 None。
+
+    这是最快也最准的一条路：`git rev-list --count <head>..HEAD` 直接在本地算，
+    零网络请求（实测 2.2 秒/次的接口调用省掉）。只有本地缺远端对象（比如刚在网页上
+    改过历史、或换了机器）时才回落到 API 那条路。
+    """
+    if not head or total <= 0:
+        return None
+    try:
+        git("merge-base", "--is-ancestor", head, "HEAD")
+    except ApiError:
+        return None  # 本地没有这个对象，或它根本不是 HEAD 的祖先
+    try:
+        pending = int(git("rev-list", "--count", f"{head}..HEAD").decode().strip() or "0")
+    except (ApiError, ValueError, UnicodeDecodeError):
+        return None
+    if pending < 0 or pending > total:
+        return None
+    return total - pending
+
+
+#: 从远端顶端往回「抽检」多少条父链。GitHub 每个提交对象要一次 HTTP 请求，
+#: 本机实测 2.2 秒/次（2026-10-25），逐条校验两百多条提交要八分钟 —— 所以只抽检
+#: 最近几条确认没有改写，其余按 git 的祖先关系信任，靠调用的「快路」兜住常见情况。
+VERIFY_DEPTH = 4
+
+
+def pushed_count_from_head(
+    repo: str, token: str, head: str, local: list[dict], limit: int = 0
+) -> int:
+    """远端顶端对应本地第几个提交：返回「本地已经推上去的提交个数」。
+
+    为什么不用 `find_pushed_prefix(local, remote_chain(...))`：`remote_chain`
+    只取最近 100 条，而本地历史早就超过 100 条了，于是「本地第 1 个提交」永远不在
+    窗口里，匹配数恒为 0 —— 每次推送都会重建全部提交、重传一千多个 blob
+    （2026-10-25 实测：一次传了 1360 个 blob，耗掉一个多小时）。
+
+    做法：先在**本地**找到与远端顶端对应的那条（本地末尾可能还有没推的新提交），
+    再抽检最近 `VERIFY_DEPTH` 条父链确认没有被改写；对不上就只认对上那段。
+    开销 = 1 次请求定位 + 最多 VERIFY_DEPTH 次抽检，与历史长短无关
+    （逐条全量校验两百多条要 485 秒，实测）。
+
+    `limit` > 0 时最多往回数这么多条（防御远端链意外很长的情况）。
+    """
+    if not local or not head:
+        return 0
+    limit = limit if limit > 0 else len(local)
+    # 快路：远端顶端就是本地 HEAD —— 一条都没落下，零请求。
+    if head == local[-1].get("sha"):
+        return min(len(local), limit)
+    try:
+        top = api(token, "GET", f"/repos/{repo}/git/commits/{head}")
+    except ApiError:
+        return 0
+    if not isinstance(top, dict):
+        return 0
+    start = -1
+    for offset in range(len(local)):
+        index = len(local) - 1 - offset
+        if _same_commit(local[index], top):
+            start = index
+            break
+    if start < 0:
+        return 0
+    pushed = start + 1
+    if limit < pushed:
+        pushed = limit
+    # 抽检：从远端顶端的父提交往回对几条，确认这段历史没被改写。
+    matched = 1
+    sha = ((top.get("parents") or [{}])[0] or {}).get("sha") or ""
+    position = start - 1
+    while sha and position >= 0 and matched < min(VERIFY_DEPTH, pushed):
+        try:
+            remote = api(token, "GET", f"/repos/{repo}/git/commits/{sha}")
+        except ApiError:
+            break
+        if not isinstance(remote, dict) or not _same_commit(local[position], remote):
+            return matched
+        matched += 1
+        sha = ((remote.get("parents") or [{}])[0] or {}).get("sha") or ""
+        position -= 1
+    return pushed
+
+
 def find_pushed_prefix(local: list[dict], remote: list[dict]) -> int:
     """返回「本地提交中已经推到远端」的个数。
 
@@ -517,11 +602,15 @@ def main(argv: list[str]) -> int:
             if commits and remote_head == commits[-1]["sha"]:
                 print("远端分支的顶端就是本地 HEAD，没有需要推送的新提交。")
                 return 0
-            chain = remote_chain(args.repo, token, remote_head)
-            pushed = find_pushed_prefix(commits, chain)
+            # 先用本地 git 图算（零请求）；本地没有远端对象时才走 API 往回数。
+            # 老实现（remote_chain + find_pushed_prefix）在历史超过 100 条后恒判 0，
+            # 于是每次推送都重建全部提交、重传上千个 blob（2026-10-25 实测一小时）。
+            pushed = pushed_count_from_git(remote_head, len(commits))
+            if pushed is None:
+                pushed = pushed_count_from_head(args.repo, token, remote_head, commits)
             if pushed:
                 print(f"远端已有 {pushed} 个提交与本地对应，从第 {pushed + 1} 个开始推送")
-                pending = commits[pushed:]
+                pending = commits[: len(commits) - pushed]
             if not pending:
                 print("没有需要推送的新提交，远端已是最新。")
                 return 0
