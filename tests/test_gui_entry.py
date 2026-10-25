@@ -2722,3 +2722,57 @@ def test_login_worker_writes_the_attempt_notes_when_every_candidate_fails(
                 dialog.destroy()
         except tk.TclError:  # pragma: no cover
             pass
+
+
+# ---------- 批量断点续跑（v0.18.0）----------
+
+
+def test_settings_dialog_saves_skip_existing(dialog_root, artifacts_dir):
+    """勾上「成品已存在就跳过」要写进配置——不然下次启动又变回关闭。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        assert dialog.skip_existing_var.get() is False
+        dialog.skip_existing_var.set(True)
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.skip_existing is True
+    saved = json.loads((artifacts_dir / "config.json").read_text(encoding="utf-8"))
+    assert saved["skip_existing"] is True
+
+
+def test_gui_export_passes_skip_existing_and_says_so(artifacts_dir, monkeypatch):
+    """开关打开时：交给导出器，并在日志里留一句，别让人误以为全都重导了。"""
+    _patch_gui_export(monkeypatch)
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        gui, "create_exporter", lambda *a, **k: recorded.append(k) or _RecordingExporter()
+    )
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+    settings.skip_existing = True
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert [kwargs["skip_existing"] for kwargs in recorded] == [True]
+    assert any("已存在就跳过" in line for line in app.logs)
+
+
+def test_gui_export_keeps_quiet_when_skip_existing_is_off(artifacts_dir, monkeypatch):
+    _patch_gui_export(monkeypatch)
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        gui, "create_exporter", lambda *a, **k: recorded.append(k) or _RecordingExporter()
+    )
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert [kwargs["skip_existing"] for kwargs in recorded] == [False]
+    assert not any("已存在就跳过" in line for line in app.logs)

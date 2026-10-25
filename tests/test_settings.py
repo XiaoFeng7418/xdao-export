@@ -68,6 +68,11 @@ FONT_DEFAULTS = {
     "ui_font_scale": DEFAULT_UI_FONT_SCALE,
 }
 
+#: 「批量断点续跑」那一个键：成品已存在就跳过。
+SKIP_FIELDS = ("skip_existing",)
+
+SKIP_DEFAULTS = {"skip_existing": False}
+
 DEFAULTS = {
     "pdf_paper": DEFAULT_PDF_PAPER,
     "pdf_orientation": DEFAULT_PDF_ORIENTATION,
@@ -200,9 +205,11 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         assert data[name] == RANGE_DEFAULTS[name]
     for name in FONT_FIELDS:
         assert data[name] == FONT_DEFAULTS[name]
+    for name in SKIP_FIELDS:
+        assert data[name] == SKIP_DEFAULTS[name]
     assert (
         set(data) - set(LEGACY_V070)
-        == set(PDF_FIELDS) | set(RANGE_FIELDS) | set(FONT_FIELDS)
+        == set(PDF_FIELDS) | set(RANGE_FIELDS) | set(FONT_FIELDS) | set(SKIP_FIELDS)
     )
 
 
@@ -506,3 +513,33 @@ def test_save_reports_whether_the_file_could_be_written(tmp_path: Path) -> None:
     blocker = tmp_path / "blocker"
     blocker.write_text("我不是目录", encoding="utf-8")
     assert AppSettings(_path=blocker / "config.json").save() is False
+
+
+# ---------------------------------------------------------------- 批量断点续跑
+
+
+def test_skip_existing_is_off_by_default(config_path: Path) -> None:
+    """默认关闭：老用户升级后行为不变，照旧每次都重新导出。"""
+    assert load_config(config_path).skip_existing is False
+
+
+def test_skip_existing_round_trip(config_path: Path) -> None:
+    settings = fresh_config(config_path)
+    settings.skip_existing = True
+    settings.save()
+
+    assert load_config(config_path).skip_existing is True
+
+
+@pytest.mark.parametrize("bad", (None, "", "maybe", "随便", [], {}))
+def test_bad_skip_existing_falls_back_to_off(config_path: Path, bad: object) -> None:
+    """认不出的值一律当关闭 —— 宁可多导一遍，也别悄悄少导出文件。"""
+    write_config(config_path, {"skip_existing": bad})
+    assert load_config(config_path).skip_existing is False
+
+
+@pytest.mark.parametrize("yes", (True, 1, "1", "true", "yes", "on", "是", "开"))
+def test_truthy_skip_existing_reads_as_on(config_path: Path, yes: object) -> None:
+    """手改配置写成 "1" / "开" 也算开 —— 和 pdf_background 那套宽容解析一致。"""
+    write_config(config_path, {"skip_existing": yes})
+    assert load_config(config_path).skip_existing is True

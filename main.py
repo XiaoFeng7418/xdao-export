@@ -317,6 +317,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="导出成品的正文字号（10~28，默认 14）；只影响 HTML / PDF / EPUB",
     )
     parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        default=None,
+        help="成品同名文件已存在且非空就跳过（一次贴很多串、断了可以接着跑）",
+    )
+    parser.add_argument(
         "--hashes",
         default=None,
         metavar="饼干",
@@ -663,6 +669,12 @@ def run_cli(args: argparse.Namespace) -> int:
     until_thread_id = _effective_until(args, settings)
     # 正文字号同理：命令行优先、其次配置，默认 14（＝老版本写死的值）。
     font_size = _effective_font_size(args, settings)
+    # 断点续跑：--skip-existing 一旦给了就开；没给就看配置里的开关。
+    skip_existing = (
+        True
+        if getattr(args, "skip_existing", None)
+        else bool(getattr(settings, "skip_existing", False))
+    )
     export_urls, skipped_urls = filter_until_thread_id(args.threads, until_thread_id)
     if not export_urls:
         # 不是错误：列表被截止挡光了。说清楚规则，用户改一个数就能重来。
@@ -825,6 +837,7 @@ def run_cli(args: argparse.Namespace) -> int:
         pdf_timeout=args.pdf_timeout,
         pdf_options=pdf_options,
         font_size=font_size,
+        skip_existing=skip_existing,
     )
 
     succeeded = 0
@@ -836,6 +849,7 @@ def run_cli(args: argparse.Namespace) -> int:
         f"格式：{format_key}｜范围：{scope}｜缓存：{'启用' if use_cache else '关闭'}",
         f"导出范围：{range_text}；{until_text}",
         f"正文字号：{font_size}px（只影响 HTML / PDF / EPUB）",
+        "已存在就跳过：开启（同名成品非空就不重做）" if skip_existing else "已存在就跳过：关闭",
         "",
     ]
     for index, raw in enumerate(export_urls, start=1):

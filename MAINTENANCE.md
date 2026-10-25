@@ -681,6 +681,18 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.18.0**：批量断点续跑（成品已存在就跳过）
+  - 需求：一次贴几十个串、跑到一半断了，重跑会把前面的全做一遍（长串一份要几分钟）。
+  - 开关：`AppSettings.skip_existing`（默认 False；`_as_bool` 宽容解析，手改配置写
+    `"1"` / `"开"` 也认）、界面「设置 → ③ 导出」勾选框、命令行 `--skip-existing`。
+  - 底座：`Exporter.skip_existing` / `last_skipped`，模板方法 `save()` 先调
+    `existing_output()`（文件存在且 `st_size > 0` 才算），命中就 `reuse_existing()`
+    返回原路径并提示「已存在，跳过」；PDF / EPUB 各自的 `save()` 覆盖里同样先查。
+    `create_exporter(..., skip_existing=None)` 走 `options` 传给构造器。
+  - 只影响手动 / 命令行导出；监控每轮本来就该导出新回复，不接这个开关。
+  - 用例：3（settings 开关与宽容解析）+ 5（导出器跳过 / 空文件重做 / 三格式 / 传参）
+    + 2（命令行日志与传参）+ 3（界面勾选写回、导出传参、关闭时不刷日志）。
+
 - **v0.17.7**（一次性窗口不再自动登录 Edge、不再同步；加一个取证开关）：
   **一、问题怎么发现的。** 2026-10-25 取证：登录成功后落的「读罐详单」里，整罐 11 块只有 3 块
   是站点的（`PHPSESSID`、`memberUserspapapa`、`userhash`），另外 8 块是 `.msn.com` / `.msn.cn` /

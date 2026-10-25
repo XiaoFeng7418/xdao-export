@@ -2840,6 +2840,17 @@ class SettingsDialog(tk.Toplevel):
         font_hint.pack(fill="x", pady=(theme.gap(1), 0))
         wrap_to_width(font_hint, minimum=220)
 
+        # 批量断点续跑：一次贴很多串、跑到一半断了，重跑时别把前面的重做一遍。
+        # 只看「同名成品已存在且非空」；监控那条路不受影响（每轮本来就要重导新回复）。
+        self.skip_existing_var = tk.BooleanVar(value=settings.skip_existing)
+        skip_row = ttk.Frame(export_card.body, style="Card.TFrame")
+        skip_row.pack(fill="x", pady=(theme.gap(1.5), 0))
+        ttk.Checkbutton(
+            skip_row,
+            text="成品已存在就跳过（批量断点续跑）",
+            variable=self.skip_existing_var,
+        ).pack(side="left")
+
         # ④ PDF 页面：默认「跟随网页样式」，导出效果与浏览器打印完全一致 ——
         # 老配置（没有这几个键）升级后行为不变，靠的就是这个默认值。
         pdf_row = ttk.Frame(export, style="Card.TFrame")
@@ -2978,6 +2989,7 @@ class SettingsDialog(tk.Toplevel):
             wanted = settings.export_font_size
         if EXPORT_FONT_SIZE_MIN <= wanted <= EXPORT_FONT_SIZE_MAX:
             settings.export_font_size = wanted
+        settings.skip_existing = bool(self.skip_existing_var.get())
         # PDF 页面：写回的都是 pdf_opts 认得的取值键；坏值保留原值（不把好设置抹掉）。
         settings.pdf_paper = _choice_key(
             pdf_opts.PAPER_LABELS, self._paper_keys, self.pdf_paper_var.get()
@@ -5401,6 +5413,9 @@ class App:
         if self.current_format() in ("html", "pdf", "epub"):
             # TXT / Markdown 是纯文本，没有字号可言 —— 那种格式下不提这一行。
             self.log(f"正文字号：{self.settings.export_font_size} 磅。")
+        if self.settings.skip_existing:
+            # 开着的时候说一句：不然用户看到「成功 8 / 8」会以为全都重新导了一遍。
+            self.log("已存在就跳过：同名成品非空时不重做。")
         if self.current_format() == "pdf":
             # 只在真的改过纸张/边距/背景/页码时说一声，全默认不必占一行。
             pdf_options = pdf_opts.from_settings(self.settings)
@@ -5434,6 +5449,7 @@ class App:
                 pdf_options=pdf_opts.from_settings(self.settings),
                 font_size=self.settings.export_font_size,
                 stop=stop_event,
+                skip_existing=self.settings.skip_existing,
             )
 
             succeeded = 0

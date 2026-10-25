@@ -102,6 +102,12 @@ class AppSettings:
     # 界面字号比例（档位见 theme.FONT_SCALE_CHOICES），改完立刻重建界面生效。
     ui_font_scale: float = DEFAULT_UI_FONT_SCALE
 
+    # ---------- 批量断点续跑 ----------
+    # 打开后：成品同名文件已存在且非空，就跳过不重做（一次贴很多串、跑到一半断了
+    # 可以接着跑）。只用于手动/命令行导出 —— 监控每轮就是要重新导出新回复，
+    # 所以监控那条路不看这个开关。
+    skip_existing: bool = False
+
     # ---------- PDF 纸张 / 页边距 ----------
     # 归一化全部交给 xdao/pdf_opts.py（界面与命令行同一套规则）；
     # 这里只负责持久化，坏值一律回落到上面那组默认值。
@@ -177,6 +183,8 @@ class AppSettings:
         self.ui_font_scale = _ui_font_scale(
             data.get("ui_font_scale"), DEFAULT_UI_FONT_SCALE
         )
+        # 老配置没有这个键 → 关闭（默认行为与以前一致：总是重新导出）
+        self.skip_existing = _as_bool(data.get("skip_existing"), False)
         # 逐字段解析：老配置没有这些键 → 取默认值（＝ v0.7.0 的成品外观）；
         # 有键但值坏 → 同样回落默认，绝不让读配置抛异常。
         self.pdf_paper = _pdf_choice(data.get("pdf_paper"), DEFAULT_PDF_PAPER, "normalize_paper")
@@ -239,6 +247,7 @@ class AppSettings:
                 "until_thread_id": self.until_thread_id,
                 "export_font_size": self.export_font_size,
                 "ui_font_scale": self.ui_font_scale,
+                "skip_existing": bool(self.skip_existing),
                 "pdf_paper": self.pdf_paper,
                 "pdf_orientation": self.pdf_orientation,
                 "pdf_margin": self.pdf_margin,

@@ -506,6 +506,9 @@ class PdfBuilder(Exporter):
     ) -> Path:
         # PDF 与 HTML 一样，先确认目录可写，别等渲染完才失败。
         output_dir = ensure_writable(output_dir)
+        existing = self.existing_output(thread, output_dir)
+        if existing is not None:
+            return self.reuse_existing(existing)
         self._notify(self.save_message)
         path = self.target_path(thread, output_dir)
         try:

@@ -190,6 +190,9 @@ class EpubBuilder(Exporter):
         """在 output_dir 下按文件名模板（或推导结果）保存。"""
         # 先确认目录可写，避免抓了几分钟才在最后一步失败。
         output_dir = ensure_writable(output_dir)
+        existing = self.existing_output(thread, output_dir)
+        if existing is not None:
+            return self.reuse_existing(existing)
         return self.build(
             thread,
             scope,

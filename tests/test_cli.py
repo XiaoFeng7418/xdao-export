@@ -1271,3 +1271,40 @@ def test_font_size_flag_wins_over_the_saved_setting(out_dir, monkeypatch):
 
     assert main(["50000001", "--font-size", "24", "-f", "html", "-o", str(out_dir)]) == 0
     assert [kwargs["font_size"] for kwargs in seen] == [24]
+
+
+def test_skip_existing_flag_reaches_the_exporter(out_dir, monkeypatch):
+    """--skip-existing 要给到导出器，并在日志里说一句（不然用户不知道这次少导了）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    code = main(["50000001", "--skip-existing", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["skip_existing"] for kwargs in seen] == [True]
+    log = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
+    assert "已存在就跳过：开启" in log
+
+
+def test_skip_existing_defaults_to_off(out_dir, monkeypatch):
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["skip_existing"] for kwargs in seen] == [False]
+    log = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
+    assert "已存在就跳过：关闭" in log
