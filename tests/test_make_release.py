@@ -510,3 +510,70 @@ def test_request_text_returns_the_decoded_body(monkeypatch):
     (call,) = calls
     assert call["method"] == "GET"
     assert call["accept"] == "application/octet-stream"
+
+
+# ---------- Release 标题格式（v0.19.5）----------
+
+
+@pytest.mark.parametrize(
+    "tag,name",
+    [
+        ("v0.19.5", "v0.19.5：发版工具拒绝错误标题格式"),
+        ("v0.20.0", "v0.20.0：导出可以按楼层区间挑"),
+    ],
+)
+def test_a_good_release_title_passes(tag: str, name: str) -> None:
+    assert make_release.check_release_name(tag, name) == ""
+
+
+@pytest.mark.parametrize(
+    "tag,name,expected",
+    [
+        # 2026-10-25 真踩过两次：把「xdao-export vX.Y.Z（免安装包 · Windows 64 位）」
+        # 直接粘进 --name，GitHub 版本列表里就出现两行和前后十几版都不一致的标题。
+        ("v0.19.5", "xdao-export v0.19.5（免安装包 · Windows 64 位）", "开头"),
+        ("v0.19.5", "v0.19.4：上一版的说法", "开头"),
+        ("v0.19.5", "v0.19.5 少了冒号", "开头"),
+        ("v0.19.5", "v0.19.5：", "空的"),
+        ("v0.19.5", "v0.19.5：免安装包", "正文"),
+        ("v0.19.5", "v0.19.5：补测试（顺手改了标题）", "括号"),
+    ],
+)
+def test_a_bad_release_title_is_rejected(tag: str, name: str, expected: str) -> None:
+    problem = make_release.check_release_name(tag, name)
+
+    assert expected in problem
+
+
+def test_main_refuses_to_create_a_release_with_a_bad_title(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """标题不合格就别发：这一步错一次要手动去网页上改，不如直接拦住。"""
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(make_release, "gh_token", lambda: "假令牌")
+    monkeypatch.setattr(
+        make_release,
+        "request_json",
+        lambda method, url, token, payload=None: calls.append((method, url)) or {},
+    )
+
+    notes = tmp_path / "notes.md"
+    notes.write_text("# v0.19.5\n", encoding="utf-8")
+    code = make_release.main(
+        [
+            "--repo",
+            "owner/name",
+            "--tag",
+            "v0.19.5",
+            "--name",
+            "xdao-export v0.19.5（免安装包 · Windows 64 位）",
+            "--notes-file",
+            str(notes),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "标题格式不对" in out
+    assert "vX.Y.Z：一句话说明" in out
+    assert calls == []
