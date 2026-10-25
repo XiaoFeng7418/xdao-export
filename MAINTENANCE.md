@@ -681,6 +681,21 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.19.6**：给请求层与一键升级里的守卫分支补用例（只补测试，行为不变）。
+  - 缘起：覆盖率体检（2026-10-25）里 `xdao/client.py` 80%、`xdao/updater.py` 87%，
+    缺的都是“出错才走到”的分支——这类分支最怕的是没人跑过。
+  - `tests/test_client.py` 39 → 55：429 限流重试与最终文案、5xx 带响应体、
+    `max_bytes` 上限、gzip 解压、超时/URLError 文案、`_proxy_from_env` 两种大小写、
+    `apply_config` 换代理与“没变就不重装 opener”、`update_cdn_path` 空答复、
+    `image_url` 拼法、`_api_get_json` 非 JSON、`jump_page_*` 两种属性顺序。
+  - `tests/test_updater.py` 42 → 60：冻结时 `app_dir()` 取 exe 目录、
+    `_download_size(0)`、解压 OSError 包装、备份删不掉时不误报、
+    `_pid_running` 非正数/posix 三种 errno、`swap_in` 回滚、
+    `discard_staging`/`_retire_staging` 只碰自己的目录、日志写不成照样叫醒帮手、
+    `_remove_tree` 超时返回 False、记号目录在帮手消失后立刻清。
+  - 用例：2328 → 2362（本机 2355 通过、7 跳过）；行覆盖 client 80% → 87%、updater 87% → 91%。
+  - 坑：Windows 的 `os.environ` 键不分大小写，`setenv("HTTPS_PROXY")` 后
+    `delenv("https_proxy")` 会把刚设的那条一起删掉——用例里要先全清再设。
 - **v0.19.5**：发版工具拒绝不合格的 Release 标题（补一道格式闸）
 
   2026-10-25 连续两版（v0.19.3、v0.19.4）把 `--name` 写成了

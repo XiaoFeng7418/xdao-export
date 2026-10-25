@@ -646,3 +646,218 @@ def test_download_image_relaxes_the_timeout_and_caps_the_size(tmp_path):
     assert call["max_bytes"] == client_module.MAX_IMAGE_BYTES
     assert call["url"] == "https://img.example/e.png"
 
+
+
+# ---------- 覆盖率体检补的分支（v0.19.6）----------
+
+
+class _FakeResponse:
+    """够用的假响应：支持 read(n)、headers、上下文管理。"""
+
+    def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
+        self._body = body
+        self.headers = dict(headers or {})
+
+    def read(self, size: int | None = None) -> bytes:
+        if size is None:
+            chunk, self._body = self._body, b""
+            return chunk
+        chunk, self._body = self._body[:size], self._body[size:]
+        return chunk
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+
+class _ScriptedOpener:
+    """按顺序吐出预先排好的「响应或异常」。"""
+
+    def __init__(self, *script) -> None:
+        self.script = list(script)
+        self.requests: list[object] = []
+
+    def open(self, request, timeout=None):  # noqa: ANN001, ARG002
+        self.requests.append(request)
+        item = self.script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def _errors_response(code: int, body: bytes = b"") -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://example/x", code, "boom", {}, io.BytesIO(body))
+
+
+class _NullSettings:
+    def __init__(self, **kwargs) -> None:
+        self.__dict__.update(kwargs)
+
+
+def test_proxy_from_env_reads_both_spellings(monkeypatch) -> None:
+    # 注意：Windows 上 os.environ 的键不分大小写，所以不能先 setenv("HTTPS_PROXY")
+    # 再 delenv("https_proxy") —— 那会把刚设的那条一起删掉。先全清再设。
+    keys = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+    for key in keys:
+        monkeypatch.delenv(key, raising=False)
+    assert XdaoClient._proxy_from_env() == ""
+
+    monkeypatch.setenv("HTTPS_PROXY", "  http://127.0.0.1:7890  ")
+    assert XdaoClient._proxy_from_env() == "http://127.0.0.1:7890"
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:8888")
+    assert XdaoClient._proxy_from_env() == "http://127.0.0.1:8888"
+
+    monkeypatch.delenv("https_proxy", raising=False)
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9999")
+    assert XdaoClient._proxy_from_env() == "http://127.0.0.1:9999"
+
+
+def test_apply_config_takes_timeout_retries_and_proxy(monkeypatch) -> None:
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    client = XdaoClient()
+
+    client.apply_config(
+        _NullSettings(timeout=7, retries=4, throttle=0.5, proxy="http://127.0.0.1:7890")
+    )
+
+    assert client.timeout == 7.0
+    assert client.retries == 4
+    assert client._throttle_interval == 0.5
+    assert client.proxy == "http://127.0.0.1:7890"
+
+
+def test_apply_config_keeps_the_same_opener_when_nothing_changed(monkeypatch) -> None:
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    client = XdaoClient()
+    opener = client._opener
+
+    client.apply_config(_NullSettings(timeout=20, retries=2, throttle=0.08, proxy=""))
+
+    assert client._opener is opener
+
+
+def test_request_retries_a_429_and_then_succeeds(monkeypatch) -> None:
+    client = XdaoClient(retries=1, throttle=0.0)
+    backs: list[int] = []
+    monkeypatch.setattr(client, "_backoff", lambda attempt, retry_after=None: backs.append(attempt))
+    client._opener = _ScriptedOpener(_errors_response(429), _FakeResponse(b"ok"))
+
+    assert client._request("https://example/x") == b"ok"
+    assert backs == [0]
+
+
+def test_request_explains_rate_limiting_after_the_last_try(monkeypatch) -> None:
+    client = XdaoClient(retries=0, throttle=0.0)
+    client._opener = _ScriptedOpener(_errors_response(429))
+
+    with pytest.raises(XdaoError) as caught:
+        client._request("https://example/x")
+
+    assert "请求过于频繁" in str(caught.value)
+
+
+def test_request_reports_a_server_error_with_the_body(monkeypatch) -> None:
+    client = XdaoClient(retries=0, throttle=0.0)
+    client._opener = _ScriptedOpener(_errors_response(503, "维护中".encode("utf-8")))
+
+    with pytest.raises(XdaoError) as caught:
+        client._request("https://example/x")
+
+    assert "请求失败 503" in str(caught.value)
+    assert "维护中" in str(caught.value)
+
+
+def test_request_refuses_a_body_over_the_cap(monkeypatch) -> None:
+    client = XdaoClient(retries=0, throttle=0.0)
+    client._opener = _ScriptedOpener(_FakeResponse(b"x" * 4096))
+
+    with pytest.raises(XdaoError) as caught:
+        client._request("https://example/x", max_bytes=2048)
+
+    assert "超过 2 KB 上限" in str(caught.value)
+
+
+def test_request_decompresses_a_gzip_body(monkeypatch) -> None:
+    client = XdaoClient(retries=0, throttle=0.0)
+    body = gzip.compress("中文内容".encode("utf-8"))
+    client._opener = _ScriptedOpener(_FakeResponse(body, {"Content-Encoding": "gzip"}))
+
+    assert client._request("https://example/x").decode("utf-8") == "中文内容"
+    assert client._last_response_headers.get("content-encoding") == "gzip"
+
+
+def test_request_turns_a_timeout_into_a_readable_message(monkeypatch) -> None:
+    client = XdaoClient(retries=0, throttle=0.0)
+    client._opener = _ScriptedOpener(TimeoutError("timed out"))
+
+    with pytest.raises(XdaoError) as caught:
+        client._request("https://example/x")
+
+    assert "请求超时" in str(caught.value)
+
+
+def test_request_turns_a_network_error_into_a_readable_message(monkeypatch) -> None:
+    client = XdaoClient(retries=0, throttle=0.0)
+    client._opener = _ScriptedOpener(urllib.error.URLError("名字解析失败"))
+
+    with pytest.raises(XdaoError) as caught:
+        client._request("https://example/x")
+
+    assert "网络错误" in str(caught.value)
+
+
+def test_update_cdn_path_takes_the_first_url(monkeypatch) -> None:
+    client = XdaoClient()
+    monkeypatch.setattr(client, "_api_get_json", lambda path, params: [{"url": "https://cdn.example/"}, {}])
+
+    assert client.update_cdn_path() == "https://cdn.example/"
+
+
+def test_update_cdn_path_keeps_the_old_one_when_the_answer_is_empty(monkeypatch) -> None:
+    client = XdaoClient()
+    monkeypatch.setattr(client, "_api_get_json", lambda path, params: [])
+
+    assert client.update_cdn_path() == client.cdn_path
+
+
+def test_image_url_builds_image_and_thumb_links() -> None:
+    client = XdaoClient()
+
+    assert client.image_url("abcdef", ".jpg").endswith("/image/abcdef.jpg")
+    assert client.image_url("abcdef", ".jpg", thumb=True).endswith("/thumb/abcdef.jpg")
+
+    client.cdn_path = "https://cdn.example"
+    assert client.image_url("abcdef", ".png") == "https://cdn.example/image/abcdef.png"
+
+
+def test_api_get_json_reports_a_non_json_page(monkeypatch) -> None:
+    client = XdaoClient()
+    monkeypatch.setattr(client, "_resolve_api_base", lambda: "https://api.example")
+    monkeypatch.setattr(client, "_request", lambda *a, **k: b"<html>error</html>")
+
+    with pytest.raises(XdaoError) as caught:
+        client._api_get_json("getThreadList", {})
+
+    assert "非 JSON" in str(caught.value)
+
+
+def test_jump_page_url_finds_the_target_whichever_attribute_comes_first() -> None:
+    first = '<html><a id="href" href="https://www.nmbxd1.com/x">go</a></html>'
+    second = '<html><a href="https://www.nmbxd1.com/y" id="href">go</a></html>'
+
+    assert XdaoClient.jump_page_url(first) == "https://www.nmbxd1.com/x"
+    assert XdaoClient.jump_page_url(second) == "https://www.nmbxd1.com/y"
+    assert XdaoClient.jump_page_url("<html>普通页面</html>") == ""
+    assert XdaoClient.jump_page_url("") == ""
+
+
+def test_jump_page_message_unescapes_and_flattens_html() -> None:
+    html = '<html><p class="error">没有&amp;权限<br>访问</p></html>'
+
+    assert XdaoClient.jump_page_message(html) == "没有&权限 访问"
+    assert XdaoClient.jump_page_message("<html></html>") == ""

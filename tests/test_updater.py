@@ -713,3 +713,210 @@ def test_can_write_dir_returns_true_even_when_the_probe_cannot_be_removed(
 def test_can_write_dir_returns_false_for_a_missing_directory(tmp_path: Path) -> None:
     """目录本身都不存在时写探针会报「找不到路径」，同样返回假。"""
     assert updater.can_write_dir(tmp_path / "还没有这个目录") is False
+
+
+# ---------- 覆盖率体检补的分支（v0.19.6）----------
+
+
+def test_app_dir_points_at_the_exe_when_frozen(tmp_path: Path, monkeypatch) -> None:
+    """打包版里「程序目录」是 exe 所在目录，不是源码树。"""
+    exe = tmp_path / updater.LAUNCHER_NAME
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater.sys, "executable", str(exe))
+
+    assert updater.app_dir() == tmp_path.resolve()
+    assert updater.launcher_path() == tmp_path.resolve() / updater.LAUNCHER_NAME
+
+
+def test_launcher_path_sits_next_to_the_program(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(updater, "app_dir", lambda: tmp_path)
+
+    assert updater.launcher_path() == tmp_path / updater.LAUNCHER_NAME
+
+
+@pytest.mark.parametrize("size,expected", [(0, "大小未知"), (-3, "大小未知"), (5 * 1024 * 1024, "5.0 MB")])
+def test_download_size_labels_what_it_knows(size: int, expected: str) -> None:
+    assert updater._download_size(size) == expected
+
+
+def test_extract_payload_wraps_an_oserror_from_the_zip_reader(tmp_path: Path, monkeypatch) -> None:
+    """解压时被占住（杀毒软件、资源管理器）要变成一句人话，而不是抛 OSError。"""
+
+    class _StuckZip:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+        def namelist(self) -> list[str]:
+            return [f"{updater.PAYLOAD_PREFIX}1.0.0/xdao-export.exe"]
+
+        def extract(self, *_args) -> None:
+            raise OSError("文件被占用")
+
+    archive = tmp_path / "package.zip"
+    archive.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(updater.zipfile, "ZipFile", _StuckZip)
+
+    with pytest.raises(UpdateCheckError) as caught:
+        updater.extract_payload(archive, tmp_path / "staging")
+
+    assert "解压失败" in str(caught.value)
+
+
+def test_cleanup_backups_keeps_going_when_a_directory_cannot_be_removed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    install = tmp_path / "xdao-export-v1.0.0"
+    install.mkdir()
+    old = tmp_path / f"{install.name}{updater.BACKUP_SUFFIX}20200101-000000"
+    old.mkdir()
+    stamp = time.time() - updater.BACKUP_KEEP_SECONDS - 60
+    os.utime(old, (stamp, stamp))
+
+    def refuse(_path) -> None:
+        raise OSError("被占用")
+
+    monkeypatch.setattr(updater.shutil, "rmtree", refuse)
+
+    assert updater.cleanup_backups(install, keep_seconds=updater.BACKUP_KEEP_SECONDS) == []
+    assert old.exists()
+
+
+def test_cleanup_backups_returns_nothing_when_the_parent_is_gone(tmp_path: Path) -> None:
+    gone = tmp_path / "gone" / "xdao-export-v1.0.0"
+
+    assert updater.cleanup_backups(gone) == []
+
+
+@pytest.mark.parametrize("pid", [0, -1])
+def test_pid_running_is_false_for_non_positive_numbers(pid: int) -> None:
+    assert updater._pid_running(pid) is False
+
+
+def test_pid_running_uses_os_kill_where_there_is_no_win32(monkeypatch) -> None:
+    """非 Windows 上退回 os.kill(pid, 0)：三种 errno 要分别对待。"""
+    monkeypatch.setattr(updater.os, "name", "posix")
+
+    monkeypatch.setattr(updater.os, "kill", lambda *_a: None)
+    assert updater._pid_running(4321) is True
+
+    def gone(*_a):
+        raise ProcessLookupError("没有这个进程")
+
+    monkeypatch.setattr(updater.os, "kill", gone)
+    assert updater._pid_running(4321) is False
+
+    def denied(*_a):
+        raise PermissionError("没权限")
+
+    monkeypatch.setattr(updater.os, "kill", denied)
+    assert updater._pid_running(4321) is True
+
+    def broken(*_a):
+        raise OSError("别的错")
+
+    monkeypatch.setattr(updater.os, "kill", broken)
+    assert updater._pid_running(4321) is False
+
+
+def test_swap_in_puts_the_old_folder_back_when_the_new_one_cannot_move(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """换不动就把名字改回去 —— 现场不能停在「旧的没了、新的没来」。"""
+    target = tmp_path / "xdao-export-v1.0.0"
+    target.mkdir()
+    (target / updater.LAUNCHER_NAME).write_bytes(b"MZ")
+    payload = tmp_path / "staging" / "xdao-export-v2.0.0"
+    payload.mkdir(parents=True)
+    plan = updater.UpgradePlan(True, "", target, target / updater.LAUNCHER_NAME, os.getpid())
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("搬不过去")
+
+    monkeypatch.setattr(updater.shutil, "move", refuse)
+
+    with pytest.raises(OSError):
+        updater.swap_in(payload, plan)
+
+    assert target.is_dir()
+    assert (target / updater.LAUNCHER_NAME).exists()
+    assert not plan.backup_dir.exists()
+
+
+def test_discard_staging_leaves_directories_that_are_not_ours(tmp_path: Path) -> None:
+    other = tmp_path / "别人的目录"
+    other.mkdir()
+
+    updater.discard_staging(other)
+
+    assert other.is_dir()
+
+
+def test_retire_staging_refuses_a_directory_that_is_not_ours(tmp_path: Path) -> None:
+    other = tmp_path / "别人的目录"
+    other.mkdir()
+
+    assert updater._retire_staging(other) is None
+    assert other.is_dir()
+
+
+def test_spawn_helper_still_launches_when_the_log_cannot_be_opened(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """日志写不成也照样升级 —— 别为了留痕把正事耽误了。"""
+    payload = tmp_path / "staging" / "xdao-export-v2.0.0"
+    payload.mkdir(parents=True)
+    exe = payload / updater.LAUNCHER_NAME
+    exe.write_bytes(b"MZ")
+    target = tmp_path / "xdao-export-v1.0.0"
+    target.mkdir()
+    plan = updater.UpgradePlan(True, "", target, target / updater.LAUNCHER_NAME, os.getpid())
+    calls: list[tuple[tuple, dict]] = []
+
+    def popen(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "帮手"
+
+    real_open = open
+
+    def picky_open(file, *args, **kwargs):
+        if str(file).endswith("xdao-update.log"):
+            raise OSError("不让写")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", picky_open)
+
+    assert updater.spawn_helper(plan, payload, exe=exe, popen=popen) == "帮手"
+    assert "stdout" not in calls[0][1]
+
+
+def test_cleanup_staging_leftovers_is_zero_when_the_parent_is_missing(tmp_path: Path) -> None:
+    assert updater.cleanup_staging_leftovers(tmp_path / "gone" / updater.STAGING_DIR_NAME) == 0
+
+
+def test_remove_tree_reports_failure_after_the_wait_expires(tmp_path: Path, monkeypatch) -> None:
+    """删不掉就返回 False（调用方会改名留记号），别假装删掉了。"""
+    parked = tmp_path / "parked"
+    parked.mkdir()
+    monkeypatch.setattr(updater.shutil, "rmtree", lambda *_a, **_k: None)
+
+    assert updater._remove_tree(parked, wait=0.0) is False
+
+
+def test_staging_leftovers_are_removed_at_once_once_the_helper_is_gone(tmp_path: Path) -> None:
+    """记号目录名字里记着帮手进程号：那个进程没了就能立刻删，不用等时辰。"""
+    dead_pid = 999999
+    leftover = tmp_path / f"{updater.STAGING_DIR_NAME}{updater.LEFTOVER_SUFFIX}{dead_pid}-1"
+    leftover.mkdir()
+    (leftover / "junk.bin").write_bytes(b"x")
+
+    removed = updater.cleanup_staging_leftovers(tmp_path / updater.STAGING_DIR_NAME)
+
+    assert removed == 1
+    assert not leftover.exists()
