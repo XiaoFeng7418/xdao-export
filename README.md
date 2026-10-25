@@ -109,6 +109,8 @@
   `--max-pages N` 与 `--until <串号>`）。撞上页数上限时汇总里会说明只抓到第几页。
 - 正文字号可调（v0.15.0 起）：HTML / PDF / EPUB 的正文磅数在「设置」里选 10~28
   （默认 14，命令行 `--font-size 20`）；TXT 与 Markdown 是纯文本，没有字号。
+- 批量断点续跑（v0.18.0 起）：「设置」里勾上「成品已存在就跳过」（命令行
+  `--skip-existing`），重跑时同名成品非空的串直接跳过，只补没导完的那几个。
 - 文件名可用模板控制：`{title} {id} {date} {po} {count}`，例如 `[{id}] {title}`。
 - 每个发言人饼干（user_hash）完整显示，PO 高亮，红名与 SAGE 有标记。
 - 标题与作者在非默认值时才显示；无标题时文件名取第一楼正文的第一句话。
@@ -174,26 +176,26 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.17.7** 提供免安装包：
+最新版 **v0.18.0** 提供免安装包：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.17.7-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位），以及协议全文 `LICENSE.txt`。 |
-| `xdao-export-v0.17.7-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
+| `xdao-export-v0.18.0-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位），以及协议全文 `LICENSE.txt`。 |
+| `xdao-export-v0.18.0-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
 
 
 **下载后核对一下**（v0.13.28 起，每个 Release 都附一份 `.sha256`）：把 zip 和 `.sha256` 放同一个
 文件夹，在 PowerShell 里跑
 
 ```powershell
-Get-FileHash .\xdao-export-v0.17.7-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.17.7-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.18.0-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.18.0-win64.zip.sha256
 ```
 
 第一行输出的字符串应当和 .sha256 里那串一模一样。只想看结论就一条命令：
 
 ```powershell
-$f = 'xdao-export-v0.17.7-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
+$f = 'xdao-export-v0.18.0-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
 ```
 
 回 `True` 就是原件。（`certutil -hashfile $f SHA256` 也能算，只是它输出大写、还多一行说明。）
@@ -594,6 +596,9 @@ python main.py 50000001 12345678 --until 50000001
 # 正文字号：HTML / PDF / EPUB 的正文用 20 磅（默认 14）
 python main.py 50000001 --font-size 20
 
+# 批量断点续跑：成品已存在的串直接跳过（默认关闭）
+python main.py 50000001 12345678 --skip-existing
+
 # 文件名模板
 python main.py 50000001 --template "[{id}] {title}"
 
@@ -666,7 +671,7 @@ xdao-export/
 ├─ tools/build_zip.py      打免安装包 + 写 .sha256（本机与 CI 都用它）
 ├─ 诊断写入.ps1            导出目录写不进去时用来定位（随免安装包一起发出）
 ├─ 诊断写入-双击运行.cmd   不会用命令行就双击它，跑完留下诊断结果报告
-└─ tests/                  2096 个离线单元测试（2089 通过，另 7 个真机用例默认跳过）
+└─ tests/                  2122 个离线单元测试（2115 通过，另 7 个真机用例默认跳过）
 ```
 
 ## 开发

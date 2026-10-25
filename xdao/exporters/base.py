@@ -55,6 +55,11 @@ class Exporter:
         # 不认识的参数留在这里，不炸构造：调用方可以把所有参数一次性交给每个导出器，
         # 由各自取用（这正是 ``create_exporter`` 能删掉那条回退阶梯的原因）。
         self.options: dict = dict(options)
+        # 批量断点续跑：同名成品已存在且非空就不重做。只影响手动/命令行导出，
+        # 监控每轮本来就该重新导出新回复，所以不走这条路。
+        self.skip_existing = bool(options.get("skip_existing"))
+        #: 这一趟是不是「跳过」而不是真导出（调用方据此计数/写日志）
+        self.last_skipped = False
 
     # ---------- 基础工具 ----------
 
@@ -65,6 +70,24 @@ class Exporter:
     def _notify(self, message: str) -> None:
         if self._progress:
             self._progress(message)
+
+    def existing_output(self, thread: ThreadData, output_dir: Path | str) -> Path | None:
+        """开关打开、且目标文件已存在且非空时，返回那个路径（表示应当跳过）。"""
+        if not self.skip_existing:
+            return None
+        path = self.target_path(thread, output_dir)
+        try:
+            if path.exists() and path.stat().st_size > 0:
+                return path
+        except OSError:
+            return None
+        return None
+
+    def reuse_existing(self, path: Path) -> Path:
+        """把「跳过」这件事记在对象上并提示一句，然后返回原路径。"""
+        self.last_skipped = True
+        self._notify(f"已存在，跳过：{path.name}")
+        return path
 
     def output_name(self, thread: ThreadData) -> str:
         """按文件名模板（若设置）推导文件名主体。"""
@@ -107,6 +130,9 @@ class Exporter:
         目录先探一次是因为抓一个长串可能要几分钟，写不进去的话那一趟就白跑了。
         """
         output_dir = ensure_writable(output_dir)
+        existing = self.existing_output(thread, output_dir)
+        if existing is not None:
+            return self.reuse_existing(existing)
         if self.save_message:
             self._notify(self.save_message)
         path = self.target_path(thread, output_dir)

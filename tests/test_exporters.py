@@ -993,3 +993,67 @@ def test_create_exporter_hands_the_stop_flag_to_the_builder():
     exporter = create_exporter("txt", FakeClient(), stop=stop)
 
     assert exporter.stop is stop
+
+
+# ---------- 批量断点续跑：成品已存在就跳过（v0.18.0）----------
+
+
+def test_save_skips_an_output_that_already_exists(out_dir):
+    """开关打开、同名成品非空：这一趟不重做，原文件一个字节都不动。"""
+    thread = sample_thread("断点续跑")
+    first = TxtBuilder(FakeClient()).save(thread, "all", out_dir)
+    before = first.stat().st_mtime_ns
+
+    again = TxtBuilder(FakeClient(), skip_existing=True)
+    result = again.save(thread, "all", out_dir)
+
+    assert result == first
+    assert again.last_skipped is True
+    assert first.stat().st_mtime_ns == before
+
+
+def test_save_rebuilds_when_the_switch_is_off(out_dir):
+    """没开开关时照旧重写（默认行为不变）。"""
+    thread = sample_thread("照旧重导")
+    first = TxtBuilder(FakeClient()).save(thread, "all", out_dir)
+    before = first.stat().st_mtime_ns
+
+    again = TxtBuilder(FakeClient())
+    result = again.save(thread, "all", out_dir)
+
+    assert result == first
+    assert again.last_skipped is False
+    assert first.stat().st_mtime_ns >= before
+
+
+def test_save_does_not_skip_an_empty_file(out_dir):
+    """空文件不算成品：半路被杀留下的 0 字节文件要重做。"""
+    thread = sample_thread("空文件重做")
+    first = TxtBuilder(FakeClient()).save(thread, "all", out_dir)
+    first.write_bytes(b"")
+
+    again = TxtBuilder(FakeClient(), skip_existing=True)
+    again.save(thread, "all", out_dir)
+
+    assert again.last_skipped is False
+    assert first.stat().st_size > 0
+
+
+def test_html_pdf_and_epub_all_honour_skip_existing(out_dir):
+    """三种「自己写文件」的导出器都要认这个开关（PDF / EPUB 各自覆盖了 save）。"""
+    thread = sample_thread("三种格式")
+    for key in ("html", "pdf", "epub"):
+        exporter = create_exporter(key, FakeClient(), skip_existing=True)
+        path = exporter.target_path(thread, out_dir)
+        path.write_bytes(b"already here")
+
+        result = exporter.save(thread, "all", out_dir)
+
+        assert result == path, key
+        assert exporter.last_skipped is True, key
+        assert path.read_bytes() == b"already here", key
+
+
+def test_create_exporter_hands_the_skip_switch_to_the_builder():
+    assert create_exporter("html", FakeClient(), skip_existing=True).skip_existing is True
+    assert create_exporter("html", FakeClient()).skip_existing is False

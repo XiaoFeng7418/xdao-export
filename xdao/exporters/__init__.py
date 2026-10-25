@@ -65,6 +65,7 @@ def create_exporter(
     pdf_options=None,
     font_size: int | None = None,
     stop=None,
+    skip_existing: bool | None = None,
 ):
     """按格式键创建导出器实例；未知格式回退到 HTML。
 
@@ -85,6 +86,7 @@ def create_exporter(
         "pdf_options": pdf_options,
         "font_size": font_size,
         "stop": stop,
+        "skip_existing": skip_existing,
     }
     # 只丢掉值为 None 的项：False 是有意义的取值（例如 fallback_html=False）。
     clean = {k: v for k, v in options.items() if v is not None}
