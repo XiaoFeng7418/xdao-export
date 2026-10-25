@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import cov_funcs, fix_tag_object, push_one_commit
+from tools import cov_funcs, fix_tag_object, patch_release_body, push_one_commit, push_tag_via_api
 
 
 def test_parse_ident_turns_a_git_ident_into_the_github_shape() -> None:
@@ -85,3 +85,55 @@ def test_push_one_commit_only_needs_a_clean_worktree() -> None:
     signature = inspect.signature(push_one_commit.main)
 
     assert list(signature.parameters) == []
+
+
+def test_push_tag_via_api_parses_a_git_ident() -> None:
+    out = push_tag_via_api.parse_ident("XiaoFeng7418 <dev@example.com> 1792932594 +0800")
+
+    assert out["name"] == "XiaoFeng7418"
+    assert out["email"] == "dev@example.com"
+    assert out["date"].endswith("+08:00")
+
+
+def test_push_tag_via_api_splits_a_tag_object() -> None:
+    raw = "\n".join(
+        [
+            "object 0123456789abcdef0123456789abcdef01234567",
+            "type commit",
+            "tag v9.9.9",
+            "tagger Someone <a@b> 1700000000 +0000",
+            "",
+            "标题行",
+            "",
+        ]
+    )
+
+    target, tagger, message = push_tag_via_api.split_tag(raw)
+
+    assert target == "0123456789abcdef0123456789abcdef01234567"
+    assert tagger["name"] == "Someone"
+    assert message == "标题行"  # 结尾换行要去掉：GitHub 建对象时就是这样
+
+
+def test_push_tag_via_api_rejects_a_broken_tag_header() -> None:
+    with pytest.raises(ValueError):
+        push_tag_via_api.split_tag("type commit\n\n标题")
+
+
+def test_push_tag_via_api_refuses_to_run_without_a_tag_name() -> None:
+    with pytest.raises(SystemExit) as caught:
+        push_tag_via_api.main([])
+
+    assert "用法" in str(caught.value)
+
+
+def test_patch_release_body_reads_utf8_notes(tmp_path: Path) -> None:
+    notes = tmp_path / "notes.md"
+    notes.write_text("# v9.9.9\n\n这是免安装包。\n", encoding="utf-8")
+
+    assert patch_release_body.read_notes(notes).startswith("# v9.9.9")
+
+
+def test_patch_release_body_reports_a_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        patch_release_body.read_notes(tmp_path / "没有这个文件.md")
