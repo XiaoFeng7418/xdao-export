@@ -681,6 +681,21 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.17.7**（一次性窗口不再自动登录 Edge、不再同步；加一个取证开关）：
+  **一、问题怎么发现的。** 2026-10-25 取证：登录成功后落的「读罐详单」里，整罐 11 块只有 3 块
+  是站点的（`PHPSESSID`、`memberUserspapapa`、`userhash`），另外 8 块是 `.msn.com` / `.msn.cn` /
+  `.bing.com` —— 同时窗口里会弹「正在同步浏览数据」、自动填充里出现云端保存的密码。
+  **二、根因。** `--user-data-dir` 指到全新目录并不会让 Edge 变成「无账号」：本机登录了 Windows
+  账号时，Edge 走**隐式登录**（implicit sign-in）自动登进同一个 Microsoft 账号，再按账号设置同步。
+  **三、修法。** `xdao/browser_login.py::build_args()` 补 `--disable-sync`，并把 `--disable-features`
+  从 `Translate` 扩成 `Translate,msImplicitSignin`（模块常量 `_DISABLE_FEATURES`）。
+  实测对比（一次性探针脚本：各起一扇新窗、等 9 秒、CDP
+  `Network.getAllCookies`）：改前整罐 11 块、微软家族 10 块；改后整罐 1 块、微软家族 0 块。
+  **四、顺带的取证开关。** `xdao/gui.py` 登录线程的成功分支：`os.environ.get("XDAO_LOGIN_DUMP")`
+  为真时，在 `("ok", value)` 入队之前落一份「读罐详单」并写一行 `详单=…`。默认不开、不改行为。
+  **五、用例。** `tests/test_browser_login.py` 两条 `build_args` 用例改成钉新开关
+  （`--disable-sync`、`msImplicitSignin`、`Translate` 都还在；顺序与末尾地址不变）。
+
 - **v0.17.6**（失败时也把对账日志落进运行日志；测试两处稳定化）：
   **一、为什么。** v0.17.5 把候选失败逐条记进 `LoginBrowser.attempt_notes`，但 `xdao/gui.py`
   只在 `browser.start()` 成功之后才把这些行入队；候选全部失败时走 `except` 分支，只弹对话框

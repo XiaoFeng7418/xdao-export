@@ -477,7 +477,12 @@ def test_build_args_has_the_required_flags() -> None:
     assert f"--user-data-dir={Path('profile')}" in args
     assert "--no-first-run" in args
     assert "--no-default-browser-check" in args
-    assert "--disable-features=Translate" in args
+    assert f"--disable-features={bl._DISABLE_FEATURES}" in args
+    # v0.17.7：窗口必须是一次性的干净窗 —— 不许拿本机 Windows 账号登进 Edge，
+    # 也不许同步云端数据（不然自动填充里会出现云端保存的密码）。
+    assert "--disable-sync" in args
+    assert "msImplicitSignin" in " ".join(args)
+    assert "Translate" in " ".join(args)
     assert args[-1] == bl.LOGIN_URL
     # 不留登录态的几项一个都不能出现。
     for forbidden in ("headless", "guest", "incognito"):
@@ -515,7 +520,7 @@ def test_build_args_stays_clean_when_flags_are_empty(monkeypatch: pytest.MonkeyP
     args = bl.build_args(info, Path("p"))
     assert "--no-sandbox" not in args
     assert args[-1] == bl.LOGIN_URL
-    assert args[-2] == "--disable-features=Translate"
+    assert args[-2] == f"--disable-features={bl._DISABLE_FEATURES}"
 
 
 # ---------------------------------------------------------------- 端口文件
