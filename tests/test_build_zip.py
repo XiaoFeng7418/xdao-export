@@ -243,3 +243,32 @@ def test_this_repository_is_ready_to_pack_its_current_version() -> None:
     """
     version = build_zip.read_version(ROOT)
     assert build_zip.check_docs(ROOT, version) == []
+
+
+# ---------------------------------------------------------------------------
+# 排障开关 --pdfdiag：包里得真打进去（v0.19.4 起）
+# ---------------------------------------------------------------------------
+
+
+def test_the_pyinstaller_command_bundles_the_pdf_diagnose_module(tmp_path: Path) -> None:
+    """``--pdfdiag`` 在 main.py 里是延迟导入，PyInstaller 扫不到，必须在命令行点名。
+
+    2026-10-25 实测：v0.19.3 的免安装包里没有 ``tools`` 这个模块，用户敲
+    ``xdao-export.exe --pdfdiag`` 只会拿到 ModuleNotFoundError —— 开关等于不存在。
+    """
+    command = build_zip.pyinstaller_command("python.exe", tmp_path / "v.txt", tmp_path, tmp_path)
+
+    assert "--hidden-import" in command
+    assert command[command.index("--hidden-import") + 1] == "tools.pdf_diag"
+    assert (ROOT / "tools" / "__init__.py").is_file()
+
+
+def test_the_command_line_still_has_the_hidden_pdf_diagnose_switch() -> None:
+    """开关与打包要成对：开关还在，那个模块就必须跟着打进去。"""
+    import argparse
+
+    from main import build_parser
+
+    parser = build_parser()
+    action = next(item for item in parser._actions if "--pdfdiag" in item.option_strings)
+    assert action.help == argparse.SUPPRESS

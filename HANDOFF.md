@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 2317 项（2026-10-25 数出来的一共这么多；本机 Windows 上 2310 通过、7 项跳过）、
+单元测试 2319 项（2026-10-25 数出来的一共这么多；本机 Windows 上 2312 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 154 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -96,7 +96,7 @@ xdao-export/
 │  ├─ test_text_hygiene.py 所有被跟踪的文本文件：BOM 只一个、行尾不混用、不整份翻行尾（7）
 │  ├─ test_repo_check.py   tools/repo_check.py：读不到东西时不许说没问题（13）
 │  ├─ test_make_release.py 发版：附件不在就别建 Release，发完再核一遍；另有三条盯着「取响应体的两个包装函数必须把值交出去」（v0.13.50 补）（31）
-│  ├─ test_build_zip.py   打包脚本：版本信息、.sha256、BOM、条目顺序、文档自检、摆给下载者那一份（23）
+│  ├─ test_build_zip.py   打包脚本：版本信息、.sha256、BOM、条目顺序、文档自检、摆给下载者那一份（25）
 │  ├─ test_push_via_api.py 备用推送：提交对象逐字节重建、--exclude 写错先拦下（46）
 │  ├─ test_sync_from_api.py API 重建远端历史：合并的每条支线、工作区核对（23）
 │  ├─ test_ci_logs.py     取 CI 日志：红的记号、--job 拼错、--grep 没搜到都要说话（37）
