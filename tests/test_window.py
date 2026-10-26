@@ -1005,4 +1005,56 @@ def test_open_folder_asks_for_a_directory_first(app: gui.App, monkeypatch) -> No
 
     assert warnings and warnings[0][0] == "提示"
 
+# ---------------------------------------------------------------------------
+# 队列轮询：导出进度/日志、挑饼干的两条出口（v0.21.2 补）
+# ---------------------------------------------------------------------------
+
+
+def test_poll_export_shows_progress_and_writes_logs(app: gui.App) -> None:
+    """导出线程只往队列里塞消息，界面靠这条循环把它们落到进度条与日志上。
+
+    钉它是因为：日志丢一条，用户就看不到「哪一步卡住了」，而这条链路
+    中间隔着队列，平时跑界面很难察觉少了一行。
+    """
+    app._exporting = True  # noqa: SLF001
+    app._export_queue.put(("progress", (3, 10, "正在抓第 4 页")))  # noqa: SLF001
+    app._export_queue.put(("log", "这一行应该出现在日志里"))  # noqa: SLF001
+    try:
+        app._poll_export()  # noqa: SLF001
+        app.root.update_idletasks()
+        assert "正在抓第 4 页（3/10）" == app.progress_var.get()
+        assert "这一行应该出现在日志里" in app.log_text.get("1.0", "end-1c")
+    finally:
+        app._exporting = False  # noqa: SLF001
+        while not app._export_queue.empty():  # noqa: SLF001
+            app._export_queue.get_nowait()  # noqa: SLF001
+
+
+def test_poll_cookies_says_when_the_first_page_has_nothing_to_pick(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, body, **kw: shown.append((title, body))
+    )
+    app._cookie_queue.put(("ok", []))  # noqa: SLF001
+
+    app._poll_cookies()  # noqa: SLF001
+
+    assert shown == [("提示", "第一页里没有可选的饼干。")]
+    assert str(app.pick_cookie_button.cget("state")) == "normal"
+
+
+def test_poll_cookies_shows_why_reading_failed(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, body, **kw: shown.append((title, body))
+    )
+    app._cookie_queue.put(("fail", "网络断了"))  # noqa: SLF001
+
+    app._poll_cookies()  # noqa: SLF001
+
+    assert shown == [("读取失败", "网络断了")]
 

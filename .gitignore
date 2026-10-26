@@ -34,3 +34,8 @@ pytest-cache-files-*/
 /xdao-pdfdiag-*/
 /pdfdiag-*/
 xdao-export-v*-win64.zip*
+
+# 覆盖率体检的中间产物（tools/cov_audit.py 用）
+.coverage
+.coverage.*
+
