@@ -681,6 +681,20 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.1**：修 Python 3.10 编译不过（f-string 表达式里带反斜杠）。
+
+  1. **症状**：CI 的 ubuntu-latest / py3.10 作业在「语法检查（全部源码必须能编译）」
+     这一步就红，`*** Error compiling 'xdao/exporters/html.py'` +
+     `SyntaxError: f-string expression part cannot include a backslash`。3.12 的
+     打包版与本地测试都看不出来（PEP 701 才放开这个限制）。
+  2. **修法**：`build_many()` 里把 `f'{"\n".join(rows)}'` 拆成
+     `joined = "\n".join(rows)` + `f"{joined}"`，输出逐字节不变。
+  3. **守卫**：新增 `tests/test_py310_syntax.py`（4 条）：用 `ast` 扫全仓源码，
+     f-string 的表达式部分出现反斜杠或跨行就报红，普通 f-string 放行。
+  4. **教训**：CI 的 3.10 语法检查不是摆设，之前几个版本的 tests 作业其实一直是红的——
+     发版时只看 build 作业会漏。发完版要三条 workflow 都看（用 `tools/ci_logs.py`）。
+  5. 收集 2443、本机 2436 通过、7 跳过。
+
 - **v0.21.0**：多串合并导出成一个文件（可选，默认关闭）。
 
   1. **底座**：`xdao/exporters/base.py` 加类属性 `supports_merge = False`（默认不支持，

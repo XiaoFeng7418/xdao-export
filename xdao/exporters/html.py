@@ -432,13 +432,14 @@ class HtmlBuilder(Exporter):
                     f'<div class="content">{body}</div>'
                     "</article>"
                 )
+            joined = "\n".join(rows)
             sections.append(
                 f'<section class="thread" id="t{thread.thread_id}">'
                 f'<h2 class="thread-title">{index}. {html_lib.escape(heading)}</h2>'
                 f'<div class="sub">串号 No.{thread.thread_id} · 共 {len(rows)} 楼 · '
                 f'{html_lib.escape(scope_label)} · PO 饼干 '
                 f'{html_lib.escape(thread.po_hash or "未知")}</div>'
-                f'{"\n".join(rows)}'
+                f"{joined}"
                 "</section>"
             )
 
