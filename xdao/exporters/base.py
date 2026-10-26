@@ -38,6 +38,9 @@ class Exporter:
     save_message = ""
     #: 文本产物是否强制用 ``\n`` 写盘（Windows 上 ``write_text`` 会写成 CRLF）
     lf_newlines = False
+    #: 能不能把多个串合并成一个文件（v0.21.0）。默认不行——合并会改变「一个串一份
+    #: 文件」这套既有约定，只有显式实现了 ``build_many()`` 的格式才把它打开。
+    supports_merge = False
 
     def __init__(
         self,
@@ -97,6 +100,19 @@ class Exporter:
         """产物路径：目录 + 安全化的文件名主体 + :attr:`suffix`。"""
         return Path(output_dir) / (sanitize_filename(self.output_name(thread)) + self.suffix)
 
+    def merged_name(self, threads: list[ThreadData]) -> str:
+        """合并产物的文件名主体：第一个串的名字 + 「等 N 个串」。"""
+        if not threads:
+            return "合并导出"
+        first = derive_filename(threads[0])
+        if len(threads) == 1:
+            return first
+        return f"{first} 等 {len(threads)} 个串"
+
+    def merged_path(self, threads: list[ThreadData], output_dir: Path | str) -> Path:
+        """合并产物的路径：与单串产物同一个目录，文件名带「等 N 个串」。"""
+        return Path(output_dir) / (sanitize_filename(self.merged_name(threads)) + self.suffix)
+
     # ---------- 子类实现 ----------
 
     def prepare_output(self, path: Path) -> None:
@@ -110,6 +126,15 @@ class Exporter:
     ):
         """产出内容（文本导出器返回字符串）。子类必须实现。"""
         raise NotImplementedError(f"{type(self).__name__} 没有实现 build()")
+
+    def build_many(
+        self,
+        threads: list[ThreadData],
+        scope: str = "all",
+        include_hashes: list[str] | None = None,
+    ) -> str:
+        """把多个串渲染进同一份内容。支持合并的导出器必须实现。"""
+        raise NotImplementedError(f"{type(self).__name__} 不支持合并导出")
 
     # ---------- 模板方法 ----------
 
@@ -143,6 +168,30 @@ class Exporter:
         content = self.build(thread, scope, include_hashes)
         # 内容都做好了才检查取消：真的被取消就不落盘，免得留下一份半成品
         # 混在导出目录里（用户取消之后不会再去核对哪几份是完整的）。
+        self.check_cancel()
+        self.write_text(path, content)
+        return path
+
+    def save_many(
+        self,
+        threads: list[ThreadData],
+        scope: str = "all",
+        output_dir: Path | str = ".",
+        include_hashes: list[str] | None = None,
+    ) -> Path:
+        """把多个串存进同一份文件（v0.21.0）。
+
+        与 :meth:`save` 同一套骨架：先探目录、再定路径、生成内容、最后才落盘。
+        只有 ``supports_merge`` 为真的导出器才会被调用到这里。
+        """
+        output_dir = ensure_writable(output_dir)
+        path = self.merged_path(threads, output_dir)
+        if self.skip_existing and path.exists() and path.stat().st_size > 0:
+            return self.reuse_existing(path)
+        if self.save_message:
+            self._notify(self.save_message)
+        self.prepare_output(path)
+        content = self.build_many(threads, scope, include_hashes)
         self.check_cancel()
         self.write_text(path, content)
         return path

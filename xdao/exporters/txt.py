@@ -14,6 +14,8 @@ class TxtBuilder(Exporter):
     """生成便于阅读和检索的纯文本。"""
 
     key = "txt"
+    #: 合并导出：多个串共用一个 .txt，中间用更粗的分隔线。
+    supports_merge = True
     display = "TXT（纯文本）"
     suffix = ".txt"
     # 进度提示放在 build 里（「正在生成 TXT 文件…」），保存阶段不再重复一句。
@@ -70,3 +72,14 @@ class TxtBuilder(Exporter):
             lines.append("")
 
         return "\n".join(lines)
+
+    def build_many(
+        self,
+        threads: list[ThreadData],
+        scope: str = "all",
+        include_hashes: list[str] | None = None,
+    ) -> str:
+        """多个串拼一份：每串仍用 :meth:`build` 生成，之间加一条粗分隔线。"""
+        self._notify(f"正在生成合并 TXT（{len(threads)} 个串）…")
+        blocks = [self.build(thread, scope, include_hashes) for thread in threads]
+        return ("\n\n" + "=" * 72 + "\n\n").join(blocks)

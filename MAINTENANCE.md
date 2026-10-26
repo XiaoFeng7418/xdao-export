@@ -681,6 +681,26 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.0**：多串合并导出成一个文件（可选，默认关闭）。
+
+  1. **底座**：`xdao/exporters/base.py` 加类属性 `supports_merge = False`（默认不支持，
+     避免任何格式被动改变「一个串一份文件」的约定）、`merged_name()/merged_path()`
+     （名字带「等 N 个串」）、`build_many()` 默认抛 `NotImplementedError`，以及模板方法
+     `save_many()`：`ensure_writable` → `merged_path` → `skip_existing` 命中则
+     `reuse_existing` → `prepare_output` → `build_many` → `check_cancel` → `write_text`。
+  2. **HTML**（`html.py`）：把 `build()` 里的整段 CSS 抽成模块级 `_style_block(body_px)`，
+     单串与合并共用同一份（所以单串输出逐字节不变）；新增 `build_many()`，每串一节
+     `<section class="thread">`，标题区写「第一个串标题 等 N 个串」。
+  3. **TXT / Markdown**：`build_many()` 分别用分隔线 `========…` 与 `\n\n---\n\n` 拼接。
+  4. **PDF**（`pdf.py`）：`save_many()` 用 `self._html.build_many(...)` 生成合并 HTML，
+     `render_pdf()` 只被调用一次；失败且允许回退时改存 `.html`，与单串同口径。
+  5. **设置与入口**：`settings.merge_export = False`；命令行 `--merge`；界面设置对话框
+     新增勾选框。不支持合并的格式（EPUB）会给一句提示并降级为一个串一份。
+  6. 用例：`test_exporters.py` +8、`test_settings.py` +12、`test_cli.py` +4、
+     `test_gui_entry.py` +5；收集 2439、本机 2432 通过、7 跳过。
+  7. **坑**：`_FakeApp` 的 `root.after` 是空实现，导出线程塞进 `_export_queue` 的日志
+     不会自己进 `app.logs`——断言队列日志要先手动 drain。
+
 - **v0.20.0**：Markdown 也能把图片存到同名目录；清单文件一次读进一批串。
 
   1. **Markdown 的 `folder` 模式**（`xdao/exporters/markdown.py`）：`IMAGE_MODES`

@@ -2851,6 +2851,16 @@ class SettingsDialog(tk.Toplevel):
             variable=self.skip_existing_var,
         ).pack(side="left")
 
+        # 合并导出：默认关闭 —— 不勾就是一个串一份文件（与旧版一致）。
+        self.merge_export_var = tk.BooleanVar(value=settings.merge_export)
+        merge_row = ttk.Frame(export_card.body, style="Card.TFrame")
+        merge_row.pack(fill="x", pady=(theme.gap(1), 0))
+        ttk.Checkbutton(
+            merge_row,
+            text="把这次导出的串合并成一个文件（HTML / TXT / Markdown / PDF）",
+            variable=self.merge_export_var,
+        ).pack(side="left")
+
         # ④ PDF 页面：默认「跟随网页样式」，导出效果与浏览器打印完全一致 ——
         # 老配置（没有这几个键）升级后行为不变，靠的就是这个默认值。
         pdf_row = ttk.Frame(export, style="Card.TFrame")
@@ -2990,6 +3000,7 @@ class SettingsDialog(tk.Toplevel):
         if EXPORT_FONT_SIZE_MIN <= wanted <= EXPORT_FONT_SIZE_MAX:
             settings.export_font_size = wanted
         settings.skip_existing = bool(self.skip_existing_var.get())
+        settings.merge_export = bool(self.merge_export_var.get())
         # PDF 页面：写回的都是 pdf_opts 认得的取值键；坏值保留原值（不把好设置抹掉）。
         settings.pdf_paper = _choice_key(
             pdf_opts.PAPER_LABELS, self._paper_keys, self.pdf_paper_var.get()
@@ -5482,6 +5493,8 @@ class App:
         if self.settings.skip_existing:
             # 开着的时候说一句：不然用户看到「成功 8 / 8」会以为全都重新导了一遍。
             self.log("已存在就跳过：同名成品非空时不重做。")
+        if self.settings.merge_export:
+            self.log("合并导出：这次导出的串写进同一份文件。")
         self._log_image_mode_note()
         if self.current_format() == "pdf":
             # 只在真的改过纸张/边距/背景/页码时说一声，全默认不必占一行。
@@ -5494,6 +5507,7 @@ class App:
             format_key = self.current_format()
             include_hashes = self.parse_hashes()
             template = self.settings.filename_template or None
+            merge_export = bool(self.settings.merge_export)
             use_cache = bool(self.use_cache_var.get())
             cache_dir = self.current_cache_dir()
             # 图片缓存跟着导出目录走，重复导出同一串时不再下载图片。
@@ -5518,6 +5532,16 @@ class App:
                 stop=stop_event,
                 skip_existing=self.settings.skip_existing,
             )
+            if merge_export and not getattr(exporter, "supports_merge", False):
+                # 勾了合并却选了不支持的格式：说一声再按一串一份走。
+                self._export_queue.put(
+                    (
+                        "log",
+                        f"提示：{format_key} 不支持合并导出，仍按一个串一份文件保存。",
+                    )
+                )
+                merge_export = False
+            merged_threads: list[ThreadData] = []
 
             succeeded = 0
             failed: list[str] = []
@@ -5569,6 +5593,13 @@ class App:
                                 f"[{index}/{len(urls)}] 提示：{result.cache_warning}",
                             )
                         )
+                    if merge_export:
+                        merged_threads.append(thread)
+                        succeeded += 1
+                        self._export_queue.put(
+                            ("log", f"[{index}/{len(urls)}] 已收进合并文件")
+                        )
+                        continue
                     path = exporter.save(
                         thread, scope, Path(output_dir), include_hashes=include_hashes
                     )
@@ -5589,6 +5620,24 @@ class App:
                     self._export_queue.put(
                         ("log", f"[{index}/{len(urls)}] 失败：{describe_export_failure(exc)}")
                     )
+
+            if merge_export and merged_threads:
+                try:
+                    merged_path = exporter.save_many(
+                        merged_threads,
+                        scope,
+                        Path(output_dir),
+                        include_hashes=include_hashes,
+                    )
+                    self._export_queue.put(
+                        ("log", f"合并完成：{merged_path.name}")
+                    )
+                except ExportCancelled:
+                    cancelled = True
+                    self._export_queue.put(("log", "已取消：合并文件没有生成"))
+                except XdaoError as exc:
+                    failed.extend(getattr(t, "thread_id", "") for t in merged_threads)
+                    self._export_queue.put(("log", f"合并失败：{exc}"))
 
             self._export_queue.put(
                 ("done", (succeeded, len(urls), failed, time.time() - started, incomplete, cancelled))
