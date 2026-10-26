@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -1462,3 +1463,240 @@ def test_start_watching_refuses_without_an_output_directory(
     assert warned == [("提示", "请先选择导出目录。")]
     assert app._watching is False  # noqa: SLF001
 
+# ---------- 监控成功路径（v0.21.5）----------
+#
+# 这一组专门走「真的开始监控」这条路：以前只有两条「拦下」的用例，成功路径
+# 一行都没跑过 —— 而它一旦坏了，表现是监控按钮点了没反应、状态永远显示空闲，
+# 或者点了停止但线程不死。所以这里把 watch_forever 换成可观察的替身，
+# 检查参数透传、状态收口（哨兵消息）与各类结果消息怎么进日志。
+
+
+def _drain_watch(app: gui.App, rounds: int = 40) -> None:
+    """把监控队列里的消息全部取走（主窗口不进事件循环，after 不会自己跑）。"""
+    for _ in range(rounds):
+        app._poll_watch()  # noqa: SLF001
+        if app.watch_queue.empty() and not app._watching:  # noqa: SLF001
+            return
+        time.sleep(0.05)
+
+
+def test_start_watching_runs_the_loop_and_reports_results(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from xdao.watcher import WatchResult, WatchTarget
+
+    target = WatchTarget("50000001")
+    app.watch_targets = [target]  # noqa: SLF001
+    app.output_var.set(str(tmp_path))  # noqa: SLF001
+    app.notify_var.set(False)  # noqa: SLF001
+
+    done = threading.Event()
+    seen: dict[str, object] = {}
+
+    def fake_loop(client, targets, output_dir, interval, **kwargs):  # noqa: ANN001, ANN003
+        seen.update(
+            targets=list(targets),
+            output_dir=Path(output_dir),
+            interval=interval,
+            verify_cached=kwargs.get("verify_cached"),
+            notifier=kwargs.get("notifier"),
+        )
+        kwargs["on_result"](
+            WatchResult(
+                target=target,
+                changed=True,
+                new_posts=4,
+                edited_posts=0,
+                total_posts=12,
+                exported=tmp_path / "50000001.html",
+                first_run=True,
+                reason="第一次导出",
+                error="",
+            )
+        )
+        done.set()
+
+    monkeypatch.setattr(gui, "watch_forever", fake_loop)
+
+    app.start_watching(45.0, verify_cached=True)
+    assert done.wait(5.0)
+    _drain_watch(app)
+
+    assert seen["targets"] == [target]
+    assert seen["output_dir"] == tmp_path
+    assert seen["interval"] == 45.0
+    assert seen["verify_cached"] is True
+    assert seen["notifier"] is None
+
+    text = app.log_text.get("1.0", "end-1c")  # noqa: SLF001
+    assert "监控已启动：每 45 秒检查 1 个串。" in text
+    assert "监控 No.50000001：首次导出 → 50000001.html" in text
+    # 线程自己上报哨兵后，状态必须落回 False（不能留假的「监控中」）。
+    assert app._watching is False  # noqa: SLF001
+
+
+def test_stop_watching_asks_the_loop_to_end_and_clears_the_flags(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from xdao.watcher import WatchTarget
+
+    target = WatchTarget("50000001")
+    app.watch_targets = [target]  # noqa: SLF001
+    app.output_var.set(str(tmp_path))  # noqa: SLF001
+    app.notify_var.set(False)  # noqa: SLF001
+
+    started = threading.Event()
+    released = threading.Event()
+    outcome: dict[str, bool] = {}
+
+    def fake_loop(client, targets, output_dir, interval, **kwargs):  # noqa: ANN001, ANN003
+        stop_event = kwargs["stop_event"]
+        started.set()
+        outcome["stopped"] = stop_event.wait(5.0)
+
+    monkeypatch.setattr(gui, "watch_forever", fake_loop)
+
+    app.start_watching(30.0)
+    assert started.wait(5.0)
+    assert app._watching is True  # noqa: SLF001
+
+    app.stop_watching()
+
+    assert app._watching is False  # noqa: SLF001
+    assert app._watch_stop is None  # noqa: SLF001
+    _drain_watch(app)
+    assert outcome["stopped"] is True
+    assert "已请求停止监控。" in app.log_text.get("1.0", "end-1c")  # noqa: SLF001
+
+
+def test_poll_watch_writes_every_kind_of_result(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from xdao.watcher import WatchResult, WatchTarget
+
+    target = WatchTarget("50000001")
+    app.watch_queue.put("监控已启动，每 30 秒检查一次（1 个串）。")  # noqa: SLF001
+    app.watch_queue.put(  # noqa: SLF001
+        WatchResult(
+            target=target,
+            changed=False,
+            new_posts=0,
+            edited_posts=0,
+            total_posts=0,
+            exported=None,
+            first_run=False,
+            reason="",
+            error="网络错误",
+        )
+    )
+    app.watch_queue.put(  # noqa: SLF001
+        WatchResult(
+            target=target,
+            changed=True,
+            new_posts=2,
+            edited_posts=0,
+            total_posts=14,
+            exported=tmp_path / "50000001.html",
+            first_run=False,
+            reason="新增 2 楼",
+            error="",
+        )
+    )
+    app.watch_queue.put(  # noqa: SLF001
+        WatchResult(
+            target=target,
+            changed=False,
+            new_posts=0,
+            edited_posts=0,
+            total_posts=14,
+            exported=None,
+            first_run=False,
+            reason="没有新楼",
+            error="",
+        )
+    )
+    monkeypatch.setattr(gui, "notify_result", lambda notifier, item: True)
+
+    app._poll_watch()  # noqa: SLF001
+
+    text = app.log_text.get("1.0", "end-1c")  # noqa: SLF001
+    assert "监控已启动，每 30 秒检查一次（1 个串）。" in text
+    assert "监控 No.50000001：出错 网络错误" in text
+    assert "监控 No.50000001：新增 2 楼 → 50000001.html" in text
+    assert "监控 No.50000001：没有新楼" in text
+    assert text.count("↳ 已弹桌面通知（No.50000001）") == 3
+    assert app.watch_queue.empty()  # noqa: SLF001
+
+# ---------- 保存日志（v0.21.5）----------
+
+
+def _clear_log(app: gui.App) -> None:
+    """把日志框清空。
+
+    直接 ``delete`` 不行：日志框是只读的（state=disabled），删除会被 Tk 静默忽略，
+    于是 ``save_log`` 以为还有内容、弹出真正的「保存日志」对话框 —— 无头环境下
+    那个模态框会一直等下去（2026-10-27 实测把整轮 pytest 挂死）。
+    """
+    app.log_text.config(state="normal")  # noqa: SLF001
+    app.log_text.delete("1.0", "end")  # noqa: SLF001
+    app.log_text.config(state="disabled")  # noqa: SLF001
+
+
+def test_save_log_says_there_is_nothing_to_save(app: gui.App, monkeypatch: pytest.MonkeyPatch) -> None:
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, body, **kw: said.append((title, body)))
+    opened: list[dict] = []
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **kw: opened.append(kw) or "")
+    _clear_log(app)
+
+    app.save_log()
+
+    assert said == [("提示", "日志是空的。")]
+    assert opened == []
+
+
+def test_save_log_does_nothing_when_the_user_cancels(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app.log("一行日志")
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **kw: "")
+    written: list[Path] = []
+    monkeypatch.setattr(
+        gui.Path, "write_text", lambda self, *a, **kw: written.append(self)
+    )
+
+    app.save_log()
+
+    assert written == []
+
+
+def test_save_log_writes_the_log_and_says_where(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app.log("要留下来的那行")
+    target = tmp_path / "xdao-export.log"
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **kw: str(target))
+
+    app.save_log()
+
+    assert target.read_text(encoding="utf-8").strip().endswith("要留下来的那行")
+    assert f"日志已保存：{target}" in app.log_text.get("1.0", "end-1c")  # noqa: SLF001
+
+
+def test_save_log_reports_a_failure_instead_of_pretending(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app.log("随便一行")
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **kw: str(tmp_path / "x.log"))
+    wrong: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, body, **kw: wrong.append((title, body)))
+
+    def refuse(self, *args, **kwargs):  # noqa: ANN001, ANN003
+        raise OSError("磁盘满了")
+
+    monkeypatch.setattr(gui.Path, "write_text", refuse)
+
+    app.save_log()
+
+    assert wrong and wrong[0][0] == "保存失败"
+    assert "磁盘满了" in wrong[0][1]
