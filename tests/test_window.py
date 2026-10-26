@@ -1058,3 +1058,187 @@ def test_poll_cookies_shows_why_reading_failed(
 
     assert shown == [("读取失败", "网络断了")]
 
+# ---------------------------------------------------------------------------
+# 登录对话框的两条轮询：验证码加载（_poll_form）与账号密码登录（_poll_login）
+# ---------------------------------------------------------------------------
+
+
+class _FakeForm:
+    """`client.fetch_login_form()` 的返回值里，对话框只用到这两样。"""
+
+    def __init__(self, captcha_bytes: bytes = b"", hash_value: str = "abc123") -> None:
+        self.captcha_bytes = captcha_bytes
+        self.hash_value = hash_value
+
+
+_GIF_1X1 = (
+    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!"
+    b"\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01"
+    b"\x00\x00\x02\x02D\x01\x00;"
+)
+
+
+def _login_dialog(root_window: tk.Tk) -> gui.LoginDialog:
+    """开一个登录对话框：client 用空壳（这些用例只手动喂队列，不真的联网）。"""
+    return gui.LoginDialog(root_window, object())  # type: ignore[arg-type]
+
+
+def test_login_dialog_puts_the_captcha_on_the_button(root_window: tk.Tk) -> None:
+    dialog = _login_dialog(root_window)
+    try:
+        dialog._result_queue.put(("form", _FakeForm(_GIF_1X1)))  # noqa: SLF001
+        dialog._poll_form()  # noqa: SLF001
+
+        assert str(dialog.captcha_button.cget("state")) == "normal"
+        assert dialog._captcha_image is not None  # noqa: SLF001
+        assert dialog._busy is False  # noqa: SLF001
+    finally:
+        dialog.destroy()
+
+
+def test_login_dialog_falls_back_to_a_refresh_button_for_a_broken_captcha(
+    root_window: tk.Tk,
+) -> None:
+    """验证码图坏了不能把按钮永远卡在「加载中…」上，得让人点一下重试。"""
+    dialog = _login_dialog(root_window)
+    try:
+        dialog._result_queue.put(("form", _FakeForm(b"not an image")))  # noqa: SLF001
+        dialog._poll_form()  # noqa: SLF001
+
+        assert str(dialog.captcha_button.cget("state")) == "normal"
+        assert str(dialog.captcha_button.cget("text")) == "刷新"
+    finally:
+        dialog.destroy()
+
+
+def test_login_dialog_reports_why_the_captcha_did_not_load(
+    root_window: tk.Tk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, body, **kw: shown.append((title, body))
+    )
+    dialog = _login_dialog(root_window)
+    try:
+        dialog._result_queue.put(("form_error", "网络断了"))  # noqa: SLF001
+        dialog._poll_form()  # noqa: SLF001
+
+        assert shown == [("加载验证码失败", "网络断了")]
+        assert str(dialog.captcha_button.cget("text")) == "刷新"
+    finally:
+        dialog.destroy()
+
+
+def test_login_dialog_demands_all_three_fields(
+    root_window: tk.Tk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, body, **kw: warned.append((title, body))
+    )
+    dialog = _login_dialog(root_window)
+    try:
+        dialog.email_var.set("a@b.c")  # noqa: SLF001
+        dialog.password_var.set("")  # noqa: SLF001
+        dialog.verify_var.set("1234")  # noqa: SLF001
+
+        dialog._do_login()  # noqa: SLF001
+
+        assert warned == [("提示", "请填写账号、密码和验证码。")]
+    finally:
+        dialog.destroy()
+
+
+def test_login_dialog_waits_until_the_captcha_is_loaded(
+    root_window: tk.Tk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, body, **kw: warned.append((title, body))
+    )
+    dialog = _login_dialog(root_window)
+    try:
+        dialog.email_var.set("a@b.c")  # noqa: SLF001
+        dialog.password_var.set("pw")  # noqa: SLF001
+        dialog.verify_var.set("1234")  # noqa: SLF001
+        dialog.form = None  # noqa: SLF001
+
+        dialog._do_login()  # noqa: SLF001
+
+        assert warned == [("提示", "验证码还没加载完成，请稍候。")]
+    finally:
+        dialog.destroy()
+
+
+def test_login_dialog_takes_the_userhash_and_closes(root_window: tk.Tk) -> None:
+    dialog = _login_dialog(root_window)
+    dialog._busy = True  # noqa: SLF001
+    dialog._result_queue.put(("ok", "hash-abc"))  # noqa: SLF001
+
+    dialog._poll_login()  # noqa: SLF001
+
+    assert dialog.userhash == "hash-abc"
+    assert not dialog.winfo_exists()
+
+
+def test_login_dialog_explains_a_failed_login_and_refreshes_the_captcha(
+    root_window: tk.Tk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[tuple[str, str]] = []
+    refreshed: list[int] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, body, **kw: shown.append((title, body))
+    )
+    dialog = _login_dialog(root_window)
+    try:
+        monkeypatch.setattr(dialog, "_refresh_captcha", lambda: refreshed.append(1))
+        dialog._busy = True  # noqa: SLF001
+        dialog._result_queue.put(("fail", "密码错了"))  # noqa: SLF001
+
+        dialog._poll_login()  # noqa: SLF001
+
+        assert len(shown) == 1
+        assert "密码错了" in shown[0][1]
+        assert refreshed == [1]
+        assert str(dialog.login_button.cget("text")) == "登录"
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+def test_login_dialog_keeps_waiting_while_the_captcha_is_on_its_way(
+    root_window: tk.Tk,
+) -> None:
+    """队列还空着且仍在忙：不该结束轮询，而要再排一次。
+
+    这条分支如果被删掉，界面就永远停在「加载中…」——后台线程还在跑，
+    却再也没人来收它的结果。
+    """
+    dialog = _login_dialog(root_window)
+    scheduled: list[tuple[int, object]] = []
+    try:
+        dialog._busy = True  # noqa: SLF001
+        dialog.after = lambda delay, func=None: scheduled.append((delay, func))  # type: ignore[method-assign]  # noqa: SLF001
+
+        dialog._poll_form()  # noqa: SLF001
+
+        assert scheduled and scheduled[0][0] == 50
+        assert dialog._busy is True  # noqa: SLF001
+    finally:
+        dialog.destroy()
+
+
+def test_login_dialog_keeps_waiting_while_the_login_is_on_its_way(
+    root_window: tk.Tk,
+) -> None:
+    dialog = _login_dialog(root_window)
+    scheduled: list[tuple[int, object]] = []
+    try:
+        dialog._busy = True  # noqa: SLF001
+        dialog.after = lambda delay, func=None: scheduled.append((delay, func))  # type: ignore[method-assign]  # noqa: SLF001
+
+        dialog._poll_login()  # noqa: SLF001
+
+        assert scheduled and scheduled[0][0] == 50
+    finally:
+        dialog.destroy()
+
