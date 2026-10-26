@@ -2914,3 +2914,125 @@ def test_load_thread_list_does_nothing_when_the_dialog_is_cancelled(
     live_app.load_thread_list()
 
     assert live_app.urls_text.get("1.0", "end-1c").strip() == ""
+
+# ---------------------------------------------------------------------------
+# 合并导出（v0.21.0）：默认一个串一份文件，勾了才合并
+# ---------------------------------------------------------------------------
+
+
+def _drain_logs(app) -> list[str]:
+    """把导出线程塞进队列的日志取出来（假窗口的 ``after`` 不会自己轮询）。"""
+    lines: list[str] = []
+    while not app._export_queue.empty():
+        kind, payload = app._export_queue.get_nowait()
+        if kind == "log":
+            lines.append(payload)
+    return lines
+
+
+class _MergeExporter:
+    """记录 save / save_many 各被叫了几次。"""
+
+    supports_merge = True
+
+    def __init__(self) -> None:
+        self.saved: list[object] = []
+        self.merged: list[int] = []
+
+    def save(self, thread, scope, path, include_hashes=False):
+        self.saved.append(thread)
+        return Path(path) / "结果.html"
+
+    def save_many(self, threads, scope, path, include_hashes=None):
+        self.merged.append(len(threads))
+        return Path(path) / "合并.html"
+
+
+def test_settings_dialog_starts_from_the_saved_merge_flag(dialog_root, artifacts_dir):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.merge_export = True
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        assert dialog.merge_export_var.get() is True
+    finally:
+        _close(dialog)
+
+
+def test_settings_dialog_saves_the_merge_flag(dialog_root, artifacts_dir):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        assert dialog.merge_export_var.get() is False  # 默认关
+        dialog.merge_export_var.set(True)
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.merge_export is True
+
+
+def test_gui_export_merges_when_the_setting_is_on(artifacts_dir, monkeypatch):
+    _patch_gui_export(monkeypatch)
+    exporter = _MergeExporter()
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: exporter)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+    settings.merge_export = True
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(
+        app,
+        [
+            "https://www.nmbxd1.com/t/50000001",
+            "https://www.nmbxd1.com/t/7001002",
+        ],
+    )
+
+    assert exporter.merged == [2]
+    assert exporter.saved == []
+    assert any("合并完成" in line for line in _drain_logs(app))
+    assert any("合并导出：这次导出的串写进同一份文件" in line for line in app.logs)
+
+
+def test_gui_export_keeps_one_file_per_thread_when_merge_is_off(artifacts_dir, monkeypatch):
+    _patch_gui_export(monkeypatch)
+    exporter = _MergeExporter()
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: exporter)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(
+        app,
+        [
+            "https://www.nmbd1.com/t/50000001",
+            "https://www.nmbd1.com/t/7001002",
+        ],
+    )
+
+    assert exporter.merged == []
+    assert len(exporter.saved) == 2
+    assert not any("合并导出" in line for line in app.logs)
+
+
+def test_gui_export_says_why_a_format_cannot_merge(artifacts_dir, monkeypatch):
+    _patch_gui_export(monkeypatch)
+
+    class _PlainExporter:
+        supports_merge = False
+
+        def save(self, thread, scope, path, include_hashes=False):
+            return Path(path) / "一份.epub"
+
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: _PlainExporter())
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+    settings.merge_export = True
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert any("不支持合并导出" in line for line in _drain_logs(app))
+

@@ -438,6 +438,8 @@ class PdfBuilder(Exporter):
     """把串导出为 PDF。"""
 
     key = "pdf"
+    #: 合并导出：多个串先拼成一份 HTML，再交给浏览器渲染成一个 PDF。
+    supports_merge = True
     display = "PDF（浏览器渲染）"
     suffix = ".pdf"
     save_message = "正在整理 HTML…"
@@ -496,6 +498,39 @@ class PdfBuilder(Exporter):
         output_pdf = Path(output_pdf)
         html = self._html.build(thread, scope, include_hashes)
         return self.render_pdf(html, output_pdf.parent, output_pdf)
+
+    def save_many(
+        self,
+        threads: list[ThreadData],
+        scope: str = "all",
+        output_dir: Path | str = ".",
+        include_hashes: list[str] | None = None,
+    ) -> Path:
+        """多个串合并成一个 PDF（v0.21.0）：拼一份 HTML 再一次渲染。
+
+        失败时与单串一样可退而存 HTML（``fallback_html`` 打开时），
+        因为用户自己还能按 Ctrl+P 补出来。
+        """
+        output_dir = ensure_writable(output_dir)
+        path = self.merged_path(threads, output_dir)
+        if self.skip_existing and path.exists() and path.stat().st_size > 0:
+            return self.reuse_existing(path)
+        self._notify(self.save_message)
+        html = self._html.build_many(threads, scope, include_hashes)
+        try:
+            return self.render_pdf(html, output_dir, path)
+        except PdfError:
+            if not self.fallback_html:
+                raise
+            self._notify("PDF 渲染失败，改为保存 HTML（可在浏览器里打印成 PDF）…")
+            html_path = path.with_suffix(".html")
+            html_path.write_text(html, encoding="utf-8")
+            self.fallback_note = (
+                f"PDF 渲染失败，已改存 {html_path.name}；"
+                "在浏览器里打开它，按 Ctrl+P 选「另存为 PDF」即可得到同样的结果。"
+            )
+            self._notify(self.fallback_note)
+            return html_path
 
     def save(
         self,

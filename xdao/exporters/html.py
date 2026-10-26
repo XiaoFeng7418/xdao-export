@@ -55,6 +55,44 @@ def _image_mode(value, fallback: str = "embed") -> str:
     return mode if mode in IMAGE_MODES else fallback
 
 
+def _style_block(body_px: int) -> str:
+    """整份 CSS（不含 ``<style>`` 标签）：字号都从正文磅数等比换算。
+
+    抽出来给 :meth:`HtmlBuilder.build` 与 :meth:`HtmlBuilder.build_many` 共用 ——
+    单串导出的 HTML 必须与旧版逐字节一致，所以这里只搬字符串、不改内容。
+    """
+    h1_px = _font_px(body_px, 18)
+    sub_px = _font_px(body_px, 12)
+    meta_px = _font_px(body_px, 11)
+    print_px = _font_px(body_px, 13)
+    return f"""  :root {{ --po: #d97706; --po-bg: #fff7ed; --line: #e2e8f0; --text: #1f2430; --muted: #667085; }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; background: #f4f6fa; color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; line-height: 1.35; }}
+  .wrap {{ max-width: 920px; margin: 0 auto; padding: 16px 14px 24px; }}
+  h1 {{ font-size: {h1_px}px; margin: 0 0 4px; word-break: break-word; }}
+  .sub {{ color: var(--muted); font-size: {sub_px}px; margin-bottom: 12px; }}
+  article.post {{ background: #fff; border: 1px solid var(--line); border-left: 4px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; margin: 5px 0; }}
+  article.post.po {{ border-left-color: var(--po); background: var(--po-bg); }}
+  .meta {{ display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: {meta_px}px; color: var(--muted); }}
+  .floor {{ color: #cbd5e1; font-family: Consolas, monospace; }}
+  .cookie {{ font-weight: 700; color: #15803d; font-family: Consolas, monospace; }}
+  .aname {{ font-weight: 600; color: #334155; }}
+  .badge-po {{ background: var(--po); color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
+  .badge-admin {{ background: #b91c1c; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
+  .badge-sage {{ background: #6366f1; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
+  .ptitle {{ font-weight: 600; color: #334155; }}
+  .time, .no {{ color: #94a3b8; }}
+  .content {{ margin-top: 3px; font-size: {body_px}px; word-break: break-word; white-space: normal; }}
+  .content br {{ display: block; content: ""; margin: 1px 0; }}
+  .post-img {{ max-width: 100%; height: auto; display: block; margin: 5px 0 0; border-radius: 4px; }}
+  @media print {{
+    body {{ background: #fff; }}
+    .wrap {{ max-width: none; padding: 0; }}
+    body {{ font-size: {print_px}px; line-height: 1.3; }}
+    article.post {{ break-inside: avoid; margin: 3px 0; padding: 5px 8px; }}
+  }}"""
+
+
 class HtmlBuilder(Exporter):
     """生成单文件 HTML（图片怎么处理由 image_mode 决定）。
 
@@ -67,6 +105,8 @@ class HtmlBuilder(Exporter):
     """
 
     key = "html"
+    #: 合并导出：多个串写进同一份 HTML，每串一节。
+    supports_merge = True
     display = "HTML（单文件）"
     suffix = ".html"
     save_message = "正在整理并保存 HTML 文件…"
@@ -316,17 +356,12 @@ class HtmlBuilder(Exporter):
             )
 
         posts_html = "\n".join(rows)
+        body_px = self.font_size
         scope_label = "仅 PO 发言" if scope == "po" and not include_hashes else "全部发言"
         if include_hashes:
             scope_label = "指定饼干：" + "、".join(include_hashes)
 
-        # 字号：正文用用户设的值，其余几处照正文等比换算（默认字号时结果与旧版一致）。
-        body_px = self.font_size
-        h1_px = _font_px(body_px, 18)
-        sub_px = _font_px(body_px, 12)
-        meta_px = _font_px(body_px, 11)
-        print_px = _font_px(body_px, 13)
-
+        style_block = _style_block(body_px)
         document = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -334,32 +369,7 @@ class HtmlBuilder(Exporter):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html_lib.escape(heading)}</title>
 <style>
-  :root {{ --po: #d97706; --po-bg: #fff7ed; --line: #e2e8f0; --text: #1f2430; --muted: #667085; }}
-  * {{ box-sizing: border-box; }}
-  body {{ margin: 0; background: #f4f6fa; color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; line-height: 1.35; }}
-  .wrap {{ max-width: 920px; margin: 0 auto; padding: 16px 14px 24px; }}
-  h1 {{ font-size: {h1_px}px; margin: 0 0 4px; word-break: break-word; }}
-  .sub {{ color: var(--muted); font-size: {sub_px}px; margin-bottom: 12px; }}
-  article.post {{ background: #fff; border: 1px solid var(--line); border-left: 4px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; margin: 5px 0; }}
-  article.post.po {{ border-left-color: var(--po); background: var(--po-bg); }}
-  .meta {{ display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: {meta_px}px; color: var(--muted); }}
-  .floor {{ color: #cbd5e1; font-family: Consolas, monospace; }}
-  .cookie {{ font-weight: 700; color: #15803d; font-family: Consolas, monospace; }}
-  .aname {{ font-weight: 600; color: #334155; }}
-  .badge-po {{ background: var(--po); color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
-  .badge-admin {{ background: #b91c1c; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
-  .badge-sage {{ background: #6366f1; color: #fff; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: {meta_px}px; }}
-  .ptitle {{ font-weight: 600; color: #334155; }}
-  .time, .no {{ color: #94a3b8; }}
-  .content {{ margin-top: 3px; font-size: {body_px}px; word-break: break-word; white-space: normal; }}
-  .content br {{ display: block; content: ""; margin: 1px 0; }}
-  .post-img {{ max-width: 100%; height: auto; display: block; margin: 5px 0 0; border-radius: 4px; }}
-  @media print {{
-    body {{ background: #fff; }}
-    .wrap {{ max-width: none; padding: 0; }}
-    body {{ font-size: {print_px}px; line-height: 1.3; }}
-    article.post {{ break-inside: avoid; margin: 3px 0; padding: 5px 8px; }}
-  }}
+{style_block}
 </style>
 </head>
 <body>
@@ -367,6 +377,96 @@ class HtmlBuilder(Exporter):
 <h1>{html_lib.escape(heading)}</h1>
 <div class="sub">串号 No.{thread.thread_id} · 共 {len(rows)} 楼 · {html_lib.escape(scope_label)} · PO 饼干 {html_lib.escape(thread.po_hash or "未知")}</div>
 {posts_html}
+</div>
+</body>
+</html>
+"""
+        self._report_missing_images()
+        return document
+
+    def build_many(
+        self,
+        threads: list[ThreadData],
+        scope: str = "all",
+        include_hashes: list[str] | None = None,
+    ) -> str:
+        """把多个串写进同一份 HTML（v0.21.0 合并导出）。
+
+        每串一节（``<section class="thread">``），标题带上串号与楼数；样式与单串
+        完全同一份（:func:`_style_block`），只多两条给节标题用的规则。
+        单串导出走的还是 :meth:`build`，本方法不碰它，所以旧成品逐字节不变。
+        """
+        if not threads:
+            raise ValueError("合并导出至少要有一个串")
+
+        scope_label = "仅 PO 发言" if scope == "po" and not include_hashes else "全部发言"
+        if include_hashes:
+            scope_label = "指定饼干：" + "、".join(include_hashes)
+
+        sections: list[str] = []
+        for index, thread in enumerate(threads, start=1):
+            posts = thread.filter_posts(scope, include_hashes)
+            self._preload_images(thread, posts)
+
+            title_text = plain_text(thread.title)
+            heading = title_text or plain_text(thread.posts[0].content if thread.posts else "")
+            heading = heading or f"串 {thread.thread_id}"
+
+            rows: list[str] = []
+            for floor, post in enumerate(posts, start=1):
+                is_po = thread.is_po_post(post)
+                body = self.render_content(post.content, thread.po_hash)
+                if post.img and post.ext:
+                    url = self._client.image_url(post.img, post.ext)
+                    embedded = self.embed_image(url)
+                    if embedded:
+                        body += (
+                            f'<img class="post-img" src="{html_lib.escape(embedded, quote=True)}"'
+                            ' alt="图片" loading="lazy">'
+                        )
+                cls = "post po" if is_po else "post"
+                rows.append(
+                    f'<article class="{cls}" id="p{post.id}">'
+                    f'<header class="meta"><span class="floor">#{floor}</span>'
+                    f"{self._post_meta_html(post, is_po)}</header>"
+                    f'<div class="content">{body}</div>'
+                    "</article>"
+                )
+            sections.append(
+                f'<section class="thread" id="t{thread.thread_id}">'
+                f'<h2 class="thread-title">{index}. {html_lib.escape(heading)}</h2>'
+                f'<div class="sub">串号 No.{thread.thread_id} · 共 {len(rows)} 楼 · '
+                f'{html_lib.escape(scope_label)} · PO 饼干 '
+                f'{html_lib.escape(thread.po_hash or "未知")}</div>'
+                f'{"\n".join(rows)}'
+                "</section>"
+            )
+
+        first = plain_text(threads[0].title) or f"串 {threads[0].thread_id}"
+        heading_title = f"{first} 等 {len(threads)} 个串"
+        body_px = self.font_size
+        style_block = _style_block(body_px)
+        print_extra = (
+            "  .thread-title { font-size: %d px; margin: 18px 0 2px; }\n"
+            "  section.thread { margin-bottom: 16px; }\n"
+            "  section.thread + section.thread { border-top: 2px solid var(--line); padding-top: 14px; }\n"
+            % _font_px(body_px, 16)
+        )
+        document = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html_lib.escape(heading_title)}</title>
+<style>
+{style_block}
+{print_extra}</style>
+</head>
+<body>
+<div class="wrap">
+<h1>{html_lib.escape(heading_title)}</h1>
+<div class="sub">合并导出：共 {len(threads)} 个串 · {html_lib.escape(scope_label)}</div>
+{"".join(sections)}
 </div>
 </body>
 </html>

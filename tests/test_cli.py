@@ -1427,3 +1427,87 @@ def test_missing_input_file_is_reported(out_dir, tmp_path, monkeypatch, capsys) 
     assert code == 2
     assert calls == []
     assert "找不到清单文件" in capsys.readouterr().err
+
+# ---------- --merge：合并导出（v0.21.0） ----------
+
+
+def make_mergeable_exporter():
+    """记录 save / save_many 各被叫了几次，并写出一个文件。"""
+    calls: list[tuple[str, int]] = []
+
+    class FakeExporter:
+        supports_merge = True
+
+        def save(self, thread, scope, output_dir, include_hashes=None):
+            calls.append(("save", thread.thread_id))
+            path = Path(output_dir) / f"{thread.thread_id}.html"
+            path.write_text("一份", encoding="utf-8")
+            return path
+
+        def save_many(self, threads, scope, output_dir, include_hashes=None):
+            calls.append(("save_many", len(threads)))
+            path = Path(output_dir) / "合并.html"
+            path.write_text("合并", encoding="utf-8")
+            return path
+
+    return (lambda *a, **k: FakeExporter()), calls
+
+
+def test_parser_knows_the_merge_option() -> None:
+    import main as cli_main
+
+    assert cli_main.build_parser().parse_args(["--merge"]).merge is True
+    assert cli_main.build_parser().parse_args([]).merge is False
+
+
+def test_batch_export_is_one_file_per_thread_by_default(out_dir, monkeypatch) -> None:
+    """不开 --merge：一个串一份文件，与旧版一致。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    factory, calls = make_mergeable_exporter()
+    monkeypatch.setattr(exporters_module, "create_exporter", factory)
+
+    code = main(["50000001", "7001002", "-o", str(out_dir)])
+
+    assert code == 0
+    assert calls == [("save", 50000001), ("save", 7001002)]
+
+
+def test_merge_flag_collects_every_thread_into_one_call(out_dir, monkeypatch) -> None:
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    factory, calls = make_mergeable_exporter()
+    monkeypatch.setattr(exporters_module, "create_exporter", factory)
+
+    code = main(["50000001", "7001002", "--merge", "-o", str(out_dir)])
+
+    assert code == 0
+    assert calls == [("save_many", 2)]
+    log = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
+    assert "合并导出：开启" in log
+    assert "合并完成" in log
+
+
+def test_merge_falls_back_with_a_note_for_formats_without_merge(out_dir, monkeypatch, capsys) -> None:
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+
+    saved: list[int] = []
+
+    class PlainExporter:
+        supports_merge = False
+
+        def save(self, thread, scope, output_dir, include_hashes=None):
+            saved.append(thread.thread_id)
+            path = Path(output_dir) / "一份.epub"
+            path.write_text("epub", encoding="utf-8")
+            return path
+
+    monkeypatch.setattr(exporters_module, "create_exporter", lambda *a, **k: PlainExporter())
+
+    code = main(["50000001", "7001002", "--merge", "-f", "epub", "-o", str(out_dir)])
+
+    assert code == 0
+    assert saved == [50000001, 7001002]
+    assert "不支持合并导出" in capsys.readouterr().err
+

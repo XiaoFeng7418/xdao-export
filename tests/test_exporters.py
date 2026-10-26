@@ -14,6 +14,8 @@ import pytest
 
 from tests import FakeClient, SAMPLE_JPEG, make_post, sample_thread, sample_thread_with_po_reply
 from xdao.client import Post
+from xdao.exporters.html import _style_block
+from xdao.exporters.markdown import MarkdownBuilder
 from xdao.exporters import (
     EXPORTERS,
     HtmlBuilder,
@@ -1118,3 +1120,137 @@ def test_folder_mode_still_downloads_the_images_once():
     thread.posts[1].ext = ".jpg"
     HtmlBuilder(client, image_mode="folder").build(thread, "all")
     assert client.downloaded.count("https://image.nmb.best/image/abcdef.jpg") == 1
+
+# ---------- 合并导出（v0.21.0） ----------
+
+
+def _two_threads():
+    first = ThreadData(
+        thread_id=8001,
+        title="第一个串的标题",
+        po_hash="POcookie",
+        posts=[make_post(1, "第一串正文", user_hash="POcookie", is_po=True)],
+    )
+    second = ThreadData(
+        thread_id=8002,
+        title="第二个串的标题",
+        po_hash="POcookie2",
+        posts=[make_post(2, "第二串正文", user_hash="Cookie2")],
+    )
+    return first, second
+
+
+def test_txt_merge_writes_one_file_with_every_thread(tmp_path: Path) -> None:
+    first, second = _two_threads()
+    exporter = TxtBuilder(FakeClient())
+
+    path = exporter.save_many([first, second], "all", tmp_path)
+
+    assert path.suffix == ".txt"
+    assert "等 2 个串" in path.name
+    assert [item.name for item in tmp_path.glob("*.txt")] == [path.name]
+    content = path.read_text(encoding="utf-8")
+    assert "No.8001" in content and "No.8002" in content
+    assert "第一串正文" in content and "第二串正文" in content
+
+
+def test_markdown_merge_separates_the_threads(tmp_path: Path) -> None:
+    first, second = _two_threads()
+    exporter = MarkdownBuilder(FakeClient())
+
+    path = exporter.save_many([first, second], "all", tmp_path)
+    content = path.read_text(encoding="utf-8")
+
+    assert path.suffix == ".md"
+    assert content.count("# ") >= 2
+    assert "\n\n---\n\n" in content
+    assert "No.8001" in content and "No.8002" in content
+
+
+def test_html_merge_puts_each_thread_in_its_own_section() -> None:
+    first, second = _two_threads()
+    builder = HtmlBuilder(FakeClient())
+
+    document = builder.build_many([first, second], "all")
+
+    assert document.count('<section class="thread"') == 2
+    assert "第一个串的标题" in document and "第二个串的标题" in document
+    assert "共 2 个串" in document
+    assert "等 2 个串" in document
+
+
+def test_html_merge_keeps_the_style_block_identical_to_single_export() -> None:
+    """合并文档必须用同一份 CSS（单串成品的外观不能因为合并功能而变）。"""
+    first, _second = _two_threads()
+    builder = HtmlBuilder(FakeClient())
+
+    single = builder.build(first, "all")
+    merged = builder.build_many([first], "all")
+
+    assert _style_block(14) in single
+    assert _style_block(14) in merged
+
+
+def test_html_merge_reports_missing_images_only_once() -> None:
+    """失败很多时只汇总一句（逐条日志封顶 10 条），合并导出也不例外。"""
+    posts = [make_post(index, f"第 {index} 楼", img=f"img{index}", ext=".jpg") for index in range(1, 13)]
+    thread = ThreadData(thread_id=8003, title="缺图串", po_hash="p", posts=posts)
+    urls = {f"https://image.nmb.best/image/img{index}.jpg" for index in range(1, 13)}
+    messages: list[str] = []
+
+    HtmlBuilder(FakeClient(fail_urls=urls), progress=messages.append).build_many([thread], "all")
+
+    assert sum("没下到" in message for message in messages) == 1
+    assert sum("图片下载失败" in message for message in messages) == 10
+
+
+def test_pdf_merge_renders_the_merged_html_once(tmp_path: Path) -> None:
+    first, second = _two_threads()
+    builder = PdfBuilder(FakeClient())
+    seen: list[str] = []
+
+    def fake_render(html: str, output_dir, target) -> Path:
+        seen.append(html)
+        target.write_bytes(b"%PDF-1.4 fake")
+        return target
+
+    builder.render_pdf = fake_render  # type: ignore[method-assign]
+    path = builder.save_many([first, second], "all", tmp_path)
+
+    assert len(seen) == 1
+    assert '<section class="thread"' in seen[0]
+    assert path.suffix == ".pdf"
+    assert path.read_bytes().startswith(b"%PDF")
+
+
+def test_merge_is_opt_in_and_single_export_is_unchanged(tmp_path: Path) -> None:
+    """默认不开合并：save() 一次还是只写一个串一个文件。"""
+    first, second = _two_threads()
+    exporter = TxtBuilder(FakeClient())
+
+    exporter.save(first, "all", tmp_path)
+    exporter.save(second, "all", tmp_path)
+
+    assert len(list(tmp_path.glob("*.txt"))) == 2
+    assert exporter.supports_merge is True
+
+
+def test_merge_respects_skip_existing(tmp_path: Path) -> None:
+    first, second = _two_threads()
+    exporter = TxtBuilder(FakeClient(), skip_existing=True)
+    path = exporter.save_many([first, second], "all", tmp_path)
+    path.write_text("已经导出过", encoding="utf-8")
+
+    exporter.last_skipped = False
+    again = exporter.save_many([first, second], "all", tmp_path)
+
+    assert again == path
+    assert exporter.last_skipped is True
+    assert path.read_text(encoding="utf-8") == "已经导出过"
+
+
+def test_epub_does_not_support_merge() -> None:
+    from xdao.exporters import create_exporter
+
+    assert create_exporter("epub", FakeClient()).supports_merge is False
+

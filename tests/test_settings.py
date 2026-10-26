@@ -71,7 +71,11 @@ FONT_DEFAULTS = {
 #: 「批量断点续跑」那一个键：成品已存在就跳过。
 SKIP_FIELDS = ("skip_existing",)
 
+#: v0.21.0 合并导出（默认关：一个串一份文件）
+MERGE_FIELDS = ("merge_export",)
+
 SKIP_DEFAULTS = {"skip_existing": False}
+MERGE_DEFAULTS = {"merge_export": False}
 
 DEFAULTS = {
     "pdf_paper": DEFAULT_PDF_PAPER,
@@ -209,7 +213,11 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         assert data[name] == SKIP_DEFAULTS[name]
     assert (
         set(data) - set(LEGACY_V070)
-        == set(PDF_FIELDS) | set(RANGE_FIELDS) | set(FONT_FIELDS) | set(SKIP_FIELDS)
+        == set(PDF_FIELDS)
+        | set(RANGE_FIELDS)
+        | set(FONT_FIELDS)
+        | set(SKIP_FIELDS)
+        | set(MERGE_FIELDS)
     )
 
 
@@ -556,3 +564,32 @@ def test_image_mode_round_trips_the_folder_mode(config_path: Path) -> None:
     settings.image_mode = "folder"
     settings.save()
     assert load_config(config_path).image_mode == "folder"
+
+
+# ---------- 合并导出（v0.21.0） ----------
+
+
+def test_merge_export_is_off_by_default(config_path: Path) -> None:
+    """默认关闭：不开就是旧行为（一个串一份文件），老用户升级后不会被改变。"""
+    assert load_config(config_path).merge_export is False
+
+
+def test_merge_export_round_trip(config_path: Path) -> None:
+    settings = load_config(config_path)
+    settings.merge_export = True
+    assert settings.save()
+    assert load_config(config_path).merge_export is True
+
+
+@pytest.mark.parametrize("bad", (None, "", "maybe", 2, [], {}, 0.5))
+def test_bad_merge_export_falls_back_to_off(config_path: Path, bad: object) -> None:
+    write_config(config_path, {"merge_export": bad})
+    assert load_config(config_path).merge_export is False
+
+
+@pytest.mark.parametrize("yes", (True, "true", 1, "on", "是", "开"))
+def test_truthy_merge_export_reads_as_on(config_path: Path, yes: object) -> None:
+    from xdao import settings as settings_module
+
+    write_config(config_path, {"merge_export": yes})
+    assert load_config(config_path).merge_export == settings_module._as_bool(yes, False)

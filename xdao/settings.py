@@ -108,6 +108,11 @@ class AppSettings:
     # 所以监控那条路不看这个开关。
     skip_existing: bool = False
 
+    # ---------- 合并导出 ----------
+    # 打开后：多个串导进同一个文件（HTML / TXT / Markdown / PDF 支持）。
+    # 默认关闭 —— 不打开时行为与旧版逐字节一致（一个串一份文件）。
+    merge_export: bool = False
+
     # ---------- PDF 纸张 / 页边距 ----------
     # 归一化全部交给 xdao/pdf_opts.py（界面与命令行同一套规则）；
     # 这里只负责持久化，坏值一律回落到上面那组默认值。
@@ -187,6 +192,7 @@ class AppSettings:
         )
         # 老配置没有这个键 → 关闭（默认行为与以前一致：总是重新导出）
         self.skip_existing = _as_bool(data.get("skip_existing"), False)
+        self.merge_export = _as_bool(data.get("merge_export"), False)
         # 逐字段解析：老配置没有这些键 → 取默认值（＝ v0.7.0 的成品外观）；
         # 有键但值坏 → 同样回落默认，绝不让读配置抛异常。
         self.pdf_paper = _pdf_choice(data.get("pdf_paper"), DEFAULT_PDF_PAPER, "normalize_paper")
@@ -250,6 +256,7 @@ class AppSettings:
                 "export_font_size": self.export_font_size,
                 "ui_font_scale": self.ui_font_scale,
                 "skip_existing": bool(self.skip_existing),
+                "merge_export": bool(self.merge_export),
                 "pdf_paper": self.pdf_paper,
                 "pdf_orientation": self.pdf_orientation,
                 "pdf_margin": self.pdf_margin,

@@ -15,7 +15,7 @@ from xdao.threadlist import (
 
 
 def test_plain_numbers_one_per_line() -> None:
-    assert parse_thread_list("50000001\n50000002\n") == ["50000001", "50000002"]
+    assert parse_thread_list("50000001\n7001002\n") == ["50000001", "7001002"]
 
 
 def test_blank_lines_and_comments_are_skipped() -> None:
@@ -24,19 +24,19 @@ def test_blank_lines_and_comments_are_skipped() -> None:
     // 这也是注释
     50000001
 
-    50000002
+    7001002
     """
-    assert parse_thread_list(text) == ["50000001", "50000002"]
+    assert parse_thread_list(text) == ["50000001", "7001002"]
 
 
 def test_urls_are_accepted_like_numbers() -> None:
-    text = "https://www.nmbxd1.com/t/50000001\n50000002\n"
-    assert parse_thread_list(text) == ["50000001", "50000002"]
+    text = "https://www.nmbxd1.com/t/50000001\n7001002\n"
+    assert parse_thread_list(text) == ["50000001", "7001002"]
 
 
 def test_duplicates_keep_the_first_position() -> None:
-    text = "50000002\n50000001\n50000002\n"
-    assert parse_thread_list(text) == ["50000002", "50000001"]
+    text = "7001002\n50000001\n7001002\n"
+    assert parse_thread_list(text) == ["7001002", "50000001"]
 
 
 def test_number_and_its_url_count_as_the_same_thread() -> None:
@@ -46,7 +46,7 @@ def test_number_and_its_url_count_as_the_same_thread() -> None:
 
 def test_unknown_lines_name_the_line_number() -> None:
     with pytest.raises(ThreadListError) as caught:
-        parse_thread_list("50000001\n不是串号\n50000002\n")
+        parse_thread_list("50000001\n不是串号\n7001002\n")
 
     message = str(caught.value)
     assert "第 2 行" in message
@@ -72,9 +72,9 @@ def test_empty_list_is_an_error_not_a_silent_no_op() -> None:
 
 def test_read_thread_list_tolerates_a_bom(tmp_path: Path) -> None:
     target = tmp_path / "清单.txt"
-    target.write_text("50000001\n50000002\n", encoding="utf-8-sig")
+    target.write_text("50000001\n7001002\n", encoding="utf-8-sig")
 
-    assert read_thread_list(target) == ["50000001", "50000002"]
+    assert read_thread_list(target) == ["50000001", "7001002"]
 
 
 def test_missing_file_says_so(tmp_path: Path) -> None:

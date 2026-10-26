@@ -26,6 +26,8 @@ class MarkdownBuilder(Exporter):
     """把串导出成 Markdown 文档。"""
 
     key = "markdown"
+    #: 合并导出：多个串共用一个 .md，串与串之间用 ``---`` 隔开。
+    supports_merge = True
     display = "Markdown（.md）"
     suffix = ".md"
     save_message = "正在生成 Markdown 文件…"
@@ -129,6 +131,17 @@ class MarkdownBuilder(Exporter):
             lines.append("")
         self._images.report()
         return "\n".join(lines)
+
+    def build_many(
+        self,
+        threads: list[ThreadData],
+        scope: str = "all",
+        include_hashes: list[str] | None = None,
+    ) -> str:
+        """多个串拼一份：每串仍用 :meth:`build` 生成，之间用分隔线隔开。"""
+        self._notify(f"正在生成合并 Markdown（{len(threads)} 个串）…")
+        blocks = [self.build(thread, scope, include_hashes) for thread in threads]
+        return "\n\n---\n\n".join(blocks)
 
 
 __all__ = ["MarkdownBuilder"]
