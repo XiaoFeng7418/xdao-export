@@ -1242,3 +1242,223 @@ def test_login_dialog_keeps_waiting_while_the_login_is_on_its_way(
     finally:
         dialog.destroy()
 
+# ---------------------------------------------------------------------------
+# 主窗口上的几条动作：清缓存、更新提示、联网检查、开监控前的拦路条件
+# ---------------------------------------------------------------------------
+
+
+def test_clear_cache_says_there_is_nothing_to_clear(
+    app: gui.App, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, body, **kw: said.append((title, body))
+    )
+    monkeypatch.setattr(app, "current_cache_dir", lambda: tmp_path / "missing")
+
+    app.clear_cache()
+
+    assert said == [("提示", "当前没有缓存。")]
+
+
+def test_clear_cache_does_nothing_when_the_user_says_no(
+    app: gui.App, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "keep.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(app, "current_cache_dir", lambda: cache_dir)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
+    refreshed: list[int] = []
+    monkeypatch.setattr(app, "refresh_cache_info", lambda: refreshed.append(1))
+
+    app.clear_cache()
+
+    assert (cache_dir / "keep.txt").exists()
+    assert refreshed == []
+
+
+def test_clear_cache_removes_the_directory_and_logs_it(
+    app: gui.App, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_dir = tmp_path / "cache"
+    (cache_dir / "images").mkdir(parents=True)
+    (cache_dir / "images" / "a.bin").write_bytes(b"x")
+    monkeypatch.setattr(app, "current_cache_dir", lambda: cache_dir)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app, "refresh_cache_info", lambda: None)
+
+    app.clear_cache()
+
+    assert not cache_dir.exists()
+    assert "缓存已清空" in app.log_text.get("1.0", "end-1c")
+
+
+def test_clear_cache_reports_a_failure_instead_of_pretending(
+    app: gui.App, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(app, "current_cache_dir", lambda: cache_dir)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app, "refresh_cache_info", lambda: None)
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, body, **kw: shown.append((title, body))
+    )
+
+    def boom(path: object) -> None:
+        raise OSError("文件被占用")
+
+    monkeypatch.setattr("shutil.rmtree", boom)
+
+    app.clear_cache()
+
+    assert shown == [("清空失败", "文件被占用")]
+
+
+class _FakeCheck:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def line(self) -> str:
+        return self._text
+
+
+class _StateStub:
+    """`ttk` 部件的 ``state([...])`` 只要别真的去找 Tk 部件就行。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def state(self, *args: object) -> None:
+        # ttk 的写法是 state(["disabled"])，这里把列表拆平，断言才好写。
+        flat: list[str] = []
+        for item in args:
+            if isinstance(item, (list, tuple)):
+                flat.extend(str(name) for name in item)
+            else:
+                flat.append(str(item))
+        self.calls.append(tuple(flat))
+
+
+def _selftest_dialog(app: gui.App) -> gui.SelftestDialog:
+    """`_run_network()` 是自检对话框上的方法，这里只要一个能记账的空壳。"""
+    dialog = object.__new__(gui.SelftestDialog)
+    dialog.tk = app.root.tk  # update_idletasks() 要用它
+    dialog.app = app
+    dialog.net_button = _StateStub()
+    dialog.status_var = tk.StringVar(master=app.root)
+    dialog.lines = []
+    dialog._append = dialog.lines.append
+    return dialog
+
+
+def test_run_network_reports_each_check(app: gui.App, monkeypatch: pytest.MonkeyPatch) -> None:
+    from xdao import preflight
+
+    monkeypatch.setattr(
+        preflight, "run_network_checks", lambda: [_FakeCheck("[行] 一是通的"), _FakeCheck("[行] 二也通")]
+    )
+    dialog = _selftest_dialog(app)
+
+    dialog._run_network()
+
+    assert dialog.lines[:2] == ["", "[行] 一是通的"]
+    assert "[行] 二也通" in dialog.lines
+    assert dialog.status_var.get() == ""
+    assert dialog.net_button.calls == [("disabled",), ("!disabled",)]
+    assert "联网那两项已经测过" in app.log_text.get("1.0", "end-1c")
+
+
+def test_run_network_does_not_hide_its_own_failure(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from xdao import preflight
+
+    def boom() -> list[object]:
+        raise RuntimeError("探针自己炸了")
+
+    monkeypatch.setattr(preflight, "run_network_checks", boom)
+    dialog = _selftest_dialog(app)
+
+    dialog._run_network()
+
+    assert any("联网检查本身出错了" in line and "探针自己炸了" in line for line in dialog.lines)
+
+
+def test_offer_download_opens_the_page_when_the_user_agrees(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from xdao import updater
+
+    monkeypatch.setattr(
+        updater, "plan_upgrade", lambda: type("P", (), {"possible": False, "reason": ""})()
+    )
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    opened: list[str] = []
+    monkeypatch.setattr(app, "_open_download_page", opened.append)
+
+    class _Result:
+        url = "https://example.invalid/dl"
+        asset_url = ""
+        asset_size = 0
+
+        def line(self) -> str:
+            return "有新版本"
+
+    app._offer_download(_Result())
+
+    assert opened == ["https://example.invalid/dl"]
+
+
+def test_offer_download_writes_the_page_into_the_log_when_the_browser_cannot_open(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app, "_open_download_page", lambda url: app.log(f"下载页：{url}"))
+
+    class _Result:
+        url = "https://example.invalid/dl"
+        asset_url = ""
+        asset_size = 0
+
+        def line(self) -> str:
+            return "有新版本"
+
+    app._offer_download(_Result())
+
+    assert "https://example.invalid/dl" in app.log_text.get("1.0", "end-1c")
+
+
+def test_start_watching_refuses_without_targets(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, body, **kw: warned.append((title, body))
+    )
+
+    app.start_watching(300)
+
+    assert warned == [("提示", "请先添加要监控的串。")]
+    assert app._watching is False  # noqa: SLF001
+
+
+def test_start_watching_refuses_without_an_output_directory(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from xdao.watcher import WatchTarget
+
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, body, **kw: warned.append((title, body))
+    )
+    app.watch_targets = [WatchTarget("50000001")]  # noqa: SLF001
+    app.output_var.set("")  # noqa: SLF001
+
+    app.start_watching(300)
+
+    assert warned == [("提示", "请先选择导出目录。")]
+    assert app._watching is False  # noqa: SLF001
+
