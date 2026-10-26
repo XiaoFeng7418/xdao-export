@@ -681,6 +681,18 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.2**：给界面队列轮询补用例（导出进度/日志、挑饼干两条出口）。
+
+  1. **为什么补**：`App._poll_export()` 与 `App._poll_cookies()` 是导出线程、
+     挑饼干线程与界面之间的唯一通道，`gui.py` 行覆盖率 79% 里最值得补的就是它们——
+     日志少写一行、失败分支漏提示，用户只会看到「没反应」。
+  2. **用例**（`tests/test_window.py` 41 → 44，真 Tk）：进度与日志落到进度条/日志框、
+     第一页没有可选饼干时的提示与按钮复位、读取失败时的报错文案。
+  3. **踩的坑**：`ttk.Button.cget("state")` 返回的是 Tcl 的 index 对象，
+     直接和字符串比会失败（`<index object: 'normal'> == 'normal'` 为假），
+     要先 `str(...)`。这条已写进用例注释。
+  4. 收集 2446、本机 2439 通过、7 跳过。
+
 - **v0.21.1**：修 Python 3.10 编译不过（f-string 表达式里带反斜杠）。
 
   1. **症状**：CI 的 ubuntu-latest / py3.10 作业在「语法检查（全部源码必须能编译）」
