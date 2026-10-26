@@ -1700,3 +1700,204 @@ def test_save_log_reports_a_failure_instead_of_pretending(
 
     assert wrong and wrong[0][0] == "保存失败"
     assert "磁盘满了" in wrong[0][1]
+
+# ---------- BrowserLoginDialog._worker 的失败分支（v0.21.6）----------
+
+
+def _login_shell(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """造一个只够跑 `_worker` 的登录窗外壳。
+
+    `_worker` 是后台线程入口，按约定**不碰 Tk**（只往队列里投消息），
+    所以这里不需要真窗口：`object.__new__` 造个空壳、把队列/停止位/设置
+    补齐即可。真开一个 Toplevel 再起线程反而会慢好几倍，也更脆。
+    """
+    import queue as queue_module
+    from types import SimpleNamespace
+
+    dialog = object.__new__(gui.BrowserLoginDialog)
+    dialog._queue = queue_module.Queue()
+    dialog._stop = threading.Event()
+    dialog._browser = None
+    dialog._session = None
+    dialog._stamp = ""
+    dialog._log = None
+    dialog.settings = SimpleNamespace(proxy="", config_path=str(tmp_path / "config.json"))
+    return dialog
+
+
+def _drain(dialog) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    while True:
+        try:
+            items.append(dialog._queue.get_nowait())
+        except Exception:
+            return items
+
+
+def test_login_worker_says_what_to_use_when_the_component_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dialog = _login_shell(monkeypatch, tmp_path)
+
+    def boom():
+        raise ImportError("没有 browser_login")
+
+    monkeypatch.setattr(gui, "_load_browser_login", boom)
+
+    dialog._worker()
+
+    kind, text = _drain(dialog)[0]
+    assert kind == "error"
+    assert "缺少「浏览器登录」组件" in text
+    assert "直接粘贴饼干登录" in text
+
+
+def test_login_worker_explains_a_browser_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dialog = _login_shell(monkeypatch, tmp_path)
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: object())
+
+    def boom(_settings):  # noqa: ANN001
+        raise RuntimeError("注册表读不出来")
+
+    monkeypatch.setattr(gui, "_find_login_browser", boom)
+
+    dialog._worker()
+
+    kind, text = _drain(dialog)[0]
+    assert kind == "error"
+    assert "没能找到浏览器：注册表读不出来" in text
+
+
+def test_login_worker_says_what_to_do_when_no_browser_is_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dialog = _login_shell(monkeypatch, tmp_path)
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: object())
+    monkeypatch.setattr(gui, "_find_login_browser", lambda _settings: None)
+
+    dialog._worker()
+
+    kind, text = _drain(dialog)[0]
+    assert kind == "error"
+    assert "没找到 Edge 或 Chrome" in text
+    assert "Firefox 走不了这条路" in text
+
+
+def test_login_worker_does_not_open_a_browser_after_cancel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    dialog = _login_shell(monkeypatch, tmp_path)
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: object())
+    monkeypatch.setattr(
+        gui, "_find_login_browser", lambda _settings: SimpleNamespace(name="Edge", path="C:/edge.exe")
+    )
+    dialog._stop.set()  # 用户已经在找浏览器的这段时间里点了取消
+    started: list[int] = []
+    fake = SimpleNamespace(
+        user_data_dir=lambda _base: tmp_path / "profile",
+        LoginBrowser=lambda *a, **k: started.append(1),
+    )
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: fake)
+
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert any(kind == "browser" for kind, _ in items)
+    assert started == []
+    assert not any(kind == "error" for kind, _ in items)
+
+
+def test_login_worker_releases_the_browser_and_writes_the_notes_when_start_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    dialog = _login_shell(monkeypatch, tmp_path)
+    stopped: list[int] = []
+
+    class FakeBrowser:
+        census_note = "开窗前普查：没探到活着的程序窗口"
+        attempt_notes = ("第 1 扇没成：端口没出来",)
+        profile_note = ""
+        browser_note = ""
+        handoff_note = ""
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("端口没起来")
+
+        def stop(self) -> None:
+            stopped.append(1)
+
+    fake = SimpleNamespace(
+        user_data_dir=lambda _base: tmp_path / "profile",
+        LoginBrowser=FakeBrowser,
+    )
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: fake)
+    monkeypatch.setattr(
+        gui, "_find_login_browser", lambda _settings: SimpleNamespace(name="Edge", path="C:/edge.exe")
+    )
+
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert stopped == [1]
+    assert ("census", "开窗前普查：没探到活着的程序窗口") in items
+    assert ("note", "第 1 扇没成：端口没出来") in items
+    kinds = [kind for kind, _ in items]
+    assert "error" in kinds
+    error = next(text for kind, text in items if kind == "error")
+    assert "打开浏览器失败：端口没起来" in error
+    assert "ready" not in kinds
+
+def test_login_worker_stops_the_browser_when_cancel_lands_during_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """取消正好落在「浏览器刚起来、还没连 CDP」那一刻：那扇窗必须被收掉。
+
+    这一支是最容易漏的：主线程那次 _release() 清空了 self._browser，后台线程
+    手里只剩局部引用 —— 如果这里不自己收，窗口就留成孤儿（真机 2026-10-18
+    那族多窗里就有它）。
+    """
+    from types import SimpleNamespace
+
+    dialog = _login_shell(monkeypatch, tmp_path)
+    stopped: list[int] = []
+    dialog._stop_marker = None
+
+    class FakeBrowser:
+        census_note = ""
+        attempt_notes = ()
+        profile_note = ""
+        browser_note = ""
+        handoff_note = ""
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            dialog._stop.set()  # 启动完成的那一瞬间，用户点了取消
+
+        def stop(self) -> None:
+            stopped.append(1)
+
+    fake = SimpleNamespace(
+        user_data_dir=lambda _base: tmp_path / "profile",
+        LoginBrowser=FakeBrowser,
+    )
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: fake)
+    monkeypatch.setattr(
+        gui, "_find_login_browser", lambda _settings: SimpleNamespace(name="Edge", path="C:/edge.exe")
+    )
+
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert stopped == [1]
+    assert "ready" not in [kind for kind, _ in items]
