@@ -681,6 +681,24 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.20.0**：Markdown 也能把图片存到同名目录；清单文件一次读进一批串。
+
+  1. **Markdown 的 `folder` 模式**（`xdao/exporters/markdown.py`）：`IMAGE_MODES`
+     增加 `"folder"`；`prepare_output()` 记下 `<成品名>.files/` 目录，正文用
+     `_relative_image_url()` 生成 URL 转义的相对路径。默认仍是 `url`，成品与旧版
+     逐字节一致。`embed` 在纯文本里没有意义，所以 Markdown 只认 `url/drop/folder`。
+  2. **清单文件**（新模块 `xdao/threadlist.py`）：`parse_thread_list()` 去重保序、
+     跳过空行与 `#`/`//` 注释；**有认不出的行就整体抛 `ThreadListError` 并带行号**
+     （最多列 5 行，其余给个数），`read_thread_list()` 负责 UTF-8-SIG 读文件与
+     「找不到 / 是个文件夹 / 不是 UTF-8」三种人话报错。命令行 `--input` 与界面
+     「从文件…」共用这一套。
+  3. **命令行的合并规则**（`main.py::_merge_thread_sources`）：命令行写的串号与
+     清单里的按串号去重、保持书写顺序；清单读不了时返回 2 并在连网之前打印原因。
+  4. **界面**（`xdao/gui.py::load_thread_list`）：输入框右侧「从文件…」按钮，读完
+     追加到输入框（已有换行才不会粘在上一行后面），日志写「新增 N 个，已有 M 个」。
+  5. 用例：`tests/test_threadlist.py` 12 条、`test_cli.py` +6、`test_gui_entry.py` +6；
+     收集 2406、本机 2399 通过、7 跳过。
+
 - **v0.19.7 之后的仓库整理（不升版本号）**：再收两个开发脚本进 `tools/`。
   - `tools/push_tag_via_api.py`：从本地 `git cat-file tag` 取 tagger 与正文，
     走 API 建标签对象与 ref；新增 `split_tag()` 把「对象/标签头/正文」拆开，

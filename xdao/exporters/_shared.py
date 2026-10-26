@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -223,6 +224,92 @@ _MIME_EXT = {
 def mime_to_ext(mime: str) -> str:
     """MIME 对应的文件扩展名。"""
     return _MIME_EXT.get(mime, ".jpg")
+
+
+class ImageFolderWriter:
+    """把图片写进成品旁边的同名目录（「存到同名目录」模式）。
+
+    HTML 与 Markdown 共用这一份：文件名规则、重名处理、相对路径转义都相同，
+    分成两份实现迟早走样。写盘失败不抛异常（导出不能因为一张图中断），
+    只记进 :attr:`missing`，调用方收尾时汇总一句。
+    """
+
+    #: 日志里逐张列出失败图片的上限，超过就只报总数。
+    MAX_MISSING_LOGS = 10
+
+    def __init__(self, notify) -> None:
+        self._notify = notify
+        self.directory: Path | None = None
+        self.relative = ""
+        self._names: set[str] = set()
+        self._serial = 0
+        #: 没写成功的图片地址（下载失败或写盘失败），按出现顺序。
+        self.missing: list[str] = []
+
+    def prepare(self, path: Path) -> None:
+        """按成品路径定下图片目录：``成品.md`` → ``成品.files/``。"""
+        folder = path.with_name(path.stem + ".files")
+        self.directory = folder
+        self.relative = folder.name
+
+    @property
+    def enabled(self) -> bool:
+        """有没有落盘位置（PDF 内存渲染、纯文本导出时是 False）。"""
+        return self.directory is not None
+
+    def file_name(self, url: str, data: bytes) -> str:
+        """给要落盘的图起个不重名的文件名（保留原名词根，便于翻找）。"""
+        suffix = _MIME_EXT.get(guess_mime(url, data), ".img")
+        stem = ""
+        try:
+            stem = Path(urllib.parse.urlsplit(url).path).stem
+        except (TypeError, ValueError):
+            stem = ""
+        stem = sanitize_filename(stem, fallback="") if stem else ""
+        if not stem:
+            stem = f"img{len(self._names) + 1:03d}"
+        name = f"{stem}{suffix}"
+        while name in self._names:
+            self._serial += 1
+            name = f"{stem}-{self._serial}{suffix}"
+        self._names.add(name)
+        return name
+
+    def write(self, client: XdaoClient, url: str) -> str:
+        """下载并写盘，返回正文里该用的相对路径；失败返回空串。"""
+        if not url or self.directory is None:
+            return ""
+        data = fetch_image(client, url)
+        if not data:
+            self._remember(url, "图片下载失败")
+            return ""
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            name = self.file_name(url, data)
+            (self.directory / name).write_bytes(data)
+        except OSError:
+            self._remember(url, "图片存不进目录")
+            return ""
+        # 相对地址一律用正斜杠；空格/中文按 URL 规则转义（Markdown 与浏览器都认）。
+        return urllib.parse.quote(f"{self.relative}/{name}", safe="/")
+
+    def _remember(self, url: str, reason: str) -> None:
+        if url in self.missing:
+            return
+        self.missing.append(url)
+        if len(self.missing) <= self.MAX_MISSING_LOGS:
+            self._notify(f"{reason}，已保留链接：{url}")
+
+    def report(self) -> None:
+        """失败超过上限时收尾汇总一句，免得日志里刷满逐条记录。"""
+        count = len(self.missing)
+        if count <= self.MAX_MISSING_LOGS:
+            return
+        urls = "、".join(self.missing[:3])
+        self._notify(
+            f"一共 {count} 张图片没存进目录，已保留原链接"
+            f"（逐条日志只列了前 {self.MAX_MISSING_LOGS} 张）；前三张是：{urls}"
+        )
 
 
 def collapse_blank_lines(text: str) -> str:

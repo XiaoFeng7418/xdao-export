@@ -71,6 +71,7 @@ _CONSOLE_HINT_FLAGS = {
     "--retries",
     "--throttle",
     "--interval",
+    "--input",
     "--verify-cached",
     "--pdfdiag",
     "--pdf-paper",
@@ -303,6 +304,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="每个串最多抓 N 页（含第 1 页）；填 0 表示不限页数",
     )
     parser.add_argument(
+        "--input",
+        default=None,
+        metavar="文件",
+        help="从文本文件读要导出的串：一行一个串号或网址，空行与 # 开头的行忽略；"
+        "可以和命令行里写的串号一起用",
+    )
+    parser.add_argument(
         "--until",
         default=None,
         metavar="串号",
@@ -356,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["embed", "url", "drop", "folder"],
         help=(
             "图片处理（HTML / PDF / EPUB）：embed 内嵌（默认）、url 仅链接、drop 丢弃、"
-            "folder 存到成品旁边的同名目录（只对 HTML 生效，PDF / EPUB 按内嵌处理）"
+            "folder 存到成品旁边的同名目录（只对 HTML 与 Markdown 生效，PDF / EPUB 按内嵌处理）"
         ),
     )
     parser.add_argument(
@@ -651,6 +659,32 @@ def _resolve_pdf_options(args: argparse.Namespace, settings):
     return options, ""
 
 
+def _merge_thread_sources(args: argparse.Namespace) -> list[str] | str:
+    """把命令行上写的串号与 --input 指的清单合成一份（去重、保序）。
+
+    返回字符串表示清单读不了，那个字符串是给人看的原因。
+    """
+    from xdao.cache import parse_thread_id
+    from xdao.threadlist import ThreadListError, read_thread_list
+
+    items = list(args.threads)
+    source = getattr(args, "input", None)
+    if source:
+        try:
+            items.extend(read_thread_list(source))
+        except ThreadListError as exc:
+            return str(exc)
+    merged: list[str] = []
+    seen: set[int] = set()
+    for item in items:
+        thread_id = parse_thread_id(item)
+        if thread_id is None or thread_id in seen:
+            continue
+        seen.add(thread_id)
+        merged.append(item)
+    return merged
+
+
 def run_cli(args: argparse.Namespace) -> int:
     """命令行导出 / 监控。返回进程退出码。"""
     from xdao.cache import CachedThreadFetcher, filter_until_thread_id
@@ -678,7 +712,12 @@ def run_cli(args: argparse.Namespace) -> int:
         if getattr(args, "skip_existing", None)
         else bool(getattr(settings, "skip_existing", False))
     )
-    export_urls, skipped_urls = filter_until_thread_id(args.threads, until_thread_id)
+    requested = _merge_thread_sources(args)
+    if isinstance(requested, str):
+        # 清单文件读不了：在连网络之前就把原因摆出来。
+        print(f"清单文件有误：{requested}", file=sys.stderr)
+        return 2
+    export_urls, skipped_urls = filter_until_thread_id(requested, until_thread_id)
     if not export_urls:
         # 不是错误：列表被截止挡光了。说清楚规则，用户改一个数就能重来。
         print(
@@ -770,10 +809,10 @@ def run_cli(args: argparse.Namespace) -> int:
     print(f"导出范围：{range_text}；{until_text}。")
 
     image_mode = args.image_mode or settings.image_mode or "embed"
-    if image_mode == "folder" and format_key != "html":
-        # 「存到同名目录」要往成品旁边写文件，只有 HTML 有同名成品；
+    if image_mode == "folder" and format_key not in ("html", "markdown"):
+        # 「存到同名目录」要往成品旁边写文件：HTML 与 Markdown 都有同名成品；
         # PDF 在内存里渲染、EPUB 是 zip，都按内嵌处理并说一声。
-        print("注意：「存到同名目录」只对 HTML 生效，这次按内嵌处理。")
+        print("注意：「存到同名目录」只对 HTML 与 Markdown 生效，这次按内嵌处理。")
         image_mode = "embed"
 
     if args.watch:
@@ -1032,7 +1071,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return pdf_diag_main()
 
-    if args.threads:
+    if args.threads or args.input:
         # 兜底：跑到这一步说明是命令行模式，绝不能让未处理的异常直接弹给使用者
         # —— 打包版会把 traceback 弹成「Unhandled exception in script」对话框。
         from xdao.client import XdaoError

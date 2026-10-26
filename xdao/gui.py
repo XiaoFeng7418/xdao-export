@@ -76,7 +76,7 @@ MAX_PAGES_UNIT = "页"
 UNTIL_THREAD_ID_UNIT = "（含它）"
 #: 哪几种导出格式认「图片」这一项（内嵌 / 只留链接 / 丢掉）。TXT 与 Markdown 是纯文本，
 #: 图片本来就只是链接或干脆没有，所以不给它们这一行。
-IMAGE_MODE_FORMATS = ("html", "pdf", "epub")
+IMAGE_MODE_FORMATS = ("html", "pdf", "epub", "markdown")
 #: 「图片」下拉框的显示名，与 ``exporters.html.IMAGE_MODES`` 同序（主窗口与编辑监控共用）。
 IMAGE_MODE_LABELS = ("内嵌图片", "仅保留链接", "丢弃图片", "存到同名目录")
 
@@ -4281,8 +4281,13 @@ class App:
         SectionHeading(input_card.body, "① 输入串网址", "每行一个，可一次粘贴多个串").pack(
             fill="x"
         )
+        # 文本框旁边带一个「从文件…」：一次要导几十个串时粘贴很别扭（清单常常是
+        # 攒了好几天的）。跟文本框放同一行只是为了省高度——左栏在最小窗口
+        # （940x680）下没有多余的一行可用。
+        urls_row = ttk.Frame(input_card.body, style="Card.TFrame")
+        urls_row.pack(fill="x", pady=(theme.gap(1.25), 0))
         self.urls_text = tk.Text(
-            input_card.body,
+            urls_row,
             height=3,
             relief="flat",
             borderwidth=0,
@@ -4297,8 +4302,15 @@ class App:
             insertbackground=TEXT,
             selectbackground=_PAL.accent_soft,
         )
-        self.urls_text.pack(fill="x", pady=(theme.gap(1.25), 0))
+        self.urls_text.pack(side="left", fill="both", expand=True)
         self._add_context_menu(self.urls_text)
+        self.load_list_button = ttk.Button(
+            urls_row,
+            text="从文件…",
+            style="Secondary.TButton",
+            command=self.load_thread_list,
+        )
+        self.load_list_button.pack(side="right", anchor="n", padx=(theme.gap(1.25), 0))
 
         # 抓取范围
         scope_row = ttk.Frame(input_card.body, style="Card.TFrame")
@@ -4646,18 +4658,22 @@ class App:
         return "embed"
 
     def _log_image_mode_note(self) -> None:
-        """「存到同名目录」只有 HTML 能真落盘：其它格式按内嵌处理，日志里说一句。
+        """「存到同名目录」只有 HTML 与 Markdown 能真落盘：其它格式按内嵌处理，日志里说一句。
 
         下拉框里四个选项对所有带图格式都露着（不按格式变来变去，好理解），
         所以选错了不报错，只在开跑时告诉用户这一次实际是怎么处理的。
         """
-        if self.current_image_mode() == "folder" and self.current_format() != "html":
-            self.log("「存到同名目录」只对 HTML 生效，这次按内嵌处理。")
+        if self.current_image_mode() == "folder" and self.current_format() not in (
+            "html",
+            "markdown",
+        ):
+            self.log("「存到同名目录」只对 HTML 与 Markdown 生效，这次按内嵌处理。")
 
     def _sync_image_mode(self) -> None:
         """图片模式对 HTML / PDF / EPUB 有意义：选它们时露出来，其它格式收起来。
 
-        「存到同名目录」只有 HTML 能真正落盘（PDF 在内存里渲染、EPUB 是 zip），
+        「存到同名目录」只有 HTML 与 Markdown 能真正落盘（PDF 在内存里渲染、
+        EPUB 是 zip），
         但下拉框仍然让它可选：选它之后导出 PDF / EPUB 会按内嵌处理并在日志里说一句，
         比让界面按格式变来变去好理解。
         """
@@ -5235,6 +5251,42 @@ class App:
         self.refresh_cache_info()
 
     # ---------- 饼干挑选 ----------
+
+    def load_thread_list(self) -> None:
+        """从文本文件读一批串号，追加到输入框里（同一串号不重复加）。
+
+        解析与报错都在 :mod:`xdao.threadlist`：有认不出的行就整体拒绝并指出
+        行号，不静默跳过——少导一个串比报错难发现得多。
+        """
+        from .cache import parse_thread_id
+        from .threadlist import ThreadListError, read_thread_list
+
+        chosen = filedialog.askopenfilename(
+            title="选择串号清单",
+            filetypes=[("文本文件", "*.txt *.md *.list"), ("所有文件", "*.*")],
+        )
+        if not chosen:
+            return
+        try:
+            entries = read_thread_list(chosen)
+        except ThreadListError as exc:
+            messagebox.showerror("读不了这个清单", str(exc))
+            return
+
+        existing = {
+            parse_thread_id(line)
+            for line in self.urls_text.get("1.0", "end").splitlines()
+            if line.strip()
+        }
+        added = [entry for entry in entries if parse_thread_id(entry) not in existing]
+        skipped = len(entries) - len(added)
+        if not added:
+            self.log(f"清单里的 {len(entries)} 个串都已经在输入框里了。")
+            return
+        current = self.urls_text.get("1.0", "end-1c")
+        prefix = "" if not current or current.endswith("\n") else "\n"
+        self.urls_text.insert("end", prefix + "\n".join(added) + "\n")
+        self.log(f"从清单读到 {len(entries)} 个串：新增 {len(added)} 个，已有 {skipped} 个。")
 
     def pick_cookies(self) -> None:
         urls = self._collect_urls()
