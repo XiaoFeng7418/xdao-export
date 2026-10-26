@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -341,3 +342,117 @@ def test_markdown_images_to_xhtml_helper_is_reusable():
 def test_data_uri_bytes_roundtrip():
     uri = "data:image/jpeg;base64," + base64.b64encode(SAMPLE_JPEG).decode("ascii")
     assert data_uri_bytes(uri) == SAMPLE_JPEG
+
+# ---------- 6. 图片存到同名目录（v0.20.0）----------
+
+
+def _thread_with_images() -> object:
+    """样例串：主帖带附件图，回复正文里还有一张图。"""
+    return sample_thread()
+
+
+def test_markdown_default_mode_keeps_image_links(tmp_path: Path) -> None:
+    """不传 image_mode（旧行为）：正文里是绝对链接，不下载任何图片。"""
+    client = FakeClient()
+    exporter = MarkdownBuilder(client)
+    path = exporter.save(sample_thread(), "all", tmp_path)
+
+    text = path.read_text(encoding="utf-8")
+
+    assert exporter.image_mode == "url"
+    assert "![图片](https://image.nmb.best/image/inline.jpg)" in text
+    assert client.downloaded == []
+    assert not path.with_name(path.stem + ".files").exists()
+
+
+def test_markdown_embed_setting_falls_back_to_links(tmp_path: Path) -> None:
+    """全局默认是「内嵌」：Markdown 是纯文本，不能塞 base64，按链接处理。"""
+    client = FakeClient(images={"https://image.nmb.best/image/inline.jpg": SAMPLE_JPEG})
+    exporter = MarkdownBuilder(client, image_mode="embed")
+    text = exporter.build(sample_thread(), "all")
+
+    assert exporter.image_mode == "url"
+    assert "![图片](https://image.nmb.best/image/inline.jpg)" in text
+    assert "data:image" not in text
+    assert client.downloaded == []
+
+
+def test_markdown_drop_mode_removes_every_image(tmp_path: Path) -> None:
+    client = FakeClient()
+    exporter = MarkdownBuilder(client, image_mode="drop")
+    text = exporter.build(sample_thread(), "all")
+
+    assert exporter.image_mode == "drop"
+    assert "![图片]" not in text
+    assert client.downloaded == []
+
+
+def test_markdown_folder_mode_writes_images_beside_the_file(tmp_path: Path) -> None:
+    client = FakeClient(
+        images={
+            "https://image.nmb.best/image/abcdef.jpg": SAMPLE_JPEG,
+            "https://image.nmb.best/image/inline.jpg": SAMPLE_JPEG,
+        }
+    )
+    exporter = MarkdownBuilder(client, image_mode="folder")
+    path = exporter.save(sample_thread(), "all", tmp_path)
+
+    folder = path.with_name(path.stem + ".files")
+    assert folder.is_dir()
+    names = sorted(item.name for item in folder.iterdir())
+    assert names == ["abcdef.jpg", "inline.jpg"]
+    # 写进去的就是原图字节（没有转码、没有加 base64 头）。
+    assert (folder / "inline.jpg").read_bytes() == SAMPLE_JPEG
+
+    text = path.read_text(encoding="utf-8")
+    # 目录名可能是中文（跟着成品名走），正文里按 URL 规则转义，浏览器与阅读器都认。
+    rel = urllib.parse.quote(folder.name, safe="")
+    assert f"![图片]({rel}/inline.jpg)" in text
+    assert f"![图片]({rel}/abcdef.jpg)" in text
+    assert "https://image.nmb.best/image/inline.jpg" not in text
+
+
+def test_markdown_folder_mode_keeps_the_link_when_download_fails(tmp_path: Path) -> None:
+    failed = "https://image.nmb.best/image/inline.jpg"
+    client = FakeClient(fail_urls={failed})
+    messages: list[str] = []
+    exporter = MarkdownBuilder(client, progress=messages.append, image_mode="folder")
+    path = exporter.save(sample_thread(), "all", tmp_path)
+
+    text = path.read_text(encoding="utf-8")
+
+    # 下不到就退回外链，正文别因为一张图丢内容。
+    assert f"![图片]({failed})" in text
+    assert any("图片下载失败，已保留链接" in message for message in messages)
+
+
+def test_markdown_folder_mode_summarises_many_failures(tmp_path: Path) -> None:
+    from tests import make_post
+    from xdao.exporters._shared import ThreadData
+
+    posts = []
+    for index in range(1, 13):
+        posts.append(
+            make_post(
+                8000 + index,
+                f'<img src="https://cdn.example/missing-{index}.jpg">',
+                is_po=index == 1,
+            )
+        )
+    thread = ThreadData(thread_id=8000, title="多图", po_hash="POCOOKIE", posts=posts)
+    client = FakeClient(fail_urls={f"https://cdn.example/missing-{index}.jpg" for index in range(1, 13)})
+    messages: list[str] = []
+    exporter = MarkdownBuilder(client, progress=messages.append, image_mode="folder")
+    exporter.save(thread, "all", tmp_path)
+
+    assert any("一共 12 张图片没存进目录" in message for message in messages)
+    assert any("逐条日志只列了前 10 张" in message for message in messages)
+
+
+def test_create_exporter_hands_the_folder_mode_to_markdown() -> None:
+    from xdao.exporters import create_exporter
+
+    exporter = create_exporter("markdown", FakeClient(), image_mode="folder")
+
+    assert isinstance(exporter, MarkdownBuilder)
+    assert exporter.image_mode == "folder"

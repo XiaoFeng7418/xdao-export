@@ -2431,13 +2431,20 @@ def test_watch_edit_dialog_rejects_a_bad_page_cap(dialog_root, artifacts_dir, mo
 def test_watch_edit_dialog_greys_the_image_box_for_formats_without_images(
     dialog_root, artifacts_dir
 ):
-    """TXT / Markdown 用不上图片处理：下拉框灰掉，免得用户以为能选。"""
+    """TXT 用不上图片处理：下拉框灰掉，免得用户以为能选。"""
     target = gui.WatchTarget("7001234", format_key="txt")
     app, dialog, edit, target = _open_watch_edit(dialog_root, artifacts_dir, [target])
     try:
         assert str(edit.image_box.cget("state")) == "disabled"
 
         edit.format_box.current(edit._format_keys.index("epub"))
+        edit.format_box.event_generate("<<ComboboxSelected>>")
+        dialog_root.update()
+
+        assert str(edit.image_box.cget("state")) == "readonly"
+
+        # v0.20.0 起 Markdown 也能「存到同名目录」，所以它同样算带图格式。
+        edit.format_box.current(edit._format_keys.index("markdown"))
         edit.format_box.event_generate("<<ComboboxSelected>>")
         dialog_root.update()
 
@@ -2809,7 +2816,7 @@ def test_folder_mode_with_a_non_html_format_says_it_falls_back(live_app):
     live_app.format_box.current(live_app._format_keys.index("pdf"))
     live_app._log_image_mode_note()
     logs = live_app.log_text.get("1.0", "end-1c")
-    assert "「存到同名目录」只对 HTML 生效" in logs
+    assert "「存到同名目录」只对 HTML 与 Markdown 生效" in logs
 
 
 def test_folder_mode_with_html_says_nothing(live_app):
@@ -2818,3 +2825,92 @@ def test_folder_mode_with_html_says_nothing(live_app):
     live_app.format_box.current(live_app._format_keys.index("html"))
     live_app._log_image_mode_note()
     assert "只对 HTML 生效" not in live_app.log_text.get("1.0", "end-1c")
+
+
+# ---------------------------------------------------------------------------
+# 从文件读串号清单（v0.20.0）
+# ---------------------------------------------------------------------------
+
+
+def _listing(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
+    target = tmp_path / "清单.txt"
+    target.write_text(body, encoding="utf-8")
+    return target
+
+
+def test_load_thread_list_appends_what_the_file_lists(
+    live_app, tmp_path, monkeypatch
+) -> None:
+    chosen = _listing(tmp_path, "# 攒的\n7001002\n7001003\n")
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kwargs: str(chosen))
+
+    live_app.load_thread_list()
+
+    text = live_app.urls_text.get("1.0", "end-1c")
+    assert "7001002" in text
+    assert "7001003" in text
+    assert "从清单读到 2 个串：新增 2 个，已有 0 个" in live_app.log_text.get("1.0", "end-1c")
+
+
+def test_load_thread_list_keeps_a_newline_before_the_new_entries(
+    live_app, tmp_path, monkeypatch
+) -> None:
+    """输入框里已有内容且末尾没有换行时，别把新串号粘在过去那一行后面。"""
+    live_app.urls_text.insert("1.0", "https://www.nmbxd1.com/t/50000001")
+    chosen = _listing(tmp_path, "7001002\n")
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kwargs: str(chosen))
+
+    live_app.load_thread_list()
+
+    lines = [line for line in live_app.urls_text.get("1.0", "end").splitlines() if line.strip()]
+    assert lines == ["https://www.nmbxd1.com/t/50000001", "7001002"]
+
+
+def test_load_thread_list_skips_entries_that_are_already_there(
+    live_app, tmp_path, monkeypatch
+) -> None:
+    live_app.urls_text.insert("1.0", "50000001\n")
+    chosen = _listing(tmp_path, "50000001\n7001002\n")
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kwargs: str(chosen))
+
+    live_app.load_thread_list()
+
+    body = live_app.urls_text.get("1.0", "end-1c")
+    assert body.count("50000001") == 1
+    assert "新增 1 个，已有 1 个" in live_app.log_text.get("1.0", "end-1c")
+
+
+def test_load_thread_list_says_so_when_nothing_new_is_added(
+    live_app, tmp_path, monkeypatch
+) -> None:
+    live_app.urls_text.insert("1.0", "50000001\n")
+    chosen = _listing(tmp_path, "50000001\n")
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kwargs: str(chosen))
+
+    live_app.load_thread_list()
+
+    assert "都已经在输入框里了" in live_app.log_text.get("1.0", "end-1c")
+
+
+def test_load_thread_list_reports_a_bad_file_and_keeps_the_box(
+    live_app, tmp_path, monkeypatch
+) -> None:
+    chosen = _listing(tmp_path, "50000001\n不是串号\n")
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kwargs: str(chosen))
+    calls = _messagebox_calls(monkeypatch)
+
+    live_app.load_thread_list()
+
+    assert calls and calls[-1][0] == "showerror"
+    assert "第 2 行" in calls[-1][2]
+    assert live_app.urls_text.get("1.0", "end-1c").strip() == ""
+
+
+def test_load_thread_list_does_nothing_when_the_dialog_is_cancelled(
+    live_app, monkeypatch
+) -> None:
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kwargs: "")
+
+    live_app.load_thread_list()
+
+    assert live_app.urls_text.get("1.0", "end-1c").strip() == ""

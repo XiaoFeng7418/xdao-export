@@ -1341,4 +1341,89 @@ def test_image_mode_folder_is_downgraded_for_pdf(out_dir, monkeypatch, capsys):
 
     assert code == 0
     assert seen[0]["image_mode"] == "embed"
-    assert "只对 HTML 生效" in capsys.readouterr().out
+    assert "只对 HTML 与 Markdown 生效" in capsys.readouterr().out
+
+
+# ---------- --input：从文件读串号清单（v0.20.0） ----------
+
+
+def test_parser_knows_the_input_option() -> None:
+    import main as cli_main
+
+    parser = cli_main.build_parser()
+
+    args = parser.parse_args(["--input", "清单.txt"])
+
+    assert args.input == "清单.txt"
+
+
+def test_input_file_adds_the_threads_it_lists(out_dir, tmp_path, monkeypatch, capsys) -> None:
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    RecordingFetcher, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+    listing = tmp_path / "清单.txt"
+    listing.write_text("# 攒了几天\n7001002\nhttps://www.nmbxd1.com/t/7001003\n", encoding="utf-8")
+
+    code = main(["50000001", "--input", str(listing), "-o", str(out_dir)])
+
+    assert code == 0
+    assert [call[0] for call in calls] == ["50000001", "7001002", "7001003"]
+
+
+def test_input_file_alone_is_enough(out_dir, tmp_path, monkeypatch) -> None:
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    RecordingFetcher, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+    listing = tmp_path / "清单.txt"
+    listing.write_text("7001004\n7001005\n", encoding="utf-8")
+
+    code = main(["--input", str(listing), "-o", str(out_dir)])
+
+    assert code == 0
+    assert [call[0] for call in calls] == ["7001004", "7001005"]
+
+
+def test_input_file_deduplicates_against_the_command_line(out_dir, tmp_path, monkeypatch) -> None:
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    RecordingFetcher, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+    listing = tmp_path / "清单.txt"
+    listing.write_text("50000001\n7001006\n", encoding="utf-8")
+
+    code = main(["50000001", "--input", str(listing), "-o", str(out_dir)])
+
+    assert code == 0
+    assert [call[0] for call in calls] == ["50000001", "7001006"]
+
+
+def test_bad_input_file_stops_before_any_network(out_dir, tmp_path, monkeypatch, capsys) -> None:
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    RecordingFetcher, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+    listing = tmp_path / "清单.txt"
+    listing.write_text("7001007\n不是串号\n", encoding="utf-8")
+
+    code = main(["--input", str(listing), "-o", str(out_dir)])
+
+    assert code == 2
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "清单文件有误" in err
+    assert "第 2 行" in err
+
+
+def test_missing_input_file_is_reported(out_dir, tmp_path, monkeypatch, capsys) -> None:
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    RecordingFetcher, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["--input", str(tmp_path / "没有这个.txt"), "-o", str(out_dir)])
+
+    assert code == 2
+    assert calls == []
+    assert "找不到清单文件" in capsys.readouterr().err

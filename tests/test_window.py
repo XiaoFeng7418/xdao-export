@@ -392,18 +392,19 @@ def test_log_widget_is_wired_to_the_log_method(app: gui.App) -> None:
 
 # ---------------------------------------------------------------- 图片行
 # v0.16.0 之前「图片」下拉只对 EPUB 显示（别的格式永远 base64 内嵌）。
-# 现在三种模式对 HTML / PDF 也生效，这一行就得跟着格式出现；纯文字格式不显示。
+# 现在几种模式对 HTML / PDF 也生效、v0.20.0 起 Markdown 也能存同名目录，
+# 这一行就得跟着格式出现；只有 TXT 这种根本存不了图的格式不显示。
 
 
 def test_image_row_follows_the_format(app: gui.App) -> None:
-    for key in ("html", "pdf", "epub"):
+    for key in ("html", "pdf", "epub", "markdown"):
         app.format_box.current(app._format_keys.index(key))  # noqa: SLF001
         app._sync_image_mode()  # noqa: SLF001
         app.root.update_idletasks()
         assert app.image_mode_frame.winfo_ismapped(), key
         assert app.current_format() == key
 
-    for key in ("txt", "markdown"):
+    for key in ("txt",):
         app.format_box.current(app._format_keys.index(key))  # noqa: SLF001
         app._sync_image_mode()  # noqa: SLF001
         app.root.update_idletasks()
