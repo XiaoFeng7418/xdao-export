@@ -35,7 +35,7 @@
 
 ## 附件
 
-- `xdao-export-v0.21.16-win64.zip`（11.67 MB，12,235,015 字节，957 个条目）
+- `xdao-export-v0.21.16-win64.zip`（免安装包，Windows 64 位，解压即用；11.67 MB，12,235,015 字节，957 个条目）
 - `xdao-export-v0.21.16-win64.zip.sha256`（SHA256：`acdd2a12b68099880b7fb22de99786c9d27f81cdd8228c00a4f5e8c3b879e892`）
 
 下载后解压覆盖原目录即可；配置与缓存在 `%APPDATA%\xdao-export` 与导出目录里，不会被覆盖。
