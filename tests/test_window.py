@@ -2729,3 +2729,112 @@ def test_worker_closes_the_window_when_cancelled_mid_start(monkeypatch) -> None:
     assert stopped == [True]
     assert dialog._browser is None
     assert all(item[0] != "error" for item in items)
+
+# ---------- 导出与监控的早期退出分支（v0.21.12）----------
+
+
+def test_start_asks_for_a_cookie_before_doing_anything(app: gui.App, monkeypatch) -> None:
+    """没登录就先别抓：弹一句并把登录窗打开，用户少一次「点了没反应」。"""
+    warned: list[tuple] = []
+    opened: list[bool] = []
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warned.append(a))
+    monkeypatch.setattr(app, "open_login", lambda: opened.append(True))
+    app.settings.userhash = ""
+
+    app.start()
+
+    assert warned == [("提示", "请先登录或设置饼干。")]
+    assert opened == [True]
+
+
+def test_start_asks_for_at_least_one_url(app: gui.App, monkeypatch) -> None:
+    app.settings.userhash = "x" * 40
+    monkeypatch.setattr(app, "_collect_urls", lambda: [])
+    warned: list[tuple] = []
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warned.append(a))
+
+    app.start()
+
+    assert warned == [("提示", "请至少输入一个串网址。")]
+
+
+def test_start_explains_when_the_until_cut_hides_everything(app: gui.App, monkeypatch) -> None:
+    """串号截止把整张列表都挡掉时，要说清「截止是怎么算的」，别只弹个空提示。"""
+    app.settings.userhash = "x" * 40
+    monkeypatch.setattr(app, "_collect_urls", lambda: ["12345678"])
+    monkeypatch.setattr(app, "until_thread_id", lambda: 1234567)
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, body, **k: warned.append((title, body))
+    )
+
+    app.start()
+
+    assert warned and warned[0][0] == "没有要导出的串"
+    assert "串号截止把列表里的串全都挡住了" in warned[0][1]
+    assert app._exporting is False
+
+
+def test_start_stops_when_the_export_directory_cannot_be_prepared(
+    app: gui.App, monkeypatch
+) -> None:
+    app.settings.userhash = "x" * 40
+    monkeypatch.setattr(app, "_collect_urls", lambda: ["50000001"])
+    monkeypatch.setattr(app, "until_thread_id", lambda: None)
+    monkeypatch.setattr(app, "prepare_export_dir", lambda: None)
+
+    app.start()
+
+    assert app._exporting is False, "目录都没准备好就不该把导出标记成进行中"
+
+
+def test_start_watching_returns_early_when_it_is_already_running(
+    app: gui.App, tmp_path
+) -> None:
+    app._watching = True
+    app.watch_targets = [gui.WatchTarget("50000001")]
+    app.output_var.set(str(tmp_path))
+
+    app.start_watching(30)
+
+    assert app._watching is True
+
+
+def test_start_watching_says_when_notifications_are_unavailable(
+    app: gui.App, tmp_path, monkeypatch
+) -> None:
+    """系统发不出桌面通知时说一句，别让用户以为通知开关坏了。"""
+    app.watch_targets = [gui.WatchTarget("50000001")]
+    app.output_var.set(str(tmp_path))
+    app.notify_var.set(True)
+
+    class _DeadNotifier:
+        def __init__(self, min_interval: float = 0.0) -> None:
+            self.min_interval = min_interval
+
+        def available(self) -> bool:
+            return False
+
+    monkeypatch.setattr(gui, "Notifier", _DeadNotifier)
+    monkeypatch.setattr(gui, "watch_forever", lambda *a, **k: None)
+
+    app.start_watching(30)
+    _drain_watch(app)
+
+    assert "提示：当前环境发不出桌面通知" in app.log_text.get("1.0", "end-1c")
+
+
+def test_start_watching_reports_a_loop_failure(app: gui.App, tmp_path, monkeypatch) -> None:
+    """监控循环抛异常：把那句话写进日志，而不是让线程悄悄死掉。"""
+    app.watch_targets = [gui.WatchTarget("50000001")]
+    app.output_var.set(str(tmp_path))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("炸了")
+
+    monkeypatch.setattr(gui, "watch_forever", boom)
+
+    app.start_watching(30)
+    _drain_watch(app)
+
+    assert "监控出错：RuntimeError: 炸了" in app.log_text.get("1.0", "end-1c")
