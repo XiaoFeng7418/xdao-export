@@ -3355,3 +3355,258 @@ def test_edit_selected_ignores_a_row_that_is_no_longer_in_the_list(
         _close(dialog)
 
     assert opened == []
+
+# ---------- 主窗口几个动作的角落分支（v0.21.10）----------
+
+
+class _Var:
+    """最小的 StringVar / BooleanVar 替身：只记值。"""
+
+    def __init__(self, value="") -> None:
+        self._value = value
+
+    def get(self):  # noqa: ANN201
+        return self._value
+
+    def set(self, value):  # noqa: ANN001, ANN201
+        self._value = value
+
+
+def _bare_app(**attrs):  # noqa: ANN003, ANN202
+    app = object.__new__(gui.App)
+    for name, value in attrs.items():
+        setattr(app, name, value)
+    return app
+
+
+def test_retry_failed_says_there_is_nothing_to_retry(monkeypatch) -> None:
+    app = _bare_app(_last_failed=[])
+    calls: list[tuple] = []
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: calls.append(a))
+
+    app.retry_failed()
+
+    assert calls == [("提示", "没有失败项需要重试。")]
+
+
+def test_retry_failed_hands_the_list_back_to_start(monkeypatch) -> None:
+    started: list[object] = []
+    logs: list[str] = []
+    app = _bare_app(_last_failed=["50000001", "12345678"])
+    app.start = lambda urls=None: started.append(urls)  # noqa: E731
+    app.log = logs.append
+
+    app.retry_failed()
+
+    assert started == [["50000001", "12345678"]]
+    assert logs == ["重试 2 个失败项。"]
+    # 传下去的是副本：start() 里再改也不会动到 _last_failed
+    assert started[0] is not app._last_failed
+
+
+def test_poll_export_swallows_a_broken_log_and_keeps_polling() -> None:
+    """日志写入抛异常不该让整条轮询断掉；还在导出就继续排下一次。"""
+    import queue
+
+    scheduled: list[tuple] = []
+
+    class _Root:
+        def after(self, delay, callback):  # noqa: ANN001, ANN201
+            scheduled.append((delay, callback.__name__))
+
+    app = _bare_app(
+        _export_queue=queue.Queue(),
+        _exporting=True,
+        _export_stop=None,
+        root=_Root(),
+        progress_bar=_FakeWidget(),
+        progress_var=_Var(),
+    )
+
+    def boom(_text):  # noqa: ANN001
+        raise RuntimeError("日志框没了")
+
+    app.log = boom
+    app._export_queue.put(("log", "这一句会炸"))
+
+    app._poll_export()
+
+    assert scheduled == [(50, "_poll_export")]
+
+
+def test_check_watch_once_asks_for_a_target_first(monkeypatch) -> None:
+    warned: list[tuple] = []
+    app = _bare_app(watch_targets=[], _exporting=False, _watching=False)
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warned.append(a))
+
+    app.check_watch_once()
+
+    assert warned == [("提示", "请先添加要监控的串。")]
+
+
+def test_check_watch_once_asks_for_an_output_dir_next(monkeypatch) -> None:
+    from xdao.watcher import WatchTarget
+
+    warned: list[tuple] = []
+    app = _bare_app(
+        watch_targets=[WatchTarget("50000001", format_key="html")],
+        output_var=_Var("   "),
+        _exporting=False,
+        _watching=False,
+    )
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warned.append(a))
+
+    app.check_watch_once()
+
+    assert warned == [("提示", "请先选择导出目录。")]
+
+
+def test_choose_folder_keeps_the_current_dir_when_cancelled(monkeypatch) -> None:
+    refreshed: list[bool] = []
+    app = _bare_app(output_var=_Var("D:\\XY"), _dir_pinned=False)
+    app.refresh_cache_info = lambda: refreshed.append(True)
+    monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **kwargs: "")
+
+    app.choose_folder()
+
+    assert app.output_var.get() == "D:\\XY"
+    assert app._dir_pinned is False
+    assert refreshed == []
+
+
+def test_choose_folder_pins_the_new_dir_and_refreshes_the_cache_line(monkeypatch) -> None:
+    refreshed: list[bool] = []
+    app = _bare_app(output_var=_Var("D:\\XY"), _dir_pinned=False)
+    app.refresh_cache_info = lambda: refreshed.append(True)
+    monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **kwargs: "E:\\新目录")
+
+    app.choose_folder()
+
+    assert app.output_var.get() == "E:\\新目录"
+    assert app._dir_pinned is True
+    assert refreshed == [True]
+
+
+def test_refresh_cache_info_counts_threads_and_images(tmp_path, monkeypatch) -> None:
+    cache_dir = tmp_path / "cache"
+    (cache_dir / "threads").mkdir(parents=True)
+    (cache_dir / "threads" / "50000001.json").write_text("{}", encoding="utf-8")
+    (cache_dir / "threads" / "12345678.json").write_text("{}", encoding="utf-8")
+    (cache_dir / "images" / "sub").mkdir(parents=True)
+    (cache_dir / "images" / "sub" / "a.jpg").write_bytes(b"x" * 1024)
+    (cache_dir / "images" / "b.jpg").write_bytes(b"x" * 1024)
+
+    from types import SimpleNamespace
+
+    info = _Var()
+    app = _bare_app(
+        cache_info_var=info,
+        output_var=_Var("D:\\XY"),
+        settings=SimpleNamespace(resolved_cache_dir=lambda _chosen: cache_dir),
+    )
+    monkeypatch.setattr(gui, "resolve_cache_dir", lambda _requested: (cache_dir, ""))
+
+    app.refresh_cache_info()
+
+    text = info.get()
+    assert text.startswith("缓存：2 个串 · 2 张图片 · ")
+    assert str(cache_dir) in text
+    assert "已自动改用这里" not in text
+
+# ---------- 致命错误兜底、监控窗复用、下载页（v0.21.10）----------
+
+
+def test_report_fatal_puts_the_original_error_in_a_plain_dialog(monkeypatch) -> None:
+    shown: list[tuple] = []
+    import tkinter.messagebox as _mb
+
+    monkeypatch.setattr(_mb, "showerror", lambda *a, **k: shown.append(a))
+
+    gui._report_fatal("界面起不来", RuntimeError("配置坏了"))
+
+    assert len(shown) == 1
+    title, text = shown[0]
+    assert title == "界面起不来"
+    assert "RuntimeError: 配置坏了" in text
+    assert "配置文件损坏" in text
+    assert "详细信息" in text
+
+
+def test_report_fatal_never_raises_even_if_the_dialog_is_broken(monkeypatch) -> None:
+    def boom(*args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("连对话框都弹不出来")
+
+    import tkinter.messagebox as _mb
+
+    monkeypatch.setattr(_mb, "showerror", boom)
+
+    gui._report_fatal("界面起不来", ValueError("随便什么错"))  # 不该抛
+
+
+def test_open_watch_reuses_the_dialog_that_is_already_on_screen() -> None:
+    calls: list[str] = []
+
+    class _Dialog:
+        def winfo_exists(self) -> bool:
+            return True
+
+        def lift(self) -> None:
+            calls.append("lift")
+
+        def focus_set(self) -> None:
+            calls.append("focus")
+
+    app = object.__new__(gui.App)
+    app._watch_dialog = _Dialog()
+
+    app.open_watch()
+
+    assert calls == ["lift", "focus"]
+    assert isinstance(app._watch_dialog, _Dialog)
+
+
+def test_open_watch_creates_a_dialog_when_there_is_none(monkeypatch) -> None:
+    made: list[object] = []
+
+    class _Dialog:
+        def __init__(self, app):  # noqa: ANN001
+            made.append(app)
+
+    monkeypatch.setattr(gui, "WatchDialog", _Dialog)
+    app = object.__new__(gui.App)
+    app._watch_dialog = None
+
+    app.open_watch()
+
+    assert made == [app]
+    assert isinstance(app._watch_dialog, _Dialog)
+
+
+def test_open_download_page_hands_the_url_to_the_browser(monkeypatch) -> None:
+    opened: list[str] = []
+    import webbrowser as _wb
+
+    monkeypatch.setattr(_wb, "open", lambda url: opened.append(url))
+    app = object.__new__(gui.App)
+    app.log = lambda _text: None
+
+    app._open_download_page("https://example.invalid/releases")
+
+    assert opened == ["https://example.invalid/releases"]
+
+
+def test_open_download_page_logs_the_url_when_the_browser_refuses(monkeypatch) -> None:
+    logs: list[str] = []
+
+    def boom(_url):  # noqa: ANN001
+        raise OSError("没有默认浏览器")
+
+    import webbrowser as _wb
+
+    monkeypatch.setattr(_wb, "open", boom)
+    app = object.__new__(gui.App)
+    app.log = logs.append
+
+    app._open_download_page("https://example.invalid/releases")
+
+    assert logs == ["下载页：https://example.invalid/releases"]

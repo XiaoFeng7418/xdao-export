@@ -681,6 +681,31 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.10**：给登录窗的失败分支与主窗口几个动作补用例（界面覆盖 90% → 91%）。
+
+  1. **为什么补**：`BrowserLoginDialog._worker` 是「点一下用浏览器登录」之后在后台
+     跑的那段。它的主干早就覆盖了，但**每一条失败路径都没测**——而这些路径恰恰是
+     真机报障的常客（v0.17.3 的「一次弹出好几扇窗」、v0.17.5 的「失败时看不见普查
+     结果」都出在这里）。主窗口那几处同理：`retry_failed` 的「没有失败项」、
+     `choose_folder` 点取消、`refresh_cache_info` 的串数/图片数，都是用户一眼能看到
+     却从没被断言过的文本。
+  2. **新增用例**（`tests/test_window.py` +6）：没有浏览器组件、找浏览器抛异常、
+     机器上没有浏览器、找浏览器期间被取消、`start()` 失败要「报原文 + 把窗收掉 +
+     把普查与逐扇死因吐出来」、启动中被取消时拿局部引用收尾。做法是
+     `object.__new__(gui.BrowserLoginDialog)` 只摆上 `_queue` / `_stop` /
+     `_browser` / `settings`，再把 `gui._load_browser_login` 与
+     `gui._find_login_browser` 换成替身——不开窗口、不起进程、不联网。
+  3. **新增用例**（`tests/test_gui_entry.py` +8）：`retry_failed` 两条（没失败项只
+     提示；有失败项时把**副本**交给 `start`，别把 `_last_failed` 本身递出去）、
+     `_poll_export` 里日志写入抛异常时吞掉并继续排轮询、`check_watch_once` 两条拦路
+     提示、`choose_folder` 两条（取消不动当前目录 / 选中后钉住并刷新缓存行）、
+     `refresh_cache_info` 数串数与图片数。
+  4. **坑**：`_poll_export` 的用例曾经先把队列 drain 出来再断言，结果错误项被自己的
+     `_drain` 吃掉了（断言恒假）——同一条队列不能既 drain 又再查 `queue.queue`。
+  5. **读数**：只跑三个界面测试文件时 gui.py 行覆盖 90% → **91%**；
+     `tests/test_window.py` 110 → 116、`tests/test_gui_entry.py` 139 → 153。
+  6. 收集 2547、本机 2540 通过、7 跳过。
+
 - **v0.21.9**：给「一键升级」的下载 / 自检 / 替换补用例（界面覆盖 89% → 90%）。
 
   1. **为什么补**：升级链路是「会动用户文件」的那一小块代码 —— 下载新版、跑自检、
