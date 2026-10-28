@@ -2838,3 +2838,439 @@ def test_start_watching_reports_a_loop_failure(app: gui.App, tmp_path, monkeypat
     _drain_watch(app)
 
     assert "监控出错：RuntimeError: 炸了" in app.log_text.get("1.0", "end-1c")
+
+# ------------------------------------------------- 导出线程内层分支（v0.21.13）
+
+
+class _Meta:
+    def __init__(self, thread_id: int = 12345678, title: str = "测试串", po_hash: str = "") -> None:
+        self.thread_id = thread_id
+        self.title = title
+        self.po_hash = po_hash
+
+
+class _FetchResult:
+    def __init__(
+        self,
+        *,
+        thread_id: int = 12345678,
+        posts: int = 3,
+        reason: str = "全部楼层已抓完",
+        retry_note: str = "",
+        cache_warning: str = "",
+    ) -> None:
+        from tests import make_post
+
+        self.meta = _Meta(thread_id)
+        self.posts = [make_post(i + 1, f"正文{i}") for i in range(posts)]
+        self.reason = reason
+        self.retry_note = retry_note
+        self.cache_warning = cache_warning
+
+
+class _FakeFetcher:
+    """``CachedThreadFetcher`` 的替身：按顺序回放预先排好的结果或异常。"""
+
+    def __init__(self, plan) -> None:
+        self.plan = list(plan)
+        self.calls: list[str] = []
+
+    def fetch(self, url: str, max_pages: int = 0):
+        self.calls.append(url)
+        item = self.plan.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+class _FakeExporter:
+    supports_merge = True
+
+    def __init__(
+        self, *, save_error: BaseException | None = None, many_error: BaseException | None = None
+    ) -> None:
+        self.save_error = save_error
+        self.many_error = many_error
+        self.saved: list[str] = []
+        self.many: list[list] = []
+
+    def save(self, thread, scope, output_dir, include_hashes=()):  # noqa: ANN001
+        if self.save_error is not None:
+            raise self.save_error
+        self.saved.append(thread.title)
+        return pathlib.Path(output_dir) / f"{thread.thread_id}.html"
+
+    def save_many(self, threads, scope, output_dir, include_hashes=()):  # noqa: ANN001
+        self.many.append(list(threads))
+        if self.many_error is not None:
+            raise self.many_error
+        return pathlib.Path(output_dir) / "合并.html"
+
+
+class _ImmediateThread:
+    """把 ``threading.Thread`` 换成「start() 就地跑完」。"""
+
+    def __init__(self, target=None, **kwargs) -> None:  # noqa: ANN001
+        self._target = target
+
+    def start(self) -> None:
+        assert self._target is not None
+        self._target()
+
+
+class _AlreadyCancelled:
+    """停止位一开始就是举着的。"""
+
+    def is_set(self) -> bool:
+        return True
+
+    def set(self) -> None:
+        return None
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return True
+
+
+def _run_export(
+    app: gui.App,
+    monkeypatch: pytest.MonkeyPatch,
+    plan: list,
+    *,
+    exporter: _FakeExporter | None = None,
+    merge: bool = False,
+    cancelled: bool = False,
+    urls: list[str] | None = None,
+) -> tuple[_FakeFetcher, _FakeExporter]:
+    """让 ``App.start()`` 的 worker 当场跑完，返回替身以便断言。"""
+    fetcher = _FakeFetcher(plan)
+    fake_exporter = exporter or _FakeExporter()
+    monkeypatch.setattr(gui, "CachedThreadFetcher", lambda *a, **k: fetcher)
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: fake_exporter)
+    monkeypatch.setattr(gui.threading, "Thread", _ImmediateThread)
+    if cancelled:
+        monkeypatch.setattr(gui.threading, "Event", _AlreadyCancelled)
+    monkeypatch.setattr(gui.App, "_poll_export", lambda self: None)
+    app.settings.userhash = "TESTHASH"
+    app.settings.merge_export = merge
+    app.start(urls or ["https://www.nmbxd1.com/t/12345678"])
+    app._exporting = False  # noqa: SLF001 —— 别让 fixture 收尾时以为还在导
+    return fetcher, fake_exporter
+
+
+def _drained(app: gui.App) -> tuple[list[str], list[object]]:
+    """把导出队列抽干，返回（日志行, done 载荷）。"""
+    logs: list[str] = []
+    done: list[object] = []
+    while not app._export_queue.empty():  # noqa: SLF001
+        kind, payload = app._export_queue.get_nowait()  # noqa: SLF001
+        if kind == "log":
+            logs.append(str(payload))
+        elif kind == "done":
+            done.append(payload)
+    return logs, done
+
+
+def test_export_worker_logs_incomplete_and_cache_warnings(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺页/撞页数上限与缓存问题都要进日志，并记进「不完整」名单。"""
+    _run_export(
+        app,
+        monkeypatch,
+        [_FetchResult(retry_note="撞上页数上限（5 页）", cache_warning="缓存目录写不进去")],
+    )
+
+    logs, done = _drained(app)
+    text = "\n".join(logs)
+    assert "注意：撞上页数上限（5 页）" in text
+    assert "提示：缓存目录写不进去" in text
+
+    assert done, "worker 必须发一条 done"
+    succeeded, total, failed, _elapsed, incomplete, cancelled = done[-1]
+    assert (succeeded, total, failed, cancelled) == (1, 1, [], False)
+    assert incomplete == ["12345678：撞上页数上限（5 页）"]
+
+
+def test_export_worker_stops_before_the_first_thread_when_cancelled(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """停止位一开始就举着：一项都不抓，done 里 cancelled 为真。"""
+    fetcher, _exporter = _run_export(app, monkeypatch, [_FetchResult()], cancelled=True)
+
+    assert fetcher.calls == []
+    _logs, done = _drained(app)
+    assert done and done[-1][5] is True
+
+
+def test_export_worker_counts_a_cancel_raised_by_the_fetcher_as_cancelled(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """抓取层抛 ExportCancelled：这条不算失败，剩下的串不再处理。"""
+    from xdao.cancel import ExportCancelled
+
+    fetcher, _exporter = _run_export(
+        app,
+        monkeypatch,
+        [_FetchResult(), ExportCancelled("用户点了取消")],
+        urls=["https://www.nmbxd1.com/t/12345678", "https://www.nmbxd1.com/t/50577215"],
+    )
+
+    assert len(fetcher.calls) == 2, "第一个串抓成功、第二个在抓取时抛取消"
+    logs, done = _drained(app)
+    assert "已取消，这一项没导完" in "\n".join(logs)
+    assert done[-1][5] is True
+
+
+def test_export_worker_separates_xdao_errors_from_unexpected_ones(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """保存抛 XdaoError 与抛别的异常都算失败，但日志措辞不同。"""
+    from xdao.client import XdaoError
+
+    _run_export(
+        app,
+        monkeypatch,
+        [_FetchResult()],
+        exporter=_FakeExporter(save_error=XdaoError("站点说没有这个串")),
+    )
+    logs, done = _drained(app)
+    assert "失败：站点说没有这个串" in "\n".join(logs)
+    assert done[-1][2] == ["https://www.nmbxd1.com/t/12345678"]
+
+    _run_export(
+        app,
+        monkeypatch,
+        [_FetchResult()],
+        exporter=_FakeExporter(save_error=RuntimeError("磁盘满了")),
+    )
+    logs, _done = _drained(app)
+    text = "\n".join(logs)
+    assert "失败：" in text and "磁盘满了" in text
+
+
+def test_export_worker_reports_a_failed_merge(app: gui.App, monkeypatch: pytest.MonkeyPatch) -> None:
+    """合并写盘失败：日志说「合并失败」。"""
+    from xdao.client import XdaoError
+
+    exporter = _FakeExporter(many_error=XdaoError("目标文件被占用"))
+    _fetcher, fake = _run_export(app, monkeypatch, [_FetchResult()], exporter=exporter, merge=True)
+
+    assert len(fake.many) == 1 and len(fake.many[0]) == 1
+    logs, _done = _drained(app)
+    text = "\n".join(logs)
+    assert "已收进合并文件" in text
+    assert "合并失败：目标文件被占用" in text
+
+
+def test_export_worker_marks_a_cancelled_merge(app: gui.App, monkeypatch: pytest.MonkeyPatch) -> None:
+    """合并保存时被取消：日志说合并文件没生成，done 里 cancelled 为真。"""
+    from xdao.cancel import ExportCancelled
+
+    exporter = _FakeExporter(many_error=ExportCancelled("取消"))
+    _run_export(app, monkeypatch, [_FetchResult()], exporter=exporter, merge=True)
+
+    logs, done = _drained(app)
+    assert "已取消：合并文件没有生成" in "\n".join(logs)
+    assert done[-1][5] is True
+
+
+def test_clear_log_empties_the_read_only_box(app: gui.App) -> None:
+    """日志框是只读的：clear_log 要先放开再删，否则 Tk 静默忽略。"""
+    app.log("第一行")
+    assert app.log_text.get("1.0", "end").strip()
+
+    app.clear_log()
+
+    assert app.log_text.get("1.0", "end").strip() == ""
+    assert str(app.log_text.cget("state")) == "disabled"
+
+
+def test_open_selftest_raises_the_existing_window(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """自检窗口已经开着时只抬起来，不新建第二扇。"""
+    calls: list[str] = []
+
+    class _Dialog:
+        def winfo_exists(self) -> bool:
+            return True
+
+        def lift(self) -> None:
+            calls.append("lift")
+
+        def focus_set(self) -> None:
+            calls.append("focus")
+
+    app._selftest_dialog = _Dialog()  # noqa: SLF001
+    app.open_selftest()
+
+    assert calls == ["lift", "focus"]
+
+
+def test_setup_style_applies_theme_and_fonts(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(gui, "apply_theme", lambda root: calls.append("theme") or "style")
+    monkeypatch.setattr(gui, "refresh_fonts", lambda root: calls.append("fonts"))
+
+    assert gui.setup_style(object()) == "style"  # type: ignore[arg-type]
+    assert calls == ["theme", "fonts"]
+
+
+def test_paste_dialog_has_a_right_click_menu(app: gui.App) -> None:
+    """右键要绑上菜单（真窗口验证一次，不弹出来）。"""
+    dialog = gui.PasteCookieDialog(app.root)
+    try:
+        assert dialog.text.bind("<Button-3>"), "右键要绑上菜单"
+    finally:
+        dialog.destroy()
+
+
+def test_jar_dump_is_skipped_when_the_backend_lacks_it() -> None:
+    """后端没有 jar_dump/write_jar_dump 时直接放过，不当成错误。"""
+    assert gui.BrowserLoginDialog._write_jar_dump(object(), object(), object(), "S", "") is None
+
+
+def test_jar_dump_survives_a_broken_backend() -> None:
+    """地址列不出来、落盘失败都只返回 None，绝不往外抛。"""
+
+    class _Backend:
+        def jar_dump(self, session, **kwargs):  # noqa: ANN001, ANN003
+            raise OSError("读不到饼干")
+
+        def write_jar_dump(self, data, *, stamp):  # noqa: ANN001, ANN003
+            return "path"
+
+        def cookie_urls_for(self, session):  # noqa: ANN001
+            raise OSError("列不出地址")
+
+    assert gui.BrowserLoginDialog._write_jar_dump(_Backend(), object(), object(), "S", "") is None
+
+
+def test_jar_dump_falls_back_when_profile_path_is_rejected() -> None:
+    """老后端不收 profile_path：TypeError 之后要再调一次（不带它）。"""
+    seen: list[dict] = []
+
+    class _Backend:
+        def jar_dump(self, session, **kwargs):  # noqa: ANN001, ANN003
+            seen.append(kwargs)
+            if "profile_path" in kwargs:
+                raise TypeError("unexpected keyword argument")
+            return {"ok": True}
+
+        def write_jar_dump(self, data, *, stamp):  # noqa: ANN001, ANN003
+            return f"dump-{stamp}.json"
+
+        def cookie_urls_for(self, session):  # noqa: ANN001
+            return ["https://www.nmbxd1.com/"]
+
+    dumped = gui.BrowserLoginDialog._write_jar_dump(_Backend(), object(), object(), "S", "C:/p")
+    assert dumped == "dump-S.json"
+    assert "profile_path" in seen[0] and "profile_path" not in seen[1]
+
+
+def test_try_leaf_cookie_reports_a_backend_failure() -> None:
+    class _Backend:
+        def fetch_leaf_cookie(self, session, **kwargs):  # noqa: ANN001, ANN003
+            raise RuntimeError("端口断了")
+
+    value, detail, navigated = gui.BrowserLoginDialog._try_leaf_cookie(
+        _Backend(), object(), navigate=False, waiting_for_login=False
+    )
+    assert value is None and "端口断了" in detail and navigated is False
+
+
+def test_try_leaf_cookie_rejects_a_value_of_the_wrong_shape() -> None:
+    class _Result:
+        value = "abc"
+        detail = "在饼干页读到的"
+        navigated = True
+
+    class _Backend:
+        def fetch_leaf_cookie(self, session, **kwargs):  # noqa: ANN001, ANN003
+            return _Result()
+
+        def looks_like_userhash(self, value: str) -> bool:
+            return False
+
+    value, detail, navigated = gui.BrowserLoginDialog._try_leaf_cookie(
+        _Backend(), object(), navigate=True, waiting_for_login=False
+    )
+    assert value is None and "形状不像" in detail and navigated is True
+
+
+def test_try_leaf_cookie_accepts_a_good_value() -> None:
+    class _Result:
+        value = "  GOODHASH  "
+        detail = "拿到了"
+        navigated = True
+
+    class _Backend:
+        def fetch_leaf_cookie(self, session, **kwargs):  # noqa: ANN001, ANN003
+            return _Result()
+
+        def looks_like_userhash(self, value: str) -> bool:
+            return value.startswith("GOOD")
+
+    value, detail, _navigated = gui.BrowserLoginDialog._try_leaf_cookie(
+        _Backend(), object(), navigate=True, waiting_for_login=False
+    )
+    assert value == "GOODHASH" and detail == "拿到了"
+
+
+def test_carry_browser_jar_gives_up_on_a_client_without_importer() -> None:
+    """客户端没有 import_cookies：这一轮直接放过，不算错。"""
+    dialog = object.__new__(gui.BrowserLoginDialog)
+    dialog._session_jar_carried = False  # noqa: SLF001
+    dialog.client = object()  # type: ignore[attr-defined]
+    dialog._queue = []  # type: ignore[attr-defined]
+    gui.BrowserLoginDialog._carry_browser_jar(dialog, object(), object())
+    assert dialog._session_jar_carried is False  # noqa: SLF001
+    assert dialog._queue == []  # type: ignore[attr-defined]
+
+
+def test_carry_browser_jar_swallows_reader_and_importer_errors() -> None:
+    class _Backend:
+        def read_site_cookies(self, session):  # noqa: ANN001
+            raise OSError("读不到")
+
+    dialog = object.__new__(gui.BrowserLoginDialog)
+    dialog._session_jar_carried = False  # noqa: SLF001
+    dialog._queue = []  # type: ignore[attr-defined]
+    dialog.client = type("C", (), {"import_cookies": lambda self, items: 3})()  # type: ignore[attr-defined]
+    gui.BrowserLoginDialog._carry_browser_jar(dialog, _Backend(), object())
+    assert dialog._session_jar_carried is False  # noqa: SLF001
+
+    class _Backend2:
+        def read_site_cookies(self, session):  # noqa: ANN001
+            return [{"name": "PHPSESSID"}]
+
+    def _boom(self, items):  # noqa: ANN001
+        raise ValueError("坏了")
+
+    dialog.client = type("C", (), {"import_cookies": _boom})()  # type: ignore[attr-defined]
+    gui.BrowserLoginDialog._carry_browser_jar(dialog, _Backend2(), object())
+    assert dialog._session_jar_carried is False  # noqa: SLF001
+
+
+def test_manual_userhash_warns_when_the_client_rejects_it(
+    app: gui.App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """「直接粘贴饼干」：客户端不认时弹「设置失败」，窗口不关。"""
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui, "ask_pasted_cookie", lambda parent: "USERHASH")
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, msg, **k: shown.append((title, msg))
+    )
+    dialog = gui.LoginDialog(app.root, app.client)
+    try:
+        def _boom(value: str):  # noqa: ANN001
+            raise ValueError("这不像一块饼干")
+
+        monkeypatch.setattr(dialog.client, "set_userhash", _boom)  # type: ignore[attr-defined]
+        dialog._manual_userhash()  # noqa: SLF001
+        assert shown and shown[0][0] == "设置失败"
+        assert "这不像一块饼干" in shown[0][1]
+        assert dialog.winfo_exists()
+    finally:
+        dialog.destroy()
+
