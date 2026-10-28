@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 2618 项（2026-10-29 数出来的一共这么多；本机 Windows 上 2611 通过、7 项跳过）、
+单元测试 2622 项（2026-10-29 数出来的一共这么多；本机 Windows 上 2615 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 268 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -118,7 +118,7 @@ xdao-export/
 │  ├─ test_epub.py         EPUB，含没标题时的书名兜底（40）
 │  ├─ test_markdown.py     Markdown（48）
 │  ├─ test_notifications.py 桌面通知（28）
-│  ├─ test_pdf.py          PDF 渲染与路由（42）
+│  ├─ test_pdf.py          PDF 渲染与路由（46）
 │  ├─ test_pdf_opts.py     PDF 纸张/边距/缩放/页码选项（325）
 │  ├─ test_browser_flags.py 打包运行时给浏览器补的开关（7）
 │  ├─ test_preflight.py    环境自检：各项检查的 ok/warn/fail 分支（39）
