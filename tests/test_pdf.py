@@ -829,3 +829,86 @@ def test_cdp_render_caps_the_wait_for_load_at_thirty_seconds(out_dir, monkeypatc
     # 读到 800 时剩 100 秒，上限 30 秒 —— 取小的那个。
     assert seen == [pytest.approx(30.0)]
 
+# ---------- 书签目录（v0.21.17） ----------
+
+
+def test_render_asks_the_browser_to_build_a_document_outline(out_dir, artifacts_dir):
+    """命令行路径必须带 --generate-pdf-document-outline。
+
+    没有它，合并导出的 PDF 只有一叠页，翻起来找不到是哪个串；
+    这个开关由浏览器按页面里的 h1/h2 自动生成 /Outlines。
+    """
+    browser = make_fake_browser(artifacts_dir)
+    target = out_dir / "带书签.pdf"
+
+    render_html_to_pdf("<html><body>你好</body></html>", target, browser_path=browser)
+
+    flags = (browser.parent / "flags.txt").read_text(encoding="utf-8")
+    assert "--generate-pdf-document-outline" in flags
+
+
+def test_cdp_params_ask_for_a_document_outline():
+    """CDP 路径也要带 generateDocumentOutline（两条路都得有书签）。"""
+    from xdao.exporters.pdf import _cdp_params
+    from xdao.pdf_opts import PdfOptions
+
+    assert _cdp_params(PdfOptions())["generateDocumentOutline"] is True
+    assert _cdp_params(PdfOptions(paper="a3"))["generateDocumentOutline"] is True
+    assert _cdp_params(PdfOptions(margin="none", background=False))["generateDocumentOutline"] is True
+
+
+class _OutlineRejectingSession(_FakeSessionForBudget):
+    """第一次打印拒绝 generateDocumentOutline，去掉它之后再成功。"""
+
+    def __init__(self, always: bool = False) -> None:
+        super().__init__()
+        self.params_seen: list[dict] = []
+        self.always = always
+
+    def call(self, method: str, params=None, *, timeout=None):
+        import base64
+
+        from xdao.cdp import CdpError
+
+        self.call_granted.append(timeout)
+        self.params_seen.append(dict(params or {}))
+        if "generateDocumentOutline" in (params or {}) or self.always:
+            raise CdpError("Invalid parameters: generateDocumentOutline")
+        return {"data": base64.b64encode(b"%PDF-1.4 fake").decode("ascii")}
+
+
+def _prepare_outline_fakes(monkeypatch, session):
+    import xdao.browser_login as browser_login
+    import xdao.exporters.pdf as pdf_module
+
+    info = type("假浏览器信息", (), {"name": "假浏览器", "path": "C:/假浏览器.exe"})()
+    monkeypatch.setattr(pdf_module, "find_browser", lambda path=None: info)
+    monkeypatch.setattr(browser_login, "find_browser", lambda explicit=None: info)
+    monkeypatch.setattr(browser_login, "LoginBrowser", _FakeLoginBrowserForBudget())
+    monkeypatch.setattr(pdf_module, "CDPSession", session)
+    return session
+
+
+def test_cdp_render_retries_without_the_outline_when_the_browser_rejects_it(out_dir, monkeypatch):
+    """老版本浏览器不认这个参数时：去掉它再打一次，别让整趟导出失败。"""
+    from xdao.exporters.pdf import print_html_to_pdf
+
+    session = _prepare_outline_fakes(monkeypatch, _OutlineRejectingSession())
+    target = out_dir / "退让.pdf"
+
+    print_html_to_pdf("<html></html>", target, timeout=900)
+
+    assert target.read_bytes().startswith(b"%PDF")
+    assert "generateDocumentOutline" in session.params_seen[0]
+    assert "generateDocumentOutline" not in session.params_seen[-1]
+
+
+def test_cdp_render_reports_a_pdf_error_when_the_retry_also_fails(out_dir, monkeypatch):
+    from xdao.exporters.pdf import print_html_to_pdf
+
+    session = _prepare_outline_fakes(monkeypatch, _OutlineRejectingSession(always=True))
+
+    with pytest.raises(PdfError, match="没能生成 PDF"):
+        print_html_to_pdf("<html></html>", out_dir / "还是失败.pdf", timeout=900)
+
+    assert len(session.params_seen) == 2

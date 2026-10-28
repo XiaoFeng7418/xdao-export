@@ -681,6 +681,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.17（2026-10-29）：PDF 书签目录**：命令行渲染加 `--generate-pdf-document-outline`，CDP 路径加 `generateDocumentOutline`；老浏览器拒绝该参数时自动去掉重打（`except CdpError` 里认 `generateDocumentOutline` 字样）。书签由浏览器按 h1/h2 生成：合并导出每串一条，单串是标题一条。用例 4 条（两条路径都带参数、退让重打、重打也失败时报 PdfError）。
 - **v0.21.16（2026-10-29）：HTML / PDF 改成边渲染边写盘，压住图片内嵌时的内存峰值**
   - 现象：79 页 / 1486 楼 / 259 张图的串，图片内嵌导 HTML 时 Python 峰值 1393 MB（成品 106.8 MB），
     导 PDF 同样 1393 MB。v0.19.7 那组纯文本内存测量（2.7 倍）没算图片，所以一直没发现。

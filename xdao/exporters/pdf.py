@@ -242,6 +242,9 @@ def _render_with_command_line(
             "--disable-crash-reporter",
             "--disable-extensions",
             "--print-to-pdf-no-header",
+            # 书签目录：浏览器按页面里的 h1/h2 自动生成 /Outlines。
+            # 没有这个开关时，合并导出的 PDF 只有一叠页，翻起来找不到是哪个串。
+            "--generate-pdf-document-outline",
             f"--print-to-pdf={target}",
             # 打包版必须补的开关（冻结环境里浏览器会被系统中断，见 browser_flags 的说明）。
             *launch_flags(),
@@ -381,7 +384,18 @@ def print_html_to_pdf(
                 try:
                     result = session.call("Page.printToPDF", params, timeout=remaining())
                 except CdpError as exc:
-                    raise PdfError(f"浏览器没能生成 PDF：{exc}") from exc
+                    # 老版本浏览器不认 generateDocumentOutline：去掉它再打一次，
+                    # 宁可少一份书签，也不要因为一个可选参数让整趟导出失败。
+                    if "generateDocumentOutline" in str(exc):
+                        params.pop("generateDocumentOutline", None)
+                        try:
+                            result = session.call(
+                                "Page.printToPDF", params, timeout=remaining()
+                            )
+                        except CdpError as retry_exc:
+                            raise PdfError(f"浏览器没能生成 PDF：{retry_exc}") from retry_exc
+                    else:
+                        raise PdfError(f"浏览器没能生成 PDF：{exc}") from exc
         data = _decode_pdf_data(result)
         target.write_bytes(data)
         _check_and_move(target, output_pdf)
@@ -411,6 +425,9 @@ def _cdp_params(options: PdfOptions) -> dict:
     params = dict(options.to_cdp_params())
     if options.paper != DEFAULT_PAPER:
         params.pop("preferCSSPageSize", None)
+    # 书签目录：浏览器按页面里的 h1/h2 自动生成 /Outlines。
+    # 老版本浏览器不认识这个参数时，调用方会去掉它再打一次（见 print_html_to_pdf）。
+    params["generateDocumentOutline"] = True
     return params
 
 
