@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -2192,3 +2193,333 @@ def test_poll_cookies_keeps_waiting_while_the_queue_is_empty(
 
     assert again == [80]
 
+# ---------- 一键升级（v0.21.9）----------
+
+
+class _UpgradeJob(list):
+    """假的结果队列：收到 ``confirm`` 时立刻替用户作答，别让工作线程卡住。"""
+
+    def __init__(self, agree: bool = True) -> None:
+        super().__init__()
+        self.agree = agree
+
+    def put(self, item) -> None:  # noqa: ANN001 - 照 queue.Queue.put 的形状
+        self.append(item)
+        if item[0] == "confirm":
+            item[1][1].put(self.agree)
+
+
+def _upgrade_result(latest: str = "9.9.9", asset: str = "https://example.invalid/x.zip"):
+    """造一个「查到新版本」的结果对象（只带升级要用的那几个字段）。"""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        url="https://example.invalid/release",
+        asset_url=asset,
+        asset_size=1024 * 1024,
+        latest=SimpleNamespace(display_version=latest),
+        line=lambda: "发现新版本 9.9.9",
+    )
+
+
+def _upgrade_plan(possible: bool = True, reason: str = "") -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(possible=possible, reason=reason)
+
+
+def test_start_upgrade_marks_busy_and_schedules_polling(app: gui.App, monkeypatch) -> None:
+    """点「升级」之后：按钮变「升级中…」、线程起来、120 毫秒后开始收进度。"""
+    started: list[dict] = []
+    scheduled: list[tuple] = []
+
+    class _FakeThread:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            started.append(kwargs)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(gui.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(app.root, "after", lambda *args: scheduled.append(args))
+
+    app._start_upgrade(_upgrade_result())
+
+    assert app._upgrading is True
+    assert app._update_button.cget("text") == "升级中…"
+    assert started[0]["target"] == app._upgrade_worker
+    assert started[0]["daemon"] is True
+    assert scheduled and scheduled[0][0] == 120
+    assert "开始下载新版本" in app.log_text.get("1.0", "end-1c")
+    app._upgrading = False
+
+
+def test_start_upgrade_is_ignored_while_one_is_running(app: gui.App, monkeypatch) -> None:
+    """已经在升级时再点一次不能起第二个线程（否则会同时换两遍文件）。"""
+    app._upgrading = True
+    started: list[object] = []
+
+    class _FakeThread:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            started.append(kwargs)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(gui.threading, "Thread", _FakeThread)
+    try:
+        app._start_upgrade(_upgrade_result())
+    finally:
+        app._upgrading = False
+
+    assert started == []
+
+
+def test_poll_upgrade_writes_the_download_percentage(app: gui.App, monkeypatch) -> None:
+    """服务器给了总长度时按钮显示百分比。"""
+    import queue as _queue
+
+    app._upgrade_queue = _queue.Queue()
+    app._upgrade_queue.put(("progress", (512, 1024)))
+    monkeypatch.setattr(app.root, "after", lambda *args: None)
+
+    app._poll_upgrade()
+
+    assert app._update_button.cget("text") == "升级中 50%"
+
+
+def test_poll_upgrade_writes_kilobytes_when_the_size_is_unknown(app: gui.App, monkeypatch) -> None:
+    """没有 Content-Length 时就只报已经下了多少 KB。"""
+    import queue as _queue
+
+    app._upgrade_queue = _queue.Queue()
+    app._upgrade_queue.put(("progress", (4096,)))
+    monkeypatch.setattr(app.root, "after", lambda *args: None)
+
+    app._poll_upgrade()
+
+    assert app._update_button.cget("text") == "升级中 4 KB"
+
+
+def test_poll_upgrade_asks_before_replacing_and_remembers_the_answer(app, monkeypatch) -> None:
+    """自检通过后要问一句；用户答「是」就回 True 给工作线程。"""
+    import queue as _queue
+
+    asked: list[tuple] = []
+    monkeypatch.setattr(
+        gui.messagebox, "askyesno", lambda title, text: asked.append((title, text)) or True
+    )
+    decision: _queue.Queue = _queue.Queue()
+
+    keep = app._upgrade_progress("confirm", ("9.9.9", decision))
+
+    assert keep is True
+    assert asked and asked[0][0] == "立刻升级"
+    assert "9.9.9" in asked[0][1]
+    assert decision.get_nowait() is True
+
+
+def test_poll_upgrade_logs_it_when_the_user_says_no(app, monkeypatch) -> None:
+    """用户答「否」：回 False 并留一句日志。"""
+    import queue as _queue
+
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *args: False)
+    decision: _queue.Queue = _queue.Queue()
+
+    app._upgrade_progress("confirm", ("9.9.9", decision))
+
+    assert decision.get_nowait() is False
+    assert "已取消升级" in app.log_text.get("1.0", "end-1c")
+
+
+def test_poll_upgrade_finish_on_failure_says_why(app, monkeypatch) -> None:
+    """失败收尾：标记回空闲、按钮回到「有新版本」、弹一句原因。"""
+    errors: list[tuple] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, text: errors.append((title, text))
+    )
+    app._upgrading = True
+
+    keep = app._upgrade_progress("finish", (False, "自检没过", ""))
+
+    assert keep is False
+    assert app._upgrading is False
+    assert app._update_button.cget("text") == "有新版本"
+    assert errors and errors[0][1] == "自检没过"
+
+
+def test_poll_upgrade_finish_on_success_hands_the_seat_over(app, monkeypatch) -> None:
+    """成功收尾：写「升级完成」，并让位（不能弹模态框）。"""
+    exited: list[bool] = []
+    monkeypatch.setattr(app, "_end_self_for_upgrade", lambda: exited.append(True))
+    app._upgrading = True
+
+    keep = app._upgrade_progress("finish", (True, "新版本就位", "exit"))
+
+    assert keep is False
+    assert app._upgrading is False
+    assert app._update_button.cget("text") == "升级完成"
+    assert exited == [True]
+
+
+def test_upgrade_worker_stops_when_this_copy_cannot_upgrade(app, monkeypatch) -> None:
+    """不能原地升级的环境：第一条就收手，并把暂存目录丢掉。"""
+    from xdao import updater
+
+    discarded: list[object] = []
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: _upgrade_plan(False, "便携版请手工覆盖"))
+    monkeypatch.setattr(updater, "default_staging_root", lambda: pathlib.Path("staging"))
+    monkeypatch.setattr(updater, "discard_staging", lambda root: discarded.append(root))
+
+    job = _UpgradeJob()
+    gui.App._upgrade_worker(app, _upgrade_result(), job)
+
+    assert job[-1] == ("finish", (False, "便携版请手工覆盖", ""))
+    assert discarded
+
+
+def test_upgrade_worker_reports_a_release_without_the_portable_package(app, monkeypatch) -> None:
+    """发布里没有免安装包时给一句人话，不硬下。"""
+    from xdao import updater
+
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: _upgrade_plan())
+    monkeypatch.setattr(updater, "default_staging_root", lambda: pathlib.Path("staging"))
+    monkeypatch.setattr(updater, "discard_staging", lambda root: None)
+
+    job = _UpgradeJob()
+    gui.App._upgrade_worker(app, _upgrade_result(asset=""), job)
+
+    assert job[-1][0] == "finish"
+    assert "没有免安装包" in job[-1][1][1]
+
+
+def test_upgrade_worker_does_not_swap_when_the_selftest_fails(app, monkeypatch) -> None:
+    """新版自检没过就绝不替换，现场保持原样。"""
+    from xdao import updater
+
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: _upgrade_plan())
+    monkeypatch.setattr(updater, "default_staging_root", lambda: pathlib.Path("staging"))
+    monkeypatch.setattr(updater, "detect_proxy", lambda: "")
+    monkeypatch.setattr(updater, "download_asset", lambda url, path, proxy, progress: None)
+    monkeypatch.setattr(updater, "remove_quietly", lambda path: None)
+    monkeypatch.setattr(updater, "extract_payload", lambda archive, out: pathlib.Path("payload"))
+    monkeypatch.setattr(updater, "payload_launcher", lambda payload: pathlib.Path("exe"))
+    monkeypatch.setattr(updater, "run_selftest", lambda launcher: (False, "打不开主窗口"))
+    switched: list[object] = []
+    monkeypatch.setattr(updater, "spawn_helper", lambda plan, payload: switched.append(plan))
+    monkeypatch.setattr(updater, "discard_staging", lambda root: None)
+
+    job = _UpgradeJob()
+    gui.App._upgrade_worker(app, _upgrade_result(), job)
+
+    assert job[-1] == ("finish", (False, "打不开主窗口，这次不换，现场保持原样。", ""))
+    assert switched == []
+
+
+def test_upgrade_worker_aborts_when_the_user_backs_out_at_the_last_step(app, monkeypatch) -> None:
+    """自检通过了、用户这时反悔：不替换，把暂存丢掉。"""
+    from xdao import updater
+
+    discarded: list[object] = []
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: _upgrade_plan())
+    monkeypatch.setattr(updater, "default_staging_root", lambda: pathlib.Path("staging"))
+    monkeypatch.setattr(updater, "detect_proxy", lambda: "")
+    monkeypatch.setattr(updater, "download_asset", lambda url, path, proxy, progress: None)
+    monkeypatch.setattr(updater, "remove_quietly", lambda path: None)
+    monkeypatch.setattr(updater, "extract_payload", lambda archive, out: pathlib.Path("payload"))
+    monkeypatch.setattr(updater, "payload_launcher", lambda payload: pathlib.Path("exe"))
+    monkeypatch.setattr(updater, "run_selftest", lambda launcher: (True, "自检通过"))
+    switched: list[object] = []
+    monkeypatch.setattr(updater, "spawn_helper", lambda plan, payload: switched.append(plan))
+    monkeypatch.setattr(updater, "discard_staging", lambda root: discarded.append(root))
+
+    job = _UpgradeJob(agree=False)
+    gui.App._upgrade_worker(app, _upgrade_result(), job)
+
+    assert job[-1] == ("finish", (False, "已取消升级，现场保持原样。", ""))
+    assert switched == []
+    assert discarded
+
+
+def test_upgrade_worker_swaps_and_leaves_the_staging_for_the_helper(app, monkeypatch) -> None:
+    """一路通过：交给帮手，并且**不能**删暂存（帮手正要用里面的新版）。"""
+    from xdao import updater
+
+    discarded: list[object] = []
+    switched: list[object] = []
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: _upgrade_plan())
+    monkeypatch.setattr(updater, "default_staging_root", lambda: pathlib.Path("staging"))
+    monkeypatch.setattr(updater, "detect_proxy", lambda: "")
+    monkeypatch.setattr(updater, "download_asset", lambda url, path, proxy, progress: progress(10, 10))
+    monkeypatch.setattr(updater, "remove_quietly", lambda path: None)
+    monkeypatch.setattr(updater, "extract_payload", lambda archive, out: pathlib.Path("payload"))
+    monkeypatch.setattr(updater, "payload_launcher", lambda payload: pathlib.Path("exe"))
+    monkeypatch.setattr(updater, "run_selftest", lambda launcher: (True, "自检通过"))
+    monkeypatch.setattr(updater, "spawn_helper", lambda plan, payload: switched.append(payload))
+    monkeypatch.setattr(updater, "discard_staging", lambda root: discarded.append(root))
+
+    app._upgrade_spawned = False
+    job = _UpgradeJob(agree=True)
+    gui.App._upgrade_worker(app, _upgrade_result(), job)
+
+    ok, message, action = job[-1][1]
+    assert (ok, action) == (True, "exit")
+    assert "9.9.9" in message
+    assert switched
+    assert discarded == []
+    assert app._upgrade_spawned is True
+    assert ("progress", (10, 10)) in job
+
+
+def test_upgrade_worker_turns_an_unexpected_error_into_a_message(app, monkeypatch) -> None:
+    """工作线程里炸了也不能把界面带走：只交一条 finish 回去。"""
+    from xdao import updater
+
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: _upgrade_plan())
+    monkeypatch.setattr(updater, "default_staging_root", lambda: pathlib.Path("staging"))
+    monkeypatch.setattr(updater, "detect_proxy", lambda: "")
+    monkeypatch.setattr(updater, "discard_staging", lambda root: None)
+
+    def boom(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        raise OSError("磁盘满了")
+
+    monkeypatch.setattr(updater, "download_asset", boom)
+
+    job = _UpgradeJob()
+    gui.App._upgrade_worker(app, _upgrade_result(), job)
+
+    assert job[-1][0] == "finish"
+    assert job[-1][1][0] is False
+    assert "磁盘满了" in job[-1][1][1]
+
+# ---------- 罐里到底有没有真会话（v0.21.9）----------
+
+
+def test_jar_with_only_the_anonymous_session_is_not_logged_in() -> None:
+    """只有 PHPSESSID 的罐子不算登录着（匿名访客也有这个）。"""
+    assert gui._jar_holds_a_session([{"name": "PHPSESSID", "value": "abc"}]) is False
+
+
+def test_jar_with_a_member_cookie_counts_as_logged_in() -> None:
+    """出现会员饼干（名字不是 PHPSESSID、值非空）就算登录着。"""
+    cookies = [
+        {"name": "PHPSESSID", "value": "abc"},
+        {"name": "memberUserspapapa", "value": "xyz"},
+    ]
+    assert gui._jar_holds_a_session(cookies) is True
+
+
+def test_jar_cookie_names_are_case_insensitive_and_values_must_be_non_empty() -> None:
+    """名字比较不分大小写；空值不算（真机上站点会把会员饼干写成空）。"""
+    assert gui._jar_holds_a_session([{"name": "phpsessid", "value": "abc"}]) is False
+    assert gui._jar_holds_a_session([{"name": "PhpSessId", "value": "abc"}]) is False
+    # 名字只是长得像（PHPSSESSID 多一个 S）就算会员饼干 —— 判据刻意宽
+    assert gui._jar_holds_a_session([{"name": "PHPSSESSID", "value": "abc"}]) is True
+    assert gui._jar_holds_a_session([{"name": "memberUserspapapa", "value": "  "}]) is False
+
+
+def test_jar_ignores_junk_entries_and_missing_arguments() -> None:
+    """None、空列表、非字典条目都不能把判定弄崩。"""
+    assert gui._jar_holds_a_session(None) is False
+    assert gui._jar_holds_a_session([]) is False
+    assert gui._jar_holds_a_session(["junk", 42, None]) is False

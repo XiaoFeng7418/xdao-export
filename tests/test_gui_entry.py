@@ -3293,3 +3293,65 @@ def test_watch_dialog_check_now_triggers_one_round(dialog_root, artifacts_dir) -
 
     assert app.checked == 1
     assert "已触发" in text
+
+# ---------- 监控窗口：编辑选中（v0.21.9）----------
+
+
+def test_edit_selected_asks_to_pick_one_first(dialog_root, artifacts_dir, monkeypatch) -> None:
+    """一行都没选中时只提示，不开编辑窗。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _AddTargetApp(settings, [], dialog_root)
+    dialog = _open_watch(dialog_root, app)
+    opened: list[object] = []
+    monkeypatch.setattr(gui, "WatchEditDialog", lambda *args: opened.append(args))
+    calls = _messagebox_calls(monkeypatch)
+    try:
+        dialog.tree.selection_remove(dialog.tree.selection())
+        dialog._edit_selected()
+    finally:
+        _close(dialog)
+
+    assert opened == []
+    assert calls and calls[0][0] == "showinfo"
+    assert "请先选中" in calls[0][2]
+
+
+def test_edit_selected_opens_the_editor_for_the_chosen_row(
+    dialog_root, artifacts_dir, monkeypatch
+) -> None:
+    """选中一行：按 id 找到那条目标，把对话框和它一起交出去。"""
+    target = gui.WatchTarget("7001234", format_key="html")
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _AddTargetApp(settings, [target], dialog_root)
+    dialog = _open_watch(dialog_root, app)
+    opened: list[tuple] = []
+    monkeypatch.setattr(gui, "WatchEditDialog", lambda *args: opened.append(args))
+    try:
+        dialog.tree.selection_set(str(id(target)))
+        dialog._edit_selected()
+    finally:
+        _close(dialog)
+
+    assert len(opened) == 1
+    parent, chosen = opened[0]
+    assert parent is dialog
+    assert chosen is target
+
+
+def test_edit_selected_ignores_a_row_that_is_no_longer_in_the_list(
+    dialog_root, artifacts_dir, monkeypatch
+) -> None:
+    """列表刚被刷新、树里还留着一个旧 iid 时：安静返回，不抛异常。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _AddTargetApp(settings, [], dialog_root)
+    dialog = _open_watch(dialog_root, app)
+    opened: list[object] = []
+    monkeypatch.setattr(gui, "WatchEditDialog", lambda *args: opened.append(args))
+    try:
+        dialog.tree.insert("", "end", iid="999999", values=("7001999", "全部", "HTML", "内嵌图片", ""))
+        dialog.tree.selection_set("999999")
+        dialog._edit_selected()
+    finally:
+        _close(dialog)
+
+    assert opened == []
