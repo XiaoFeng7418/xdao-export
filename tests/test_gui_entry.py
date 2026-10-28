@@ -3610,3 +3610,184 @@ def test_open_download_page_logs_the_url_when_the_browser_refuses(monkeypatch) -
     app._open_download_page("https://example.invalid/releases")
 
     assert logs == ["下载页：https://example.invalid/releases"]
+
+# ---------- 工作线程内层函数的成败两分支（v0.21.11）----------
+
+
+class _ImmediateThread:
+    """替身线程：start() 就地跑完，用例里不用等、也不用 join。"""
+
+    def __init__(self, target=None, daemon=None, **kwargs) -> None:  # noqa: ANN001
+        self._target = target
+
+    def start(self) -> None:
+        if self._target is not None:
+            self._target()
+
+
+def _no_threads(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gui, "threading", SimpleNamespace(Thread=_ImmediateThread))
+
+
+class _Button:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def config(self, **kwargs) -> None:  # noqa: ANN003
+        self.calls.append(kwargs)
+
+
+class _Form:
+    hash_value = "form-hash"
+    captcha_bytes = b"not-an-image"
+
+
+def test_refresh_captcha_reports_the_load_failure(monkeypatch) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    _no_threads(monkeypatch)
+    dialog = object.__new__(gui.LoginDialog)
+    dialog._busy = False
+    dialog._result_queue = _queue.Queue()
+    dialog.captcha_button = _Button()
+    dialog.after = lambda *a: None
+
+    def boom():  # noqa: ANN202
+        raise OSError("连不上站点")
+
+    dialog.client = SimpleNamespace(fetch_login_form=boom)
+
+    dialog._refresh_captcha()
+
+    assert dialog._result_queue.get_nowait() == ("form_error", "连不上站点")
+
+
+def test_refresh_captcha_hands_the_form_over_on_success(monkeypatch) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    _no_threads(monkeypatch)
+    dialog = object.__new__(gui.LoginDialog)
+    dialog._busy = False
+    dialog._result_queue = _queue.Queue()
+    dialog.captcha_button = _Button()
+    dialog.after = lambda *a: None
+    form = _Form()
+    dialog.client = SimpleNamespace(fetch_login_form=lambda: form)
+
+    dialog._refresh_captcha()
+
+    assert dialog._result_queue.get_nowait() == ("form", form)
+
+
+def test_do_login_reports_the_failure_and_leaves_the_button_alone(monkeypatch) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    _no_threads(monkeypatch)
+    dialog = object.__new__(gui.LoginDialog)
+    dialog._busy = False
+    dialog._result_queue = _queue.Queue()
+    dialog.login_button = _Button()
+    dialog.after = lambda *a: None
+    dialog.update_idletasks = lambda: None
+    dialog.email_var = SimpleNamespace(get=lambda: "a@b.c")
+    dialog.password_var = SimpleNamespace(get=lambda: "pw")
+    dialog.verify_var = SimpleNamespace(get=lambda: "1234")
+    dialog.form = _Form()
+
+    def boom(*args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("账号或密码不对")
+
+    dialog.client = SimpleNamespace(login=boom)
+
+    dialog._do_login()
+
+    assert dialog._result_queue.get_nowait() == ("fail", "账号或密码不对")
+
+
+def test_do_login_passes_the_form_hash_and_returns_the_userhash(monkeypatch) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    _no_threads(monkeypatch)
+    seen: list[tuple] = []
+    dialog = object.__new__(gui.LoginDialog)
+    dialog._busy = False
+    dialog._result_queue = _queue.Queue()
+    dialog.login_button = _Button()
+    dialog.after = lambda *a: None
+    dialog.update_idletasks = lambda: None
+    dialog.email_var = SimpleNamespace(get=lambda: "a@b.c")
+    dialog.password_var = SimpleNamespace(get=lambda: "pw")
+    dialog.verify_var = SimpleNamespace(get=lambda: "1234")
+    dialog.form = _Form()
+    dialog.client = SimpleNamespace(login=lambda *a: seen.append(a) or "hash-xyz")
+
+    dialog._do_login()
+
+    assert seen == [("a@b.c", "pw", "1234", "form-hash")]
+    assert dialog._result_queue.get_nowait() == ("ok", "hash-xyz")
+
+
+def test_pick_cookies_turns_a_text_reply_into_an_error(monkeypatch) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    _no_threads(monkeypatch)
+    app = object.__new__(gui.App)
+    app._cookie_queue = _queue.Queue()
+    app.pick_cookie_button = _Button()
+    app.root = SimpleNamespace(after=lambda *a: None)
+    app.apply_settings_to_client = lambda: None
+    app._collect_urls = lambda: ["https://www.nmbxd1.com/t/50000001"]
+    app.client = SimpleNamespace(fetch_thread_page=lambda *a: "串不存在")
+
+    app.pick_cookies()
+
+    assert app._cookie_queue.get_nowait() == ("fail", "串不存在")
+
+
+def test_pick_cookies_reports_the_site_side_error(monkeypatch) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    _no_threads(monkeypatch)
+    app = object.__new__(gui.App)
+    app._cookie_queue = _queue.Queue()
+    app.pick_cookie_button = _Button()
+    app.root = SimpleNamespace(after=lambda *a: None)
+    app.apply_settings_to_client = lambda: None
+    app._collect_urls = lambda: ["https://www.nmbxd1.com/t/50000001"]
+    app.client = SimpleNamespace(
+        fetch_thread_page=lambda *a: {"success": False, "error": "需要登录"}
+    )
+
+    app.pick_cookies()
+
+    assert app._cookie_queue.get_nowait() == ("fail", "需要登录")
+
+
+def test_pick_cookies_passes_the_parsed_posts_up(monkeypatch) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    _no_threads(monkeypatch)
+    posts = [object()]
+    app = object.__new__(gui.App)
+    app._cookie_queue = _queue.Queue()
+    app.pick_cookie_button = _Button()
+    app.root = SimpleNamespace(after=lambda *a: None)
+    app.apply_settings_to_client = lambda: None
+    app._collect_urls = lambda: ["https://www.nmbxd1.com/t/50000001"]
+    app.client = SimpleNamespace(
+        fetch_thread_page=lambda *a: {"data": "ok"},
+        parse_thread_page=lambda payload, page: {"posts": posts},
+    )
+
+    app.pick_cookies()
+
+    assert app._cookie_queue.get_nowait() == ("ok", posts)

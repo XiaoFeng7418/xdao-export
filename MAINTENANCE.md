@@ -681,6 +681,26 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.11**：给「工作线程内层函数」的成败两分支补用例（界面覆盖 91% → 93%）。
+
+  1. **为什么补**：界面里有一类函数是「点了按钮之后在后台线程里跑的那一小段」——
+     `LoginDialog._refresh_captcha()` 里的 `work()`、`_do_login()` 里的 `work()`、
+     `App.pick_cookies()` 里的 `work()`。它们只有五行十行，但**成功与失败两条路都要
+     把结果放回队列**，放错了界面就永远转圈。此前的用例都只测了「队列里的东西怎么
+     显示」，没人测「线程往里放了什么」。
+  2. **做法**：把 `gui` 模块里的 `threading` 换成一个「start() 就地跑完」的替身
+     （`_ImmediateThread`），于是 `work()` 变成同步调用，结果直接落在队列上；对象用
+     `object.__new__` 造，摆上 `_result_queue` / `client` / 按钮替身即可，不开窗、
+     不联网。
+  3. **新增用例**（`tests/test_gui_entry.py` 153 → 160）：验证码取不到 → 队列里是
+     `("form_error", 原文)`；取到了 → `("form", form)`；登录抛异常 → `("fail", 原文)`；
+     登录成功 → 把「邮箱/密码/验证码/表单 hash」四个参数原样交给 `client.login` 并回
+     `("ok", userhash)`；挑饼干三种（站点回文字、回 `success=false`、正常解析）。
+  4. **坑**：`tests/test_gui_entry.py` 里没有 `make_post`，别顺手用；断言队列里的对象
+     时要拿**同一个实例**比对（`_Form()` 造两次是两个对象）。
+  5. **读数**：只跑三个界面测试文件时 gui.py 行覆盖 91% → **93%**（231 行未覆盖）。
+  6. 收集 2554、本机 2547 通过、7 跳过。
+
 - **v0.21.10**：给登录窗的失败分支与主窗口几个动作补用例（界面覆盖 90% → 91%）。
 
   1. **为什么补**：`BrowserLoginDialog._worker` 是「点一下用浏览器登录」之后在后台
