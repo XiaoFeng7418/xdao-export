@@ -2368,6 +2368,77 @@ def test_finish_after_cancel_says_what_was_kept(tmp_path, monkeypatch):
     assert app.progress_bar.calls == [("stop", None), ("set_value", 2, 5)]
     assert any("已导出的文件都还在" in line for line in app.logs)
 
+def test_finish_after_failures_lists_what_failed_and_where_the_rest_went(tmp_path, monkeypatch):
+    """有失败项时的汇总：弹「部分失败」、日志里点名哪几个失败、文件在哪。"""
+    app = _fake_app(tmp_path)
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text: warnings.append((title, text))
+    )
+
+    gui.App._finish(
+        app,
+        3,
+        5,
+        ["https://www.nmbxd1.com/t/7001234", "https://www.nmbxd1.com/t/7002345"],
+        91.0,
+        None,
+    )
+
+    assert warnings and warnings[0][0] == "部分失败"
+    assert "成功 3 / 5 个串" in warnings[0][1]
+    assert "失败 2 个" in warnings[0][1]
+    assert str(tmp_path) in warnings[0][1], "弹窗要告诉用户文件写在哪"
+    assert app._last_failed == [
+        "https://www.nmbxd1.com/t/7001234",
+        "https://www.nmbxd1.com/t/7002345",
+    ], "失败清单要留着，重试按钮靠它"
+    assert any("失败清单" in line for line in app.logs)
+    assert any("7001234" in line for line in app.logs), "点不到具体是哪个串就白记了"
+    assert app.progress_var.get() == "完成：成功 3 / 5 个串，用时 91 秒"
+
+
+def test_finish_warns_about_threads_that_were_only_partly_fetched(tmp_path, monkeypatch):
+    """没失败、但有串只抓到一部分：也要单独弹窗，别让「缺页」混在成功里。"""
+    app = _fake_app(tmp_path)
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text: warnings.append((title, text))
+    )
+    notes = [f"第 {index} 串只抓到一半" for index in range(1, 8)]
+
+    gui.App._finish(app, 8, 8, [], 40.0, notes)
+
+    assert warnings and warnings[0][0] == "有串没抓全"
+    body = warnings[0][1]
+    assert "其中 7 个" in body
+    assert "第 1 串只抓到一半" in body
+    assert "…" in body, "只列前五条，剩下的用省略号收尾"
+    assert "第 7 串只抓到一半" not in body
+    assert any("有 7 个串没能抓全" in line for line in app.logs)
+    assert sum(1 for line in app.logs if "只抓到一半" in line) == 7, "日志里要逐条记全"
+
+
+def test_finish_after_a_clean_run_reports_nothing_but_success(tmp_path, monkeypatch):
+    """一切顺利：只弹「完成」，不弹警告、日志里不出现失败字样。"""
+    app = _fake_app(tmp_path)
+    infos: list[tuple[str, str]] = []
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, text: infos.append((title, text))
+    )
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text: warnings.append((title, text))
+    )
+
+    gui.App._finish(app, 4, 4, [], 12.5, None)
+
+    assert warnings == []
+    assert infos and infos[0][0] == "完成"
+    assert "成功导出 4 / 4 个串" in infos[0][1]
+    assert str(tmp_path) in infos[0][1]
+    assert not any("失败" in line for line in app.logs)
+
 
 # ---------- 监控条目可编辑（v0.17.0）----------
 
@@ -3036,3 +3107,189 @@ def test_gui_export_says_why_a_format_cannot_merge(artifacts_dir, monkeypatch):
 
     assert any("不支持合并导出" in line for line in _drain_logs(app))
 
+
+
+# ---------- 监控开关与移除选中（v0.21.7） ----------
+
+
+class _WatchLoopApp(_WatchApp):
+    """记下「开始监控」被怎么调用的，另加 `check_watch_once`。"""
+
+    def __init__(self, settings, targets, root=None) -> None:
+        super().__init__(settings, targets, root)
+        self.started: list[tuple[float, bool]] = []
+        self.stopped = 0
+        self.checked = 0
+
+    def start_watching(self, interval, verify_cached) -> None:
+        self.started.append((interval, verify_cached))
+        self._watching = True
+
+    def stop_watching(self) -> None:
+        self.stopped += 1
+        self._watching = False
+
+    def check_watch_once(self) -> None:
+        self.checked += 1
+
+
+def _watch_loop_app(artifacts_dir, targets) -> _WatchLoopApp:
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    return _WatchLoopApp(settings, targets)
+
+
+def _two_watch_targets() -> list:
+    return [
+        gui.WatchTarget("https://www.nmbxd1.com/t/50000001"),
+        gui.WatchTarget("https://www.nmbxd1.com/t/7002222", format_key="markdown"),
+    ]
+
+
+def test_watch_dialog_start_records_the_interval_and_turns_the_switch_on(
+    dialog_root, artifacts_dir
+) -> None:
+    app = _watch_loop_app(artifacts_dir, _two_watch_targets())
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog.interval_var.set("90")
+        dialog.verify_var.set(True)
+        dialog._start()
+
+        assert app.started == [(90.0, True)]
+        assert app.settings.watch_interval == 90.0
+        assert app.settings.verify_cached is True
+        assert app.persisted >= 1, "开始监控前要把列表写回配置"
+        assert dialog.toggle_button.cget("text") == "停止监控"
+    finally:
+        _close(dialog)
+
+
+def test_watch_dialog_start_rounds_a_short_interval_up_to_fifteen_seconds(
+    dialog_root, artifacts_dir
+) -> None:
+    app = _watch_loop_app(artifacts_dir, _two_watch_targets())
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog.interval_var.set("2")
+        dialog._start()
+        assert app.started == [(15.0, False)]
+    finally:
+        _close(dialog)
+
+
+def test_watch_dialog_start_falls_back_to_five_minutes_when_the_input_is_junk(
+    dialog_root, artifacts_dir
+) -> None:
+    app = _watch_loop_app(artifacts_dir, _two_watch_targets())
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog.interval_var.set("半小时")
+        dialog._start()
+        assert app.started == [(300.0, False)]
+    finally:
+        _close(dialog)
+
+
+def test_watch_dialog_start_refuses_an_empty_list(
+    dialog_root, artifacts_dir, monkeypatch
+) -> None:
+    app = _watch_loop_app(artifacts_dir, [])
+    dialog = _open_watch(dialog_root, app)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text, **kwargs: calls.append((title, text))
+    )
+    try:
+        dialog._start()
+    finally:
+        _close(dialog)
+
+    assert app.started == []
+    assert calls and "先添加" in calls[0][1]
+
+
+def test_watch_dialog_toggle_starts_then_stops(dialog_root, artifacts_dir) -> None:
+    app = _watch_loop_app(artifacts_dir, _two_watch_targets())
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._toggle()
+        running = app._watching
+        dialog._toggle()
+        text = dialog.toggle_button.cget("text")
+    finally:
+        _close(dialog)
+
+    assert running is True
+    assert app._watching is False
+    assert app.stopped == 1
+    assert text == "开始监控"
+
+
+def test_watch_dialog_remove_selected_drops_the_rows_and_persists(
+    dialog_root, artifacts_dir
+) -> None:
+    targets = _two_watch_targets()
+    app = _watch_loop_app(artifacts_dir, targets)
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog.tree.selection_set(str(id(targets[0])))
+        dialog._remove_selected()
+        left = [t.thread_id for t in app.watch_targets]
+        persisted = len(app.settings.watch_targets)
+        stopped = app.stopped
+    finally:
+        _close(dialog)
+
+    assert left == [7002222]
+    assert persisted == 1
+    assert stopped == 0, "还剩一条时不该把监控停掉"
+
+
+def test_watch_dialog_removing_the_last_row_stops_a_running_loop(
+    dialog_root, artifacts_dir
+) -> None:
+    targets = _two_watch_targets()
+    app = _watch_loop_app(artifacts_dir, targets)
+    app._watching = True
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog.tree.selection_set(str(id(targets[0])), str(id(targets[1])))
+        dialog._remove_selected()
+        empty = app.watch_targets == []
+        stopped = app.stopped
+    finally:
+        _close(dialog)
+
+    assert empty is True
+    assert stopped == 1
+
+
+def test_watch_dialog_check_now_refuses_an_empty_list(
+    dialog_root, artifacts_dir, monkeypatch
+) -> None:
+    app = _watch_loop_app(artifacts_dir, [])
+    dialog = _open_watch(dialog_root, app)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text, **kwargs: calls.append((title, text))
+    )
+    try:
+        dialog._check_now()
+    finally:
+        _close(dialog)
+
+    assert app.checked == 0
+    assert calls and "先添加" in calls[0][1]
+
+
+def test_watch_dialog_check_now_triggers_one_round(dialog_root, artifacts_dir) -> None:
+    app = _watch_loop_app(artifacts_dir, _two_watch_targets())
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._check_now()
+        text = dialog.status_var.get()
+    finally:
+        _close(dialog)
+
+    assert app.checked == 1
+    assert "已触发" in text
