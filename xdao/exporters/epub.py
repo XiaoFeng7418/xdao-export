@@ -28,6 +28,7 @@ from ..client import Post
 from ._shared import (
     ThreadData,
     attachment_image_url,
+    derive_filename,
     ensure_writable,
     fetch_image,
     guess_mime,

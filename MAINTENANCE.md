@@ -681,6 +681,30 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.15**：修「没标题的串导 EPUB 直接失败」（NameError）。
+
+  1. **怎么发现的**：端到端实测（挑了一个 79 页、1486 楼的公开串）跑 EPUB，日志报
+     `NameError: name 'derive_filename' is not defined`，目录里留了个 79 MB 的残包。
+     回头查 `git log -S`：这行是 v0.13.49 重构时带进来的——`_epub_title()` 里调
+     `derive_filename(thread)`，但 `epub.py` 的 `from ._shared import (...)` 里没它。
+  2. **为什么一直没暴露**：这条兜底只在 `plain_text(thread.title)` 为空或是「无标题」时
+     才走；绝大多数串有标题，所以导出一直是好的。单元测试也没碰过空标题的 EPUB。
+  3. **修法**：`xdao/exporters/epub.py` 的导入表补 `derive_filename`（一行）。行为与设计
+     一致：书名优先用标题，没标题就退回文件名推导的结果。
+  4. **用例**：`tests/test_epub.py` +2（空标题、「无标题」各一条，断言 `content.opf`
+     里的 `dc:title` 是 `derive_filename()` 的结果）；该文件 38 → 40。
+  5. **顺带实测出来的数据**（79 页 / 1486 楼 / 259 张图）：
+
+     | 格式 | 产物 | 耗时 | Python 峰值 |
+     |---|---|---|---|
+     | HTML 内嵌图 | 106.8 MB 单文件 | 251 秒 | 1393 MB |
+     | HTML 图片存同名目录 | 1.0 MB + 79.4 MB 图目录 | 204 秒 | 18 MB |
+     | PDF | 101.9 MB | 278 秒 | 1393 MB |
+     | EPUB | 158.6 MB | 220 秒 | 202 MB |
+
+     结论：图片内嵌时内存峰值 ≈ 最终文件大小的十三倍（1.4 GB），大串 + 多图建议选
+     「存到同名目录」；纯文本的帖数再多也只是 MB 级。
+
 - **v0.21.14**：给登录框的握手/导航分支与读饼干兜底补用例。
 
   1. **补的是哪些分支**：①`BrowserLoginDialog._worker`——取消正好落在 `session.connect()`
