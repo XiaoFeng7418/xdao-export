@@ -522,3 +522,36 @@ def test_bad_epub_font_size_keeps_the_original_stylesheet(artifacts_dir: Path):
     for bad in (0, -5, "abc", None):
         builder = create_exporter("epub", FakeClient(), font_size=bad)
         assert builder.font_size is None
+
+# ---------- 书名兜底（v0.21.15）----------
+
+
+def test_untitled_thread_falls_back_to_the_derived_file_name(artifacts_dir: Path) -> None:
+    """标题空着（或就是「无标题」）时要退回用文件名推导，而不是直接报错。
+
+    v0.21.15 之前这里调了一个没导入的 `derive_filename`，于是「没标题的串导 EPUB」
+    每次都挂在 NameError 上——错误只在书名兜底那条路上出现，普通串看不出问题。
+    """
+    from xdao.exporters._shared import derive_filename
+
+    thread = ThreadData(thread_id=4001, title="", po_hash="", posts=[make_post(4001, "正文")])
+    path = build_epub(artifacts_dir, thread)
+
+    with zipfile.ZipFile(path) as archive:
+        opf = archive.read("OEBPS/content.opf").decode("utf-8")
+    assert derive_filename(thread) in opf
+
+
+def test_untitled_thread_uses_the_first_post_when_the_title_is_blank(artifacts_dir: Path) -> None:
+    """标题是「无标题」时也算没标题：书名退到文件名推导，不抛异常。"""
+    from xdao.exporters._shared import derive_filename
+
+    thread = ThreadData(
+        thread_id=4002, title="无标题", po_hash="", posts=[make_post(4002, "第一句")]
+    )
+    path = build_epub(artifacts_dir, thread)
+
+    with zipfile.ZipFile(path) as archive:
+        opf = archive.read("OEBPS/content.opf").decode("utf-8")
+    assert derive_filename(thread) in opf
+

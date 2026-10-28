@@ -26,7 +26,7 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 2611 项（2026-10-29 数出来的一共这么多；本机 Windows 上 2604 通过、7 项跳过）、
+单元测试 2613 项（2026-10-29 数出来的一共这么多；本机 Windows 上 2606 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
 其中界面相关的 268 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
@@ -115,7 +115,7 @@ xdao-export/
 │  ├─ test_exporters.py    HTML/TXT/公共文本处理/文件名模板/成品已存在就跳过/合并导出（119；v0.13.49 起多 4 条钉住五个导出器共用的底座`Exporter`：构造签名统一、显示名与扩展名来自类属性、保存骨架由模板方法接管）
 │  ├─ test_watcher.py      监控与配置（32）
 │  ├─ test_watch_list.py   监控列表文件格式：导出往返、容错、合并去重（42）
-│  ├─ test_epub.py         EPUB（38）
+│  ├─ test_epub.py         EPUB，含没标题时的书名兜底（40）
 │  ├─ test_markdown.py     Markdown（48）
 │  ├─ test_notifications.py 桌面通知（28）
 │  ├─ test_pdf.py          PDF 渲染与路由（42）
