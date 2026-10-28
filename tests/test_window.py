@@ -21,6 +21,8 @@ import pytest
 from xdao import gui, theme
 from xdao.settings import AppSettings
 
+from tests import make_post
+
 from .conftest import ARTIFACTS_ROOT
 
 
@@ -2015,3 +2017,178 @@ def test_open_settings_falls_back_to_a_loud_save_when_the_dialog_did_not_save(
     app.open_settings()
 
     assert louds == [True]
+
+
+# ---------- 挑选饼干对话框（v0.21.8） ----------
+
+
+def _open_picker(root, target: str, counter: dict, po_hash: str = ""):
+    """开一个真的挑选饼干窗口；`grab_set` 在未映射窗口上会抛 TclError，先按掉。"""
+    var = tk.StringVar(value=target)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(tk.Toplevel, "grab_set", lambda self: None)
+        picker = gui.CookiePicker(root, counter, po_hash, var)
+    root.update_idletasks()
+    return picker, var
+
+
+def _checkbutton_labels(widget) -> list[str]:
+    labels: list[str] = []
+    for child in widget.winfo_children():
+        if isinstance(child, tk.Checkbutton):
+            labels.append(str(child.cget("text")))
+        labels.extend(_checkbutton_labels(child))
+    return labels
+
+
+def test_cookie_picker_prechecks_the_cookies_already_in_the_box(
+    app: gui.App
+) -> None:
+    picker, _var = _open_picker(app.root, "aaa bbb", {"aaa": 2, "bbb": 1, "ccc": 5})
+    try:
+        assert picker.vars["aaa"].get() is True
+        assert picker.vars["bbb"].get() is True
+        assert picker.vars["ccc"].get() is False
+    finally:
+        picker.destroy()
+
+
+def test_cookie_picker_lists_the_busiest_cookie_first_and_marks_the_po(app: gui.App) -> None:
+    picker, _var = _open_picker(app.root, "", {"aaa": 2, "po1": 1, "ccc": 5}, po_hash="po1")
+    try:
+        assert list(picker.vars) == ["ccc", "aaa", "po1"]
+        labels = _checkbutton_labels(picker)
+        assert any("← PO" in label for label in labels)
+        assert sum("← PO" in label for label in labels) == 1
+    finally:
+        picker.destroy()
+
+
+def test_cookie_picker_apply_writes_the_chosen_cookies_back(app: gui.App) -> None:
+    picker, var = _open_picker(app.root, "aaa", {"aaa": 2, "bbb": 1, "ccc": 5})
+    picker.vars["ccc"].set(True)
+    picker.vars["aaa"].set(False)
+
+    picker._apply()
+
+    assert var.get() == "ccc"
+    assert picker.winfo_exists() == 0, "应用之后窗口要关掉"
+
+
+def test_cookie_picker_apply_with_nothing_ticked_leaves_the_box_empty(app: gui.App) -> None:
+    """本来就没勾：应用之后是空，而不是把刚才框里的东西原样留着。"""
+    picker, var = _open_picker(app.root, "", {"aaa": 2, "bbb": 1})
+
+    picker._apply()
+
+    assert var.get() == ""
+
+
+def test_cookie_picker_set_all_toggles_every_box(app: gui.App) -> None:
+    picker, _var = _open_picker(app.root, "", {"aaa": 2, "bbb": 1, "ccc": 5})
+    try:
+        picker._set_all(True)
+        assert all(v.get() for v in picker.vars.values())
+        picker._set_all(False)
+        assert not any(v.get() for v in picker.vars.values())
+    finally:
+        picker.destroy()
+
+
+# ---------- 从串里挑选饼干：入口与轮询（v0.21.8） ----------
+
+
+def _picker_stub(monkeypatch) -> list[tuple]:
+    """把真正的 CookiePicker 换成记录参数的替身（真窗口那一层另有五条用例）。"""
+    calls: list[tuple] = []
+
+    class _Stub:
+        def __init__(self, master, counter, po_hash, target_var) -> None:
+            calls.append((dict(counter), po_hash, target_var.get()))
+
+    monkeypatch.setattr(gui, "CookiePicker", _Stub)
+    return calls
+
+
+def test_pick_cookies_warns_without_a_url(app: gui.App, monkeypatch) -> None:
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text, **k: warned.append((title, text))
+    )
+
+    app.pick_cookies()
+
+    assert warned == [("提示", "请先在输入框里填写一个串网址。")]
+    assert str(app.pick_cookie_button.cget("state")) == "normal"
+
+
+def test_pick_cookies_warns_when_the_first_url_has_no_thread_id(
+    app: gui.App, monkeypatch
+) -> None:
+    app.urls_text.insert("1.0", "不是一个网址")
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text, **k: warned.append((title, text))
+    )
+
+    app.pick_cookies()
+
+    assert warned == [("提示", "无法识别第一个网址里的串号。")]
+    assert str(app.pick_cookie_button.cget("state")) == "normal"
+
+
+def test_poll_cookies_opens_the_picker_with_what_the_first_page_holds(
+    app: gui.App, monkeypatch
+) -> None:
+    calls = _picker_stub(monkeypatch)
+    posts = [
+        make_post(1, "一楼", user_hash="aaa"),
+        make_post(2, "二楼", user_hash="aaa"),
+        make_post(3, "PO 发言", user_hash="po1", is_po=True),
+        make_post(4, "没有饼干", user_hash=""),
+    ]
+    app._cookie_queue.put(("ok", posts))
+
+    app._poll_cookies()
+
+    assert calls == [({"aaa": 2, "po1": 1}, "po1", app.hashes_var.get())]
+    assert str(app.pick_cookie_button.cget("state")) == "normal"
+
+
+def test_poll_cookies_shows_why_reading_failed(app: gui.App, monkeypatch) -> None:
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, text, **k: errors.append((title, text))
+    )
+    app._cookie_queue.put(("fail", "网络错误"))
+
+    app._poll_cookies()
+
+    assert errors == [("读取失败", "网络错误")]
+    assert str(app.pick_cookie_button.cget("state")) == "normal"
+
+
+def test_poll_cookies_says_when_the_first_page_has_no_cookies(
+    app: gui.App, monkeypatch
+) -> None:
+    info: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showinfo", lambda title, text, **k: info.append((title, text))
+    )
+    app._cookie_queue.put(("ok", [make_post(1, "匿名", user_hash="")]))
+
+    app._poll_cookies()
+
+    assert info == [("提示", "第一页里没有可选的饼干。")]
+
+
+def test_poll_cookies_keeps_waiting_while_the_queue_is_empty(
+    app: gui.App, monkeypatch
+) -> None:
+    again: list[int] = []
+    monkeypatch.setattr(app.root, "after", lambda delay, func=None: again.append(delay) or "id")
+
+    app._poll_cookies()
+
+    assert again == [80]
+
