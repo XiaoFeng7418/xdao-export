@@ -5,6 +5,7 @@ EPUB 与 Markdown 的测试见 ``test_epub.py`` / ``test_markdown.py``。
 
 from __future__ import annotations
 
+import threading
 import urllib.parse
 
 import re
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests import FakeClient, SAMPLE_JPEG, make_post, sample_thread, sample_thread_with_po_reply
+from xdao.cancel import ExportCancelled
 from xdao.client import Post
 from xdao.exporters.html import _style_block
 from xdao.exporters.markdown import MarkdownBuilder
@@ -1209,8 +1211,13 @@ def test_pdf_merge_renders_the_merged_html_once(tmp_path: Path) -> None:
     builder = PdfBuilder(FakeClient())
     seen: list[str] = []
 
-    def fake_render(html: str, output_dir, target) -> Path:
-        seen.append(html)
+    def fake_render(html, output_dir, target, html_writer=None) -> Path:
+        # v0.21.16 起合并导出改成流式写 HTML：这里把写出来的内容读回来核对，
+        # 同时确认调用方不再先把整份 HTML 拼成字符串（html 必须是 None）。
+        assert html is None and html_writer is not None
+        staged = target.with_suffix('.staged.html')
+        html_writer(staged)
+        seen.append(staged.read_text(encoding='utf-8'))
         target.write_bytes(b"%PDF-1.4 fake")
         return target
 
@@ -1254,3 +1261,66 @@ def test_epub_does_not_support_merge() -> None:
 
     assert create_exporter("epub", FakeClient()).supports_merge is False
 
+
+
+# ---------- 流式写盘（v0.21.16） ----------
+
+
+def test_html_save_writes_exactly_what_build_returns(tmp_path: Path) -> None:
+    """流式写盘与「先拼字符串」必须逐字节一致，否则老成品会变样。"""
+    thread = sample_thread()
+    client = FakeClient()
+
+    built = HtmlBuilder(client).build(thread, "all", None).encode("utf-8")
+    path = HtmlBuilder(client).save(thread, "all", tmp_path)
+
+    assert path.read_bytes() == built
+
+
+def test_merged_html_save_writes_exactly_what_build_many_returns(tmp_path: Path) -> None:
+    first, second = _two_threads()
+    client = FakeClient()
+
+    built = HtmlBuilder(client).build_many([first, second], "all", None).encode("utf-8")
+    path = HtmlBuilder(client).save_many([first, second], "all", tmp_path)
+
+    assert path.read_bytes() == built
+
+
+def test_html_save_leaves_no_part_file_behind(tmp_path: Path) -> None:
+    HtmlBuilder(FakeClient()).save(sample_thread(), "all", tmp_path)
+
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_cancelled_html_save_writes_no_product(tmp_path: Path) -> None:
+    """取消时既不能留下成品，也不能留下 .part 半成品。"""
+    stop = threading.Event()
+    stop.set()
+
+    with pytest.raises(ExportCancelled):
+        HtmlBuilder(FakeClient(), stop=stop).save(sample_thread(), "all", tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_pdf_build_streams_the_html_into_staging(tmp_path: Path) -> None:
+    """PDF 也不再先把整份 HTML 拼成字符串，而是把写文件的动作交给 writer。"""
+    thread = sample_thread()
+    builder = PdfBuilder(FakeClient())
+    seen: list[str] = []
+
+    def fake_render(html, output_dir, target, html_writer=None) -> Path:
+        assert html is None and html_writer is not None
+        staged = target.with_suffix(".staged.html")
+        html_writer(staged)
+        seen.append(staged.read_text(encoding="utf-8"))
+        target.write_bytes(b"%PDF-1.4 fake")
+        return target
+
+    builder.render_pdf = fake_render  # type: ignore[method-assign]
+    path = builder.save(thread, "all", tmp_path)
+
+    assert len(seen) == 1
+    assert '<article class="post' in seen[0]
+    assert path.read_bytes().startswith(b"%PDF")

@@ -681,6 +681,21 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.16（2026-10-29）：HTML / PDF 改成边渲染边写盘，压住图片内嵌时的内存峰值**
+  - 现象：79 页 / 1486 楼 / 259 张图的串，图片内嵌导 HTML 时 Python 峰值 1393 MB（成品 106.8 MB），
+    导 PDF 同样 1393 MB。v0.19.7 那组纯文本内存测量（2.7 倍）没算图片，所以一直没发现。
+  - 根因：`HtmlBuilder.build()` 先把所有楼 join 成一个字符串，再套 f-string 拼成整份文档，
+    最后 `write_text` 又编码一份；三份大字符串 + 图片缓存同时在内存里。
+  - 修法：`HtmlBuilder` 新增 `write_document()` / `write_merged()`，边渲染边写文件；覆盖
+    `save()` / `save_many()`，先写 `.part` 再 `os.replace`（取消或中途出错都不留半成品）。
+    `build()` / `build_many()` 保留给需要整份字符串的调用方，并抽出 `_article_html()` 保证三条路径
+    逐字节一致。PDF 侧给 `render_html_to_pdf()` 与 `_prepare_staging()` 加 `html_writer`，直接把
+    HTML 流式写进临时目录；渲染失败改存 HTML 的兜底也走流式。
+  - 实测：HTML 1171 降到 118 MB，PDF 1393 降到 118 MB；PDF 用时 278 秒降到 143 秒（缓存已热）。
+  - 用例：`tests/test_exporters.py` 119 增至 124（逐字节一致、无 `.part` 残留、取消不留产物、
+    PDF 流式、合并流式）。
+  - 教训：写盘路径一改，先拿「逐字节一致」的用例钉住再谈性能，否则老用户会发现成品莫名变了。
+
 - **v0.21.15**：修「没标题的串导 EPUB 直接失败」（NameError）。
 
   1. **怎么发现的**：端到端实测（挑了一个 79 页、1486 楼的公开串）跑 EPUB，日志报

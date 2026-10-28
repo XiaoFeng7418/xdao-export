@@ -123,7 +123,7 @@ def browser_launch_failure_hint(returncode: int) -> str:
 
 
 def render_html_to_pdf(
-    html: str,
+    html: str | None,
     output_pdf: Path | str,
     *,
     browser_path: str | Path | None = None,
@@ -132,6 +132,7 @@ def render_html_to_pdf(
     progress=None,
     work_dir: Path | None = None,
     stop=None,
+    html_writer=None,
 ) -> Path:
     """把一段 HTML 渲染成 PDF，返回写入的路径。
 
@@ -154,6 +155,7 @@ def render_html_to_pdf(
             progress=progress,
             work_dir=work_dir,
             stop=stop,
+            html_writer=html_writer,
         )
     return print_html_to_pdf(
         html,
@@ -164,11 +166,15 @@ def render_html_to_pdf(
         progress=progress,
         work_dir=work_dir,
         stop=stop,
+        html_writer=html_writer,
     )
 
 
 def _prepare_staging(
-    html: str, output_pdf: Path, work_dir: Path | None
+    html: str | None,
+    output_pdf: Path,
+    work_dir: Path | None,
+    html_writer=None,
 ) -> tuple[Path, Path, Path]:
     """开一个临时目录，把 HTML 写进去。
 
@@ -183,7 +189,10 @@ def _prepare_staging(
     source = temp_dir / "source.html"
     profile = temp_dir / "profile"
     profile.mkdir(exist_ok=True)
-    source.write_text(html, encoding="utf-8")
+    if html_writer is not None:
+        html_writer(source)
+    else:
+        source.write_text(html or "", encoding="utf-8")
     return temp_dir, source, profile
 
 
@@ -200,7 +209,7 @@ def _check_and_move(target: Path, output_pdf: Path) -> None:
 
 
 def _render_with_command_line(
-    html: str,
+    html: str | None,
     output_pdf: Path | str,
     *,
     browser_path: str | Path | None = None,
@@ -208,6 +217,7 @@ def _render_with_command_line(
     progress=None,
     work_dir: Path | None = None,
     stop=None,
+    html_writer=None,
 ) -> Path:
     """命令行渲染路径（``--print-to-pdf``）：默认走这条，纸张沿用网页样式。
 
@@ -219,7 +229,7 @@ def _render_with_command_line(
     if progress:
         progress(f"正在用 {browser.name} 渲染 PDF…")
 
-    temp_dir, source, profile = _prepare_staging(html, output_pdf, work_dir)
+    temp_dir, source, profile = _prepare_staging(html, output_pdf, work_dir, html_writer)
     target = temp_dir / "output.pdf"
     try:
         command = [
@@ -299,7 +309,7 @@ def _render_with_command_line(
 
 
 def print_html_to_pdf(
-    html: str,
+    html: str | None,
     output_pdf: Path | str,
     *,
     browser_path: str | Path | None = None,
@@ -308,6 +318,7 @@ def print_html_to_pdf(
     progress=None,
     work_dir: Path | None = None,
     stop=None,
+    html_writer=None,
 ) -> Path:
     """用 CDP 的 ``Page.printToPDF`` 渲染：只有这条路能设纸张与页边距。
 
@@ -339,7 +350,7 @@ def print_html_to_pdf(
     if progress:
         progress(f"正在用 {info.name} 渲染 PDF（{opts.describe()}）…")
 
-    temp_dir, source, profile = _prepare_staging(html, output_pdf, work_dir)
+    temp_dir, source, profile = _prepare_staging(html, output_pdf, work_dir, html_writer)
     target = temp_dir / "output.pdf"
     try:
         # 用登录模块的浏览器句柄：它已经把「等调试端口 → 独立 profile → 不弹黑框」
@@ -476,7 +487,7 @@ class PdfBuilder(Exporter):
         # 图片模式以内部 HTML 导出器归一化后的值为准（认不出的值在那里会退回 embed）。
         self.image_mode = self._html.image_mode
 
-    def render_pdf(self, html: str, _work_dir: Path, output_pdf: Path) -> Path:
+    def render_pdf(self, html: str | None, _work_dir: Path, output_pdf: Path, html_writer=None) -> Path:
         self.check_cancel()
         return render_html_to_pdf(
             html,
@@ -486,6 +497,7 @@ class PdfBuilder(Exporter):
             timeout=self.timeout,
             progress=self._progress,
             stop=self.stop,
+            html_writer=html_writer,
         )
 
     def build(
@@ -496,8 +508,10 @@ class PdfBuilder(Exporter):
         include_hashes: list[str] | None = None,
     ) -> Path:
         output_pdf = Path(output_pdf)
-        html = self._html.build(thread, scope, include_hashes)
-        return self.render_pdf(html, output_pdf.parent, output_pdf)
+        writer = lambda target: self._html.write_document(  # noqa: E731
+            thread, scope, include_hashes, target
+        )
+        return self.render_pdf(None, output_pdf.parent, output_pdf, html_writer=writer)
 
     def save_many(
         self,
@@ -516,15 +530,17 @@ class PdfBuilder(Exporter):
         if self.skip_existing and path.exists() and path.stat().st_size > 0:
             return self.reuse_existing(path)
         self._notify(self.save_message)
-        html = self._html.build_many(threads, scope, include_hashes)
+        writer = lambda target: self._html.write_merged(  # noqa: E731
+            threads, scope, include_hashes, target
+        )
         try:
-            return self.render_pdf(html, output_dir, path)
+            return self.render_pdf(None, output_dir, path, html_writer=writer)
         except PdfError:
             if not self.fallback_html:
                 raise
             self._notify("PDF 渲染失败，改为保存 HTML（可在浏览器里打印成 PDF）…")
             html_path = path.with_suffix(".html")
-            html_path.write_text(html, encoding="utf-8")
+            self._html.write_merged(threads, scope, include_hashes, html_path)
             self.fallback_note = (
                 f"PDF 渲染失败，已改存 {html_path.name}；"
                 "在浏览器里打开它，按 Ctrl+P 选「另存为 PDF」即可得到同样的结果。"
@@ -555,9 +571,7 @@ class PdfBuilder(Exporter):
             # 用户在浏览器里打开后按 Ctrl+P 即可另存为 PDF。
             self._notify("PDF 渲染失败，改为保存 HTML（可在浏览器里打印成 PDF）…")
             html_path = self.target_path(thread, output_dir).with_suffix(".html")
-            html_path.write_text(
-                self._html.build(thread, scope, include_hashes), encoding="utf-8"
-            )
+            self._html.write_document(thread, scope, include_hashes, html_path)
             self.fallback_note = (
                 f"PDF 渲染失败，已改存 {html_path.name}；"
                 "在浏览器里打开它，按 Ctrl+P 选「另存为 PDF」即可得到同样的结果。"
