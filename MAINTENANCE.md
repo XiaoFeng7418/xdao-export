@@ -681,6 +681,19 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.14**：给登录框的握手/导航分支与读饼干兜底补用例。
+
+  1. **补的是哪些分支**：①`BrowserLoginDialog._worker`——取消正好落在 `session.connect()`
+     过程中（收窗、不报错）、`ensure_login_page()` 抛异常（只留一句「请在窗口里手动打开」、
+     流程照走）、`_new_session` 之后 `connect()` 失败（报「打开浏览器失败」并收窗）；
+     ②`_read_userhash`——按地址读到就直接用；按地址漏了、整罐读又抛异常时当作没读到；
+     整罐读补上但分不出域/路径时给一句不带定位的说明。
+  2. **做法**：假后端只提供这几条分支要用的方法；`LoginBrowser` 替身缺的属性由工厂补默认值
+     （`devtools_failure_hint` 这类必须给，否则 worker 在 try 里就会 AttributeError）；
+     轮询循环用「进程已退出」的假 browser 让它一圈就收，不真等。
+  3. **读数**：只跑三个界面测试文件时 gui.py 行覆盖仍是 96%（122 → 121 行未覆盖），
+     收集 2611、本机 2604 通过、7 跳过；契约 29 passed。
+
 - **v0.21.13**：给导出线程内层分支与几处小函数补用例。
 
   1. **补的是哪些分支**：①导出线程内层——抓取结果带「缺页/撞页数上限」提示并记进

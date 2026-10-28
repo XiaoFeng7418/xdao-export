@@ -26,10 +26,10 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
-单元测试 2605 项（2026-10-29 数出来的一共这么多；本机 Windows 上 2598 通过、7 项跳过）、
+单元测试 2611 项（2026-10-29 数出来的一共这么多；本机 Windows 上 2604 通过、7 项跳过）、
 7 个真机用例默认跳过（都离线，无需联网；跳过的那些要显式开关 `XDAO_BROWSER_TEST=1` /
 `XDAO_LIVE_NOTIFY=1` / `XDAO_PDF_TEST=1`，还有一个要管理员权限的符号链接用例）；
-其中界面相关的 262 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
+其中界面相关的 268 项（`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）
 在没有显示环境的机器上会自动 skip。下面那张测试表的数字由 `tests/test_docs_facts.py`
 对着真实收集数把关：加删测试文件、用例数量变了，它就会红，照报红的位置改表即可。
 
@@ -130,7 +130,7 @@ xdao-export/
 │  ├─ test_theme.py        配色/字体/间距/ttk 样式、Card 拉伸（34，需真 Tk）
 │  ├─ test_widgets.py      自绘控件：圆角矩形、徽章、输入框、链接、进度条（56，需真 Tk）
 │  ├─ test_threadlist.py   清单文件：解析、去重、注释、认不出就报错（12）
-│  ├─ test_window.py       主窗口布局、队列轮询、登录对话框、常用动作、监控与保存日志、登录窗失败分支、挑选饼干与从串里读饼干、一键升级链路、登录窗坏分支、导出线程内层与收尾（142，需真 Tk）
+│  ├─ test_window.py       主窗口布局、队列轮询、登录对话框、常用动作、监控与保存日志、登录窗失败分支、挑选饼干与从串里读饼干、一键升级链路、登录窗坏分支与握手、读饼干兜底、导出线程内层（148，需真 Tk）
 │  └─ test_dev_tools.py    仓库自带开发脚本：纯函数据与用法提示（13）
 └─ xdao/
    ├─ __init__.py          版本号
