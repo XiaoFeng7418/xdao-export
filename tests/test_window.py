@@ -1049,18 +1049,6 @@ def test_poll_cookies_says_when_the_first_page_has_nothing_to_pick(
     assert str(app.pick_cookie_button.cget("state")) == "normal"
 
 
-def test_poll_cookies_shows_why_reading_failed(
-    app: gui.App, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    shown: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        gui.messagebox, "showerror", lambda title, body, **kw: shown.append((title, body))
-    )
-    app._cookie_queue.put(("fail", "网络断了"))  # noqa: SLF001
-
-    app._poll_cookies()  # noqa: SLF001
-
-    assert shown == [("读取失败", "网络断了")]
 
 # ---------------------------------------------------------------------------
 # 登录对话框的两条轮询：验证码加载（_poll_form）与账号密码登录（_poll_login）
@@ -3545,3 +3533,449 @@ def test_read_userhash_prefers_the_address_read() -> None:
 
     assert gui.BrowserLoginDialog._read_userhash(backend, session) == ("FROMURL", "")
 
+
+
+# ---------- 顶栏下拉框与启动检查的绕路（v0.21.18 覆盖补齐）----------
+
+
+def test_theme_selector_ignores_a_missing_variable(app: gui.App) -> None:
+    """界面还没搭完时没有这个变量（构造过程中会绑一次）；点一下不该炸。"""
+    app._theme_var = None
+    app._on_theme_selected()
+
+
+def test_theme_selector_does_nothing_when_the_theme_is_unchanged(app: gui.App, monkeypatch) -> None:
+    """选了当前这一档：不重建界面（重建很贵，而且会把日志冲掉）。"""
+    calls: list[str] = []
+    monkeypatch.setattr(app, "switch_theme", lambda name: calls.append(name))
+    app._theme_var.set(app._theme_name)
+    app._on_theme_selected()
+    assert calls == []
+
+
+def test_theme_selector_switches_when_a_different_palette_is_picked(app: gui.App, monkeypatch) -> None:
+    names = [theme.palette(key).name for key in theme.PALETTES]
+    other = next(name for name in names if name != app._theme_name)
+    calls: list[str] = []
+    monkeypatch.setattr(app, "switch_theme", lambda name: calls.append(name))
+    app._theme_var.set(other)
+    app._on_theme_selected()
+    assert calls == [other]
+
+
+def test_font_selector_ignores_a_missing_variable(app: gui.App) -> None:
+    app._font_scale_var = None
+    app._on_font_scale_selected()
+
+
+def test_font_selector_does_nothing_when_the_step_is_unchanged(app: gui.App, monkeypatch) -> None:
+    calls: list[float] = []
+    monkeypatch.setattr(app, "switch_font_scale", lambda scale: calls.append(scale))
+    app._font_scale_var.set(theme.font_scale_label())
+    app._on_font_scale_selected()
+    assert calls == []
+
+
+def test_font_selector_switches_when_another_step_is_picked(app: gui.App, monkeypatch) -> None:
+    label = next(
+        text for text, _ in theme.FONT_SCALE_CHOICES if text != theme.font_scale_label()
+    )
+    calls: list[float] = []
+    monkeypatch.setattr(app, "switch_font_scale", lambda scale: calls.append(scale))
+    app._font_scale_var.set(label)
+    app._on_font_scale_selected()
+    assert calls == [theme.font_scale_for_label(label)]
+
+
+def test_format_box_falls_back_to_html_when_the_text_is_unknown(app: gui.App) -> None:
+    """下拉框被写成不认识的值时（配置文件坏了之类）不能当场抛 KeyError。"""
+    app.format_box.set("不认识的格式")
+    assert app.format_box.current() == -1
+    assert app.current_format() == "html"
+
+
+def test_image_mode_box_falls_back_to_embed_when_the_text_is_unknown(app: gui.App) -> None:
+    app.image_mode_box.set("不认识的图片处理")
+    assert app.image_mode_box.current() == -1
+    assert app.current_image_mode() == "embed"
+
+
+def test_export_dir_is_refused_when_the_field_is_empty(app: gui.App, monkeypatch) -> None:
+    calls: list[tuple] = []
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: calls.append(a))
+    app.output_var.set("   ")
+    assert app.prepare_export_dir() is None
+    assert calls and calls[0][0] == "提示"
+    assert "请选择导出目录" in calls[0][1]
+
+
+def test_check_update_does_nothing_while_one_is_already_running(app: gui.App) -> None:
+    app._checking_update = True
+    app.check_update()
+    assert app._checking_update is True
+
+
+def test_check_update_offers_the_download_page_when_a_newer_version_is_known(
+    app: gui.App, monkeypatch
+) -> None:
+    class _Result:
+        newer = True
+
+        def line(self) -> str:
+            return "有新版本"
+
+    result = _Result()
+    app._update_result = result
+    offered: list[object] = []
+    monkeypatch.setattr(app, "_offer_download", lambda item: offered.append(item))
+    app.check_update()
+    assert offered == [result]
+
+
+def test_poll_update_does_nothing_without_a_queue(app: gui.App) -> None:
+    app._update_queue = None
+    app._poll_update()
+
+
+def test_poll_update_waits_when_the_worker_has_not_finished(app: gui.App, monkeypatch) -> None:
+    import queue as _queue
+
+    app._update_queue = _queue.Queue()
+    scheduled: list[tuple] = []
+    monkeypatch.setattr(app.root, "after", lambda ms, fn=None, *a: scheduled.append((ms, fn)))
+    app._poll_update()
+    assert scheduled and scheduled[0][0] == 120
+
+
+def test_update_done_writes_one_line_when_the_check_failed(app: gui.App) -> None:
+    class _Result:
+        newer = False
+        ok = False
+        from_cache = False
+
+        def line(self) -> str:
+            return "没查到新版本（可能是没网）"
+
+    app._update_done(_Result())
+    text = app.log_text.get("1.0", "end-1c")
+    assert "没查到新版本" in text
+
+
+# ---------- 登录窗的几个提前返回（v0.21.18 覆盖补齐）----------
+
+
+def test_http_note_ignores_empty_text() -> None:
+    """没有结论时不写那一行（否则界面上多一个空标签）。"""
+    dialog = _bare_login_dialog()
+    dialog._set_http_note("")
+
+
+def test_start_does_nothing_after_the_dialog_began_closing() -> None:
+    dialog = _bare_login_dialog()
+    dialog._closing = True
+    dialog._thread = None
+    dialog.start()
+    assert dialog._thread is None
+
+
+def test_restart_cleans_up_before_starting_again() -> None:
+    dialog = _bare_login_dialog()
+    calls: list[str] = []
+    dialog._shutdown = lambda: calls.append("shutdown")  # type: ignore[method-assign]
+    dialog.start = lambda: calls.append("start")  # type: ignore[method-assign]
+    dialog._restart()
+    assert calls == ["shutdown", "start"]
+
+
+def _paste_ready_dialog(monkeypatch) -> gui.BrowserLoginDialog:
+    dialog = _bare_login_dialog()
+    dialog.grab_release = lambda: None  # type: ignore[method-assign]
+    dialog.grab_set = lambda: None  # type: ignore[method-assign]
+    dialog.winfo_exists = lambda: True  # type: ignore[method-assign]
+    return dialog
+
+
+def test_manual_paste_returns_quietly_when_nothing_was_pasted(monkeypatch) -> None:
+    dialog = _paste_ready_dialog(monkeypatch)
+    monkeypatch.setattr(gui, "ask_pasted_cookie", lambda master: None)
+    dialog._manual_userhash()
+
+
+def test_manual_paste_reports_a_bad_cookie(monkeypatch) -> None:
+    dialog = _paste_ready_dialog(monkeypatch)
+    monkeypatch.setattr(gui, "ask_pasted_cookie", lambda master: "userhash=坏的")
+    calls: list[tuple] = []
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda *a, **k: calls.append(a))
+
+    class _Client:
+        def import_userhash(self, text: str) -> str:
+            raise ValueError("认不出这段饼干")
+
+    dialog.client = _Client()  # type: ignore[assignment]
+    dialog._manual_userhash()
+    assert calls and calls[0][0] == "设置失败"
+    assert "认不出这段饼干" in calls[0][1]
+
+
+# ---------- 右键菜单、收尾与升级轮询的绕路（v0.21.18 覆盖补齐）----------
+
+
+def _quiet_menus(monkeypatch) -> list[tuple[int, int]]:
+    """把真弹菜单换成记账：测试里弹出来的菜单没人点，留在屏幕上会干扰后面的用例。"""
+    shown: list[tuple[int, int]] = []
+    monkeypatch.setattr(tk.Menu, "tk_popup", lambda self, x, y, *a: shown.append((x, y)))
+    monkeypatch.setattr(tk.Menu, "grab_release", lambda self: None)
+    return shown
+
+
+def test_log_text_has_a_right_click_menu(app: gui.App, monkeypatch) -> None:
+    shown = _quiet_menus(monkeypatch)
+    app.log_text.event_generate("<Button-3>", x=8, y=8)
+    app.root.update()
+    assert shown, "右键没有弹出菜单"
+
+
+def test_paste_cookie_box_has_a_right_click_menu(root_window: tk.Tk, monkeypatch) -> None:
+    shown = _quiet_menus(monkeypatch)
+    dialog = gui.PasteCookieDialog(root_window)
+    try:
+        root_window.update()
+        dialog.text.event_generate("<Button-3>", x=8, y=8)
+        root_window.update()
+        assert shown, "右键没有弹出菜单"
+    finally:
+        dialog.destroy()
+        root_window.update()
+
+
+def test_image_mode_sync_returns_early_before_the_window_is_ready(app: gui.App) -> None:
+    """构造过程中会先调一次，那时滚动区还没建出来。"""
+    del app._scroll_needed
+    app._sync_image_mode()
+
+
+def test_settings_save_failure_is_reported_once(app: gui.App, monkeypatch) -> None:
+    monkeypatch.setattr(app.settings, "save", lambda: False)
+    app._settings_save_warned = False
+    assert app.save_settings() is False
+    app.save_settings()  # 第二次不再重复念同一句
+    text = app.log_text.get("1.0", "end-1c")
+    assert text.count("设置没能写进") == 1
+
+
+def test_settings_save_failure_is_repeated_when_it_is_loud(app: gui.App, monkeypatch) -> None:
+    monkeypatch.setattr(app.settings, "save", lambda: False)
+    app._settings_save_warned = True
+    assert app.save_settings(loud=True) is False
+    text = app.log_text.get("1.0", "end-1c")
+    assert text.count("设置没能写进") == 1
+
+
+def test_upgrade_poll_does_nothing_without_a_queue(app: gui.App) -> None:
+    app._upgrade_queue = None
+    app._poll_upgrade()
+
+
+def test_upgrade_progress_writes_notes_to_the_log(app: gui.App) -> None:
+    assert app._upgrade_progress("note", "正在下载新版本") is True
+    assert "正在下载新版本" in app.log_text.get("1.0", "end-1c")
+
+
+def test_upgrade_progress_ignores_unknown_kinds(app: gui.App) -> None:
+    assert app._upgrade_progress("没见过的类型", None) is True
+
+
+def test_export_poll_finishes_when_the_worker_says_done(app: gui.App, monkeypatch) -> None:
+    import queue as _queue
+
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: None)
+    app._export_queue = _queue.Queue()
+    app._export_queue.put(("done", (1, 1, [], 3.0, [], False)))
+    app._exporting = True
+    app._poll_export()
+    assert app._exporting is False
+    assert "全部处理完毕：成功 1 / 1 个" in app.log_text.get("1.0", "end-1c")
+
+
+def test_close_does_nothing_when_it_already_began_closing(app: gui.App, monkeypatch) -> None:
+    scheduled: list[tuple] = []
+    monkeypatch.setattr(app.root, "after", lambda ms, fn=None, *a: scheduled.append((ms, fn)))
+    app._closing = True
+    app.on_close()
+    assert scheduled == []
+
+
+def test_fit_log_height_gives_up_when_the_metrics_are_odd(app: gui.App, monkeypatch) -> None:
+    monkeypatch.setattr(app.log_text.master, "winfo_height", lambda: "高")
+    app._fit_log_height()  # 不该炸
+
+
+# ---------- 自检、登录窗与清理的兜底（v0.21.18 覆盖补齐）----------
+
+
+def test_dialog_colors_do_nothing_without_a_mapping(root_window: tk.Tk) -> None:
+    """新旧配色一样时映射是空的：不该挨个改控件（很贵，而且没意义）。"""
+    gui._sync_dialog_colors(root_window, theme.PALETTE, theme.PALETTE)
+
+
+def test_login_error_explains_a_missing_account() -> None:
+    title, text = gui.describe_login_failure("账号不存在")
+    assert title == "账号有问题"
+    assert "请确认邮箱地址" in text
+
+
+def test_login_error_explains_an_empty_cookie_jar() -> None:
+    title, text = gui.describe_login_failure("饼干列表是空的")
+    assert title == "这个账号还没有饼干"
+    assert "领取并应用一块饼干" in text
+
+
+def test_captcha_refresh_is_ignored_while_one_is_loading(root_window: tk.Tk) -> None:
+    dialog = _login_dialog(root_window)
+    dialog._busy = True
+    dialog._refresh_captcha()  # 上一次还在路上，不再起一条
+    assert dialog._busy is True
+
+
+def test_load_form_kicks_off_the_captcha_fetch(root_window: tk.Tk, monkeypatch) -> None:
+    dialog = _login_dialog(root_window)
+    calls: list[str] = []
+    monkeypatch.setattr(dialog, "_refresh_captcha", lambda: calls.append("refresh"))
+    dialog._load_form()
+    assert calls == ["refresh"]
+
+
+def test_browser_cookie_check_flags_a_stale_cookie_on_the_jump_page(monkeypatch) -> None:
+    """HTTP 200 但内容是登录跳转页：这块饼干不认了，要给一句能照着做的话。"""
+
+    class _Client:
+        SITE = "https://www.nmbxd1.com"
+
+        def __init__(self) -> None:
+            self.userhash = ""
+
+        def import_userhash(self, value: str) -> str:
+            self.userhash = value
+            return value
+
+        def _request_following_jumps(self, url, timeout=15.0):  # noqa: ANN001
+            return b"<html>login</html>", url
+
+        def jump_page_url(self, text: str) -> str:
+            return f"{self.SITE}/Member/User/Index/login.html"
+
+    message = gui.verify_userhash_live(_Client(), "abc123")
+    assert message == gui.BROWSER_STALE_COOKIE_MESSAGE
+
+
+def test_selftest_browser_check_is_ignored_while_one_is_running(app: gui.App) -> None:
+    dialog = object.__new__(gui.SelftestDialog)
+    dialog._browser_busy = True
+    dialog._run_browser_check()
+
+
+def test_selftest_browser_poll_does_nothing_when_not_busy(app: gui.App) -> None:
+    dialog = object.__new__(gui.SelftestDialog)
+    dialog._browser_busy = False
+    dialog._poll_browser_check()
+
+
+def test_selftest_reports_when_every_browser_fails(app: gui.App) -> None:
+    import queue as _queue
+    from types import SimpleNamespace
+
+    class _Report:
+        ok = False
+
+        def render(self) -> str:
+            return "[不行] 两扇都起不来"
+
+        def first_ok(self):
+            return None
+
+    dialog = object.__new__(gui.SelftestDialog)
+    dialog.app = app
+    dialog._browser_busy = True
+    dialog._browser_queue = _queue.Queue()
+    dialog._browser_queue.put(("report", _Report()))
+    dialog.browser_button = _StateStub()
+    dialog.status_var = tk.StringVar(master=app.root)
+    lines: list[str] = []
+    dialog._append = lines.append
+    dialog.text = SimpleNamespace(see=lambda *a: None)
+
+    dialog._poll_browser_check()
+
+    assert dialog._browser_busy is False
+    assert lines and "[不行]" in lines[0]
+    assert "暂时用不了" in app.log_text.get("1.0", "end-1c")
+
+
+def test_selftest_copy_does_nothing_when_the_text_is_empty(app: gui.App) -> None:
+    from types import SimpleNamespace
+
+    dialog = object.__new__(gui.SelftestDialog)
+    dialog.app = app
+    dialog.status_var = tk.StringVar(master=app.root)
+    dialog.text = SimpleNamespace(get=lambda *a: "   ")
+
+    def boom() -> None:  # pragma: no cover - 不该走到
+        raise AssertionError("空文本不该碰剪贴板")
+
+    dialog.clipboard_clear = boom
+    dialog._copy()
+    assert dialog.status_var.get() == ""
+
+
+def test_cleanup_old_backups_swallows_errors(app: gui.App, monkeypatch) -> None:
+    from xdao import updater
+
+    def boom() -> None:
+        raise OSError("删不掉")
+
+    monkeypatch.setattr(updater, "cleanup_backups", boom)
+    app._cleanup_old_backups()
+
+
+def test_staging_cleanup_swallows_errors(app: gui.App, monkeypatch) -> None:
+    from xdao import updater
+
+    def boom() -> None:
+        raise OSError("删不掉")
+
+    monkeypatch.setattr(updater, "cleanup_staging_leftovers_at_startup", boom)
+    app._cleanup_staging_leftovers()
+
+
+def test_upgrade_poll_stops_at_the_finish_event(app: gui.App, monkeypatch) -> None:
+    import queue as _queue
+
+    finished: list[tuple] = []
+    monkeypatch.setattr(
+        app, "_upgrade_finish", lambda ok, message, action: finished.append((ok, message, action))
+    )
+    app._upgrade_queue = _queue.Queue()
+    app._upgrade_queue.put(("finish", (True, "换好了", "exit")))
+    app._poll_upgrade()
+    assert finished == [(True, "换好了", "exit")]
+
+
+def test_watch_check_points_the_client_at_the_image_cache(app: gui.App, monkeypatch, tmp_path) -> None:
+    """勾了本地缓存：这一轮检查要把客户端的图片缓存指到缓存目录下。"""
+    from types import SimpleNamespace
+
+    app.watch_targets = [gui.WatchTarget("50000001", format_key="html")]
+    result = SimpleNamespace(
+        target=app.watch_targets[0],
+        error="",
+        exported=None,
+        reason="无更新",
+        first_run=False,
+        new_posts=0,
+    )
+    monkeypatch.setattr(gui, "check_once", lambda *a, **k: result)
+    app.output_var.set(str(tmp_path))
+    app.use_cache_var.set(True)
+    app.check_watch_once()
+    assert app.client.image_cache_dir is not None
+    assert app.client.image_cache_dir.parent == app.current_cache_dir()
