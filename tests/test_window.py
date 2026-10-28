@@ -2523,3 +2523,209 @@ def test_jar_ignores_junk_entries_and_missing_arguments() -> None:
     assert gui._jar_holds_a_session(None) is False
     assert gui._jar_holds_a_session([]) is False
     assert gui._jar_holds_a_session(["junk", 42, None]) is False
+
+# ---------- 登录后台线程的提前返回与失败收尾（v0.21.10）----------
+
+
+def _bare_login_dialog(stop: bool = False):
+    """只把 `_worker` 要碰的几个属性摆上，不开窗口、不起进程。"""
+    import queue as _queue
+    import threading as _threading
+    from types import SimpleNamespace
+
+    dialog = object.__new__(gui.BrowserLoginDialog)
+    dialog._queue = _queue.Queue()
+    dialog._stop = _threading.Event()
+    if stop:
+        dialog._stop.set()
+    dialog._browser = None
+    dialog.settings = SimpleNamespace(proxy="", config_path=str(ARTIFACTS_ROOT / "window-layout" / "config.json"))
+    return dialog
+
+
+def _drain(dialog) -> list[tuple]:  # noqa: ANN001
+    items: list[tuple] = []
+    while True:
+        try:
+            items.append(dialog._queue.get_nowait())
+        except Exception:  # noqa: BLE001 - 队列空了
+            return items
+
+
+def test_worker_says_so_when_the_browser_component_is_missing(monkeypatch) -> None:
+    """打包时漏了「浏览器登录」组件：给一句能照着做的话，不去找浏览器。"""
+    dialog = _bare_login_dialog()
+
+    def boom():
+        raise ImportError("没有 cdp")
+
+    monkeypatch.setattr(gui, "_load_browser_login", boom)
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert items and items[0][0] == "error"
+    assert "缺少「浏览器登录」组件" in items[0][1]
+
+
+def test_worker_reports_why_no_browser_could_be_found(monkeypatch) -> None:
+    """找浏览器的过程本身抛了异常：报原文，别让用户以为是网络问题。"""
+    from types import SimpleNamespace
+
+    dialog = _bare_login_dialog()
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: SimpleNamespace())
+
+    def boom(settings):  # noqa: ANN001
+        raise RuntimeError("注册表读不出来")
+
+    monkeypatch.setattr(gui, "_find_login_browser", boom)
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert items and items[0][0] == "error"
+    assert items[0][1] == "没能找到浏览器：注册表读不出来"
+
+
+def test_worker_suggests_the_paste_route_when_no_browser_is_installed(monkeypatch) -> None:
+    """一台机器上既没有 Edge 也没有 Chrome：说清还有「直接粘贴饼干」这条路。"""
+    from types import SimpleNamespace
+
+    dialog = _bare_login_dialog()
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: SimpleNamespace())
+    monkeypatch.setattr(gui, "_find_login_browser", lambda settings: None)
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert items and items[0][0] == "error"
+    assert "没找到 Edge 或 Chrome" in items[0][1]
+    assert "直接粘贴饼干" in items[0][1]
+
+
+def test_worker_stops_before_launching_when_cancelled_while_searching(monkeypatch) -> None:
+    """用户在「找浏览器」那点时间里点了取消：不许再多开一个进程。"""
+    from types import SimpleNamespace
+
+    dialog = _bare_login_dialog(stop=True)
+    launched: list[object] = []
+
+    class _Backend:
+        @staticmethod
+        def user_data_dir(_base):  # noqa: ANN001
+            return "profile"
+
+        @staticmethod
+        def LoginBrowser(*args, **kwargs):  # noqa: ANN002, ANN003
+            launched.append(args)
+            return object()
+
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: _Backend())
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: SimpleNamespace(name="Edge", path="C:\\edge.exe"),
+    )
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert [item[0] for item in items] == ["browser"]
+    assert launched == []
+
+
+def test_worker_closes_the_window_it_opened_when_starting_fails(monkeypatch) -> None:
+    """浏览器起不来（或后面某步失败）：报「打开浏览器失败」并把那扇窗收掉。
+
+    v0.17.3 之前这里只报错不收敛 —— 用户再点一次就多一扇窗。
+    """
+    from types import SimpleNamespace
+
+    dialog = _bare_login_dialog()
+    stopped: list[bool] = []
+
+    class _Browser:
+        process = None
+        census_note = "开窗前普查：探到 1 扇"
+        attempt_notes = ["第 1 扇没成：端口没起来"]
+        profile_note = ""
+        browser_note = ""
+        handoff_note = ""
+        port = None
+
+        def start(self) -> None:
+            raise RuntimeError("端口文件没出现")
+
+        def stop(self) -> None:
+            stopped.append(True)
+
+    class _Backend:
+        @staticmethod
+        def user_data_dir(_base):  # noqa: ANN001
+            return "profile"
+
+        @staticmethod
+        def LoginBrowser(*args, **kwargs):  # noqa: ANN002, ANN003
+            return _Browser()
+
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: _Backend())
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: SimpleNamespace(name="Edge", path="C:\\edge.exe"),
+    )
+    dialog._worker()
+
+    items = _drain(dialog)
+    kinds = [item[0] for item in items]
+    assert stopped == [True]
+    assert dialog._browser is None
+    assert kinds.count("census") == 1  # 普查看到了什么，失败时也要吐出来
+    notes = "".join(str(item[1]) for item in items if item[0] == "note")
+    assert "第 1 扇没成" in notes
+    errors = [item for item in items if item[0] == "error"]
+    assert errors and "打开浏览器失败" in errors[0][1]
+    assert "端口文件没出现" in errors[0][1]
+
+
+def test_worker_closes_the_window_when_cancelled_mid_start(monkeypatch) -> None:
+    """取消正好落在启动过程中：拿局部引用收尾，不留孤儿进程，也不报错。"""
+    from types import SimpleNamespace
+
+    dialog = _bare_login_dialog()
+    stopped: list[bool] = []
+
+    class _Browser:
+        process = None
+        census_note = ""
+        attempt_notes = []
+        profile_note = ""
+        browser_note = ""
+        handoff_note = ""
+        used_profile = ""
+        port = None
+        browser_ws_url = "ws://127.0.0.1:1/devtools/page/x"
+
+        def start(self) -> None:
+            dialog._stop.set()  # 模拟「启动过程中用户点了取消」
+
+        def stop(self) -> None:
+            stopped.append(True)
+
+    class _Backend:
+        @staticmethod
+        def user_data_dir(_base):  # noqa: ANN001
+            return "profile"
+
+        @staticmethod
+        def LoginBrowser(*args, **kwargs):  # noqa: ANN002, ANN003
+            return _Browser()
+
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: _Backend())
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: SimpleNamespace(name="Edge", path="C:\\edge.exe"),
+    )
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert stopped == [True]
+    assert dialog._browser is None
+    assert all(item[0] != "error" for item in items)
