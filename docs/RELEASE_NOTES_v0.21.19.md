@@ -38,6 +38,9 @@
 
 ## 附件
 
+免安装包（Windows 64 位）：解压即用，不用装 Python、不用装依赖。
+换版本时直接覆盖原目录即可，配置与缓存不在包里。
+
 - `xdao-export-v0.21.19-win64.zip`（@package_info@）
 - `xdao-export-v0.21.19-win64.zip.sha256`（SHA256：`@sha256@`）
 
