@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import concurrent.futures
 import html as html_lib
+import os
 import threading
 import urllib.parse
 from pathlib import Path
 
 from ..client import Post, XdaoClient
+from ..paths import ensure_writable
 from ._shared import (
     ThreadData,
     fetch_image,
@@ -323,6 +325,121 @@ class HtmlBuilder(Exporter):
         parts.append(f'<span class="no">No.{post.id}</span>')
         return "".join(parts)
 
+    def _article_html(self, thread: ThreadData, post: Post, floor: int) -> str:
+        """一楼成品 HTML（单串、合并、流式三条路径共用同一份，输出才对得上）。"""
+        is_po = thread.is_po_post(post)
+        body = self.render_content(post.content, thread.po_hash)
+        if post.img and post.ext:
+            url = self._client.image_url(post.img, post.ext)
+            embedded = self.embed_image(url)
+            if embedded:
+                body += (
+                    f'<img class="post-img" src="{html_lib.escape(embedded, quote=True)}"'
+                    ' alt="图片" loading="lazy">'
+                )
+        cls = "post po" if is_po else "post"
+        return (
+            f'<article class="{cls}" id="p{post.id}">'
+            f'<header class="meta"><span class="floor">#{floor}</span>'
+            f"{self._post_meta_html(post, is_po)}</header>"
+            f'<div class="content">{body}</div>'
+            "</article>"
+        )
+
+    @staticmethod
+    def _scope_label(scope: str, include_hashes: list[str] | None) -> str:
+        if include_hashes:
+            return "指定饼干：" + "、".join(include_hashes)
+        return "仅 PO 发言" if scope == "po" else "全部发言"
+
+    @staticmethod
+    def _heading_of(thread: ThreadData) -> str:
+        title_text = plain_text(thread.title)
+        heading = title_text or plain_text(thread.posts[0].content if thread.posts else "")
+        return heading or f"串 {thread.thread_id}"
+
+    def _single_head(
+        self, thread: ThreadData, total: int, heading: str, scope_label: str
+    ) -> str:
+        style_block = _style_block(self.font_size)
+        return (
+            "<!DOCTYPE html>\n"
+            '<html lang="zh-CN">\n'
+            "<head>\n"
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{html_lib.escape(heading)}</title>\n"
+            "<style>\n"
+            f"{style_block}\n"
+            "</style>\n"
+            "</head>\n"
+            "<body>\n"
+            '<div class="wrap">\n'
+            f"<h1>{html_lib.escape(heading)}</h1>\n"
+            f'<div class="sub">串号 No.{thread.thread_id} · 共 {total} 楼 · '
+            f'{html_lib.escape(scope_label)} · PO 饼干 '
+            f'{html_lib.escape(thread.po_hash or "未知")}</div>\n'
+        )
+
+    @staticmethod
+    def _single_tail() -> str:
+        return "\n</div>\n</body>\n</html>\n"
+
+    def _merged_head(self, threads: list[ThreadData], scope_label: str) -> str:
+        first = plain_text(threads[0].title) or f"串 {threads[0].thread_id}"
+        heading_title = f"{first} 等 {len(threads)} 个串"
+        style_block = _style_block(self.font_size)
+        print_extra = (
+            "  .thread-title { font-size: %d px; margin: 18px 0 2px; }\n"
+            "  section.thread { margin-bottom: 16px; }\n"
+            "  section.thread + section.thread { border-top: 2px solid var(--line); padding-top: 14px; }\n"
+            % _font_px(self.font_size, 16)
+        )
+        return (
+            "<!DOCTYPE html>\n"
+            '<html lang="zh-CN">\n'
+            "<head>\n"
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{html_lib.escape(heading_title)}</title>\n"
+            "<style>\n"
+            f"{style_block}\n"
+            f"{print_extra}</style>\n"
+            "</head>\n"
+            "<body>\n"
+            '<div class="wrap">\n'
+            f"<h1>{html_lib.escape(heading_title)}</h1>\n"
+            f'<div class="sub">合并导出：共 {len(threads)} 个串 · '
+            f'{html_lib.escape(scope_label)}</div>\n'
+        )
+
+    @staticmethod
+    def _merged_tail() -> str:
+        return "\n</div>\n</body>\n</html>\n"
+
+    def _merged_section(
+        self,
+        thread: ThreadData,
+        index: int,
+        scope_label: str,
+        scope: str,
+        include_hashes: list[str] | None,
+    ) -> str:
+        posts = thread.filter_posts(scope, include_hashes)
+        self._preload_images(thread, posts)
+        heading = self._heading_of(thread)
+        rows = [self._article_html(thread, post, floor) for floor, post in enumerate(posts, start=1)]
+        joined = "\n".join(rows)
+        return (
+            f'<section class="thread" id="t{thread.thread_id}">'
+            f'<h2 class="thread-title">{index}. {html_lib.escape(heading)}</h2>'
+            f'<div class="sub">串号 No.{thread.thread_id} · 共 {len(rows)} 楼 · '
+            f'{html_lib.escape(scope_label)} · PO 饼干 '
+            f'{html_lib.escape(thread.po_hash or "未知")}</div>'
+            f"{joined}"
+            "</section>"
+        )
+
     def build(
         self,
         thread: ThreadData,
@@ -332,55 +449,14 @@ class HtmlBuilder(Exporter):
         """生成完整 HTML 文档。"""
         posts = thread.filter_posts(scope, include_hashes)
         self._preload_images(thread, posts)
-
-        title_text = plain_text(thread.title)
-        heading = title_text or plain_text(thread.posts[0].content if thread.posts else "")
-        heading = heading or f"串 {thread.thread_id}"
-
-        rows: list[str] = []
-        for index, post in enumerate(posts, start=1):
-            is_po = thread.is_po_post(post)
-            body = self.render_content(post.content, thread.po_hash)
-            if post.img and post.ext:
-                url = self._client.image_url(post.img, post.ext)
-                embedded = self.embed_image(url)
-                if embedded:
-                    body += f'<img class="post-img" src="{html_lib.escape(embedded, quote=True)}" alt="图片" loading="lazy">'
-
-            cls = "post po" if is_po else "post"
-            rows.append(
-                f'<article class="{cls}" id="p{post.id}">'
-                f'<header class="meta"><span class="floor">#{index}</span>{self._post_meta_html(post, is_po)}</header>'
-                f'<div class="content">{body}</div>'
-                "</article>"
+        rows = [self._article_html(thread, post, floor) for floor, post in enumerate(posts, start=1)]
+        document = (
+            self._single_head(
+                thread, len(rows), self._heading_of(thread), self._scope_label(scope, include_hashes)
             )
-
-        posts_html = "\n".join(rows)
-        body_px = self.font_size
-        scope_label = "仅 PO 发言" if scope == "po" and not include_hashes else "全部发言"
-        if include_hashes:
-            scope_label = "指定饼干：" + "、".join(include_hashes)
-
-        style_block = _style_block(body_px)
-        document = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html_lib.escape(heading)}</title>
-<style>
-{style_block}
-</style>
-</head>
-<body>
-<div class="wrap">
-<h1>{html_lib.escape(heading)}</h1>
-<div class="sub">串号 No.{thread.thread_id} · 共 {len(rows)} 楼 · {html_lib.escape(scope_label)} · PO 饼干 {html_lib.escape(thread.po_hash or "未知")}</div>
-{posts_html}
-</div>
-</body>
-</html>
-"""
+            + "\n".join(rows)
+            + self._single_tail()
+        )
         self._report_missing_images()
         return document
 
@@ -390,90 +466,142 @@ class HtmlBuilder(Exporter):
         scope: str = "all",
         include_hashes: list[str] | None = None,
     ) -> str:
-        """把多个串写进同一份 HTML（v0.21.0 合并导出）。
-
-        每串一节（``<section class="thread">``），标题带上串号与楼数；样式与单串
-        完全同一份（:func:`_style_block`），只多两条给节标题用的规则。
-        单串导出走的还是 :meth:`build`，本方法不碰它，所以旧成品逐字节不变。
-        """
+        """把多个串写进同一份 HTML（v0.21.0 合并导出）。"""
         if not threads:
             raise ValueError("合并导出至少要有一个串")
-
-        scope_label = "仅 PO 发言" if scope == "po" and not include_hashes else "全部发言"
-        if include_hashes:
-            scope_label = "指定饼干：" + "、".join(include_hashes)
-
-        sections: list[str] = []
-        for index, thread in enumerate(threads, start=1):
-            posts = thread.filter_posts(scope, include_hashes)
-            self._preload_images(thread, posts)
-
-            title_text = plain_text(thread.title)
-            heading = title_text or plain_text(thread.posts[0].content if thread.posts else "")
-            heading = heading or f"串 {thread.thread_id}"
-
-            rows: list[str] = []
-            for floor, post in enumerate(posts, start=1):
-                is_po = thread.is_po_post(post)
-                body = self.render_content(post.content, thread.po_hash)
-                if post.img and post.ext:
-                    url = self._client.image_url(post.img, post.ext)
-                    embedded = self.embed_image(url)
-                    if embedded:
-                        body += (
-                            f'<img class="post-img" src="{html_lib.escape(embedded, quote=True)}"'
-                            ' alt="图片" loading="lazy">'
-                        )
-                cls = "post po" if is_po else "post"
-                rows.append(
-                    f'<article class="{cls}" id="p{post.id}">'
-                    f'<header class="meta"><span class="floor">#{floor}</span>'
-                    f"{self._post_meta_html(post, is_po)}</header>"
-                    f'<div class="content">{body}</div>'
-                    "</article>"
-                )
-            joined = "\n".join(rows)
-            sections.append(
-                f'<section class="thread" id="t{thread.thread_id}">'
-                f'<h2 class="thread-title">{index}. {html_lib.escape(heading)}</h2>'
-                f'<div class="sub">串号 No.{thread.thread_id} · 共 {len(rows)} 楼 · '
-                f'{html_lib.escape(scope_label)} · PO 饼干 '
-                f'{html_lib.escape(thread.po_hash or "未知")}</div>'
-                f"{joined}"
-                "</section>"
-            )
-
-        first = plain_text(threads[0].title) or f"串 {threads[0].thread_id}"
-        heading_title = f"{first} 等 {len(threads)} 个串"
-        body_px = self.font_size
-        style_block = _style_block(body_px)
-        print_extra = (
-            "  .thread-title { font-size: %d px; margin: 18px 0 2px; }\n"
-            "  section.thread { margin-bottom: 16px; }\n"
-            "  section.thread + section.thread { border-top: 2px solid var(--line); padding-top: 14px; }\n"
-            % _font_px(body_px, 16)
-        )
-        document = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html_lib.escape(heading_title)}</title>
-<style>
-{style_block}
-{print_extra}</style>
-</head>
-<body>
-<div class="wrap">
-<h1>{html_lib.escape(heading_title)}</h1>
-<div class="sub">合并导出：共 {len(threads)} 个串 · {html_lib.escape(scope_label)}</div>
-{"".join(sections)}
-</div>
-</body>
-</html>
-"""
+        scope_label = self._scope_label(scope, include_hashes)
+        sections = [
+            self._merged_section(thread, index, scope_label, scope, include_hashes)
+            for index, thread in enumerate(threads, start=1)
+        ]
+        document = self._merged_head(threads, scope_label) + "".join(sections) + self._merged_tail()
         self._report_missing_images()
         return document
+
+    # ---------- 流式写盘（v0.21.16） ----------
+
+    def write_document(
+        self,
+        thread: ThreadData,
+        scope: str,
+        include_hashes: list[str] | None,
+        path: Path,
+    ) -> Path:
+        """边渲染边把单串写进文件（与 :meth:`build` 逐字节一致）。
+
+        图片内嵌时成品动辄上百 MB：先拼成一个大字符串再写，内存里会同时留着
+        图片缓存、这段字符串、以及写盘时的编码副本（实测峰值 1.4 GB）。这里改成
+        「开文件 → 逐楼写」，峰值回落到与图片缓存同量级。
+        """
+        posts = thread.filter_posts(scope, include_hashes)
+        self._preload_images(thread, posts)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                self._single_head(
+                    thread,
+                    len(posts),
+                    self._heading_of(thread),
+                    self._scope_label(scope, include_hashes),
+                )
+            )
+            for floor, post in enumerate(posts, start=1):
+                self.check_cancel()
+                if floor > 1:
+                    handle.write("\n")
+                handle.write(self._article_html(thread, post, floor))
+            handle.write(self._single_tail())
+        self._report_missing_images()
+        return path
+
+    def write_merged(
+        self,
+        threads: list[ThreadData],
+        scope: str,
+        include_hashes: list[str] | None,
+        path: Path,
+    ) -> Path:
+        """边渲染边写合并文档（与 :meth:`build_many` 逐字节一致）。"""
+        if not threads:
+            raise ValueError("合并导出至少要有一个串")
+        scope_label = self._scope_label(scope, include_hashes)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(self._merged_head(threads, scope_label))
+            for index, thread in enumerate(threads, start=1):
+                posts = thread.filter_posts(scope, include_hashes)
+                self._preload_images(thread, posts)
+                heading = self._heading_of(thread)
+                handle.write(
+                    f'<section class="thread" id="t{thread.thread_id}">'
+                    f'<h2 class="thread-title">{index}. {html_lib.escape(heading)}</h2>'
+                    f'<div class="sub">串号 No.{thread.thread_id} · 共 {len(posts)} 楼 · '
+                    f'{html_lib.escape(scope_label)} · PO 饼干 '
+                    f'{html_lib.escape(thread.po_hash or "未知")}</div>'
+                )
+                for floor, post in enumerate(posts, start=1):
+                    self.check_cancel()
+                    if floor > 1:
+                        handle.write("\n")
+                    handle.write(self._article_html(thread, post, floor))
+                handle.write("</section>")
+            handle.write(self._merged_tail())
+        self._report_missing_images()
+        return path
+
+    def _save_streamed(
+        self,
+        path: Path,
+        write,
+    ) -> Path:
+        """先写同名 ``.part`` 再换名：取消或中途出错都不留半份成品。"""
+        part = path.with_name(path.name + ".part")
+        try:
+            write(part)
+            self.check_cancel()
+            os.replace(part, path)
+        finally:
+            if part.exists():
+                try:
+                    part.unlink()
+                except OSError:
+                    pass
+        return path
+
+    def save(
+        self,
+        thread: ThreadData,
+        scope: str = "all",
+        output_dir: Path | str = ".",
+        include_hashes: list[str] | None = None,
+    ) -> Path:
+        output_dir = ensure_writable(output_dir)
+        existing = self.existing_output(thread, output_dir)
+        if existing is not None:
+            return self.reuse_existing(existing)
+        if self.save_message:
+            self._notify(self.save_message)
+        path = self.target_path(thread, output_dir)
+        self.prepare_output(path)
+        return self._save_streamed(
+            path, lambda target: self.write_document(thread, scope, include_hashes, target)
+        )
+
+    def save_many(
+        self,
+        threads: list[ThreadData],
+        scope: str = "all",
+        output_dir: Path | str = ".",
+        include_hashes: list[str] | None = None,
+    ) -> Path:
+        output_dir = ensure_writable(output_dir)
+        path = self.merged_path(threads, output_dir)
+        if self.skip_existing and path.exists() and path.stat().st_size > 0:
+            return self.reuse_existing(path)
+        if self.save_message:
+            self._notify(self.save_message)
+        self.prepare_output(path)
+        return self._save_streamed(
+            path, lambda target: self.write_merged(threads, scope, include_hashes, target)
+        )
 
     # ---------- 图片预取 ----------
 
