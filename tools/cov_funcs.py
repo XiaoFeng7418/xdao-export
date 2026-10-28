@@ -41,7 +41,6 @@ def main(argv):
             path = root / fname
         if not path.exists():
             continue
-        executed = set(info["executed_lines"])
         missing = sorted(set(info["missing_lines"]))
         fns = functions_of(path)
         stats = {}

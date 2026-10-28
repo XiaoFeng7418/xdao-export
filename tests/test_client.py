@@ -288,21 +288,6 @@ def test_fetch_login_form_hands_the_gui_a_real_png():
     assert any("verify.html" in url for url in calls)
 
 
-class _FakeResponse:
-    def __init__(self, body: bytes, headers: dict[str, str]) -> None:
-        self._body = body
-        self.headers = headers
-
-    def read(self, size: int = -1) -> bytes:
-        return self._body if size < 0 else self._body[:size]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc) -> bool:
-        return False
-
-
 class _FakeOpener:
     def __init__(self, response: _FakeResponse) -> None:
         self.response = response

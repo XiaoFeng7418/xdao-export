@@ -50,7 +50,6 @@ for _entry in (_ROOT, _TOOLS):
 from xdao.appinfo import GITHUB_REPO  # noqa: E402  （必须在上面那段 sys.path 之后）
 from xdao.github_api import (  # noqa: E402
     API_BASE,
-    ApiError,
     gh_token as _gh_token,
     request_bytes,
     should_retry_ci,

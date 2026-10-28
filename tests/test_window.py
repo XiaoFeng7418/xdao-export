@@ -2530,16 +2530,6 @@ def _bare_login_dialog(stop: bool = False):
     dialog.settings = SimpleNamespace(proxy="", config_path=str(ARTIFACTS_ROOT / "window-layout" / "config.json"))
     return dialog
 
-
-def _drain(dialog) -> list[tuple]:  # noqa: ANN001
-    items: list[tuple] = []
-    while True:
-        try:
-            items.append(dialog._queue.get_nowait())
-        except Exception:  # noqa: BLE001 - 队列空了
-            return items
-
-
 def test_worker_says_so_when_the_browser_component_is_missing(monkeypatch) -> None:
     """打包时漏了「浏览器登录」组件：给一句能照着做的话，不去找浏览器。"""
     dialog = _bare_login_dialog()

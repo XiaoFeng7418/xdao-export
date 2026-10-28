@@ -2952,7 +2952,7 @@ def test_folder_mode_with_html_says_nothing(live_app):
 # ---------------------------------------------------------------------------
 
 
-def _listing(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
+def _listing(tmp_path: Path, body: str) -> Path:
     target = tmp_path / "清单.txt"
     target.write_text(body, encoding="utf-8")
     return target

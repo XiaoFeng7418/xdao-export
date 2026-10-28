@@ -551,7 +551,6 @@ def main(argv: list[str]) -> int:
     exclude = set(args.exclude)
 
     repo_root = Path(__file__).resolve().parent.parent
-    import os
 
     os.chdir(repo_root)
 

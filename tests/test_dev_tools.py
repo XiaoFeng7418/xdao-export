@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -137,3 +138,99 @@ def test_patch_release_body_reads_utf8_notes(tmp_path: Path) -> None:
 def test_patch_release_body_reports_a_missing_file(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         patch_release_body.read_notes(tmp_path / "没有这个文件.md")
+
+
+# ---------------------------------------------------------------------------
+# 静态检查：同一文件里别把名字定义两遍（v0.21.19）
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+#: 这些目录不是源码：``.test-artifacts`` 是用例自己写的临时文件，别去扫。
+_SKIP_PARTS = {"__pycache__", "build", "dist", ".git", ".test-artifacts", "_scratch"}
+
+
+def _repo_python_files() -> list[Path]:
+    """仓库里真正属于源码的 ``.py``（跳过隐藏目录、构建产物与临时资料）。"""
+    found: list[Path] = []
+    for path in sorted(_REPO_ROOT.rglob("*.py")):
+        relative = path.relative_to(_REPO_ROOT)
+        if any(part in _SKIP_PARTS or part.startswith(".") for part in relative.parts):
+            continue
+        found.append(path)
+    return found
+
+
+def _top_level_bindings(path: Path) -> list[tuple[str, int]]:
+    """模块顶层绑定了哪些名字、在哪一行。
+
+    只认「定义」与「导入」两类：函数、类、``名字 = 值``、``名字: 类型 = 值``、
+    ``import`` / ``from ... import ...``。块里（``if`` / ``try`` / ``with``）的不算：
+    那些是有意按条件覆盖的写法。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    bindings: list[tuple[str, int]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bindings.append((node.name, node.lineno))
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings.append((target.id, node.lineno))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            bindings.append((node.target.id, node.lineno))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # ``import urllib.parse`` 绑的是 ``urllib``，但 ``urllib.request``
+                # 再导一次不该算重名，所以按完整点号记。
+                bindings.append((alias.asname or alias.name, node.lineno))
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    bindings.append((alias.asname or alias.name, node.lineno))
+    return bindings
+
+
+def test_no_module_binds_the_same_top_level_name_twice() -> None:
+    """同一个文件里别把同一个名字定义两遍：后一份会静默盖掉前一份。
+
+    盖掉的后果是**没有任何工具会报**：编译通过、导入通过、跑用例也通过，只是前一份
+    从来没被用过。v0.21.18 就这样丢过一条用例（``test_window.py`` 里同名用例写了两遍，
+    前一份从没跑过），v0.21.19 又发现 ``test_client.py`` 的 ``_FakeResponse``、
+    ``test_window.py`` 的 ``_drain`` 各写了两份，``browser_login.py`` 里那份本地
+    ``Frame`` 被模块末尾的兼容出口盖住。所以这里拿标准库 ``ast`` 把仓库扫一遍。
+    """
+    duplicates: list[str] = []
+    for path in _repo_python_files():
+        seen: dict[str, int] = {}
+        for name, line in _top_level_bindings(path):
+            if name in seen:
+                relative = path.relative_to(_REPO_ROOT).as_posix()
+                duplicates.append(f"{relative}: 「{name}」在第 {seen[name]} 行与第 {line} 行各绑一次")
+            else:
+                seen[name] = line
+
+    assert duplicates == []
+
+
+def test_sync_from_api_parses_the_response_as_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``api()`` 得真的把回包解析成字典。
+
+    v0.21.19 之前这份脚本忘了 ``import json``：``api()`` 一调就 ``NameError``，而所有
+    用例都把 ``sync_from_api.api`` 整个顶掉，所以从来没人碰到过那一行 —— 与 v0.21.15
+    的 ``derive_filename`` 是同一类「没人调过的代码里藏着 NameError」。
+    """
+    from tools import sync_from_api
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_request_bytes(method: str, path: str, **kwargs: object) -> bytes:
+        calls.append((method, path))
+        return b'{"sha": "abc123", "commit": {"message": "title"}}'
+
+    monkeypatch.setattr(sync_from_api, "request_bytes", fake_request_bytes)
+
+    assert sync_from_api.api("t", "/repos/o/r/commits/master") == {
+        "sha": "abc123",
+        "commit": {"message": "title"},
+    }
+    assert calls == [("GET", "/repos/o/r/commits/master")]

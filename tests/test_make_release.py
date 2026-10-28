@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import make_release  # noqa: E402
+import xdao.github_api as github_api  # noqa: E402  （gh 令牌的实现在这里）
 
 REPO = "owner/name"
 TAG = "v9.9.9"
@@ -159,7 +160,7 @@ def test_the_token_falls_back_to_gh(monkeypatch):
         seen.append(list(argv))
         return types.SimpleNamespace(returncode=0, stdout="gh-token\n", stderr="")
 
-    monkeypatch.setattr(make_release.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_api.subprocess, "run", fake_run)
     assert make_release.gh_token() == "gh-token"
     assert seen == [[r"<某个目录>\gh.exe", "auth", "token"]]
 
@@ -171,7 +172,7 @@ def test_a_missing_gh_is_a_clear_error(monkeypatch):
     def fake_run(argv, **kwargs):
         raise FileNotFoundError(argv[0])
 
-    monkeypatch.setattr(make_release.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_api.subprocess, "run", fake_run)
     with pytest.raises(make_release.ApiError) as info:
         make_release.gh_token()
     assert "XDAO_GH" in str(info.value)
@@ -181,7 +182,7 @@ def test_a_failed_gh_login_is_an_error(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.setattr(
-        make_release.subprocess, "run",
+        github_api.subprocess, "run",
         lambda argv, **kwargs: types.SimpleNamespace(returncode=1, stdout="", stderr="not logged in"),
     )
     with pytest.raises(make_release.ApiError) as info:
