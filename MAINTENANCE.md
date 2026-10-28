@@ -681,6 +681,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.18（2026-10-29）：界面代码的测试补一轮**：只动 tests/，不改产品代码。给 `xdao/gui.py`（3086 语句）补了 46 条用例——`tests/test_window.py` 148 → 192、`tests/test_gui_entry.py` 178 → 180，覆盖登录窗坏分支与握手、读饼干失败兜底、自检窗的浏览器检查轮询、清理旧备份/暂存目录的 `except`、更新轮询的收尾事件、`run()` 遇 Ctrl+C 安静退出、监控一次性检查把图片缓存指到缓存目录。跑全部界面相关用例的覆盖率 96% / 121 未覆盖行 → **98% / 57 行**，剩余基本是防御性 `except`。另修掉一处用例卫生问题：`tests/test_window.py` 里 `test_poll_cookies_shows_why_reading_failed` 定义了两次，前一份被后一份遮住从未执行，已删掉较弱的那份。
 - **v0.21.17（2026-10-29）：PDF 书签目录**：命令行渲染加 `--generate-pdf-document-outline`，CDP 路径加 `generateDocumentOutline`；老浏览器拒绝该参数时自动去掉重打（`except CdpError` 里认 `generateDocumentOutline` 字样）。书签由浏览器按 h1/h2 生成：合并导出每串一条，单串是标题一条。用例 4 条（两条路径都带参数、退让重打、重打也失败时报 PdfError）。
 - **v0.21.16（2026-10-29）：HTML / PDF 改成边渲染边写盘，压住图片内嵌时的内存峰值**
   - 现象：79 页 / 1486 楼 / 259 张图的串，图片内嵌导 HTML 时 Python 峰值 1393 MB（成品 106.8 MB），

@@ -84,6 +84,37 @@ def test_run_reports_fatal_when_app_init_fails(monkeypatch):
     assert calls and "配置文件损坏" in str(calls[0][1])
 
 
+
+def test_run_exits_quietly_when_ctrl_c_breaks_the_event_loop(monkeypatch) -> None:
+    """Ctrl+C 打断 mainloop：安静退出，不抛、不弹「Unhandled exception」。"""
+    roots: list[object] = []
+
+    class _Root:
+        def __init__(self) -> None:
+            self.report_callback_exception = None
+            self.protocol_calls: list[tuple] = []
+            roots.append(self)
+
+        def protocol(self, name, func) -> None:  # noqa: ANN001
+            self.protocol_calls.append((name, func))
+
+        def mainloop(self) -> None:
+            raise KeyboardInterrupt
+
+    class _App:
+        def __init__(self, root) -> None:  # noqa: ANN001
+            self.root = root
+
+        def on_close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui.tk, "Tk", _Root)
+    monkeypatch.setattr(gui, "App", _App)
+
+    gui.run()  # 不该往外抛
+
+    assert roots and roots[0].protocol_calls[0][0] == "WM_DELETE_WINDOW"
+
 def test_describe_export_failure_explains_permission_errors(tmp_path):
     """写盘被拒时不能只甩一句 errno —— 要说清哪个目录、往哪换、还能查什么。"""
     target = tmp_path / "输出目录" / "某串.html"
@@ -1338,6 +1369,24 @@ def test_watch_dialog_shows_the_page_cap_in_the_table(dialog_root, artifacts_dir
     rows = [dialog.tree.item(iid, "values") for iid in dialog.tree.get_children()]
     assert "最多 7 页" in rows[0][1]
     assert "最多" not in rows[1][1]
+
+
+def test_watch_dialog_names_the_hash_filtered_and_po_only_scopes(dialog_root, artifacts_dir):
+    """范围列要把三种范围分清楚：只盯指定饼干的、只盯 PO 的、全都收的。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(
+        settings,
+        [
+            gui.WatchTarget("7001234", format_key="html", include_hashes=["abc123"]),
+            gui.WatchTarget("7002000", format_key="html", scope="po"),
+            gui.WatchTarget("7003000", format_key="html"),
+        ],
+        dialog_root,
+    )
+    dialog = _open_watch(dialog_root, app)
+    dialog_root.update_idletasks()
+    rows = [dialog.tree.item(iid, "values") for iid in dialog.tree.get_children()]
+    assert [row[1] for row in rows] == ["指定饼干", "仅 PO", "全部"]
 
 
 def test_watch_dialog_exports_the_list_to_the_chosen_file(dialog_root, artifacts_dir, monkeypatch):
