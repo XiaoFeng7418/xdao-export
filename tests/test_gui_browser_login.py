@@ -2904,3 +2904,150 @@ def test_library_does_not_open_its_own_session_while_starting_the_browser(
     browser.start()
     assert opened == [], "库在启动浏览器时自己开了 CDP 会话，替身会漏接"
     browser.stop()
+
+# ---------- 登录对话框主线程轮询的兜底分支（v0.21.12）----------
+
+
+class _Value:
+    def __init__(self, value="") -> None:
+        self._value = value
+
+    def get(self):  # noqa: ANN201
+        return self._value
+
+    def set(self, value):  # noqa: ANN001, ANN201
+        self._value = value
+
+
+class _Button:
+    def __init__(self) -> None:
+        self.state = "disabled"
+        self.text = ""
+
+    def config(self, **kwargs) -> None:
+        if "state" in kwargs:
+            self.state = kwargs["state"]
+        if "text" in kwargs:
+            self.text = kwargs["text"]
+
+
+class _PollDialog:
+    """只摆 ``BrowserLoginDialog._poll()`` 会碰到的那些属性。"""
+
+    def __init__(self, messages, *, log=None, closing: bool = False, client=None) -> None:
+        import queue as _queue
+
+        dialog = object.__new__(gui.BrowserLoginDialog)
+        dialog._queue = _queue.Queue()
+        for item in messages:
+            dialog._queue.put(item)
+        dialog._ui_job = "旧的 after 令牌"
+        dialog._closing = closing
+        dialog._paste_nudges = 0
+        dialog.status_var = _Value()
+        dialog.failure = ""
+        dialog._log = log
+        dialog.client = client or _ImportClient()
+        dialog.retry_button = _Button()
+        dialog.paste_button = _Button()
+        dialog.scheduled = []
+        dialog.shut_down = []
+        dialog.destroyed = []
+        dialog.notes = {}
+        dialog._set_status = lambda text: dialog.status_var.set(text)
+        dialog._set_browser_note = lambda text: dialog.notes.__setitem__("browser", text)
+        dialog._set_hint = lambda text: dialog.notes.__setitem__("hint", text)
+        dialog._set_http_note = lambda text: dialog.notes.__setitem__("http", text)
+        dialog._diagnosis = lambda: "（诊断）"
+        dialog._shutdown = lambda: dialog.shut_down.append(True)
+        dialog.destroy = lambda: dialog.destroyed.append(True)
+        dialog.after = lambda delay, func: dialog.scheduled.append(delay)
+        self.dialog = dialog
+
+    def run(self):
+        gui.BrowserLoginDialog._poll(self.dialog)
+        return self.dialog
+
+
+class _ImportClient:
+    def __init__(self, value: str = "新的饼干", error: Exception | None = None) -> None:
+        self.value = value
+        self.error = error
+        self.imported: list[str] = []
+
+    def import_userhash(self, value: str) -> str:
+        self.imported.append(value)
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+def test_login_poll_reports_a_cookie_it_cannot_apply() -> None:
+    """取到了饼干但装不进客户端：说清是哪一步失败，并让重试按钮能点。"""
+    client = _ImportClient(error=ValueError("格式不对"))
+    dialog = _PollDialog([("ok", "坏饼干")], client=client).run()
+
+    assert dialog.status_var.get() == "饼干取到了，但设置失败：格式不对"
+    assert str(dialog.retry_button.state) == "normal"
+    assert dialog.destroyed == [], "设置失败时不能关窗，用户还得重试"
+    assert dialog.scheduled, "没关窗就要继续排队等下一轮"
+
+
+def test_login_poll_shuts_the_browser_down_before_closing() -> None:
+    dialog = _PollDialog([("ok", "好饼干")], client=_ImportClient("好饼干")).run()
+
+    assert dialog.shut_down == [True]
+    assert dialog.destroyed == [True]
+    assert dialog.scheduled == [], "成功之后不该再排下一轮"
+
+
+def test_login_poll_survives_a_broken_run_log() -> None:
+    """写运行日志的东西挂了，也不能影响登录本身。"""
+    calls: list[str] = []
+
+    def broken(message: str) -> None:
+        calls.append(message)
+        raise RuntimeError("日志盘满了")
+
+    dialog = _PollDialog([("forensics", "对账一行"), ("census", "普查一行")], log=broken).run()
+
+    assert calls == ["读罐对账：对账一行", "普查一行"]
+    assert dialog.status_var.get() == "", "这两类消息只写日志，不该改状态行"
+
+
+def test_login_poll_survives_a_destroyed_paste_button() -> None:
+    """窗口关得比消息快：改按钮文案会抛 TclError，得悄悄放过。"""
+    import tkinter as tk
+
+    dialog = _PollDialog([("paste_nudge", "")]).dialog
+
+    def boom(**kwargs):
+        raise tk.TclError("窗口已经销毁")
+
+    dialog.paste_button.config = boom
+    gui.BrowserLoginDialog._poll(dialog)
+
+    assert dialog._paste_nudges == 1
+    assert dialog.notes.get("hint")
+
+
+def test_login_poll_says_the_browser_window_was_closed() -> None:
+    dialog = _PollDialog([("browser_closed", "")]).run()
+
+    assert "浏览器窗口已经关掉了" in dialog.status_var.get()
+    assert "浏览器窗口已经关掉了" in dialog.failure
+    assert dialog.failure.endswith("（诊断）")
+
+
+def test_login_poll_writes_other_errors_into_the_failure_line() -> None:
+    dialog = _PollDialog([("fail", "读不到调试端口")]).run()
+
+    assert dialog.status_var.get() == "读不到调试端口"
+    assert dialog.failure == "读不到调试端口（诊断）"
+    assert str(dialog.retry_button.state) == "normal"
+
+
+def test_login_poll_does_not_schedule_after_the_window_is_closing() -> None:
+    dialog = _PollDialog([], closing=True).run()
+
+    assert dialog.scheduled == []

@@ -3791,3 +3791,420 @@ def test_pick_cookies_passes_the_parsed_posts_up(monkeypatch) -> None:
     app.pick_cookies()
 
     assert app._cookie_queue.get_nowait() == ("ok", posts)
+
+# ---------- 监控窗与设置窗的角落分支（v0.21.12）----------
+
+
+class _SilentApp(_AddTargetApp):
+    """能改「输入框里有什么」「饼干框里有什么」的假 App。"""
+
+    def __init__(
+        self,
+        settings,
+        targets,
+        root=None,
+        urls=None,
+        hashes=None,
+        max_pages: int = 0,
+    ) -> None:
+        super().__init__(settings, targets, root, max_pages=max_pages)
+        self._urls = list(urls or [])
+        self._hashes = list(hashes or [])
+
+    def _collect_urls(self):
+        return list(self._urls)
+
+    def parse_hashes(self):
+        return list(self._hashes)
+
+
+def test_watch_add_from_input_refuses_with_an_empty_box(dialog_root, artifacts_dir, monkeypatch):
+    """输入框空着就点「添加」：提示一句，别往列表里塞空气。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _SilentApp(settings, [], dialog_root, urls=[])
+    calls = _messagebox_calls(monkeypatch)
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._add_from_input()
+    finally:
+        _close(dialog)
+
+    assert calls == [("showwarning", "提示", "请先在主窗口的输入框里填写串网址。")]
+    assert app.persisted == 0
+
+
+def test_watch_add_from_input_skips_junk_and_duplicates(dialog_root, artifacts_dir):
+    """一锅乱炖的输入：认不出的跳过、已经在列表里的跳过、剩下的照加。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    existing = gui.WatchTarget("https://www.nmbxd1.com/t/7001234")
+    app = _SilentApp(
+        settings,
+        [existing],
+        dialog_root,
+        urls=[
+            "不是网址",
+            "https://www.nmbxd1.com/t/7001234",
+            "https://www.nmbxd1.com/t/7009999",
+        ],
+    )
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._add_from_input()
+    finally:
+        _close(dialog)
+
+    assert [t.thread_id for t in app.watch_targets] == [7001234, 7009999]
+    assert app.persisted == 1, "加完要存盘"
+
+
+def test_watch_add_from_input_says_when_nothing_was_added(dialog_root, artifacts_dir, monkeypatch):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _SilentApp(settings, [], dialog_root, urls=["垃圾", "还是垃圾"])
+    calls = _messagebox_calls(monkeypatch)
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._add_from_input()
+    finally:
+        _close(dialog)
+
+    assert calls == [("showinfo", "提示", "没有新增（可能已存在，或网址无法识别）。")]
+    assert app.watch_targets == []
+
+
+def test_watch_export_does_nothing_when_the_save_dialog_is_cancelled(
+    dialog_root, artifacts_dir, monkeypatch
+):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [gui.WatchTarget("7001234")])
+    asked: list[dict] = []
+    monkeypatch.setattr(
+        gui.filedialog, "asksaveasfilename", lambda **k: asked.append(k) or ""
+    )
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: None)
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        before = dialog.status_var.get()
+        dialog._export_list()
+        after = dialog.status_var.get()
+    finally:
+        _close(dialog)
+
+    assert asked, "空列表以外的情况本该弹出保存对话框"
+    assert after == before, "取消保存不该改状态栏"
+
+
+def test_watch_export_reports_a_write_failure(dialog_root, artifacts_dir, monkeypatch):
+    from xdao import watch_list
+
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [gui.WatchTarget("7001234")])
+    calls = _messagebox_calls(monkeypatch)
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **k: str(artifacts_dir / "x.json"))
+
+    def boom(*args, **kwargs):
+        raise watch_list.WatchListError("磁盘满了")
+
+    monkeypatch.setattr(watch_list, "export_targets", boom)
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._export_list()
+    finally:
+        _close(dialog)
+
+    assert ("showerror", "导出失败", "磁盘满了") in calls
+
+
+def test_watch_import_does_nothing_when_the_open_dialog_is_cancelled(
+    dialog_root, artifacts_dir, monkeypatch
+):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [gui.WatchTarget("7001234")])
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: "")
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._import_list()
+    finally:
+        _close(dialog)
+
+    assert [t.thread_id for t in app.watch_targets] == [7001234]
+    assert app.persisted == 0
+
+
+def test_watch_import_lists_at_most_ten_skipped_entries(dialog_root, artifacts_dir, monkeypatch):
+    """跳过 12 条时只列前 10 条，末尾交代还剩几条——免得对话框被撑到屏幕外。"""
+    import json
+
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [])
+    source = artifacts_dir / "来.json"
+    source.write_text(
+        json.dumps({"targets": [{"url_or_id": f"70012{i}0", "format_key": "docx"} for i in range(12)]}),
+        encoding="utf-8",
+    )
+    shown: list[str] = []
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: str(source))
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, text, **k: shown.append(text))
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._import_list()
+    finally:
+        _close(dialog)
+
+    assert shown and "…另有 2 条。" in shown[0]
+    assert shown[0].count("格式认不出：docx") == 10
+
+
+def test_watch_import_of_an_empty_file_says_so(dialog_root, artifacts_dir, monkeypatch):
+    import json
+
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    app = _WatchApp(settings, [])
+    source = artifacts_dir / "空.json"
+    source.write_text(json.dumps({"targets": []}), encoding="utf-8")
+    shown: list[str] = []
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: str(source))
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, text, **k: shown.append(text))
+
+    dialog = _open_watch(dialog_root, app)
+    try:
+        dialog._import_list()
+    finally:
+        _close(dialog)
+
+    assert shown and "（文件里一条都没有。）" in shown[0]
+
+
+def test_watch_edit_refuses_the_hashes_scope_without_any_hash(dialog_root, artifacts_dir, monkeypatch):
+    """选了「指定饼干」但主窗口一个串号都没填：当场说清楚，别存下去。"""
+    target = gui.WatchTarget("7001234", format_key="html")
+    app, dialog, edit, target = _open_watch_edit(dialog_root, artifacts_dir, [target])
+    calls = _messagebox_calls(monkeypatch)
+    try:
+        edit.scope_box.current(2)
+        edit._save()
+
+        assert calls and calls[0][0] == "showwarning"
+        assert "「指定饼干」要用主窗口「只看指定饼干」里填的串号" in calls[0][2]
+        assert app.persisted == 0
+        assert edit.winfo_exists(), "没保存就不该关窗，用户还要改回来"
+    finally:
+        _close(edit)
+        _close(dialog)
+
+
+def test_watch_edit_refuses_a_negative_page_cap(dialog_root, artifacts_dir, monkeypatch):
+    target = gui.WatchTarget("7001234", format_key="html")
+    app, dialog, edit, target = _open_watch_edit(dialog_root, artifacts_dir, [target])
+    calls = _messagebox_calls(monkeypatch)
+    try:
+        edit.pages_var.set("-3")
+        edit._save()
+
+        assert ("showwarning", "提示", "页数上限不能是负数（0 表示不限）。") in calls
+        assert app.persisted == 0
+    finally:
+        _close(edit)
+        _close(dialog)
+
+
+def test_settings_dialog_keeps_good_numbers_when_the_input_is_junk(dialog_root, artifacts_dir):
+    """超时/重试填了非数字：回落到默认值，而不是把配置写成 0 或 NaN。"""
+    from xdao.settings import DEFAULT_RETRIES, DEFAULT_TIMEOUT
+
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.timeout = 33.0
+    settings.retries = 7
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.timeout_var.set("很久")
+        dialog.retries_var.set("几次")
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.timeout == DEFAULT_TIMEOUT
+    assert settings.retries == DEFAULT_RETRIES
+
+
+def test_settings_dialog_picks_the_cache_and_browser_folders(dialog_root, artifacts_dir, monkeypatch):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **k: "E:\\缓存目录")
+        monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: "C:\\浏览器.exe")
+        dialog._choose_cache()
+        dialog._choose_browser()
+        assert dialog.cache_var.get() == "E:\\缓存目录"
+        assert dialog.browser_var.get() == "C:\\浏览器.exe"
+
+        # 取消（返回空串）时保留原值
+        monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **k: "")
+        monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **k: "")
+        dialog._choose_cache()
+        dialog._choose_browser()
+        assert dialog.cache_var.get() == "E:\\缓存目录"
+    finally:
+        _close(dialog)
+
+
+def test_update_button_text_survives_a_missing_or_dead_button(monkeypatch):
+    """按钮没了（窗口关了）或底层窗口已销毁：写文案要悄悄放过，不能抛。"""
+    import tkinter as tk
+
+    app = _bare_app(_update_button=None)
+    app._update_button_text("随便")  # 没有按钮：直接返回
+
+    class _Dead:
+        def winfo_exists(self) -> bool:
+            return False
+
+        def config(self, **kwargs):  # pragma: no cover - 不该被调用
+            raise AssertionError("按钮不存在时不该写文案")
+
+    app._update_button = _Dead()
+    app._update_button_text("随便")
+
+    class _Gone:
+        def winfo_exists(self) -> bool:
+            return True
+
+        def config(self, **kwargs):
+            raise tk.TclError("窗口已经销毁")
+
+    app._update_button = _Gone()
+    app._update_button_text("随便")
+
+
+def test_refresh_cache_info_survives_unreadable_files(tmp_path, monkeypatch):
+    """统计缓存大小时个别文件 stat 失败（被占用/权限）：跳过它，别让整行消失。"""
+    import pathlib as _pathlib
+
+    cache_dir = tmp_path / "cache"
+    (cache_dir / "threads").mkdir(parents=True)
+    (cache_dir / "threads" / "50000001.json").write_text("{}", encoding="utf-8")
+    (cache_dir / "images").mkdir()
+    (cache_dir / "images" / "a.jpg").write_bytes(b"x")
+
+    real_stat = _pathlib.Path.stat
+    seen: dict[str, int] = {}
+
+    def flaky(self, *args, **kwargs):
+        key = str(self)
+        seen[key] = seen.get(key, 0) + 1
+        # .json 只被显式 stat 一次（统计大小）→ 直接失败；
+        # .jpg 先被 is_file() 问一次（必须成功，否则连图片都数不出来），
+        # 第二次（统计大小）再失败 —— 正好走到两个 except OSError 分支。
+        if self.suffix == ".json" or (self.suffix == ".jpg" and seen[key] > 1):
+            raise OSError("读不了")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(_pathlib.Path, "stat", flaky)
+    info = _Var()
+    app = _bare_app(
+        cache_info_var=info,
+        output_var=_Var("D:\\XY"),
+        settings=__import__("types").SimpleNamespace(resolved_cache_dir=lambda _chosen: cache_dir),
+    )
+    monkeypatch.setattr(gui, "resolve_cache_dir", lambda _requested: (cache_dir, ""))
+
+    app.refresh_cache_info()
+
+    assert info.get().startswith("缓存：1 个串 · 1 张图片 · 0.0 MB")
+
+
+def test_refresh_cache_info_explains_a_fallback_directory(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "temp-cache"
+    cache_dir.mkdir()
+    info = _Var()
+    app = _bare_app(
+        cache_info_var=info,
+        output_var=_Var("D:\\XY"),
+        settings=__import__("types").SimpleNamespace(resolved_cache_dir=lambda _chosen: cache_dir),
+    )
+    monkeypatch.setattr(
+        gui,
+        "resolve_cache_dir",
+        lambda _requested: (cache_dir, "原目录写不进去"),
+    )
+
+    app.refresh_cache_info()
+
+    assert "（原目录" in info.get()
+    assert "已自动改用这里" in info.get()
+
+
+def test_offer_download_offers_the_in_place_upgrade(dialog_root, monkeypatch):
+    """能原地升级时先问一句「现在下载并安装吗」，同意就走升级流程。"""
+    from types import SimpleNamespace
+
+    from xdao import updater
+
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: SimpleNamespace(possible=True, reason=""))
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    app = _UpdateApp(dialog_root)
+
+    class _Result:
+        url = "https://example.invalid/dl"
+        asset_url = "https://example.invalid/pkg.zip"
+        asset_size = 12 * 1024 * 1024
+
+        def line(self) -> str:
+            return "有新版本 1.2.3"
+
+    gui.App._offer_download(app, _Result())
+
+    assert len(app.upgrades_started) == 1
+
+
+def test_offer_download_says_why_it_cannot_upgrade_in_place(dialog_root, monkeypatch):
+    from types import SimpleNamespace
+
+    from xdao import updater
+
+    monkeypatch.setattr(
+        updater,
+        "plan_upgrade",
+        lambda: SimpleNamespace(possible=False, reason="当前不是免安装版，不能原地升级。"),
+    )
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
+    app = _UpdateApp(dialog_root)
+
+    class _Result:
+        url = "https://example.invalid/dl"
+        asset_url = ""
+        asset_size = 0
+
+        def line(self) -> str:
+            return "有新版本 1.2.3"
+
+    gui.App._offer_download(app, _Result())
+
+    assert any("不能原地升级" in line for line in app.logged)
+
+
+def test_offer_download_logs_the_line_when_there_is_no_url(dialog_root, monkeypatch):
+    from types import SimpleNamespace
+
+    from xdao import updater
+
+    monkeypatch.setattr(updater, "plan_upgrade", lambda: SimpleNamespace(possible=False, reason=""))
+    app = _UpdateApp(dialog_root)
+
+    class _Result:
+        url = ""
+        asset_url = ""
+        asset_size = 0
+
+        def line(self) -> str:
+            return "有新版本，但找不到下载地址"
+
+    gui.App._offer_download(app, _Result())
+
+    assert app.logged == ["有新版本，但找不到下载地址"]
