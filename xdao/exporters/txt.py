@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ..client import XdaoClient
 from ._shared import ThreadData, derive_filename, iter_post_image_urls, plain_text
 from .base import Exporter
 

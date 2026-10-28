@@ -497,11 +497,14 @@ def test_browser_launch_failure_hint_for_other_codes():
 
 
 def test_is_frozen_reflects_interpreter(monkeypatch):
+    import sys
+
     import xdao.exporters.pdf as pdf_module
 
-    monkeypatch.delattr(pdf_module.sys, "frozen", raising=False)
+    # 判据在 browser_flags 里，读的就是这个全局 sys：直接改源头上那个属性。
+    monkeypatch.delattr(sys, "frozen", raising=False)
     assert pdf_module.is_frozen() is False
-    monkeypatch.setattr(pdf_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
     assert pdf_module.is_frozen() is True
 
 

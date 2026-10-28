@@ -20,7 +20,6 @@ import argparse
 import hashlib
 import json
 import mimetypes
-import subprocess
 import sys
 import time
 import urllib.error
@@ -52,8 +51,7 @@ def gh_token() -> str:
     本机的 gh 可能不在 PATH 里，可以用环境变量 ``XDAO_GH`` 指向 gh.exe。
 
     实现搬去了 :mod:`xdao.github_api`（四个脚本共用一份），这里保留原来的名字与
-    文案。``subprocess`` 也仍然 import 在本模块里：测试与调用方是拿
-    ``make_release.subprocess.run`` 打桩的。
+    文案；要打桩的话打在 :mod:`xdao.github_api` 的 ``subprocess`` 上（真正的调用在那里）。
     """
     return _gh_token()
 

@@ -10,25 +10,19 @@ Chrome 与 Edge 都是 Chromium，CDP 协议完全一致，所以同一套实现
 
 协议层刻意只用标准库：CDP 需要的只是一次 HTTP 升级握手加几条文本帧，
 socket + base64 + hashlib + struct 就够；多一个第三方依赖，打包体积和
-「装不上」的风险都要跟着涨。
+「装不上」的风险都要跟着涨。帧协议与 CDP 会话本身在 :mod:`xdao.cdp` 里
+（PDF 渲染也走同一条通道），本模块只留登录流程。
 
 本模块只做逻辑，不含任何界面代码（界面层见 gui.py）。
 """
 
 from __future__ import annotations
 
-import base64
 import errno
-import hashlib
-import itertools
 import json
 import os
-import queue
 import re
-import secrets
 import shutil
-import socket
-import struct
 import subprocess
 import tempfile
 import threading
@@ -58,16 +52,6 @@ _DISABLE_FEATURES = "Translate,msImplicitSignin"
 _IS_WINDOWS = os.name == "nt"
 COOKIE_LIST_PATH = "/Member/User/Cookie/index.html"
 COOKIE_SITE = "https://www.nmbxd1.com"
-
-# RFC 6455 规定的握手魔术串：Sec-WebSocket-Accept 由它和客户端随机 key 哈希得来。
-_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-
-OPCODE_CONTINUATION = 0x0
-OPCODE_TEXT = 0x1
-OPCODE_BINARY = 0x2
-OPCODE_CLOSE = 0x8
-OPCODE_PING = 0x9
-OPCODE_PONG = 0xA
 
 # 浏览器的调试端口文件是先创建、后写入的，读到半截要接着等，所以轮询间隔取小一点。
 _POLL_INTERVAL = 0.2
@@ -134,11 +118,6 @@ _KILL_PROFILE_PROCESSES = _IS_WINDOWS
 _PROCESS_CENSUS = _IS_WINDOWS
 #: :func:`fresh_profile_dir` 的进程内序号：同一个毫秒里连叫两次也要拿到不同的名字。
 _FRESH_PROFILE_SEQ = 0
-# 连调试端口时，等站点页面出现的最长时间。
-# 浏览器是先写端口文件、再加载命令行给的地址的：端口一出来就连，可能只看到一个空标签
-# （真机上还量到过 Edge 自带的 edge://sync-confirmation-dialog/）。连到那种页面上，
-# 页面里的 fetch 属于别的源，读饼干会一律读空，所以这里给它几秒把登录页开出来。
-_SITE_WAIT = 8.0
 # 多扇窗里挑一扇接手时（见 :meth:`LoginBrowser._order_by_login`），问一扇窗「罐里有没有
 # userhash」的预算：够连上、够读一次饼干，又不至于让「哪扇登录过」这个问题拖慢开窗。
 # 只连本地调试端口、只读饼干，不动用户正看着的那一页。
@@ -159,15 +138,6 @@ class BrowserInfo:
 
     name: str
     path: str
-
-
-@dataclass(frozen=True)
-class Frame:
-    """一个 WebSocket 帧（只留下本模块需要的三个字段）。"""
-
-    fin: bool
-    opcode: int
-    payload: bytes
 
 
 # 候选浏览器。顺序就是优先级：先 Edge（Windows 必装），再 Chrome、Chromium、Brave。
@@ -2352,7 +2322,9 @@ def browser_open(
 # 帧协议与 CDP 会话都在 ``xdao/cdp.py`` 里：浏览器登录与 PDF 渲染共用同一条通道，
 # 这一层不再留在本模块。下面这组名字是**兼容出口**：本模块的既有调用方
 # （界面层、测试、真机脚本）一直按这些名字引用，保留别名就不用全体改一遍。
-from .cdp import (
+# 这些名字在本模块里确实「定义了不用」——它们就是出口本身。pyflakes 会一直
+# 报 ``imported but unused``，是知道的：别照着提示删，删了界面层与测试当场断。
+from .cdp import (  # noqa: F401
     OPCODE_BINARY,
     OPCODE_CLOSE,
     OPCODE_CONTINUATION,
@@ -2369,7 +2341,7 @@ from .cdp import (
     _split_ws_url,
     _ws_handshake,
     build_frame,
-    http_json,  # noqa: F401  —— _http_json 的公开名
+    http_json,  # _http_json 的公开名
     read_frame,
 )
 

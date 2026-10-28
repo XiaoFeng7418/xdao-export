@@ -26,7 +26,6 @@ import base64
 import os
 import shutil
 import subprocess
-import sys
 import time
 import uuid
 from dataclasses import dataclass

@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 # 「怎么问 GitHub」的真源在 xdao/github_api.py；脚本要能直接
