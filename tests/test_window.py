@@ -3274,3 +3274,274 @@ def test_manual_userhash_warns_when_the_client_rejects_it(
     finally:
         dialog.destroy()
 
+# ---------- 登录窗握手与导航分支（v0.21.14）----------
+
+
+def _login_backend(browser, *, session=None, stop_on_connect=False, stop_on_navigate=False,
+                   navigate_error: Exception | None = None, connect_error: Exception | None = None):
+    """造一个够用的假浏览器后端：只提供 _worker 走这几条分支要用的东西。"""
+    from types import SimpleNamespace
+
+    class _Session:
+        def __init__(self) -> None:
+            self.retargeted = 0
+            self.closed = 0
+
+        def connect(self) -> None:
+            if connect_error is not None:
+                raise connect_error
+            if stop_on_connect:
+                browser.dialog._stop.set()
+
+        def retarget(self) -> bool:
+            self.retargeted += 1
+            return True
+
+        def current_url(self) -> str:
+            return "https://www.nmbxd1.com/Member/User/Index/index.html"
+
+        def close(self) -> None:
+            self.closed += 1
+
+    state = SimpleNamespace(session=session or _Session(), browsers=[], profiles=0)
+
+    class _Backend:
+        @staticmethod
+        def user_data_dir(_base):  # noqa: ANN001
+            state.profiles += 1
+            return "profile"
+
+        @staticmethod
+        def LoginBrowser(*args, **kwargs):  # noqa: ANN002, ANN003
+            state.browsers.append(browser)
+            for name, fallback in (
+                ("devtools_failure_hint", ""),
+                ("census_note", ""),
+                ("profile_note", ""),
+                ("browser_note", ""),
+                ("handoff_note", ""),
+                ("attempt_notes", ()),
+                ("used_profile", ""),
+                ("port", None),
+            ):
+                if not hasattr(browser, name):
+                    setattr(browser, name, fallback)
+            return browser
+
+        @staticmethod
+        def _new_session(ws_url, failure_hint="", **kwargs):  # noqa: ANN001, ANN003
+            return state.session
+
+        @staticmethod
+        def ensure_login_page(session):  # noqa: ANN001
+            if navigate_error is not None:
+                raise navigate_error
+            if stop_on_navigate:
+                browser.dialog._stop.set()
+
+        @staticmethod
+        def ensure_watch_banner(*args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+    return _Backend(), state
+
+
+def _login_browser(dialog, *, alive: bool = True):  # noqa: ANN001
+    from types import SimpleNamespace
+
+    class _Process:
+        def poll(self):  # noqa: ANN201
+            return None if alive else 0
+
+    class _Browser:
+        process = _Process()
+        census_note = ""
+        attempt_notes = []
+        profile_note = ""
+        browser_note = ""
+        handoff_note = ""
+        used_profile = "C:/tmp/browser-profile"
+        port = 61000
+        browser_ws_url = "ws://127.0.0.1:61000/devtools/page/x"
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    browser = _Browser()
+    browser.dialog = dialog
+    return browser
+
+
+def test_worker_notes_a_failed_login_page_navigation(monkeypatch) -> None:
+    """导航到登录页失败只是「尽力而为」：留一句提示，流程照走。"""
+    dialog = _bare_login_dialog()
+    browser = _login_browser(dialog, alive=False)  # 下一轮立刻看到「窗口已关」，不用真等
+    backend, _state = _login_backend(browser, navigate_error=RuntimeError("Page.navigate 失败"))
+
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: backend)
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: __import__("types").SimpleNamespace(name="Edge", path="C:\\edge.exe"),
+    )
+    dialog._worker()
+
+    items = _drain(dialog)
+    notes = "".join(str(item[1]) for item in items if item[0] == "note")
+    assert "没能把浏览器窗口切到登录页" in notes
+    assert "Page.navigate 失败" in notes
+    kinds = [item[0] for item in items]
+    assert "ready" in kinds, "导航失败不该掐掉整条登录流程"
+    assert "browser_closed" in kinds
+
+
+def test_worker_closes_the_window_when_cancel_lands_during_the_handshake(monkeypatch) -> None:
+    """取消正好落在握手过程中：拿局部引用收尾，不报错、不留孤儿。"""
+    dialog = _bare_login_dialog()
+    stopped: list[bool] = []
+
+    class _Browser:
+        process = None
+        census_note = ""
+        attempt_notes = []
+        profile_note = ""
+        browser_note = ""
+        handoff_note = ""
+        used_profile = ""
+        port = None
+        browser_ws_url = "ws://127.0.0.1:1/devtools/page/x"
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            stopped.append(True)
+
+    browser = _Browser()
+    browser.dialog = dialog
+    backend, _state = _login_backend(browser, stop_on_connect=True)
+
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: backend)
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: __import__("types").SimpleNamespace(name="Edge", path="C:\\edge.exe"),
+    )
+    dialog._worker()
+
+    items = _drain(dialog)
+    assert stopped == [True]
+    assert dialog._browser is None
+    assert all(item[0] != "error" for item in items), "取消时后台不该再报错"
+    assert all(item[0] != "ready" for item in items)
+
+
+def test_worker_reports_a_session_that_cannot_connect(monkeypatch) -> None:
+    """连会话失败：报「打开浏览器失败」并且把窗口收掉。"""
+    dialog = _bare_login_dialog()
+    stopped: list[bool] = []
+
+    class _Browser:
+        process = None
+        census_note = ""
+        attempt_notes = []
+        profile_note = ""
+        browser_note = ""
+        handoff_note = ""
+        used_profile = ""
+        port = None
+        browser_ws_url = "ws://127.0.0.1:1/devtools/page/x"
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            stopped.append(True)
+
+    browser = _Browser()
+    browser.dialog = dialog
+    backend, _state = _login_backend(browser, connect_error=OSError("调试端口没人接"))
+
+    monkeypatch.setattr(gui, "_load_browser_login", lambda: backend)
+    monkeypatch.setattr(
+        gui,
+        "_find_login_browser",
+        lambda settings: __import__("types").SimpleNamespace(name="Edge", path="C:\\edge.exe"),
+    )
+    dialog._worker()
+
+    items = _drain(dialog)
+    errors = [str(item[1]) for item in items if item[0] == "error"]
+    assert errors and "打开浏览器失败" in errors[0] and "调试端口没人接" in errors[0]
+    assert stopped == [True]
+    assert dialog._browser is None
+
+# ---------- _read_userhash 的兜底分支（v0.21.14）----------
+
+
+def _cookie_backend(*, url_value="", merged=None, merged_error: Exception | None = None,
+                    named=None):
+    """造一个只够 _read_userhash 用的假后端。"""
+    from types import SimpleNamespace
+
+    class _Backend:
+        @staticmethod
+        def cookie_urls_for(session):  # noqa: ANN001
+            return ["https://www.nmbxd1.com/"]
+
+        @staticmethod
+        def userhash_from_cookies(cookies):  # noqa: ANN001
+            for item in cookies or []:
+                if item.get("name") == "userhash":
+                    return str(item.get("value") or "")
+            return ""
+
+        @staticmethod
+        def read_site_cookies(session, urls):  # noqa: ANN001
+            if merged_error is not None:
+                raise merged_error
+            return merged or []
+
+        @staticmethod
+        def named_userhash_entries(cookies):  # noqa: ANN001
+            if named is not None:
+                return named
+            return [item for item in cookies or [] if item.get("name") == "userhash"]
+
+    class _Session:
+        @staticmethod
+        def read_cookies(urls):  # noqa: ANN001
+            if url_value:
+                return [{"name": "userhash", "value": url_value, "domain": ".nmbxd1.com", "path": "/"}]
+            return []
+
+    return _Backend(), _Session()
+
+
+def test_read_userhash_swallows_a_failed_whole_jar_read() -> None:
+    """按地址读漏了、整罐读又抛异常：当作没读到，不把流程搞崩。"""
+    backend, session = _cookie_backend(merged_error=OSError("罐读不出来"))
+
+    assert gui.BrowserLoginDialog._read_userhash(backend, session) == (None, "")
+
+
+def test_read_userhash_notes_a_hidden_cookie_without_where_it_was() -> None:
+    """整罐读补上的饼干若分不出域/路径，就给一句不带定位的说明。"""
+    merged = [{"name": "userhash", "value": "ABCDEF", "domain": "", "path": ""}]
+    backend, session = _cookie_backend(merged=merged, named=[])
+
+    value, note = gui.BrowserLoginDialog._read_userhash(backend, session)
+
+    assert value == "ABCDEF"
+    assert note == "按地址读饼干漏了 userhash，是整罐读补上的。"
+
+
+def test_read_userhash_prefers_the_address_read() -> None:
+    """按地址就能读到：直接用，不做第二次读、也不带诊断。"""
+    backend, session = _cookie_backend(url_value="FROMURL")
+
+    assert gui.BrowserLoginDialog._read_userhash(backend, session) == ("FROMURL", "")
+
