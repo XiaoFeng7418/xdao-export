@@ -681,6 +681,25 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
+- **v0.21.13**：给导出线程内层分支与几处小函数补用例。
+
+  1. **补的是哪些分支**：①导出线程内层——抓取结果带「缺页/撞页数上限」提示并记进
+     不完整名单、缓存目录的提示、停止位一开始就举着（一项都不抓）、抓取时抛
+     `ExportCancelled`、保存时 `XdaoError` 与其它异常分别记、合并写盘失败、合并时被
+     取消；②小函数——`clear_log`（只读框要先放开再删）、`open_selftest` 抬起已有窗口、
+     `setup_style` 的顺序、`PasteCookieDialog` 的右键绑定、`_write_jar_dump` 的三条早退
+     与 TypeError 回落、`_try_leaf_cookie` 三种形状、`_carry_browser_jar` 两种失败、
+     `_manual_userhash` 被客户端拒绝时弹「设置失败」。
+  2. **做法**：导出线程用「就地跑完的 Thread」替身（只替 `gui.threading.Thread` 这一个
+     属性，绝不整个替换 `threading` 模块——换成替身会把 `Event` 一起换掉，worker 跑到
+     一半就抛）；日志断言从 `_export_queue` 的 `("log", …)` 里取，因为 `_poll_export`
+     已被换空，队列消息不会自动进日志框。
+  3. **踩的坑**：`App.start(urls)` 只给一个网址时，worker 的循环只转一圈——想验「第二个
+     串在抓取时被取消」，必须传两个网址；`LoginDialog._manual_userhash` 调的是
+     `client.set_userhash()`（不是 `import_userhash`）。
+  4. **读数**：只跑三个界面测试文件时 gui.py 行覆盖 95% → 96%；收集 2605、
+     本机 2598 通过、7 跳过；契约 29 passed。
+
 - **v0.21.12**：界面上「不好走到」的分支补用例（gui.py 行覆盖 93% → 95%）。
 
   1. **补的是哪些分支**：①监控窗口——输入框空着点添加、一锅乱炖地贴网址（认不出的跳过、
