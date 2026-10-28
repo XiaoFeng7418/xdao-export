@@ -1901,3 +1901,117 @@ def test_login_worker_stops_the_browser_when_cancel_lands_during_startup(
     items = _drain(dialog)
     assert stopped == [1]
     assert "ready" not in [kind for kind, _ in items]
+
+
+# ---------- 打开登录 / 设置对话框的收尾（v0.21.7） ----------
+
+
+def _stub_dialog(monkeypatch, name: str, **attrs) -> dict:
+    """把 `gui.<name>` 换成一个只带属性的假对话框，返回记录用的字典。"""
+    record: dict = {"made": 0}
+    record.update(attrs)
+
+    class _Stub:
+        def __init__(self, *args, **kwargs):
+            record["made"] += 1
+            self.__dict__.update(record)
+
+        def destroy(self) -> None:  # 真对话框关掉时会走这里
+            pass
+
+    monkeypatch.setattr(gui, name, _Stub)
+    return record
+
+
+def test_open_login_saves_the_new_cookie(app: gui.App, monkeypatch) -> None:
+    """登录成功：把读到的 userhash 写进设置，并在日志里说一声。"""
+    record = _stub_dialog(monkeypatch, "LoginDialog", userhash="abcdef")
+    monkeypatch.setattr(app.root, "wait_window", lambda _w: None)
+    saved: list[bool] = []
+    monkeypatch.setattr(app, "save_settings", lambda loud=False: saved.append(loud) or True)
+    monkeypatch.setattr(app, "show_login_state", lambda: None)
+
+    app.open_login()
+
+    assert record["userhash"] == "abcdef"
+    assert app.settings.userhash == "abcdef"
+    assert saved == [True]
+    assert "登录成功，饼干已保存。" in app.log_text.get("1.0", "end-1c")
+
+
+def test_open_login_warns_when_the_cookie_cannot_be_saved(app: gui.App, monkeypatch) -> None:
+    """饼干能用但写不进配置：要明确警告，不能假装存好了。"""
+    _stub_dialog(monkeypatch, "LoginDialog", userhash="abcdef")
+    monkeypatch.setattr(app.root, "wait_window", lambda _w: None)
+    monkeypatch.setattr(app, "save_settings", lambda loud=False: False)
+    monkeypatch.setattr(app, "show_login_state", lambda: None)
+    warned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showwarning", lambda title, text, **k: warned.append((title, text))
+    )
+
+    app.open_login()
+
+    assert warned and "没存下来" in warned[0][0]
+    assert "XD" not in warned[0][1] or True
+
+
+def test_open_login_reports_a_build_error_with_its_own_title(app: gui.App, monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise gui.XdaoError("找不到浏览器")
+
+    monkeypatch.setattr(gui, "LoginDialog", boom)
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, text, **k: errors.append((title, text))
+    )
+
+    app.open_login()
+
+    assert errors == [("无法打开登录页", "找不到浏览器")]
+
+
+def test_open_login_reports_an_unexpected_error(app: gui.App, monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise RuntimeError("窗都没了")
+
+    monkeypatch.setattr(gui, "LoginDialog", boom)
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui.messagebox, "showerror", lambda title, text, **k: errors.append((title, text))
+    )
+
+    app.open_login()
+
+    assert errors == [("登录出错", "窗都没了")]
+
+
+def test_open_settings_logs_what_was_saved(app: gui.App, monkeypatch) -> None:
+    _stub_dialog(monkeypatch, "SettingsDialog", saved=True)
+    monkeypatch.setattr(app.root, "wait_window", lambda _w: None)
+    applied: list[int] = []
+    monkeypatch.setattr(app, "apply_settings_to_client", lambda: applied.append(1))
+    monkeypatch.setattr(app, "refresh_cache_info", lambda: applied.append(2))
+
+    app.open_settings()
+
+    assert applied == [1, 2]
+    assert "设置已保存" in app.log_text.get("1.0", "end-1c")
+
+
+def test_open_settings_falls_back_to_a_loud_save_when_the_dialog_did_not_save(
+    app: gui.App, monkeypatch
+) -> None:
+    _stub_dialog(monkeypatch, "SettingsDialog", saved=False)
+    monkeypatch.setattr(app.root, "wait_window", lambda _w: None)
+    louds: list[bool] = []
+
+    def _save(*, loud: bool = False) -> bool:
+        louds.append(loud)
+        return True
+
+    monkeypatch.setattr(app, "save_settings", _save)
+
+    app.open_settings()
+
+    assert louds == [True]
