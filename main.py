@@ -303,6 +303,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="每个串最多抓 N 页（含第 1 页）；填 0 表示不限页数",
     )
+    from xdao.cache import PAGE_WORKERS_MAX
+
+    parser.add_argument(
+        "--page-workers",
+        type=_page_workers,
+        default=None,
+        metavar="N",
+        help=f"同时抓 N 页（1~{PAGE_WORKERS_MAX}，默认 1 即一页一页抓）；"
+        "长串调大能快不少，真撞上限流会自动退回一页一页抓",
+    )
     parser.add_argument(
         "--input",
         default=None,
@@ -558,6 +568,44 @@ def _font_size(raw: str) -> int:
     return value
 
 
+def _page_workers(raw: str) -> int:
+    """``--page-workers`` 的取值校验：1~6 之间的整数。
+
+    默认 1（＝一页一页抓，与旧版本一致）。上限压在 6：再往上对站点不礼貌、
+    也更容易撞限流，而抓页的瓶颈本来就多在服务端延迟而不是连接数。
+    写错的值必须报错而不是悄悄回落 —— 用户以为开了并发、其实还是单路，
+    那这个开关就白给了。
+    """
+    from xdao.cache import PAGE_WORKERS_MAX
+
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"同时抓几页得填一个整数（1~{PAGE_WORKERS_MAX}），现在填的是 {raw!r}"
+        ) from None
+    if not 1 <= value <= PAGE_WORKERS_MAX:
+        raise argparse.ArgumentTypeError(
+            f"同时抓几页要在 1~{PAGE_WORKERS_MAX} 之间，现在填的是 {value}"
+        )
+    return value
+
+
+def _effective_page_workers(args: argparse.Namespace, settings) -> int:
+    """这次抓取实际开几路并发：命令行优先，其次配置，都没给就是 1（串行）。
+
+    默认必须是 1：老配置里没有这个键，行为要与旧版本完全一致 —— 并行会把
+    同时在飞的请求数涨上去，站点限流阈值谁也说不准，不能让升级顺手改掉它。
+    """
+    from xdao.cache import DEFAULT_PAGE_WORKERS, normalize_page_workers
+
+    if getattr(args, "page_workers", None) is not None:
+        return normalize_page_workers(args.page_workers)
+    return normalize_page_workers(
+        getattr(settings, "page_workers", DEFAULT_PAGE_WORKERS)
+    )
+
+
 def _effective_font_size(args: argparse.Namespace, settings) -> int:
     """这次导出实际用的正文字号：命令行优先，其次配置，都没给就是 14。
 
@@ -712,6 +760,8 @@ def run_cli(args: argparse.Namespace) -> int:
     until_thread_id = _effective_until(args, settings)
     # 正文字号同理：命令行优先、其次配置，默认 14（＝老版本写死的值）。
     font_size = _effective_font_size(args, settings)
+    # 并行抓页：默认 1 路（串行），命令行优先、其次配置。
+    page_workers = _effective_page_workers(args, settings)
     # 断点续跑：--skip-existing 一旦给了就开；没给就看配置里的开关。
     merge_export = bool(getattr(args, "merge", False))
     skip_existing = (
@@ -867,7 +917,8 @@ def run_cli(args: argparse.Namespace) -> int:
                                     progress=progress, verify_cached=args.verify,
                                     browser_path=args.pdf_browser or settings.pdf_browser or None,
                                     pdf_options=pdf_options,
-                                    font_size=font_size)
+                                    font_size=font_size,
+                                    page_workers=page_workers)
                 notify_result(notifier, result)
             watch_forever(
                 client, targets, output_dir, max(15.0, interval),
@@ -876,13 +927,14 @@ def run_cli(args: argparse.Namespace) -> int:
                 browser_path=args.pdf_browser or settings.pdf_browser or None,
                 pdf_options=pdf_options,
                 font_size=font_size,
+                page_workers=page_workers,
             )
         except KeyboardInterrupt:
             print("\n已停止监控。")
         return 0
 
     fetcher = CachedThreadFetcher(client, cache_dir=cache_dir, progress=lambda m: print(f"    {m}"),
-                                 use_cache=use_cache)
+                                 use_cache=use_cache, page_workers=page_workers)
     exporter = create_exporter(
         format_key,
         client,

@@ -21,6 +21,9 @@ DEFAULT_THROTTLE = 0.08
 DEFAULT_WATCH_INTERVAL = 300.0
 # 同一个串两次桌面通知的最小间隔：监控每轮都可能报"有更新"，不节流会刷屏。
 DEFAULT_NOTIFY_INTERVAL = 900.0
+# 并行抓页的默认并发数：1 ＝ 一页一页抓，与旧版本行为一致。
+# 真正做归一化的是 cache.normalize_page_workers（上限也在那边），这里只存值。
+DEFAULT_PAGE_WORKERS = 1
 
 # ---------- PDF 纸张 / 边距的默认值 ----------
 # 这组默认值等价于 v0.7.0 的行为：跟随网页样式（纸张与页边距都交给浏览器）、
@@ -78,6 +81,9 @@ class AppSettings:
     timeout: float = DEFAULT_TIMEOUT
     retries: int = DEFAULT_RETRIES
     throttle: float = DEFAULT_THROTTLE
+    # 并行抓页的并发数：1＝串行（默认，最稳）；2~6 会同时下几页。
+    # 长串（几十页以上）快很多，但请求更密 —— 碰到限流时抓取层自动退回串行。
+    page_workers: int = DEFAULT_PAGE_WORKERS
 
     # ---------- 导出偏好 ----------
     format_key: str = "html"
@@ -169,6 +175,12 @@ class AppSettings:
         self.timeout = _as_float(data.get("timeout"), DEFAULT_TIMEOUT)
         self.retries = _as_int(data.get("retries"), DEFAULT_RETRIES)
         self.throttle = _as_float(data.get("throttle"), DEFAULT_THROTTLE)
+        # 并行抓页：归一化上限在 cache 里（同一套规则给命令行、界面和配置用）。
+        from .cache import normalize_page_workers
+
+        self.page_workers = normalize_page_workers(
+            data.get("page_workers", DEFAULT_PAGE_WORKERS)
+        )
         self.format_key = str(data.get("format_key") or "html")
         self.scope = str(data.get("scope") or "all")
         self.filename_template = str(data.get("filename_template") or "")
@@ -245,6 +257,7 @@ class AppSettings:
                 "timeout": self.timeout,
                 "retries": self.retries,
                 "throttle": self.throttle,
+                "page_workers": self.page_workers,
                 "format_key": self.format_key,
                 "scope": self.scope,
                 "filename_template": self.filename_template,

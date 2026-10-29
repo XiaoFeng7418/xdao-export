@@ -77,6 +77,11 @@ MERGE_FIELDS = ("merge_export",)
 SKIP_DEFAULTS = {"skip_existing": False}
 MERGE_DEFAULTS = {"merge_export": False}
 
+#: v0.21.21 并行抓页（默认 1 ＝一页一页抓，与旧版本逐字节一致）
+PAGE_FIELDS = ("page_workers",)
+
+PAGE_DEFAULTS = {"page_workers": 1}
+
 DEFAULTS = {
     "pdf_paper": DEFAULT_PDF_PAPER,
     "pdf_orientation": DEFAULT_PDF_ORIENTATION,
@@ -211,6 +216,10 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         assert data[name] == FONT_DEFAULTS[name]
     for name in SKIP_FIELDS:
         assert data[name] == SKIP_DEFAULTS[name]
+    for name in MERGE_FIELDS:
+        assert data[name] == MERGE_DEFAULTS[name]
+    for name in PAGE_FIELDS:
+        assert data[name] == PAGE_DEFAULTS[name]
     assert (
         set(data) - set(LEGACY_V070)
         == set(PDF_FIELDS)
@@ -218,6 +227,7 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         | set(FONT_FIELDS)
         | set(SKIP_FIELDS)
         | set(MERGE_FIELDS)
+        | set(PAGE_FIELDS)
     )
 
 
@@ -593,3 +603,29 @@ def test_truthy_merge_export_reads_as_on(config_path: Path, yes: object) -> None
 
     write_config(config_path, {"merge_export": yes})
     assert load_config(config_path).merge_export == settings_module._as_bool(yes, False)
+# ---------- 并行抓页（v0.21.21） ----------
+
+
+def test_page_workers_defaults_to_one(config_path: Path) -> None:
+    """默认 1：等于旧版本「一页一页抓」，升级不会顺手把并发打开。"""
+    assert load_config(config_path).page_workers == 1
+
+
+def test_page_workers_round_trip(config_path: Path) -> None:
+    settings = fresh_config(config_path)
+    settings.page_workers = 4
+    assert settings.save()
+    assert load_config(config_path).page_workers == 4
+
+
+@pytest.mark.parametrize("value,expected", ((1, 1), (3, 3), (6, 6), (0, 1), (-2, 1), (99, 6)))
+def test_page_workers_is_clamped(config_path: Path, value: int, expected: int) -> None:
+    """越界的数夹回 1~6：上限对站点礼貌，下限是「不能变成 0 路」。"""
+    write_config(config_path, {"page_workers": value})
+    assert load_config(config_path).page_workers == expected
+
+
+@pytest.mark.parametrize("bad", (None, "", "abc", 1.5, [], {}))
+def test_bad_page_workers_falls_back_to_one(config_path: Path, bad: object) -> None:
+    write_config(config_path, {"page_workers": bad})
+    assert load_config(config_path).page_workers == 1

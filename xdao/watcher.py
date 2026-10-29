@@ -162,6 +162,7 @@ def check_once(
     browser_path: str | None = None,
     pdf_options=None,
     font_size: int | None = None,
+    page_workers: int | None = None,
 ) -> WatchResult:
     """检查一个串并按需导出（有更新才写文件）。
 
@@ -170,6 +171,9 @@ def check_once(
     ``browser_path`` / ``pdf_options`` / ``font_size`` 是给导出器用的：不传时就是
     浏览器的默认纸张与页边距、以及默认正文字号。**必须由调用方显式带进来** ——
     监控是长期后台跑的功能，用户改了设置却只在手动导出生效，会看起来像「设置没保存」。
+
+    ``page_workers`` 是抓页并发数（1＝一页一页抓）。监控同样受这个设置影响：
+    长串每轮都要把所有页走一遍缓存校验，串行时一轮能拖很久。
 
     每轮抓多少页由 ``target.max_pages`` 决定（0 ＝ 不限，与设置里的「最多页数」同一套语义）。
     """
@@ -180,6 +184,7 @@ def check_once(
             client,
             cache_dir=cache_dir,
             progress=progress,
+            page_workers=page_workers,
         )
         fetched = fetcher.fetch(
             target.url_or_id,
@@ -276,13 +281,15 @@ def watch_forever(
     browser_path: str | None = None,
     pdf_options=None,
     font_size: int | None = None,
+    page_workers: int | None = None,
 ) -> None:
     """后台循环：每 interval 秒检查一轮，直到 stop_event 被设置。
 
     每轮的顺序是「先检查、后等待」，所以启动后马上就会出一次结果。
     ``notifier`` 不为空时，检查出更新的串会顺带弹一条桌面通知
     （节流由 :class:`~xdao.notifications.Notifier` 负责）。
-    ``browser_path`` / ``pdf_options`` / ``font_size`` 与 :func:`check_once` 同义。
+    ``browser_path`` / ``pdf_options`` / ``font_size`` / ``page_workers`` 与
+    :func:`check_once` 同义。
     """
     interval = max(15.0, float(interval or 60))
     while not (stop_event and stop_event.is_set()):
@@ -298,6 +305,7 @@ def watch_forever(
                 browser_path=browser_path,
                 pdf_options=pdf_options,
                 font_size=font_size,
+                page_workers=page_workers,
             )
             if on_result:
                 try:

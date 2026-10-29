@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import re
@@ -20,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .cancel import check as check_cancel
+from .cancel import ExportCancelled, check as check_cancel
 from .client import Post, XdaoClient, XdaoError, reply_count
 from .paths import OutputDirNotWritable, can_write_dir, ensure_writable
 
@@ -32,6 +33,29 @@ DEFAULT_CACHE_DIRNAME = ".cache"
 #: 与「用户填的页数上限」是两件事 —— 用户上限更小时以用户上限为准，
 #: 用户没填（0＝不限）时仍然保留这道阀，免得一个畸形的超长串被一把拉到底。
 SAFETY_MAX_PAGES = 5000
+
+#: 并行抓页的默认并发数：``1`` 就是一页一页抓，与旧版本行为完全一致。
+#: 这个功能是**可选项**（用户自己开），默认不开的原因见 ``_prefetch_pages``。
+DEFAULT_PAGE_WORKERS = 1
+#: 并行抓页的上限。再高对站点不友好，收益也早就被带宽和服务端延迟吃掉了。
+PAGE_WORKERS_MAX = 6
+
+
+def normalize_page_workers(value) -> int:
+    """把「并行抓页数」归一化到 1..:data:`PAGE_WORKERS_MAX`。
+
+    坏值（``None``、``"abc"``、0、负数）一律回落成 1，也就是串行 ——
+    宁可慢一点，也不要因为配置里一个奇怪的值去打站点。
+    """
+    try:
+        workers = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_PAGE_WORKERS
+    return max(DEFAULT_PAGE_WORKERS, min(PAGE_WORKERS_MAX, workers))
+
+
+#: ``_process_page`` 用来区分「这一页已经预取过」和「没有」的哨兵。
+_MISSING = object()
 
 
 def post_fingerprint(post: Post) -> str:
@@ -383,6 +407,7 @@ class CachedThreadFetcher:
         use_cache: bool = True,
         retry_attempts: int | None = None,
         retry_delay: float | None = None,
+        page_workers: int = DEFAULT_PAGE_WORKERS,
         stop=None,
     ) -> None:
         self._client = client
@@ -391,6 +416,10 @@ class CachedThreadFetcher:
         # 用户在界面上点「取消导出」时，这里举起停止位；每抓一页、每次补抓前都会看一眼
         # （见 cancel.check）。None ＝ 不响应取消（命令行与监控都没有这个按钮）。
         self.stop = stop
+        # 并行抓页的并发数：1＝串行（默认，行为与旧版一致）。
+        self.page_workers = normalize_page_workers(page_workers)
+        # 本轮已经预先下载好的页（页号 → 接口原始 payload），由 _process_page 取用。
+        self._prefetched: dict[int, object] = {}
         # 补抓次数/间隔可在构造时覆盖（测试里调成 0 或 0 秒，免得白等）。
         self.retry_attempts = (
             self.RETRY_ATTEMPTS if retry_attempts is None else max(0, int(retry_attempts))
@@ -634,6 +663,15 @@ class CachedThreadFetcher:
         if max_pages <= 0:
             upper_bound = min(upper_bound, SAFETY_MAX_PAGES)
 
+        # 可选：先把后面几页并发下载好（只在 page_workers > 1 时做）。
+        # 顺序不变 —— 解析、写缓存、判断"到底了"仍然在下面的循环里按页号
+        # 从小到大做，所以产物与串行时逐字节一致（见 _prefetch_pages）。
+        self._prefetched = {}
+        if self.page_workers > 1:
+            self._prefetch_pages(
+                thread_id, [page for page in pages_to_fetch if page <= upper_bound]
+            )
+
         # 抓不下来的页先记进"重试队列"，不再像以前那样当场 break 把后面
         # 所有页一起丢掉。原因：接口偶发超时/限流/返回空壳时，旧行为会静默
         # 少抓一大截，用户拿到的产物缺页却看不出来。
@@ -703,6 +741,55 @@ class CachedThreadFetcher:
             requested_pages=requested_pages,
         )
 
+    def _prefetch_pages(self, thread_id: int, pages: list[int]) -> None:
+        """可选：并发把后面几页先下载下来，结果放进 ``self._prefetched``。
+
+        只做"下载"这一步。解析、写缓存、判断"到底了"仍然由
+        :meth:`_process_page` 按页号从小到大做 —— 顺序一乱，``end`` 的判断和
+        缓存写入都会跟着错，所以这里宁可不图那点并行。
+
+        为什么是可选而不是默认：并发会同时占几条连接，站点的限流阈值谁也说不准；
+        默认串行最稳，用户嫌慢再自己开。真撞上限流就自动退回串行，别继续加压。
+        """
+        todo = [page for page in pages if page not in self._prefetched]
+        if len(todo) < 2:
+            return
+        workers = min(self.page_workers, len(todo))
+        self._notify(f"并行抓取 {len(todo)} 页（最多 {workers} 路）…")
+        cancelled = False
+        throttled = ""
+
+        def load(page: int):
+            nonlocal cancelled
+            try:
+                check_cancel(self.stop)
+            except ExportCancelled:
+                cancelled = True
+                return page, "", None
+            try:
+                return page, "", self._client.fetch_thread_page(thread_id, page)
+            except ExportCancelled:
+                cancelled = True
+                return page, "", None
+            except Exception as exc:  # noqa: BLE001 —— 单页失败留给串行那趟重试
+                return page, f"{type(exc).__name__}: {exc}", None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            for page, error, raw in pool.map(load, todo):
+                if cancelled:
+                    break
+                if error:
+                    if not throttled and ("429" in error or "频繁" in error or "限流" in error):
+                        throttled = error
+                    continue
+                self._prefetched[page] = raw
+        if cancelled:
+            raise ExportCancelled("导出已取消")
+        if throttled:
+            # 被限流了就别再并发：剩下的页改成一页一页抓，并说清楚为什么变慢了。
+            self.page_workers = DEFAULT_PAGE_WORKERS
+            self._notify("刚才被服务器限流了，剩下的页改成一页一页抓。")
+
     def _process_page(
         self,
         thread_id: int,
@@ -720,7 +807,11 @@ class CachedThreadFetcher:
         """
         self._last_page_error = ""
         self._notify(f"正在抓取第 {page} 页…")
-        raw = self._client.fetch_thread_page(thread_id, page)
+        raw = self._prefetched.pop(page, _MISSING)
+        if raw is _MISSING:
+            # 没预取到（没开并行，或者并行那趟把这一页漏了）：现抓。
+            # 漏掉的页会在这里按原样重试一次，所以并行失败不会丢页。
+            raw = self._client.fetch_thread_page(thread_id, page)
         if isinstance(raw, str):
             failed.add(page)
             self._last_page_error = raw
