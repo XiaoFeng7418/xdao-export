@@ -886,6 +886,9 @@ def run_cli(args: argparse.Namespace) -> int:
     exporter = create_exporter(
         format_key,
         client,
+        # 导出器自己也报进度（整理正文、下载图片、渲染 PDF）。不传的话命令行
+        # 在「抓完最后一页 → 成品落盘」这段最长的等待里一片安静，看着像卡住。
+        progress=lambda message: print(f"    {message}"),
         filename_template=template,
         image_mode=image_mode,
         browser_path=args.pdf_browser or settings.pdf_browser or None,

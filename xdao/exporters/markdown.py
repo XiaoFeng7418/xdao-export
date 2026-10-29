@@ -16,6 +16,7 @@ from ._shared import (
     ImageFolderWriter,
     ThreadData,
     attachment_image_url,
+    iter_post_image_urls,
     plain_text,
     render_inline_content,
 )
@@ -58,6 +59,19 @@ class MarkdownBuilder(Exporter):
     def _image_target(self, url: str) -> str:
         """目录模式：下载并写盘，返回正文里该用的相对路径（失败返回空串）。"""
         return self._images.write(self._client, url)
+
+    def _preload_images(self, posts: list[Post]) -> None:
+        """「存到同名目录」时先把图片并发下完，再逐楼渲染。
+
+        不预取也能出成品，但每楼渲染时一张张串行下，图多的串会像卡住，
+        而且中途点取消要等当前那张下完才响应。
+        """
+        if self.image_mode != "folder" or not self._images.enabled:
+            return
+        urls: list[str] = []
+        for post in posts:
+            urls.extend(iter_post_image_urls(self._client, post))
+        self._images.prefetch(self._client, urls, check_cancel=self.check_cancel)
 
     def _render_post(self, index: int, post: Post, thread: ThreadData) -> str:
         """单楼渲染。"""
@@ -114,6 +128,7 @@ class MarkdownBuilder(Exporter):
         """scope: 'all' 导出全部楼层，'po' 只导出 PO（主帖始终保留）。"""
         export_time = _datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         posts = thread.filter_posts(scope, include_hashes)
+        self._preload_images(posts)
 
         lines = [
             f"# {thread.title or '无标题'}",
@@ -127,6 +142,7 @@ class MarkdownBuilder(Exporter):
             "",
         ]
         for index, post in enumerate(posts, start=1):
+            self.check_cancel()
             lines.append(self._render_post(index, post, thread))
             lines.append("")
         self._images.report()

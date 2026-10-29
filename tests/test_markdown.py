@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -29,6 +30,7 @@ from xdao.exporters._shared import (
     resolve_image_url,
     sanitize_filename,
 )
+from xdao.cancel import ExportCancelled
 from xdao.exporters.markdown import MarkdownBuilder
 
 
@@ -346,11 +348,6 @@ def test_data_uri_bytes_roundtrip():
 # ---------- 6. 图片存到同名目录（v0.20.0）----------
 
 
-def _thread_with_images() -> object:
-    """样例串：主帖带附件图，回复正文里还有一张图。"""
-    return sample_thread()
-
-
 def test_markdown_default_mode_keeps_image_links(tmp_path: Path) -> None:
     """不传 image_mode（旧行为）：正文里是绝对链接，不下载任何图片。"""
     client = FakeClient()
@@ -456,3 +453,103 @@ def test_create_exporter_hands_the_folder_mode_to_markdown() -> None:
 
     assert isinstance(exporter, MarkdownBuilder)
     assert exporter.image_mode == "folder"
+
+
+# ---------- 目录模式的图片并发预取（v0.21.20） ----------
+
+
+def _thread_with_images(count: int) -> ThreadData:
+    """一个主帖 + ``count`` 楼回复，每楼正文里各一张图。"""
+    posts = [make_post(9000, "主帖只有文字", is_po=True)]
+    for index in range(1, count + 1):
+        posts.append(make_post(9000 + index, f'<img src="https://cdn.example/pic-{index}.jpg">'))
+    return ThreadData(thread_id=9000, title="多图", po_hash="POCOOKIE", posts=posts)
+
+
+def test_markdown_folder_mode_prefetches_images_with_progress(tmp_path: Path) -> None:
+    """图多的串先把图并发下完再渲染，日志里有总数与百分比进度。"""
+    client = FakeClient()
+    messages: list[str] = []
+    exporter = MarkdownBuilder(client, progress=messages.append, image_mode="folder")
+
+    path = exporter.save(_thread_with_images(3), "all", tmp_path)
+
+    assert "正在下载 3 张图片…" in messages
+    assert "正在下载图片：3/3" in messages
+    assert sorted(client.downloaded) == [
+        "https://cdn.example/pic-1.jpg",
+        "https://cdn.example/pic-2.jpg",
+        "https://cdn.example/pic-3.jpg",
+    ]
+    folder = path.with_name(path.stem + ".files")
+    assert len(list(folder.iterdir())) == 3
+
+
+def test_markdown_folder_mode_downloads_a_repeated_image_once(tmp_path: Path) -> None:
+    """同一张图在多个楼层出现：只下一次、只落一个文件（以前会写「同名-1」副本）。"""
+    url = "https://cdn.example/same.jpg"
+    posts = [
+        make_post(9101, f'<img src="{url}">', is_po=True),
+        make_post(9102, f'<img src="{url}">'),
+    ]
+    thread = ThreadData(thread_id=9101, title="重复图", po_hash="POCOOKIE", posts=posts)
+    client = FakeClient()
+    exporter = MarkdownBuilder(client, image_mode="folder")
+
+    path = exporter.save(thread, "all", tmp_path)
+
+    assert client.downloaded == [url]
+    folder = path.with_name(path.stem + ".files")
+    assert [item.name for item in folder.iterdir()] == ["same.jpg"]
+    text = path.read_text(encoding="utf-8")
+    rel = urllib.parse.quote(folder.name, safe="")
+    assert text.count(f"![图片]({rel}/same.jpg)") == 2
+
+
+def test_markdown_folder_mode_says_nothing_when_there_are_no_images(tmp_path: Path) -> None:
+    """没有图片就不该冒出「正在下载 0 张」这种空话。"""
+    thread = ThreadData(
+        thread_id=9200,
+        title="无图",
+        po_hash="POCOOKIE",
+        posts=[make_post(9200, "只有文字", is_po=True)],
+    )
+    client = FakeClient()
+    messages: list[str] = []
+    exporter = MarkdownBuilder(client, progress=messages.append, image_mode="folder")
+
+    exporter.save(thread, "all", tmp_path)
+
+    assert [message for message in messages if message.startswith("正在下载")] == []
+    assert client.downloaded == []
+
+
+def test_markdown_folder_mode_can_be_cancelled_before_rendering(tmp_path: Path) -> None:
+    """停止位举着的时候：图片阶段就抛出去，不落盘、不留半份成品。"""
+    stop = threading.Event()
+    stop.set()
+    exporter = MarkdownBuilder(FakeClient(), image_mode="folder", stop=stop)
+
+    with pytest.raises(ExportCancelled):
+        exporter.save(_thread_with_images(2), "all", tmp_path)
+
+    assert list(tmp_path.glob("*.md")) == []
+
+
+def test_markdown_folder_mode_checks_cancel_between_posts(tmp_path: Path) -> None:
+    """图片下完才点取消：逐楼渲染那段也要认，不能当成没取消。"""
+    stop = threading.Event()
+
+    def progress(message: str) -> None:
+        # 最后一批图片下完时立刻举停止位，真正的取消点落在渲染循环里。
+        if message.startswith("正在下载图片：10/10"):
+            stop.set()
+
+    exporter = MarkdownBuilder(
+        FakeClient(), progress=progress, image_mode="folder", stop=stop
+    )
+
+    with pytest.raises(ExportCancelled):
+        exporter.save(_thread_with_images(10), "all", tmp_path)
+
+    assert list(tmp_path.glob("*.md")) == []
