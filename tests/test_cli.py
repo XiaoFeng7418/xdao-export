@@ -1344,6 +1344,30 @@ def test_image_mode_folder_is_downgraded_for_pdf(out_dir, monkeypatch, capsys):
     assert "只对 HTML 与 Markdown 生效" in capsys.readouterr().out
 
 
+def test_exporter_gets_a_progress_printer(out_dir, monkeypatch, capsys):
+    """导出器也要能把进度说出来（v0.21.20）。
+
+    以前只给抓取层传了 progress，导出器这一段是哑的：抓完最后一页之后，
+    下载图片、整理正文、渲染 PDF 全都没有任何输出，看着像卡死。
+    """
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", make_recording_fetcher()[0])
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        exporters_module,
+        "create_exporter",
+        lambda *a, **k: seen.append(k) or make_writing_exporter()(),
+    )
+
+    code = main(["50000001", "-f", "markdown", "-o", str(out_dir), "--image-mode", "folder"])
+
+    assert code == 0
+    printer = seen[0]["progress"]
+    assert callable(printer)
+    printer("正在下载 6 张图片…")
+    assert "    正在下载 6 张图片…" in capsys.readouterr().out
+
+
 # ---------- --input：从文件读串号清单（v0.20.0） ----------
 
 

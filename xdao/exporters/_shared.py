@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import html as html_lib
 import re
+import threading
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -243,6 +245,10 @@ class ImageFolderWriter:
         self.relative = ""
         self._names: set[str] = set()
         self._serial = 0
+        #: url -> 图片字节；``None`` 表示下不到（预取试过一次就不再重试）。
+        self._data: dict[str, bytes | None] = {}
+        #: url -> 正文里要写的相对路径：同一张图出现多次只落一个文件。
+        self._paths: dict[str, str] = {}
         #: 没写成功的图片地址（下载失败或写盘失败），按出现顺序。
         self.missing: list[str] = []
 
@@ -251,6 +257,51 @@ class ImageFolderWriter:
         folder = path.with_name(path.stem + ".files")
         self.directory = folder
         self.relative = folder.name
+
+    def prefetch(
+        self,
+        client: XdaoClient,
+        urls: list[str],
+        *,
+        check_cancel=None,
+        workers: int = 6,
+    ) -> None:
+        """并发预取一批图片（带进度与取消检查），供 :meth:`write` 直接取用。
+
+        HTML 与 EPUB 早就这么下了；Markdown 的「存到同名目录」原先在渲染正文时
+        一张一张串行下，图多的串看起来像卡住，中途点取消也要等当前那张下完。
+        落盘文件名仍按渲染顺序分配，所以成品与串行下载时逐字节一致。
+        """
+        wanted: list[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            if url and url not in seen and url not in self._data:
+                seen.add(url)
+                wanted.append(url)
+        if not wanted:
+            return
+        total = len(wanted)
+        self._notify(f"正在下载 {total} 张图片…")
+        # 每完成约 10% 报一次进度：从「正在下载 N 张」到结束之间原来一句话都没有，
+        # 图多的串看着像卡住了。步长取整且至少 1，短列表也不会刷屏。
+        step = max(1, total // 10)
+        lock = threading.Lock()
+        done = 0
+
+        def load(url: str) -> None:
+            nonlocal done
+            # 取消时在下载线程里就抛出去，executor.map 会把它带回调用方。
+            if check_cancel is not None:
+                check_cancel()
+            self._data[url] = fetch_image(client, url)
+            with lock:
+                done += 1
+                finished = done
+            if finished % step == 0 or finished == total:
+                self._notify(f"正在下载图片：{finished}/{total}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+            list(executor.map(load, wanted))
 
     @property
     def enabled(self) -> bool:
@@ -279,7 +330,12 @@ class ImageFolderWriter:
         """下载并写盘，返回正文里该用的相对路径；失败返回空串。"""
         if not url or self.directory is None:
             return ""
-        data = fetch_image(client, url)
+        # 同一张图在多个楼层出现时只写一个文件、返回同一个相对路径：
+        # HTML 的图片缓存本来就是这么做的，Markdown 以前会写出「同名-1.jpg」这种副本。
+        cached = self._paths.get(url)
+        if cached is not None:
+            return cached
+        data = self.fetch(client, url)
         if not data:
             self._remember(url, "图片下载失败")
             return ""
@@ -291,7 +347,17 @@ class ImageFolderWriter:
             self._remember(url, "图片存不进目录")
             return ""
         # 相对地址一律用正斜杠；空格/中文按 URL 规则转义（Markdown 与浏览器都认）。
-        return urllib.parse.quote(f"{self.relative}/{name}", safe="/")
+        value = urllib.parse.quote(f"{self.relative}/{name}", safe="/")
+        self._paths[url] = value
+        return value
+
+    def fetch(self, client: XdaoClient, url: str) -> bytes | None:
+        """取图片字节：预取过的直接用缓存，没预取过的现下（失败也记下来不重试）。"""
+        if url in self._data:
+            return self._data[url]
+        data = fetch_image(client, url)
+        self._data[url] = data
+        return data
 
     def _remember(self, url: str, reason: str) -> None:
         if url in self.missing:
