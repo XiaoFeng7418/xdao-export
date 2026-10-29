@@ -25,7 +25,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .appinfo import WINDOW_TITLE
-from .cache import CachedThreadFetcher, filter_until_thread_id, parse_thread_id, resolve_cache_dir
+from .cache import (
+    PAGE_WORKERS_MAX,
+    CachedThreadFetcher,
+    filter_until_thread_id,
+    parse_thread_id,
+    resolve_cache_dir,
+)
 from .cancel import ExportCancelled
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
@@ -2690,6 +2696,7 @@ class SettingsDialog(tk.Toplevel):
         self.timeout_var = tk.StringVar(value=f"{settings.timeout:g}")
         self.retries_var = tk.StringVar(value=str(settings.retries))
         self.throttle_var = tk.StringVar(value=f"{settings.throttle:g}")
+        self.page_workers_var = tk.StringVar(value=str(settings.page_workers))
         numbers = ttk.Frame(net, style="Card.TFrame")
         numbers.grid(row=2, column=0, columnspan=2, sticky="w", pady=theme.gap(1))
         for column, (text, variable) in enumerate(
@@ -2705,6 +2712,17 @@ class SettingsDialog(tk.Toplevel):
             ttk.Entry(group, textvariable=variable, width=10).pack(
                 anchor="w", pady=(theme.gap(0.5), 0)
             )
+        # 并发抓页跟上面三个网络项排同一行：都是「网络」这一卡片的旋钮
+        workers_group = ttk.Frame(numbers, style="Card.TFrame")
+        workers_group.grid(row=0, column=3, sticky="w", padx=(0, theme.gap(3)))
+        ttk.Label(workers_group, text="同时抓页数", style="Card.TLabel").pack(anchor="w")
+        ttk.Spinbox(
+            workers_group,
+            from_=1,
+            to=PAGE_WORKERS_MAX,
+            textvariable=self.page_workers_var,
+            width=4,
+        ).pack(anchor="w", pady=(theme.gap(0.5), 0))
         throttle_hint = ttk.Label(
             net,
             text="请求过密会被限流（429）；抓很长的串时把间隔调到 0.3～0.5 更稳。",
@@ -2714,6 +2732,16 @@ class SettingsDialog(tk.Toplevel):
         )
         throttle_hint.grid(row=3, column=0, columnspan=2, sticky="ew")
         wrap_to_width(throttle_hint, minimum=220)
+        workers_hint = ttk.Label(
+            net,
+            text="同时抓页数默认 1（一页一页抓，最稳）；2～6 适合长串，快不少，"
+            "真撞上限流会自动退回一页一页抓。",
+            style="CardMuted.TLabel",
+            wraplength=theme.gap(80),
+            justify="left",
+        )
+        workers_hint.grid(row=4, column=0, columnspan=2, sticky="ew")
+        wrap_to_width(workers_hint, minimum=220)
 
         # ② 缓存
         cache_card = Card(outer)
@@ -3033,6 +3061,15 @@ class SettingsDialog(tk.Toplevel):
             settings.retries = max(0, min(10, int(float(self.retries_var.get()))))
         except (TypeError, ValueError):
             settings.retries = DEFAULT_RETRIES
+        # 并发抓页：填坏了就沿用原值，不要静默变成 1（用户会以为设置没保存）。
+        # 这里不吃 "2.5" 这类写法：Spinbox 里给的就是整数，带小数说明填错了，
+        # 静默截成 2 反而让人以为存进去的是 2.5。
+        try:
+            settings.page_workers = max(
+                1, min(PAGE_WORKERS_MAX, int(str(self.page_workers_var.get()).strip()))
+            )
+        except (TypeError, ValueError):
+            pass
 
         # v0.13.53：把写盘结果记下来 —— 写不进去时外面那句「设置已保存」就是假话。
         self.saved = bool(settings.save())
@@ -5519,6 +5556,7 @@ class App:
                 progress=lambda msg: self._export_queue.put(("log", msg)),
                 use_cache=use_cache,
                 stop=stop_event,
+                page_workers=self.settings.page_workers,
             )
             exporter = create_exporter(
                 format_key,
@@ -5869,6 +5907,7 @@ class App:
                     browser_path=self.settings.pdf_browser or None,
                     pdf_options=pdf_opts.from_settings(self.settings),
                     font_size=self.settings.export_font_size,
+                    page_workers=self.settings.page_workers,
                 )
             except Exception as exc:  # noqa: BLE001 —— 监控线程也不能把 traceback 弹给用户
                 self.watch_queue.put(f"监控出错：{type(exc).__name__}: {exc}")
@@ -5927,6 +5966,7 @@ class App:
                     browser_path=self.settings.pdf_browser or None,
                     pdf_options=pdf_opts.from_settings(self.settings),
                     font_size=self.settings.export_font_size,
+                    page_workers=self.settings.page_workers,
                 )
                 self.watch_queue.put(result)
 

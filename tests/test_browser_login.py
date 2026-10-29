@@ -443,7 +443,7 @@ def test_find_browser_prefers_the_windows_default_browser(
 
 
 def test_browser_candidates_puts_the_current_one_first_and_dedupes(
-    artifacts_dir: Path,
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """重试时要先试「刚才那个」，再换别的；重复的不许试两遍。"""
     pf = artifacts_dir / "pf"
@@ -451,6 +451,8 @@ def test_browser_candidates_puts_the_current_one_first_and_dedupes(
     chrome = _touch(pf, r"Google\Chrome\Application\chrome.exe")
     env = _no_browsers_env(artifacts_dir)
     env["PROGRAMFILES"] = str(pf)
+    # 认不出默认浏览器，才能断言「固定顺序 Edge 先」；否则本机默认浏览器一换，这条就跟着红
+    _fake_registry(monkeypatch, {})
     current = bl.BrowserInfo(name="Chrome", path=str(chrome))
     got = bl.browser_candidates(current, env=env)
     assert [info.path for info in got] == [str(chrome), str(edge)]

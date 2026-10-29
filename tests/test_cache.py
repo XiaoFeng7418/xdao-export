@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from xdao.cache import (
+    DEFAULT_PAGE_WORKERS,
+    PAGE_WORKERS_MAX,
     CachedThreadFetcher,
     SAFETY_MAX_PAGES,
     ThreadCache,
@@ -16,6 +18,7 @@ from xdao.cache import (
     default_cache_dir,
     filter_until_thread_id,
     parse_reply_count,
+    normalize_page_workers,
     parse_thread_id,
     post_fingerprint,
     resolve_cache_dir,
@@ -1007,3 +1010,178 @@ def test_fetch_without_stop_still_works(artifacts_dir):
     result = fetcher.fetch(7001)
 
     assert len(result.posts) == 7
+# ---------- 并行抓页（v0.21.21，可选功能，默认关） ----------
+
+
+def build_four_page_api(page_count: int = 4) -> FakeApi:
+    """``page_count`` 页、每页 2 条回复的串（第 1 页是主帖）。"""
+    pages = {}
+    for page in range(1, page_count + 1):
+        pages[page] = make_page(
+            7002,
+            page,
+            [make_reply(200 + page * 2), make_reply(201 + page * 2)],
+            reply_count=(page_count - 1) * 2,
+            page_count=page_count,
+        )
+    return FakeApi(pages)
+
+
+class BarrierApi(FakeApi):
+    """``page > 1`` 的请求要凑够 ``parties`` 个线程才放行。
+
+    串行时第一个请求就会卡在栅栏上超时（抛 ``BrokenBarrierError``），
+    所以这条用例能真的证明「确实在并发」而不是仅仅「请求次数对」。
+    """
+
+    def __init__(self, pages: dict[int, dict], parties: int, timeout: float = 5.0) -> None:
+        super().__init__(pages)
+        self._barrier = threading.Barrier(parties, timeout=timeout)
+
+    def fetch_thread_page(self, thread_id: int, page: int = 1) -> dict:
+        if page > 1:
+            self._barrier.wait()
+        return super().fetch_thread_page(thread_id, page)
+
+
+class RaiseOnceApi(FakeApi):
+    """指定页第一次请求抛异常，之后正常（模拟预取那趟偶发失败）。"""
+
+    def __init__(self, pages: dict[int, dict], bad: list[int], message: str = "网络错误：连接被重置（测试）") -> None:
+        super().__init__(pages)
+        self._bad = list(bad)
+        self._message = message
+
+    def fetch_thread_page(self, thread_id: int, page: int = 1) -> dict:
+        if page in self._bad:
+            self._bad.remove(page)
+            self.requests.append((thread_id, page))
+            raise OSError(self._message)
+        return super().fetch_thread_page(thread_id, page)
+
+
+def test_normalize_page_workers_clamps_and_falls_back():
+    assert normalize_page_workers(None) == 1
+    assert normalize_page_workers("") == 1
+    assert normalize_page_workers("abc") == 1
+    assert normalize_page_workers([]) == 1
+    assert normalize_page_workers(0) == 1
+    assert normalize_page_workers(-3) == 1
+    assert normalize_page_workers(1) == 1
+    assert normalize_page_workers(4) == 4
+    assert normalize_page_workers("5") == 5
+    assert normalize_page_workers(PAGE_WORKERS_MAX) == PAGE_WORKERS_MAX
+    assert normalize_page_workers(PAGE_WORKERS_MAX + 1) == PAGE_WORKERS_MAX
+    assert DEFAULT_PAGE_WORKERS == 1
+
+
+def test_page_workers_defaults_to_serial(artifacts_dir):
+    """默认就是串行：不传参数时页数一路抓下来，连并行提示都不该出现。"""
+    api = build_four_page_api()
+    messages: list[str] = []
+    fetcher = make_fetcher(api, artifacts_dir, progress=messages.append)
+
+    result = fetcher.fetch(7002)
+
+    assert fetcher.page_workers == 1
+    assert result.posts[0].is_po is True
+    assert [page for _, page in api.requests] == [1, 2, 3, 4]
+    assert not any("并行抓取" in message for message in messages)
+
+
+def test_page_workers_downloads_pages_concurrently(artifacts_dir):
+    """开 3 路时三页同时抓（栅栏证明并发），且每页只请求一次。"""
+    api = BarrierApi(build_four_page_api().pages, parties=3)
+    messages: list[str] = []
+    fetcher = make_fetcher(api, artifacts_dir, page_workers=3, progress=messages.append)
+
+    result = fetcher.fetch(7002)
+
+    assert fetcher.page_workers == 3
+    assert "并行抓取 3 页（最多 3 路）…" in messages
+    # 第 2~4 页各一次；第 1 页不预取，仍由主循环抓。
+    assert sorted(page for _, page in api.requests) == [1, 2, 3, 4]
+    assert result.posts[0].is_po is True
+
+
+def test_page_workers_produce_the_same_result_as_serial(artifacts_dir, tmp_path):
+    """产物必须与串行逐字节一致：只并发「下载」，解析顺序不变。"""
+    parallel_dir = artifacts_dir / "parallel"
+    serial_dir = artifacts_dir / "serial"
+    parallel_dir.mkdir()
+    serial_dir.mkdir()
+
+    serial_fetcher = make_fetcher(build_four_page_api(), serial_dir)
+    parallel_fetcher = make_fetcher(build_four_page_api(), parallel_dir, page_workers=4)
+
+    serial = serial_fetcher.fetch(7002)
+    parallel = parallel_fetcher.fetch(7002)
+
+    assert [(post.id, post.content) for post in parallel.posts] == [
+        (post.id, post.content) for post in serial.posts
+    ]
+    assert parallel.reason == serial.reason
+
+
+def test_prefetch_failure_falls_back_to_fetching_that_page(artifacts_dir):
+    """预取那趟某页失败不算丢页：主循环会按原样再抓一次。"""
+    api = RaiseOnceApi(build_four_page_api().pages, bad=[3])
+    fetcher = make_fetcher(api, artifacts_dir, page_workers=3, retry_attempts=0)
+
+    result = fetcher.fetch(7002)
+
+    page3_requests = [page for _, page in api.requests if page == 3]
+    assert len(page3_requests) == 2  # 预取失败一次 + 主循环补一次
+    assert result.failed_pages == []  # 没有缺页
+    assert result.posts[0].is_po is True
+
+
+def test_rate_limit_during_prefetch_falls_back_to_serial(artifacts_dir):
+    """预取撞上限流 → 剩下的页改成一页一页抓，并把原因说出来。"""
+    api = RaiseOnceApi(
+        build_four_page_api().pages, bad=[2], message="HTTP 429：请求过于频繁"
+    )
+    messages: list[str] = []
+    fetcher = make_fetcher(api, artifacts_dir, page_workers=3, progress=messages.append)
+
+    fetcher.fetch(7002)
+
+    assert fetcher.page_workers == 1
+    assert "刚才被服务器限流了，剩下的页改成一页一页抓。" in messages
+
+
+def test_page_workers_never_exceeds_the_page_count(artifacts_dir):
+    """只有 2 页要抓时最多 2 路 —— 不会因为设置写着 6 就开 6 个线程。"""
+    api = BarrierApi(build_four_page_api(page_count=2).pages, parties=1)
+    messages: list[str] = []
+    fetcher = make_fetcher(api, artifacts_dir, page_workers=6, progress=messages.append)
+
+    fetcher.fetch(7002)
+
+    # 串行兜底的那半句：到底就停，没有第 3 页。
+    assert not any("并行抓取 1 页" in message for message in messages)
+    assert [page for _, page in api.requests] == [1, 2]
+
+
+def test_page_workers_cancel_before_fetch_touches_nothing(artifacts_dir):
+    """已点取消时连预取都不做：一个请求都不发。"""
+    api = build_four_page_api()
+    stop = threading.Event()
+    stop.set()
+    fetcher = make_fetcher(api, artifacts_dir, page_workers=4, stop=stop)
+
+    with pytest.raises(ExportCancelled):
+        fetcher.fetch(7002)
+    assert api.requests == []
+
+
+def test_page_workers_only_pages_within_the_limit_are_prefetched(artifacts_dir):
+    """开了页数上限时，预取也不许越过上限去抓。"""
+    api = BarrierApi(build_four_page_api().pages, parties=1)
+    fetcher = make_fetcher(api, artifacts_dir, page_workers=3)
+
+    result = fetcher.fetch(7002, max_pages=2)
+
+    assert [page for _, page in api.requests] == [1, 2]
+    assert result.truncated  # 撞上页数上限没抓完
+    assert all(page <= 2 for _, page in api.requests)

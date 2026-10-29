@@ -192,6 +192,23 @@ def make_recording_fetcher():
     return RecordingFetcher, calls
 
 
+def make_init_recording_fetcher():
+    """再包一层：记录 ``CachedThreadFetcher(...)`` 的构造参数。
+
+    ``make_recording_fetcher`` 记的是 ``fetch(...)`` 的参数（max_pages 那些），
+    而 ``page_workers`` 是构造时给抓取层的，得单独采一份。
+    """
+    base, calls = make_recording_fetcher()
+    inits: list[dict] = []
+
+    class RecordingFetcher(base):
+        def __init__(self, *args, **kwargs) -> None:
+            inits.append(kwargs)
+            super().__init__(*args, **kwargs)
+
+    return RecordingFetcher, calls, inits
+
+
 def make_writing_exporter():
     class FakeExporter:
         def save(self, thread, scope, output_dir, include_hashes=None):
@@ -1535,3 +1552,103 @@ def test_merge_falls_back_with_a_note_for_formats_without_merge(out_dir, monkeyp
     assert saved == [50000001, 7001002]
     assert "不支持合并导出" in capsys.readouterr().err
 
+# ---------- 并行抓页：--page-workers（v0.21.21，可选项，默认 1） ----------
+
+
+def test_parser_page_workers_accepts_the_range_and_rejects_junk():
+    """``--page-workers`` 只收 1~6；默认是 None（＝看配置，配置默认 1）。"""
+    assert build_parser().parse_args(["50000001"]).page_workers is None
+    assert build_parser().parse_args(["50000001", "--page-workers", "1"]).page_workers == 1
+    assert build_parser().parse_args(["50000001", "--page-workers", "6"]).page_workers == 6
+    for bad in ("0", "-1", "7", "abc", "2.5", ""):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["50000001", "--page-workers", bad])
+
+
+@pytest.mark.parametrize(
+    "bad,needle",
+    (("abc", "整数"), ("0", "1~6"), ("9", "1~6")),
+)
+def test_page_workers_error_message_says_what_is_wrong(bad, needle, capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["50000001", "--page-workers", bad])
+    assert needle in capsys.readouterr().err
+
+
+def test_help_mentions_page_workers(capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--help"])
+    assert "--page-workers" in capsys.readouterr().out
+
+
+def test_page_workers_reaches_the_fetcher(out_dir, monkeypatch):
+    """并发数要原样交给抓取层（真正干活的地方）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls, inits = make_init_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["50000001", "--page-workers", "4", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["page_workers"] for kwargs in inits] == [4]
+
+
+def test_page_workers_defaults_to_serial(out_dir, monkeypatch):
+    """没给开关、配置里也没有这个键 → 1（一页一页抓，与旧版本一致）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls, inits = make_init_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["page_workers"] for kwargs in inits] == [1]
+
+
+def test_page_workers_falls_back_to_the_saved_setting(out_dir, monkeypatch):
+    """命令行没写时用配置里存的那条并发数（界面里设过就能在这条路上生效）。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls, inits = make_init_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    class SettingsWithWorkers(OfflineSettings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.page_workers = 3
+
+    import xdao.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "AppSettings", SettingsWithWorkers)
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    assert [kwargs["page_workers"] for kwargs in inits] == [3]
+
+
+def test_watch_mode_hands_page_workers_to_every_check(out_dir, monkeypatch):
+    """监控也要用上并发数：长串每轮都要把页走一遍，串行时一轮能拖很久。"""
+    import xdao.watcher as watcher_module
+
+    patch_offline(monkeypatch)
+    calls: list[tuple] = []
+    empty = watcher_module.WatchResult(target=watcher_module.WatchTarget("5009"))
+
+    def fake_check(client, target, out, **kwargs):
+        calls.append((target, kwargs))
+        return empty
+
+    monkeypatch.setattr(watcher_module, "check_once", fake_check)
+    monkeypatch.setattr(watcher_module, "watch_forever", lambda *a, **k: None)
+
+    code = main(
+        ["5009", "--watch", "--page-workers", "3", "-f", "html", "-o", str(out_dir)]
+    )
+
+    assert code == 0
+    assert calls, "监控一轮都没跑"
+    _, kwargs = calls[0]
+    assert kwargs["page_workers"] == 3

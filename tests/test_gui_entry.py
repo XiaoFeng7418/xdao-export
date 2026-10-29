@@ -4257,3 +4257,115 @@ def test_offer_download_logs_the_line_when_there_is_no_url(dialog_root, monkeypa
     gui.App._offer_download(app, _Result())
 
     assert app.logged == ["有新版本，但找不到下载地址"]
+# ---------------------------------------------------------------------------
+# 并行抓页：设置面板与两处调用（v0.21.21，可选项，默认 1）
+# ---------------------------------------------------------------------------
+
+
+def test_settings_dialog_starts_from_the_saved_page_workers(dialog_root, artifacts_dir):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.page_workers = 3
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        assert dialog.page_workers_var.get() == "3"
+    finally:
+        _close(dialog)
+
+
+def test_settings_dialog_saves_the_page_workers(dialog_root, artifacts_dir):
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.page_workers_var.set("4")
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.page_workers == 4
+    saved = json.loads((artifacts_dir / "config.json").read_text(encoding="utf-8"))
+    assert saved["page_workers"] == 4
+
+
+@pytest.mark.parametrize("value", ("99", "0", "-3"))
+def test_settings_dialog_clamps_the_page_workers(dialog_root, artifacts_dir, value):
+    """越界也存得下来（夹到 1~6），不要在界面上留一个「看上去生效」的假值。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.page_workers_var.set(value)
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert 1 <= settings.page_workers <= 6
+
+
+@pytest.mark.parametrize("bad", ("abc", "", "2.5"))
+def test_settings_dialog_keeps_a_good_page_workers_when_the_input_is_bad(
+    dialog_root, artifacts_dir, bad
+):
+    """填坏了就沿用原值，别把用户的设置冲成默认 1。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.page_workers = 5
+    dialog = _open_settings(dialog_root, settings)
+    try:
+        dialog.page_workers_var.set(bad)
+        dialog._save()
+    finally:
+        _close(dialog)
+
+    assert settings.page_workers == 5
+
+
+def test_gui_export_opens_the_fetcher_with_the_configured_page_workers(
+    artifacts_dir, monkeypatch
+):
+    """界面导出要把并发数交给抓取层 —— 设在界面里、只有命令行生效就不算做到。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+    settings.page_workers = 4
+    inits: list[dict] = []
+
+    class RecordingFetcher:
+        def __init__(self, *args, **kwargs) -> None:
+            inits.append(kwargs)
+
+        def fetch(self, url, **kwargs):
+            return SimpleNamespace(
+                meta=SimpleNamespace(thread_id="50000001", title="测试串", po_hash="PO"),
+                posts=[],
+                reason="测试用抓取结果",
+                retry_note="",
+                cache_warning="",
+            )
+
+    monkeypatch.setattr(gui, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: _RecordingExporter())
+    monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+
+    assert [kwargs["page_workers"] for kwargs in inits] == [4]
+
+
+def test_gui_watch_check_hands_page_workers_to_the_check(artifacts_dir, monkeypatch):
+    """监控那条路也要用上并发数：长串每轮把所有页走一遍，串行时一轮能拖很久。"""
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.page_workers = 3
+    calls: list[dict] = []
+
+    def fake_check(client, target, output_dir, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(target=target, error="", exported=None)
+
+    monkeypatch.setattr(gui, "check_once", fake_check)
+    monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
+
+    app = _FakeWatchApp(
+        settings, artifacts_dir / "out", gui.WatchTarget("7001", format_key="html")
+    )
+    gui.App.check_watch_once(app)
+
+    assert calls, "检查一轮都没跑"
+    assert calls[0]["page_workers"] == 3
