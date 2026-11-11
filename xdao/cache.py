@@ -34,24 +34,28 @@ DEFAULT_CACHE_DIRNAME = ".cache"
 #: 用户没填（0＝不限）时仍然保留这道阀，免得一个畸形的超长串被一把拉到底。
 SAFETY_MAX_PAGES = 5000
 
-#: 并行抓页的默认并发数：``1`` 就是一页一页抓，与旧版本行为完全一致。
-#: 这个功能是**可选项**（用户自己开），默认不开的原因见 ``_prefetch_pages``。
-DEFAULT_PAGE_WORKERS = 1
+#: 并行抓页的下限：``1`` 就是一页一页抓（串行）。
+PAGE_WORKERS_MIN = 1
+#: 并行抓页的默认并发数。v0.22.0 起从 1 调成 2：实测一个 79 页的串串行要
+#: 346.9 秒、平均 4.4 秒一页，时间几乎全花在等服务器回话上，两路并发能砍掉
+#: 大约一半等待。只开两路是刻意的克制 —— 站点的限流阈值谁也说不准，撞上
+#: 限流时 ``_prefetch_pages`` 会当场退回串行（并且界面会把这次退回记下来）。
+DEFAULT_PAGE_WORKERS = 2
 #: 并行抓页的上限。再高对站点不友好，收益也早就被带宽和服务端延迟吃掉了。
 PAGE_WORKERS_MAX = 6
 
 
 def normalize_page_workers(value) -> int:
-    """把「并行抓页数」归一化到 1..:data:`PAGE_WORKERS_MAX`。
+    """把「并行抓页数」归一化到 :data:`PAGE_WORKERS_MIN`..:data:`PAGE_WORKERS_MAX`。
 
-    坏值（``None``、``"abc"``、0、负数）一律回落成 1，也就是串行 ——
+    坏值（``None``、``"abc"``）一律回落成默认值；0 与负数收成 1，也就是串行 ——
     宁可慢一点，也不要因为配置里一个奇怪的值去打站点。
     """
     try:
         workers = int(value)
     except (TypeError, ValueError):
         return DEFAULT_PAGE_WORKERS
-    return max(DEFAULT_PAGE_WORKERS, min(PAGE_WORKERS_MAX, workers))
+    return max(PAGE_WORKERS_MIN, min(PAGE_WORKERS_MAX, workers))
 
 
 #: ``_process_page`` 用来区分「这一页已经预取过」和「没有」的哨兵。
@@ -748,16 +752,22 @@ class CachedThreadFetcher:
         :meth:`_process_page` 按页号从小到大做 —— 顺序一乱，``end`` 的判断和
         缓存写入都会跟着错，所以这里宁可不图那点并行。
 
-        为什么是可选而不是默认：并发会同时占几条连接，站点的限流阈值谁也说不准；
-        默认串行最稳，用户嫌慢再自己开。真撞上限流就自动退回串行，别继续加压。
+        默认两路（见 :data:`DEFAULT_PAGE_WORKERS`）。为什么不多开：并发会同时
+        占几条连接，站点的限流阈值谁也说不准；真撞上限流就当场退回串行，别继续
+        加压 —— 退回这件事还会被界面记下来，下次导出按串行走。
         """
         todo = [page for page in pages if page not in self._prefetched]
         if len(todo) < 2:
             return
         workers = min(self.page_workers, len(todo))
-        self._notify(f"并行抓取 {len(todo)} 页（最多 {workers} 路）…")
+        total = len(todo)
+        # 长串一抓就是几分钟，只在开头说一句「并行抓取 N 页」等于没进度；
+        # 大约每十分之一报一次，既看得见在动，也不至于刷屏。
+        step = max(1, total // 10)
+        self._notify(f"并行抓取 {total} 页（最多 {workers} 路）…")
         cancelled = False
         throttled = ""
+        done = 0
 
         def load(page: int):
             nonlocal cancelled
@@ -778,16 +788,19 @@ class CachedThreadFetcher:
             for page, error, raw in pool.map(load, todo):
                 if cancelled:
                     break
+                done += 1
                 if error:
                     if not throttled and ("429" in error or "频繁" in error or "限流" in error):
                         throttled = error
                     continue
                 self._prefetched[page] = raw
+                if done % step == 0 or done == total:
+                    self._notify(f"并行抓取：已下好 {done}/{total} 页")
         if cancelled:
             raise ExportCancelled("导出已取消")
         if throttled:
             # 被限流了就别再并发：剩下的页改成一页一页抓，并说清楚为什么变慢了。
-            self.page_workers = DEFAULT_PAGE_WORKERS
+            self.page_workers = PAGE_WORKERS_MIN
             self._notify("刚才被服务器限流了，剩下的页改成一页一页抓。")
 
     def _process_page(

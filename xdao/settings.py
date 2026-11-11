@@ -21,9 +21,13 @@ DEFAULT_THROTTLE = 0.08
 DEFAULT_WATCH_INTERVAL = 300.0
 # 同一个串两次桌面通知的最小间隔：监控每轮都可能报"有更新"，不节流会刷屏。
 DEFAULT_NOTIFY_INTERVAL = 900.0
-# 并行抓页的默认并发数：1 ＝ 一页一页抓，与旧版本行为一致。
-# 真正做归一化的是 cache.normalize_page_workers（上限也在那边），这里只存值。
-DEFAULT_PAGE_WORKERS = 1
+# 并行抓页的默认并发数：2 ＝ 两路并发下载。v0.21.21 时默认是 1（串行），
+# v0.22.0 起改成 2：实测 79 页的串串行要 346.9 秒，其中绝大多数时间在等
+# 服务器回话，两路并发能省掉将近一半。真正做归一化的是 cache.normalize_page_workers。
+DEFAULT_PAGE_WORKERS = 2
+#: 配置文件结构版本。老配置没有这个键；``_apply`` 靠它做一次性迁移
+#: （v0.22.0：把当年那个「默认 1」升级成新的默认 2，改动过的值不动）。
+SCHEMA_VERSION = 2
 
 # ---------- PDF 纸张 / 边距的默认值 ----------
 # 这组默认值等价于 v0.7.0 的行为：跟随网页样式（纸张与页边距都交给浏览器）、
@@ -176,11 +180,16 @@ class AppSettings:
         self.retries = _as_int(data.get("retries"), DEFAULT_RETRIES)
         self.throttle = _as_float(data.get("throttle"), DEFAULT_THROTTLE)
         # 并行抓页：归一化上限在 cache 里（同一套规则给命令行、界面和配置用）。
-        from .cache import normalize_page_workers
+        from .cache import PAGE_WORKERS_MIN, normalize_page_workers
 
-        self.page_workers = normalize_page_workers(
-            data.get("page_workers", DEFAULT_PAGE_WORKERS)
-        )
+        stored_workers = data.get("page_workers", DEFAULT_PAGE_WORKERS)
+        if "schema" not in data and stored_workers in (None, "", PAGE_WORKERS_MIN):
+            # v0.22.0 的一次性迁移：老配置里存着的那个 1 是**当年的默认值**
+            # （v0.21.21 之前默认就是一页一页抓），不是用户特意选成串行的。
+            # 跟着新默认走一次；被限流退回串行后界面会存 1，那时配置里已有
+            # schema 键，就不会再被这条规则改回去。
+            stored_workers = DEFAULT_PAGE_WORKERS
+        self.page_workers = normalize_page_workers(stored_workers)
         self.format_key = str(data.get("format_key") or "html")
         self.scope = str(data.get("scope") or "all")
         self.filename_template = str(data.get("filename_template") or "")
@@ -251,6 +260,7 @@ class AppSettings:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             data = {
+                "schema": SCHEMA_VERSION,
                 "userhash": self.userhash,
                 "output_dir": self.output_dir,
                 "proxy": self.proxy,

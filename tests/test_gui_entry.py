@@ -4369,3 +4369,134 @@ def test_gui_watch_check_hands_page_workers_to_the_check(artifacts_dir, monkeypa
 
     assert calls, "检查一轮都没跑"
     assert calls[0]["page_workers"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 导出报告 / 预计剩余 / 并行抓页被限流后的记忆（v0.22.0）
+# ---------------------------------------------------------------------------
+
+
+def _patch_gui_export_with_note(monkeypatch, note: str = ""):
+    """把抓取换成「带一句缺页说明」的替身，返回记录下来的 fetch 参数。"""
+    calls: list[tuple[str, dict]] = []
+
+    class RecordingFetcher:
+        page_workers = 2
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def fetch(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return SimpleNamespace(
+                meta=SimpleNamespace(thread_id="50000001", title="测试串", po_hash="PO"),
+                posts=[],
+                reason="测试用抓取结果",
+                retry_note=note,
+                cache_warning="",
+            )
+
+    exporter = _RecordingExporter()
+    monkeypatch.setattr(gui, "CachedThreadFetcher", RecordingFetcher)
+    monkeypatch.setattr(gui, "create_exporter", lambda *a, **k: exporter)
+    monkeypatch.setattr(gui.threading, "Thread", _SyncThread)
+    return calls
+
+
+def _drain(app) -> list[tuple[str, object]]:
+    """把导出线程投进队列的消息取出来（假窗口不跑事件循环）。"""
+    messages: list[tuple[str, object]] = []
+    while True:
+        try:
+            messages.append(app._export_queue.get_nowait())
+        except queue.Empty:
+            return messages
+
+
+def test_gui_export_writes_a_report_when_a_thread_is_incomplete(
+    artifacts_dir, monkeypatch
+):
+    """缺页的串要在产物旁边留一份清单：程序一关，日志里的「缺了第 3 页」就没了。"""
+    note = "第 3 页抓了 2 次都没成功"
+    _patch_gui_export_with_note(monkeypatch, note=note)
+    out = artifacts_dir / "out"
+    out.mkdir()
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeApp(settings, out)
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+    messages = _drain(app)
+
+    reports = sorted(out.glob("导出报告-*.txt"))
+    assert len(reports) == 1
+    text = reports[0].read_text(encoding="utf-8")
+    assert note in text
+    assert "No.50000001" in text
+    assert any(
+        kind == "log" and "缺页/缺图的清单已写入" in payload for kind, payload in messages
+    )
+
+
+def test_gui_export_writes_no_report_when_everything_is_clean(artifacts_dir, monkeypatch):
+    """一次干净的导出不留空文件：导出目录里只该有产物。"""
+    _patch_gui_export_with_note(monkeypatch)
+    out = artifacts_dir / "out"
+    out.mkdir()
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+
+    app = _FakeApp(settings, out)
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+    messages = _drain(app)
+
+    assert list(out.glob("*.txt")) == []
+    assert not any("缺页/缺图的清单" in str(payload) for _, payload in messages)
+
+
+def test_gui_export_puts_the_estimate_into_the_progress_line():
+    """进度行要带上「约剩 X」：批量导出最难熬的是不知道还要等多久。"""
+    app = _FakeApp(AppSettings(), Path("."))
+    app._exporting = True
+    app._finish = lambda *a, **k: None
+    app._export_queue.put(("progress", (1, 3, "[2/3] https://example/t/1", 125.0)))
+    app._export_queue.put(("done", (1, 3, [], 1.0)))
+
+    gui.App._poll_export(app)
+
+    assert "约剩 2 分 5 秒" in app.progress_var.get()
+
+
+def test_gui_export_progress_without_an_estimate_still_works():
+    """老格式（三元组，没有估时）也要照常显示 —— 队列里可能还压着旧消息。"""
+    app = _FakeApp(AppSettings(), Path("."))
+    app._exporting = True
+    app._finish = lambda *a, **k: None
+    app._export_queue.put(("progress", (1, 3, "[2/3] https://example/t/1")))
+    app._export_queue.put(("done", (1, 3, [], 1.0)))
+
+    gui.App._poll_export(app)
+
+    assert app.progress_var.get() == "[2/3] https://example/t/1（1/3）"
+
+
+def test_a_rate_limited_export_remembers_the_serial_fallback(artifacts_dir, monkeypatch):
+    """抓页被限流退回串行后，要把这个结果记进配置，别下次又先并发再被限流一遍。"""
+    _patch_gui_export_with_note(monkeypatch)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = "TESTHASH"
+    settings.page_workers = 4  # 抓取替身只会给 2，于是算「退回了」
+
+    app = _FakeApp(settings, artifacts_dir / "out")
+    persisted: list[int] = []
+    app.persist_prefs = lambda: persisted.append(settings.page_workers)
+    app._finish = lambda *a, **k: None
+    app._exporting = True
+
+    gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
+    gui.App._poll_export(app)
+
+    assert settings.page_workers == 2
+    # 开跑前会先存一次（里面还是 4），退回之后又存一次 —— 最后一次才是结果。
+    assert persisted[-1] == 2
+    assert any("并行抓页已退回 2 路" in line for line in app.logs)

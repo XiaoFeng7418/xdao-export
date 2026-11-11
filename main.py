@@ -310,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_page_workers,
         default=None,
         metavar="N",
-        help=f"同时抓 N 页（1~{PAGE_WORKERS_MAX}，默认 1 即一页一页抓）；"
+        help=f"同时抓 N 页（1~{PAGE_WORKERS_MAX}，默认 2 即两页一起抓）；"
         "长串调大能快不少，真撞上限流会自动退回一页一页抓",
     )
     parser.add_argument(
@@ -743,7 +743,9 @@ def run_cli(args: argparse.Namespace) -> int:
     """命令行导出 / 监控。返回进程退出码。"""
     from xdao.cache import CachedThreadFetcher, filter_until_thread_id
     from xdao.client import XdaoClient, XdaoError
+    from xdao.export_report import ReportEntry, take_missing_images, write_report
     from xdao.exporters import EXPORTERS, ThreadData, choose_writable_dir, create_exporter
+    from xdao.human import duration as human_duration
     from xdao.settings import AppSettings
     from xdao.watcher import WatchTarget, check_once, notify_result, watch_forever
 
@@ -971,9 +973,19 @@ def run_cli(args: argparse.Namespace) -> int:
         "",
     ]
     merged_threads: list[ThreadData] = []
+    report_entries: list[ReportEntry] = []
+    started = time.time()
     for index, raw in enumerate(export_urls, start=1):
         print(f"[{index}/{len(export_urls)}] {raw}")
         log_lines.append(f"[{index}/{len(export_urls)}] {raw}")
+        # 按前几个串的平均耗时估总量：批量导出最难受的是不知道还要等多久。
+        done_before = index - 1
+        if done_before > 0:
+            average = (time.time() - started) / done_before
+            remain = average * (len(export_urls) - done_before)
+            eta = f"还剩 {len(export_urls) - done_before} 个串，按当前速度约 {human_duration(remain)}"
+            print(f"    {eta}")
+            log_lines.append(f"    {eta}")
         try:
             # 页数上限（0＝不限）交给抓取层：它是唯一知道"到没到上限"的地方，
             # 撞上时结果里的 retry_note 会写清楚停在那一页。
@@ -1000,11 +1012,31 @@ def run_cli(args: argparse.Namespace) -> int:
                 log_lines.append(f"    提示：{result.cache_warning}")
             if merge_export:
                 merged_threads.append(thread)
+                report_entries.append(
+                    ReportEntry(
+                        label=str(thread.thread_id),
+                        title=thread.title,
+                        output="",
+                        posts=len(thread.posts),
+                        note=getattr(result, "retry_note", ""),
+                        missing_images=take_missing_images(exporter),
+                    )
+                )
                 succeeded += 1
                 print("    已收进合并文件（全部抓完后统一生成）")
                 log_lines.append("    已收进合并文件")
                 continue
             path = exporter.save(thread, scope, output_dir, include_hashes=hashes)
+            report_entries.append(
+                ReportEntry(
+                    label=str(thread.thread_id),
+                    title=thread.title,
+                    output=path.name,
+                    posts=len(thread.posts),
+                    note=getattr(result, "retry_note", ""),
+                    missing_images=take_missing_images(exporter),
+                )
+            )
             succeeded += 1
             size = f"（{path.stat().st_size / 1024 / 1024:.1f} MB）" if path.exists() else ""
             print(f"    完成：{path}{size}")
@@ -1036,6 +1068,8 @@ def run_cli(args: argparse.Namespace) -> int:
             )
             print(f"    合并完成：{merged_path}{size}")
             log_lines.append(f"    合并完成：{merged_path}{size}")
+            for entry in report_entries:
+                entry.output = merged_path.name
             note = getattr(exporter, "fallback_note", "")
             if note:
                 print(f"    说明：{note}")
@@ -1044,6 +1078,23 @@ def run_cli(args: argparse.Namespace) -> int:
             failed.extend(merged_threads and [getattr(t, "thread_id", "") for t in merged_threads])
             print(f"    合并失败：{exc}", file=sys.stderr)
             log_lines.append(f"    合并失败：{exc}")
+
+    # 有缺页或缺图就落一份清单：命令行跑完窗口一关，缺了什么就再也查不到了。
+    try:
+        report_path = write_report(output_dir, report_entries)
+    except OSError as exc:
+        report_path = None
+        print(f"    缺页/缺图清单没能写入：{exc}", file=sys.stderr)
+    if report_path is not None:
+        print(f"    缺页/缺图的清单：{report_path}")
+        log_lines.append(f"缺页/缺图的清单：{report_path}")
+
+    # 抓取替身（测试用）可能没有 page_workers，取不到就当没退回。
+    demoted = getattr(fetcher, "page_workers", None)
+    if isinstance(demoted, int) and demoted < page_workers:
+        hint = "这次撞上限流，已经退回一页一页抓了（想固定成一路，把设置里的「同时抓页数」改成 1 即可）"
+        print(f"    提示：{hint}")
+        log_lines.append(f"    提示：{hint}")
 
     summary = f"全部处理完毕：成功 {succeeded} / {len(export_urls)} 个。"
     print(summary)

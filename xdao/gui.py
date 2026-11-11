@@ -34,7 +34,10 @@ from .cache import (
 )
 from .cancel import ExportCancelled
 from .client import XdaoClient, XdaoError
+from .dpi import enable_dpi_awareness, system_scale
+from .export_report import ReportEntry, take_missing_images, write_report
 from .exporters import EXPORTERS, ThreadData, create_exporter
+from .human import duration as human_duration
 from .notifications import Notifier
 from .paths import OutputDirNotWritable, choose_writable_dir, ensure_writable
 from . import pdf_opts, theme, watch_list
@@ -2734,8 +2737,8 @@ class SettingsDialog(tk.Toplevel):
         wrap_to_width(throttle_hint, minimum=220)
         workers_hint = ttk.Label(
             net,
-            text="同时抓页数默认 1（一页一页抓，最稳）；2～6 适合长串，快不少，"
-            "真撞上限流会自动退回一页一页抓。",
+            text="同时抓页数默认 2（两页一起下，长串快将近一倍）；填 1 就是一页一页抓。"
+            "真撞上限流会自动退回一页一页抓，并把这次退回记进配置。",
             style="CardMuted.TLabel",
             wraplength=theme.gap(80),
             justify="left",
@@ -4141,7 +4144,7 @@ class App:
         根本没法用（1366x768 的笔记本很常见）。所以放大之后跟屏幕比一次，
         取小的那个 —— 宁可滚动，也不给一个点不到的窗口。
         """
-        scale = theme.font_scale()
+        scale = theme.font_scale() * theme.dpi_scale()
         scaled = (int(round(width * scale)), int(round(height * scale)))
         try:
             max_width = self.root.winfo_screenwidth() - 40
@@ -5586,14 +5589,26 @@ class App:
             # 抓下来但明确不完整的串（缺页/撞上页数上限）：产物已经写出去了，
             # 所以要单独收集，在结束时的汇总里提醒用户"这几份别当全的用"。
             incomplete: list[str] = []
+            # 缺页/缺图的清单：结束时落成一份文本，程序关了之后也还能核对。
+            report_entries: list[ReportEntry] = []
             cancelled = False
             started = time.time()
             for index, url in enumerate(urls, start=1):
                 if stop_event.is_set():
                     cancelled = True
                     break
+                # 按「已经处理完的那几个」的平均耗时估还剩多久。第一个串还没开始
+                # 时没有样本，就不瞎猜（eta 传 0，界面上不显示）。
+                done_before = index - 1
+                eta = 0.0
+                if done_before > 0:
+                    spent = time.time() - started
+                    eta = spent / done_before * (len(urls) - done_before)
                 self._export_queue.put(
-                    ("progress", (index - 1, len(urls), f"[{index}/{len(urls)}] {url}"))
+                    (
+                        "progress",
+                        (done_before, len(urls), f"[{index}/{len(urls)}] {url}", eta),
+                    )
                 )
                 try:
                     # max_pages 是"每个串最多抓几页"：0 交给抓取层当"不限"
@@ -5634,6 +5649,15 @@ class App:
                     if merge_export:
                         merged_threads.append(thread)
                         succeeded += 1
+                        report_entries.append(
+                            ReportEntry(
+                                label=f"No.{thread.thread_id}",
+                                title=thread.title,
+                                posts=len(thread.posts),
+                                note=getattr(result, "retry_note", "") or "",
+                                missing_images=take_missing_images(exporter),
+                            )
+                        )
                         self._export_queue.put(
                             ("log", f"[{index}/{len(urls)}] 已收进合并文件")
                         )
@@ -5642,6 +5666,16 @@ class App:
                         thread, scope, Path(output_dir), include_hashes=include_hashes
                     )
                     succeeded += 1
+                    report_entries.append(
+                        ReportEntry(
+                            label=f"No.{thread.thread_id}",
+                            title=thread.title,
+                            output=path.name,
+                            posts=len(thread.posts),
+                            note=getattr(result, "retry_note", "") or "",
+                            missing_images=take_missing_images(exporter),
+                        )
+                    )
                     self._export_queue.put(("log", f"[{index}/{len(urls)}] 完成：{path.name}"))
                 except ExportCancelled:
                     # 取消不是失败：已经导出的文件保留，剩下的串不再处理。
@@ -5659,6 +5693,14 @@ class App:
                         ("log", f"[{index}/{len(urls)}] 失败：{describe_export_failure(exc)}")
                     )
 
+            # 抓页时撞上限流会自动退回串行；把这个结果带回主线程记进配置，
+            # 免得下次又先开两路、再被限流一次才退。线程里不碰 Tk 变量，
+            # 所以这里只投消息，落盘交给 _poll_export。
+            # 取不到 page_workers 的抓取替身（测试用）当作没退回。
+            demoted = getattr(fetcher, "page_workers", None)
+            if isinstance(demoted, int) and demoted < self.settings.page_workers:
+                self._export_queue.put(("workers_demoted", demoted))
+
             if merge_export and merged_threads:
                 try:
                     merged_path = exporter.save_many(
@@ -5667,6 +5709,8 @@ class App:
                         Path(output_dir),
                         include_hashes=include_hashes,
                     )
+                    for entry in report_entries:
+                        entry.output = merged_path.name
                     self._export_queue.put(
                         ("log", f"合并完成：{merged_path.name}")
                     )
@@ -5676,6 +5720,17 @@ class App:
                 except XdaoError as exc:
                     failed.extend(getattr(t, "thread_id", "") for t in merged_threads)
                     self._export_queue.put(("log", f"合并失败：{exc}"))
+
+            # 有缺页或缺图就落一份清单，放在产物旁边（干净的一次导出不留空文件）。
+            try:
+                report_path = write_report(Path(output_dir), report_entries)
+            except OSError as exc:
+                report_path = None
+                self._export_queue.put(("log", f"缺页/缺图清单没能写入：{exc}"))
+            if report_path is not None:
+                self._export_queue.put(
+                    ("log", f"缺页/缺图的清单已写入：{report_path.name}")
+                )
 
             self._export_queue.put(
                 ("done", (succeeded, len(urls), failed, time.time() - started, incomplete, cancelled))
@@ -5767,14 +5822,29 @@ class App:
             except queue.Empty:
                 break
             if kind == "progress":
-                done, total, label = payload
+                # 老格式是三元组（没有预计剩余），四元组多一个秒数。
+                if len(payload) == 4:
+                    done, total, label, eta = payload
+                else:
+                    done, total, label = payload
+                    eta = 0.0
+                text = f"{label}（{done}/{total}）"
+                if done > 0 and eta > 1:
+                    text += f"，约剩 {human_duration(eta)}"
                 self.progress_bar.set_value(done, total)
-                self.progress_var.set(f"{label}（{done}/{total}）")
+                self.progress_var.set(text)
             elif kind == "log":
                 try:
                     self.log(payload)
                 except Exception:
                     pass
+            elif kind == "workers_demoted":
+                # 抓取层被限流后退回了串行：记住这个结果，别每次导出都被限流一遍。
+                self.settings.page_workers = int(payload)
+                self.persist_prefs()
+                self.log(
+                    f"并行抓页已退回 {payload} 路（这次撞上限流），这个选择已存进设置。"
+                )
             elif kind == "done":
                 self._finish(*payload)
                 return
@@ -6010,6 +6080,10 @@ class App:
 
 
 def run() -> None:
+    # 先在开窗前声明 DPI 感知：声明之后再建窗口，Windows 才不会把界面当成
+    # 低分辨率位图放大（125%/150% 缩放时字会明显发虚）。
+    enable_dpi_awareness()
+    theme.set_dpi_scale(system_scale())
     try:
         root = tk.Tk()
     except Exception as exc:  # noqa: BLE001 —— 打包版（--windowed）没有 stderr，崩了就是一片空白

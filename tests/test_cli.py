@@ -1594,8 +1594,8 @@ def test_page_workers_reaches_the_fetcher(out_dir, monkeypatch):
     assert [kwargs["page_workers"] for kwargs in inits] == [4]
 
 
-def test_page_workers_defaults_to_serial(out_dir, monkeypatch):
-    """没给开关、配置里也没有这个键 → 1（一页一页抓，与旧版本一致）。"""
+def test_page_workers_defaults_to_two_lanes(out_dir, monkeypatch):
+    """没给开关、配置里也没有这个键 → 2（v0.22.0 起默认两页一起抓）。"""
     exporters_module, cache_module = patch_offline(monkeypatch)
     fetcher_class, calls, inits = make_init_recording_fetcher()
     monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
@@ -1604,7 +1604,7 @@ def test_page_workers_defaults_to_serial(out_dir, monkeypatch):
     code = main(["50000001", "-f", "html", "-o", str(out_dir)])
 
     assert code == 0
-    assert [kwargs["page_workers"] for kwargs in inits] == [1]
+    assert [kwargs["page_workers"] for kwargs in inits] == [2]
 
 
 def test_page_workers_falls_back_to_the_saved_setting(out_dir, monkeypatch):
@@ -1652,3 +1652,91 @@ def test_watch_mode_hands_page_workers_to_every_check(out_dir, monkeypatch):
     assert calls, "监控一轮都没跑"
     _, kwargs = calls[0]
     assert kwargs["page_workers"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 预计剩余时间 / 缺页缺图清单 / 被限流后退回（v0.22.0）
+# ---------------------------------------------------------------------------
+
+
+def _fetcher_with_note(note: str = "", page_workers: int | None = None):
+    """抓取替身：每串都带一句「缺页说明」，可选地报告「现在几路」。"""
+
+    class RecordingFetcher:
+        def __init__(self, *args, **kwargs) -> None:
+            if page_workers is not None:
+                self.page_workers = page_workers
+
+        def fetch(self, url, **kwargs):
+            from xdao.cache import parse_thread_id
+
+            thread_id = parse_thread_id(url) or 50000001
+            return SimpleNamespace(
+                meta=SimpleNamespace(
+                    thread_id=thread_id, title=f"测试串 {thread_id}", po_hash="PO"
+                ),
+                posts=[],
+                reason="测试用抓取结果",
+                retry_note=note,
+                cache_warning="",
+            )
+
+    return RecordingFetcher
+
+
+def test_cli_says_how_long_is_left(out_dir, monkeypatch, capsys):
+    """批量导出要报「还剩几个、大概还要多久」。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", _fetcher_with_note())
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["50000001", "7001002", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "还剩 1 个串，按当前速度约" in out
+    log = (out_dir / "xdao-export.log").read_text(encoding="utf-8")
+    assert "还剩 1 个串，按当前速度约" in log
+
+
+def test_cli_writes_a_report_when_a_thread_is_incomplete(out_dir, monkeypatch, capsys):
+    """缺页的串要在导出目录留一份清单 —— 窗口一关，日志里的说明就查不到了。"""
+    note = "第 5 页抓了 3 次都没成功"
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", _fetcher_with_note(note))
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["50000001", "-f", "html", "-o", str(out_dir)])
+
+    assert code == 0
+    reports = sorted(out_dir.glob("导出报告-*.txt"))
+    assert len(reports) == 1
+    text = reports[0].read_text(encoding="utf-8")
+    assert note in text
+    assert "50000001" in text
+    assert "缺页/缺图的清单" in capsys.readouterr().out
+
+
+def test_cli_writes_no_report_when_the_export_is_clean(out_dir, monkeypatch):
+    """干净的导出不留空文件。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", _fetcher_with_note())
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    assert main(["50000001", "-f", "html", "-o", str(out_dir)]) == 0
+
+    assert list(out_dir.glob("导出报告-*.txt")) == []
+
+
+def test_cli_says_when_the_fetch_fell_back_to_one_lane(out_dir, monkeypatch, capsys):
+    """被限流退回一路之后，命令行也要说一声，不然用户会以为一直并发着。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    monkeypatch.setattr(
+        cache_module, "CachedThreadFetcher", _fetcher_with_note(page_workers=1)
+    )
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    assert main(["50000001", "-f", "html", "-o", str(out_dir)]) == 0
+
+    out = capsys.readouterr().out
+    assert "撞上限流" in out

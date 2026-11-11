@@ -3,6 +3,21 @@
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
 > 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
 
+## 最近一次改动（v0.22.0）
+
+- **默认两路抓页**：`xdao/cache.py` 的 `DEFAULT_PAGE_WORKERS` 1→2，老配置用
+  `settings.SCHEMA_VERSION = 2` 做一次性迁移（只升级「没有 schema 且值 ∈ None/""/1」的存量，
+  用户手动选过 1 的不动）；撞限流退回串行后由界面/命令行把这个结果写回配置。
+- **高分屏**：新增 `xdao/dpi.py`（`enable_dpi_awareness()` 用 `shcore.SetProcessDpiAwareness(2)`，
+  老系统退回 `user32.SetProcessDPIAware()`；`system_scale()` 读 `GetDeviceCaps(LOGPIXELSX)/96`）；
+  `theme.DPI_SCALE` 只乘间距、左栏宽度与窗口尺寸，**不乘字号** —— DPI 感知后 Tk 的点已经是物理缩放过的。
+  `XDAO_DPI_SCALE` / `XDAO_NO_DPI_AWARE` 两个环境变量便于在没有高分屏的机器上测。
+- **估算剩余**：新增 `xdao/human.py` 的 `duration()`；界面进度载荷从三元组变四元组
+  `(done, total, label, eta)`，`_poll_export` 同时兼容老三元组（队列里可能还压着旧消息）。
+- **缺页清单**：新增 `xdao/export_report.py`（`ReportEntry` / `take_missing_images` /
+  `render` / `write_report`，文件名 `导出报告-YYYYmmdd-HHMMSS.txt`，只在有问题时落盘）；
+  `take_missing_images` 读完会**清空**导出器的列表，否则批量导出时上一串的缺图会串到下一串。
+
 ## 每周例行（有自动提醒）
 
 1. **体检**

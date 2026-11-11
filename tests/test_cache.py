@@ -380,7 +380,7 @@ def test_cache_survives_short_page(artifacts_dir):
             2: make_page(7001, 2, [], reply_count=99, page_count=9),
         }
     )
-    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir)
+    fetcher = CachedThreadFetcher(api, cache_dir=artifacts_dir, page_workers=1)
     result = fetcher.fetch(7001)
     assert api.requests == [(7001, 1), (7001, 2)]
     assert len(result.posts) == 2
@@ -1061,10 +1061,11 @@ class RaiseOnceApi(FakeApi):
 
 
 def test_normalize_page_workers_clamps_and_falls_back():
-    assert normalize_page_workers(None) == 1
-    assert normalize_page_workers("") == 1
-    assert normalize_page_workers("abc") == 1
-    assert normalize_page_workers([]) == 1
+    # 坏值一律回落默认（两路）；0 与负数收成 1，也就是串行。
+    assert normalize_page_workers(None) == DEFAULT_PAGE_WORKERS
+    assert normalize_page_workers("") == DEFAULT_PAGE_WORKERS
+    assert normalize_page_workers("abc") == DEFAULT_PAGE_WORKERS
+    assert normalize_page_workers([]) == DEFAULT_PAGE_WORKERS
     assert normalize_page_workers(0) == 1
     assert normalize_page_workers(-3) == 1
     assert normalize_page_workers(1) == 1
@@ -1072,21 +1073,21 @@ def test_normalize_page_workers_clamps_and_falls_back():
     assert normalize_page_workers("5") == 5
     assert normalize_page_workers(PAGE_WORKERS_MAX) == PAGE_WORKERS_MAX
     assert normalize_page_workers(PAGE_WORKERS_MAX + 1) == PAGE_WORKERS_MAX
-    assert DEFAULT_PAGE_WORKERS == 1
+    assert DEFAULT_PAGE_WORKERS == 2
 
 
-def test_page_workers_defaults_to_serial(artifacts_dir):
-    """默认就是串行：不传参数时页数一路抓下来，连并行提示都不该出现。"""
+def test_page_workers_default_to_two_lanes(artifacts_dir):
+    """v0.22.0 起默认两路：不传参数也会并发抓，并把开了几路说出来。"""
     api = build_four_page_api()
     messages: list[str] = []
     fetcher = make_fetcher(api, artifacts_dir, progress=messages.append)
 
     result = fetcher.fetch(7002)
 
-    assert fetcher.page_workers == 1
+    assert fetcher.page_workers == DEFAULT_PAGE_WORKERS == 2
     assert result.posts[0].is_po is True
-    assert [page for _, page in api.requests] == [1, 2, 3, 4]
-    assert not any("并行抓取" in message for message in messages)
+    assert sorted(page for _, page in api.requests) == [1, 2, 3, 4]
+    assert "并行抓取 3 页（最多 2 路）…" in messages
 
 
 def test_page_workers_downloads_pages_concurrently(artifacts_dir):
