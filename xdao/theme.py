@@ -245,6 +245,34 @@ FONT_SCALE_MAX = 2.0
 #: 当前界面字号比例（``1.0`` ＝ 下面各 ``SIZE_*`` 的原值）
 FONT_SCALE = 1.0
 
+#: 系统缩放比例（125% ＝ ``1.25``）。字号不乘它 —— 声明 DPI 感知之后 Windows
+#: 会按真实 DPI 把「点」换算成像素；但间距、左栏宽度、窗口尺寸是写死的像素，
+#: 不乘它就会在 150% 的屏上挤成一小块。
+DPI_SCALE = 1.0
+
+
+def normalize_dpi_scale(value: object, fallback: float = 1.0) -> float:
+    """把读来的系统缩放收进 ``[1.0, 3.0]``；认不出来就回落。"""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+    if number != number:  # NaN
+        return fallback
+    return min(max(number, 1.0), 3.0)
+
+
+def set_dpi_scale(scale: object) -> float:
+    """设定系统缩放比例，返回真正生效的值。"""
+    global DPI_SCALE
+    DPI_SCALE = normalize_dpi_scale(scale)
+    return DPI_SCALE
+
+
+def dpi_scale() -> float:
+    """当前系统缩放比例（``1.0`` ＝ 100%）。"""
+    return DPI_SCALE
+
 
 def normalize_font_scale(value: object, fallback: float = 1.0) -> float:
     """把读来的比例收进 ``[FONT_SCALE_MIN, FONT_SCALE_MAX]``。
@@ -325,12 +353,13 @@ SETTINGS_COLUMN_WIDTH = 452
 
 
 def settings_column_width() -> int:
-    """左栏实际用的固定宽度：跟着界面字号一起放大。
+    """左栏实际用的固定宽度：跟着界面字号与系统缩放一起放大。
 
     字号调大后 452px 装不下「导出目录」那一行的小字提示与输入框，会被截断；
-    跟着比例放大才能保持版面比例不变。
+    跟着比例放大才能保持版面比例不变。高分屏上同理 —— 150% 缩放时 452 像素
+    在物理尺寸上只有原来的三分之二。
     """
-    return int(round(SETTINGS_COLUMN_WIDTH * FONT_SCALE))
+    return int(round(SETTINGS_COLUMN_WIDTH * FONT_SCALE * DPI_SCALE))
 
 #: 左栏滚动区的初始高度（窗口刚打开、还没拿到真实高度时用）。
 #: 只是个起点：真实可视高度由布局决定，内容更高时会出现滚动条。
@@ -338,8 +367,11 @@ SETTINGS_VIEWPORT_HEIGHT = 430
 
 
 def gap(steps: float = 1) -> int:
-    """间距档位：``gap(1)=4``、``gap(2)=8``、``gap(3)=12``、``gap(4)=16``。"""
-    return int(round(GAP_UNIT * steps))
+    """间距档位：``gap(1)=4``、``gap(2)=8``、``gap(3)=12``、``gap(4)=16``。
+
+    高分屏上跟着系统缩放一起放大，否则 150% 时控件会挤在一起。
+    """
+    return int(round(GAP_UNIT * steps * DPI_SCALE))
 
 
 # ---------------------------------------------------------------- ttk 样式
@@ -721,19 +753,23 @@ __all__ = [
     "PALETTES",
     "Palette",
     "apply_theme",
+    "dpi_scale",
     "font",
     "font_scale",
     "font_scale_for_label",
     "font_scale_label",
     "gap",
     "mono",
+    "normalize_dpi_scale",
     "normalize_font_scale",
     "palette",
     "resolve_fonts",
     "scaled",
+    "set_dpi_scale",
     "set_font_scale",
     "settings_column_width",
     "style_colors",
+    "DPI_SCALE",
     "FONT_MONO",
     "FONT_SCALE",
     "FONT_SCALE_CHOICES",

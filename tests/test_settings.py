@@ -29,6 +29,7 @@ from xdao import settings as settings_module
 from xdao.pdf_opts import PdfOptions, from_settings
 from xdao.settings import (
     DEFAULT_EXPORT_FONT_SIZE,
+    DEFAULT_PAGE_WORKERS,
     DEFAULT_MAX_PAGES,
     DEFAULT_PDF_BACKGROUND,
     DEFAULT_PDF_MARGIN,
@@ -80,7 +81,7 @@ MERGE_DEFAULTS = {"merge_export": False}
 #: v0.21.21 并行抓页（默认 1 ＝一页一页抓，与旧版本逐字节一致）
 PAGE_FIELDS = ("page_workers",)
 
-PAGE_DEFAULTS = {"page_workers": 1}
+PAGE_DEFAULTS = {"page_workers": DEFAULT_PAGE_WORKERS}
 
 DEFAULTS = {
     "pdf_paper": DEFAULT_PDF_PAPER,
@@ -220,8 +221,10 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         assert data[name] == MERGE_DEFAULTS[name]
     for name in PAGE_FIELDS:
         assert data[name] == PAGE_DEFAULTS[name]
+    # schema 是老配置里唯一多出来的「标记位」：它只用来判断「1 是不是特意选的」。
+    assert data["schema"] == settings_module.SCHEMA_VERSION
     assert (
-        set(data) - set(LEGACY_V070)
+        set(data) - set(LEGACY_V070) - {"schema"}
         == set(PDF_FIELDS)
         | set(RANGE_FIELDS)
         | set(FONT_FIELDS)
@@ -606,8 +609,24 @@ def test_truthy_merge_export_reads_as_on(config_path: Path, yes: object) -> None
 # ---------- 并行抓页（v0.21.21） ----------
 
 
-def test_page_workers_defaults_to_one(config_path: Path) -> None:
-    """默认 1：等于旧版本「一页一页抓」，升级不会顺手把并发打开。"""
+def test_page_workers_defaults_to_two(config_path: Path) -> None:
+    """v0.22.0 起默认两路：一个 79 页的串串行 346.9 秒，两路能省掉近一半等待。"""
+    assert load_config(config_path).page_workers == DEFAULT_PAGE_WORKERS == 2
+
+
+def test_legacy_page_workers_of_one_is_upgraded(config_path: Path) -> None:
+    """老配置里那个 1 是当年的默认值、不是特意选的，所以一次性升成两路。"""
+    write_config(config_path, {"page_workers": 1})
+    assert load_config(config_path).page_workers == 2
+
+
+def test_page_workers_of_one_is_kept_after_the_upgrade(config_path: Path) -> None:
+    """存过 schema 之后再填 1 就是「我就要一页一页抓」，不许再给我改回去。"""
+    settings = fresh_config(config_path)
+    settings.page_workers = 1
+    assert settings.save()
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["schema"] == settings_module.SCHEMA_VERSION
     assert load_config(config_path).page_workers == 1
 
 
@@ -618,7 +637,7 @@ def test_page_workers_round_trip(config_path: Path) -> None:
     assert load_config(config_path).page_workers == 4
 
 
-@pytest.mark.parametrize("value,expected", ((1, 1), (3, 3), (6, 6), (0, 1), (-2, 1), (99, 6)))
+@pytest.mark.parametrize("value,expected", ((2, 2), (3, 3), (6, 6), (0, 1), (-2, 1), (99, 6)))
 def test_page_workers_is_clamped(config_path: Path, value: int, expected: int) -> None:
     """越界的数夹回 1~6：上限对站点礼貌，下限是「不能变成 0 路」。"""
     write_config(config_path, {"page_workers": value})
@@ -626,6 +645,8 @@ def test_page_workers_is_clamped(config_path: Path, value: int, expected: int) -
 
 
 @pytest.mark.parametrize("bad", (None, "", "abc", 1.5, [], {}))
-def test_bad_page_workers_falls_back_to_one(config_path: Path, bad: object) -> None:
+def test_bad_page_workers_falls_back_to_the_default(config_path: Path, bad: object) -> None:
+    # 1.5 会被 int() 截成 1（那就按 1 算），其余的坏值统一回落默认的两路。
+    expected = 1 if isinstance(bad, float) else DEFAULT_PAGE_WORKERS
     write_config(config_path, {"page_workers": bad})
-    assert load_config(config_path).page_workers == 1
+    assert load_config(config_path).page_workers == expected
