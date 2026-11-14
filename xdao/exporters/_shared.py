@@ -215,7 +215,10 @@ def download_images(
     - 进度按「已下好的张数」报，顺序无关，所以日志可能比串行时乱一点，
       但成品不受影响（落盘仍由各调用方按正文顺序决定）。
     """
-    total = len(urls)
+    # 签名写的是 Iterable，实现要用 len() 与 executor.map，所以先落地成列表：
+    # 生成器进来也不会在 len() 上炸掉（三个调用方目前都传列表，这是兜底）。
+    queue = list(urls)
+    total = len(queue)
     if not total:
         return
     notify(f"正在下载 {total} 张图片…")
@@ -237,7 +240,7 @@ def download_images(
             notify(f"正在下载图片：{finished}/{total}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        list(executor.map(load, urls))
+        list(executor.map(load, queue))
 
 
 def guess_mime(url: str, data: bytes | None = None) -> str:

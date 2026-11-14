@@ -47,9 +47,6 @@ LANGUAGE = "zh-CN"
 TEXT_DIR = "OEBPS/text"
 IMAGE_DIR = "OEBPS/images"
 
-#: 图片下载的并发数只在 ``._shared.IMAGE_WORKERS`` 一处定义（HTML / EPUB / Markdown
-# 共用同一个并发下载函数），本模块不再另立一个名字。
-
 # EPUB 3 的固定外壳。
 CONTAINER_XML = """<?xml version="1.0" encoding="utf-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
