@@ -2324,7 +2324,7 @@ def browser_open(
 # （界面层、测试、真机脚本）一直按这些名字引用，保留别名就不用全体改一遍。
 # 这些名字在本模块里确实「定义了不用」——它们就是出口本身。pyflakes 会一直
 # 报 ``imported but unused``，是知道的：别照着提示删，删了界面层与测试当场断。
-from .cdp import (  # noqa: F401
+from .cdp import (  # noqa: E402, F401
     OPCODE_BINARY,
     OPCODE_CLOSE,
     OPCODE_CONTINUATION,

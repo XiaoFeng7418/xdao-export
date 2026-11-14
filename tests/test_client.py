@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import gzip
+import time
 import io
+import threading
 import urllib.error
+import zlib
 
 import pytest
 
@@ -846,3 +849,145 @@ def test_jump_page_message_unescapes_and_flattens_html() -> None:
 
     assert XdaoClient.jump_page_message(html) == "没有&权限 访问"
     assert XdaoClient.jump_page_message("<html></html>") == ""
+
+# ---------- 网络层边界（v0.23.0 A 类）----------
+
+from xdao.client import _decompress  # noqa: E402
+
+
+def test_decompress_handles_deflate_now_that_we_advertise_it() -> None:
+    """请求头写着 ``gzip, deflate``，服务器真回 deflate 时不能把压缩字节当正文。"""
+    body = "中文内容".encode("utf-8")
+
+    assert _decompress(zlib.compress(body), "deflate") == body
+    assert _decompress(gzip.compress(body), "deflate") == body  # 头写错也能救
+    assert _decompress(gzip.compress(body), "GZIP") == body  # 大小写不敏感
+
+
+def test_decompress_accepts_a_raw_deflate_stream() -> None:
+    """有的服务器发不带 zlib 头的「裸」deflate，不能因此把正文丢掉。"""
+    body = "裸 deflate".encode("utf-8")
+    compressor = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    raw = compressor.compress(body) + compressor.flush()
+
+    assert _decompress(raw, "deflate") == body
+
+
+def test_decompress_leaves_unknown_or_broken_bodies_alone() -> None:
+    """认不出的编码、坏的压缩包都原样返回，交给上层报错。"""
+    assert _decompress(b"plain", "") == b"plain"
+    assert _decompress(b"plain", "br") == b"plain"
+    assert _decompress(b"", "gzip") == b""
+    assert _decompress(b"\x1f\x8b-broken-gzip", "gzip") == b"\x1f\x8b-broken-gzip"
+
+
+def test_request_decompresses_a_deflate_body(monkeypatch) -> None:
+    """端到端走一遍 _request：deflate 头 + zlib 压缩体。"""
+    client = XdaoClient(retries=0, throttle=0.0)
+    body = zlib.compress("压缩过的正文".encode("utf-8"))
+    client._opener = _ScriptedOpener(_FakeResponse(body, {"Content-Encoding": "deflate"}))
+
+    assert client._request("https://example/x").decode("utf-8") == "压缩过的正文"
+
+
+def test_resolve_api_base_probes_only_once_for_many_pages() -> None:
+    """每取一页都重新探测前缀＝每页多一个请求，导出大串时白白多发几十个。"""
+    client = XdaoClient(throttle=0.0, retries=0)
+    probed: list[str] = []
+
+    def fake_request(url, data=None, **kwargs):
+        probed.append(url)
+        if "/getCDNPath" in url:
+            return b"[]"
+        return b'{"id": 1}'
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    for page in range(1, 6):
+        client.fetch_thread_page(1, page)
+
+    cdn_calls = [url for url in probed if "/getCDNPath" in url]
+    assert len(cdn_calls) == 1, f"只该探测一次，实际 {len(cdn_calls)} 次：{probed}"
+    assert len(probed) == 6, "五页各一次 + 探测一次"
+
+
+def test_api_get_json_probes_again_after_the_prefix_dies() -> None:
+    """记住的前缀失效后要能被清掉，下一轮重新探测备用前缀。"""
+    client = XdaoClient(throttle=0.0, retries=0)
+    client._api_base = client.API_BASES[0]
+    primary = client.API_BASES[0]
+    backup = client.API_BASES[1]
+
+    def fake_request(url, data=None, **kwargs):
+        if url.startswith(primary):
+            raise XdaoError("首选前缀挂了")
+        if "/getCDNPath" in url:
+            return b"[]"
+        return b'{"ok": true}'
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    assert client._api_get_json("thread", {"id": 1}) == {"ok": True}
+    assert client._api_base == backup
+
+
+def test_download_image_keeps_the_cache_clean_under_concurrency(tmp_path) -> None:
+    """六线程并发下图时，同一 URL 的临时文件不能撞名、也不能留在缓存目录里。"""
+    client = XdaoClient()
+    client.image_cache_dir = tmp_path / "images"
+    client._request = lambda url, data=None, **kwargs: b"\x89PNG-bytes"  # noqa: ARG005
+    errors: list[BaseException] = []
+
+    def grab() -> None:
+        try:
+            client.download_image("https://img.example/same.png")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=grab) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == [], f"并发下载不该抛错：{errors}"
+    files = [p for p in (tmp_path / "images").rglob("*") if p.is_file()]
+    assert len(files) == 1, f"只该留一个缓存文件：{files}"
+    assert not [p for p in files if p.suffix == ".part"], "临时文件写完要换名，不该留下"
+    assert files[0].read_bytes() == b"\x89PNG-bytes"
+
+# ---------- 节流在多线程下仍然算得准（v0.22.1）----------
+#
+# 「同时抓 N 页」让几个线程一起发请求，而节流是「读时刻 → 睡差额 → 写时刻」。
+# 不加锁时所有线程同时读到旧时刻、同时判定不用等，实际间隔就短于设定值 ——
+# 等于悄悄放大了对站点的请求密度。这两条把「只放一个线程进等待区」钉住。
+
+
+def test_throttle_makes_concurrent_callers_wait_their_turn() -> None:
+    """四个线程一起进来，实际总耗时仍要凑够三次间隔。"""
+    interval = 0.02
+    client = _quiet_client()
+    client._throttle_interval = interval
+
+    started = time.monotonic()
+    threads = [threading.Thread(target=client._throttle) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    elapsed = time.monotonic() - started
+
+    floor = interval * 3 * 0.9
+    assert elapsed >= floor, f"四个线程只用了 {elapsed:.3f} 秒，节流被并发绕过了"
+
+
+def test_throttle_does_not_sleep_when_the_interval_is_zero(monkeypatch) -> None:
+    """把间隔设成 0 就是「不等」，一秒都不该睡。"""
+    slept: list[float] = []
+    monkeypatch.setattr(client_module.time, "sleep", slept.append)
+    client = _quiet_client()
+    client._throttle_interval = 0.0
+
+    client._throttle()
+
+    assert slept == []

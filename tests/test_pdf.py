@@ -407,11 +407,8 @@ def test_builder_save_uses_template_and_embeds_images(out_dir, artifacts_dir):
     assert path.name == "[1001] 标_题.pdf"
     assert path.read_bytes().startswith(b"%PDF")
 
-    # 交给浏览器的 HTML 里图片应当是内嵌的
-    source = None
-    for candidate in out_dir.rglob("source.html"):
-        source = candidate
-    # 临时目录已被清理，改从参数文件确认调用发生过
+    # 交给浏览器的 HTML 里图片应当是内嵌的；临时目录已被清理，
+    # 改从参数文件确认调用发生过
     assert (browser.parent / "flags.txt").exists()
 
 

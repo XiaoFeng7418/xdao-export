@@ -39,7 +39,9 @@ from .appinfo import LAUNCHER_NAME, PAYLOAD_PREFIX, USER_AGENT
 # 代理探测与 opener 装配和「查询新版本」共用一份（原先这里反过来 import update_check
 # 才拿到它们，依赖方向是倒的）；``detect_proxy`` 仍从 updater 出去，因为调用方与测试
 # 都在 ``updater.detect_proxy`` 上打桩。
-from .github_api import detect_proxy, proxy_handlers
+from .github_api import detect_proxy  # noqa: F401  （有意再导出，调用方与测试在这里打桩）
+from .github_api import proxy_handlers
+from .paths import can_write_dir as _paths_can_write_dir
 from .update_check import UpdateCheckError
 
 #: 下载超时（秒）。安装包十几 MB，给宽一点，但也不能挂死。
@@ -87,17 +89,16 @@ def launcher_path() -> Path:
 
 
 def can_write_dir(path: Path) -> bool:
-    """探一下这个目录能不能写（只读介质、系统目录要提前发现）。"""
-    probe = path / f".xdao-write-probe-{os.getpid()}"
-    try:
-        probe.write_text("", encoding="utf-8")
-    except OSError:
+    """探一下这个目录能不能写（只读介质、系统目录要提前发现）。
+
+    目录不存在就直接判「不能写」——本函数只回答问题，不该顺手把目录建出来；
+    真正的探测交给 :func:`xdao.paths.can_write_dir`（两层探针、两个探针名，
+    比原先这里自己写一个文件更严，也就不会把「表层能写、下一层写不进去」
+    的目录误判成可写）。
+    """
+    if not path.is_dir():
         return False
-    try:
-        probe.unlink()
-    except OSError:
-        pass
-    return True
+    return _paths_can_write_dir(path)
 
 
 # ---------------------------------------------------------------- 下载解压
