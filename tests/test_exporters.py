@@ -957,6 +957,21 @@ def test_preload_reports_progress_for_many_images(out_dir):
     assert numbers == sorted(numbers)
 
 
+def test_download_images_accepts_any_iterable_and_keeps_every_url():
+    """签名收的是 Iterable：生成器传进来也不能在 len() / map 上炸掉。"""
+    from xdao.exporters._shared import download_images
+
+    fetched: list[str] = []
+    messages: list[str] = []
+    urls = (name for name in ["a.jpg", "b.jpg", "c.jpg"])
+
+    download_images(urls, fetched.append, messages.append)
+
+    assert fetched == ["a.jpg", "b.jpg", "c.jpg"]
+    assert messages[0] == "正在下载 3 张图片…"
+    assert messages[-1] == "正在下载图片：3/3"
+
+
 def test_preload_does_nothing_when_images_are_not_embedded(out_dir):
     """只留链接 / 丢图片时不该下任何一张图。"""
     client = FakeClient(images={"abc": SAMPLE_JPEG})
