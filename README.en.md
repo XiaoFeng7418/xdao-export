@@ -2,13 +2,22 @@
 
 [简体中文](README.md) ｜ **English**
 
-**Download a whole X island thread and keep it on disk.** Unzip the portable build, double click,
-done — no Python install, no copying cookies out of the browser devtools.
+**Download a whole X island thread and keep it on disk.** A guest session only sees the first 100
+pages; this pulls the thread from the first reply to the last, embeds the images into one file, and
+resumes where the last run stopped.
 
 [![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
 [![latest release](https://img.shields.io/github/v/release/XiaoFeng7418/xdao-export)](https://github.com/XiaoFeng7418/xdao-export/releases/latest)
 [![license](https://img.shields.io/github/license/XiaoFeng7418/xdao-export)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+
+**Two ways in — pick the one that fits:**
+
+- **Just download and run (recommended, no Python needed)** → grab the latest portable build from the
+  [Releases page](https://github.com/XiaoFeng7418/xdao-export/releases/latest), unzip it and double
+  click `xdao-export.exe`. The [Download](#download) section below covers the hash check.
+- **Run from source (developers)** → needs Python 3.10+ (the official installer ships tkinter), no
+  third party packages, `python main.py`. See [Run from source](#run-from-source) below.
 
 **What it is**: a Windows desktop tool (also usable as a plain command line program) that pulls a
 thread on X island (nmbxd1.com / nmbxd.com) from the first reply to the last and writes it to a
