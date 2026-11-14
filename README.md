@@ -601,7 +601,7 @@ python main.py
 ```powershell
 # 导出单个/多个串
 # （例子里的 50000001 是 X岛官方的测试串；12345678 是编出来的占位编号，不是真实串）
-python main.py 50000001 -f markdown -o D:\备份
+python main.py 50000001 -f markdown -o D:\备份      # 也可以用 --format / --output
 python main.py https://www.nmbxd1.com/t/50000001 https://www.nmbxd1.com/t/12345678 -f epub
 
 # 导出 PDF（需要本机装有 Chrome 或 Edge）
@@ -616,7 +616,7 @@ python main.py 50000001 --hashes abc123,def456
 
 # 导出范围：每个串最多抓 20 页；抓到 50000001 为止（含它），它后面的串跳过
 python main.py 50000001 --max-pages 20
-# 同时抓 4 页（默认 1，仍是一页一页抓；撞上站点限流会自动退回串行）
+# 同时抓 4 页（默认 2；撞上站点限流会自动退回一页一页抓）
 python main.py 50000001 --max-pages 20 --page-workers 4
 python main.py 50000001 12345678 --until 50000001
 
@@ -674,6 +674,7 @@ xdao-export/
 ├─ main.py                 入口：图形界面 / 命令行导出 / 监控 / 自检
 ├─ LICENSE                 MIT 许可全文（版权声明在里面；打包时作为 LICENSE.txt 一起发出）
 ├─ pytest.ini              测试配置
+├─ ruff.toml               静态检查配置（只开「一定是错」的那几组规则，`python -m ruff check .`）
 ├─ xdao/
 │  ├─ client.py            网络：登录、取串、翻页、下载图片、重试与代理
 │  ├─ cdp.py               Chrome DevTools 协议通道（浏览器登录与 PDF 渲染共用）
@@ -698,7 +699,7 @@ xdao-export/
 ├─ tools/build_zip.py      打免安装包 + 写 .sha256（本机与 CI 都用它）
 ├─ 诊断写入.ps1            导出目录写不进去时用来定位（随免安装包一起发出）
 ├─ 诊断写入-双击运行.cmd   不会用命令行就双击它，跑完留下诊断结果报告
-└─ tests/                  2772 个离线单元测试（2765 通过，另 7 个真机用例默认跳过）
+└─ tests/                  2775 个离线单元测试（2768 通过，另 7 个真机用例默认跳过）
 ```
 
 ## 开发
@@ -708,6 +709,17 @@ xdao-export/
 ```powershell
 python -m pytest -q
 ```
+
+静态检查用 [ruff](https://docs.astral.sh/ruff/)（开发期工具，不进运行时依赖；版本钉在 CI 里）：
+
+```powershell
+python -m ruff check .
+```
+
+`ruff.toml` 只开了 `E4` / `E7` / `E9` / `F` / `B` 这几组 —— 都是「一定是错」的规则
+（重复定义、未使用的导入或变量、`zip` 少了 `strict`、`raise` 丢了上下文）。
+仓库里的历史文件有大量风格类告警，一次改不完也没必要改，所以不追求全规则零告警；
+目标是**新代码别再加错**。CI 每次推送都会跑这一步。
 
 约定：
 
