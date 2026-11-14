@@ -1,0 +1,28 @@
+# ruff 的检查范围：只留「一定是错」的那几条规则。
+#
+# 为什么不整套全开：仓库里有大量历史文件，按 ruff 默认的全规则集跑会出几百条风格类告警
+# （未排序的 import、盲 except、魔法数字……），一次改不完，而把历史文件整套翻一遍也不是
+# 这次要做的事。这份配置的目标是「新代码别再加错」，所以只挑这三组：
+#
+#   E4 / E7 / E9  import 与语法层面的问题（重复导入、未定义名、语法错）
+#   F             pyflakes：未使用的导入与变量、重复定义（"定义了两次、后一个把前一个遮住"）
+#   B             bugbear 里会被当成 bug 的那批（循环变量没用、zip 少了 strict、raise 丢了上下文）
+#
+# 用法：
+#   python -m ruff check .
+#
+# 版本：与 CI 里钉的 ruff 版本保持一致（见 .github/workflows/tests.yml）。
+# 2026-11-14 收窄成这份配置，并把当时命中的 37 条全部清掉（其中两处是「有意再导出」，
+# 就地写了 noqa 并注明原因）。
+
+extend-exclude = [
+    "build",
+    "dist",
+    ".cache",
+    ".test-artifacts",
+    ".ruff_cache",
+    ".venv",
+]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B"]

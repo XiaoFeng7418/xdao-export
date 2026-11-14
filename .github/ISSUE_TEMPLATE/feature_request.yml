@@ -1,0 +1,59 @@
+name: 提一个想法
+description: 想要的功能、觉得别扭的地方——用这张表单说
+title: "[想法] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先说一句可能的预期：这个工具的定位是**离线备份**，不是在线阅读器，
+        所以「要不要做成在线看」这类方向通常不会走。
+        另外程序只用 Python 标准库，不引入第三方依赖——这既是它的优点，也限住了
+        一些「换个库就好了」的做法。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 属于哪一类
+      options:
+        - 新功能
+        - 现有功能不好用（想改改法）
+        - 界面 / 文案
+        - 导出成品的样子
+        - 别的问题
+    validations:
+      required: true
+
+  - type: textarea
+    id: scene
+    attributes:
+      label: 什么场景下需要
+      description: 说清「在做什么事的时候卡住了」，比只说「想要个 X 功能」有用得多
+      placeholder: |
+        导出几十个长串做存档，导出完不知道哪几个没导全，只能一个个点开看。
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 希望它怎么用
+      description: 界面上放哪儿、命令行大概长什么样、导出成品里多什么
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternative
+    attributes:
+      label: 现在怎么绕过去的（可选）
+      description: 现在的替代做法，能说明这个需求有多实在
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 已经搜过 issue，没有重复的
+          required: false

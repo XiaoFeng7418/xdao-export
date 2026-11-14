@@ -35,6 +35,9 @@ pytest-cache-files-*/
 /pdfdiag-*/
 xdao-export-v*-win64.zip*
 
+# 静态检查的缓存（根目录 ruff.toml 对应 `python -m ruff check .`）
+.ruff_cache/
+
 # 覆盖率体检的中间产物（tools/cov_audit.py 用）
 .coverage
 .coverage.*

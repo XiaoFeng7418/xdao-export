@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题与常见故障
+    url: https://github.com/XiaoFeng7418/xdao-export#readme
+    about: 登录、导出目录写不进去、PDF 渲染不出来这类问题，README 与包里的「使用说明.txt」里先找一遍
+  - name: 下载与版本说明
+    url: https://github.com/XiaoFeng7418/xdao-export/releases
+    about: 免安装包、更新记录、校验值都在这里；有问题先看是不是最新版
