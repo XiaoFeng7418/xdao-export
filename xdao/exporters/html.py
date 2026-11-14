@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import base64
-import concurrent.futures
 import html as html_lib
 import os
-import threading
 import urllib.parse
 from pathlib import Path
 
@@ -14,6 +12,7 @@ from ..client import Post, XdaoClient
 from ..paths import ensure_writable
 from ._shared import (
     ThreadData,
+    download_images,
     fetch_image,
     guess_mime,
     iter_post_image_urls,
@@ -618,29 +617,13 @@ class HtmlBuilder(Exporter):
         if not wanted:
             return
 
-        self._notify(f"正在下载 {len(wanted)} 张图片…")
-
-        total = len(wanted)
-        # 每完成 10% 报一次进度：图多的串里，从「正在下载 120 张」到结束之间
-        # 原来一句提示都没有，看起来像卡住了。步长取整且至少 1，短列表也不会刷屏。
-        step = max(1, total // 10)
-        lock = threading.Lock()
-        done = 0
-
-        def load(url: str) -> None:
-            nonlocal done
-            # 取消时在下载线程里就抛出去，executor.map 会把它带回主线程。
-            self.check_cancel()
-            self.embed_image(url)
-            with lock:
-                done += 1
-                finished = done
-            if finished % step == 0 or finished == total:
-                self._notify(f"正在下载图片：{finished}/{total}")
-
         self._preloading = True
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-                list(executor.map(load, wanted))
+            download_images(
+                wanted,
+                self.embed_image,
+                self._notify,
+                check_cancel=self.check_cancel,
+            )
         finally:
             self._preloading = False

@@ -41,7 +41,7 @@ def main(argv):
     print("=" * 78)
     print("一、按文件：语句覆盖率从低到高（只列 < 85% 的）")
     print("=" * 78)
-    for pct, hit, total, rel, path, stmts, executed in rows:
+    for pct, hit, total, rel, _path, _stmts, _executed in rows:
         if pct >= 85:
             continue
         print(f"{str(rel):40s} {pct:5.1f}%  {hit:4d}/{total:4d}  缺 {total - hit:4d}")
@@ -51,7 +51,7 @@ def main(argv):
     print(f"二、完全没跑到任何一条语句的函数（按文件列，最多 {top} 个文件）")
     print("=" * 78)
     listed = 0
-    for pct, hit, total, rel, path, stmts, executed in rows:
+    for _pct, _hit, _total, rel, path, stmts, executed in rows:
         if listed >= top:
             break
         try:
@@ -80,8 +80,8 @@ def main(argv):
     print("=" * 78)
     print("三、整块没跑到的行段（连续 >= 6 行，按文件）")
     print("=" * 78)
-    for pct, hit, total, rel, path, stmts, executed in rows:
-        if pct >= 85:
+    for _pct, _hit, _total, rel, _path, stmts, executed in rows:
+        if _pct >= 85:
             continue
         missing = sorted(stmts - executed)
         runs, cur = [], [missing[0]] if missing else []

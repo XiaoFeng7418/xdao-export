@@ -482,8 +482,6 @@ def test_cache_dir_candidates_survive_a_broken_temp_dir(artifacts_dir, monkeypat
     """
     import tempfile
 
-    import xdao.cache as cache_module
-
     def boom() -> str:
         raise FileNotFoundError(
             2,

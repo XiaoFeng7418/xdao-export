@@ -16,10 +16,8 @@
 from __future__ import annotations
 
 import base64
-import concurrent.futures
 import datetime as _datetime
 import html as html_lib
-import threading
 import uuid
 import zipfile
 from pathlib import Path
@@ -29,6 +27,7 @@ from ._shared import (
     ThreadData,
     attachment_image_url,
     derive_filename,
+    download_images,
     ensure_writable,
     fetch_image,
     guess_mime,
@@ -48,8 +47,8 @@ LANGUAGE = "zh-CN"
 TEXT_DIR = "OEBPS/text"
 IMAGE_DIR = "OEBPS/images"
 
-#: 图片下载的并发数，和 HTML 导出器那边保持一致：图多的串串行下会慢好几倍。
-IMAGE_WORKERS = 6
+#: 图片下载的并发数只在 ``._shared.IMAGE_WORKERS`` 一处定义（HTML / EPUB / Markdown
+# 共用同一个并发下载函数），本模块不再另立一个名字。
 
 # EPUB 3 的固定外壳。
 CONTAINER_XML = """<?xml version="1.0" encoding="utf-8"?>
@@ -255,27 +254,15 @@ class EpubBuilder(Exporter):
                     urls.append(url)
         if not urls:
             return []
-        self._notify(f"正在下载 {len(urls)} 张图片…")
-        total = len(urls)
-        step = max(1, total // 10)
-        lock = threading.Lock()
-        done = 0
-
-        def load(url: str) -> None:
-            nonlocal done
-            self.check_cancel()
-            self._load(url)
-            with lock:
-                done += 1
-                finished = done
-            if finished % step == 0 or finished == total:
-                self._notify(f"正在下载图片：{finished}/{total}")
-
         # _load 自己负责写 _data_cache（失败记 None），这里只等它们回来。
         self._preloading = True
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as executor:
-                list(executor.map(load, urls))
+            download_images(
+                urls,
+                self._load,
+                self._notify,
+                check_cancel=self.check_cancel,
+            )
         finally:
             self._preloading = False
 

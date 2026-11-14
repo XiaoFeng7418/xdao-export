@@ -15,13 +15,11 @@ import pytest
 
 from tests import FakeClient, SAMPLE_JPEG, make_post, sample_thread, sample_thread_with_po_reply
 from xdao.cancel import ExportCancelled
-from xdao.client import Post
 from xdao.exporters.html import _style_block
 from xdao.exporters.markdown import MarkdownBuilder
 from xdao.exporters import (
     EXPORTERS,
     HtmlBuilder,
-    OutputDirNotWritable,
     PdfBuilder,
     ThreadData,
     TxtBuilder,
@@ -574,7 +572,7 @@ def test_can_write_dir_probes_a_subdirectory(out_dir, monkeypatch):
 
 def test_can_write_dir_leaves_no_litter(out_dir):
     """探测要自己收拾干净：不留探针文件，也不留探针目录。"""
-    from xdao.exporters._shared import PROBE_NAME, can_write_dir
+    from xdao.exporters._shared import can_write_dir
 
     assert can_write_dir(out_dir) is True
     assert list(out_dir.iterdir()) == []
@@ -814,7 +812,7 @@ def test_txt_save_without_template_uses_title(out_dir):
 
 def test_registry_lists_all_formats():
     assert set(EXPORTERS) == {"html", "pdf", "txt", "markdown", "epub"}
-    for key, (label, suffix, cls) in EXPORTERS.items():
+    for label, suffix, cls in EXPORTERS.values():
         assert label and suffix.startswith(".") and isinstance(cls, type)
     # 格式键与扩展名要一一对应，界面与命令行都靠它推导文件名
     assert EXPORTERS["pdf"][1] == ".pdf"
