@@ -170,6 +170,7 @@ def test_the_eol_report_parser_understands_git_output() -> None:
         b"i/crlf  w/crlf  attr/text=auto eol=lf \tHANDOFF.md\0"
         b"i/lf    w/crlf  attr/text eol=crlf    \t\xe8\xaf\x8a\xe6\x96\xad\xe5\x86\x99\xe5\x85\xa5.ps1\0"
         b"i/lf    w/lf    attr/                 \txdao/gui.py\0"
+        b"i/-text w/-text attr/-text            \tdocs/screenshot.png\0"
         b"\0"
         b"\xe8\xbf\x99\xe4\xb8\x8d\xe6\x98\xaf\xe4\xb8\x80\xe6\x9d\xa1\xe8\x83\xbd\xe8\xae\xa4\xe5\x87\xba\xe6\x9d\xa5\xe7\x9a\x84\xe8\xae\xb0\xe5\xbd\x95\0"
     )
@@ -178,6 +179,7 @@ def test_the_eol_report_parser_understands_git_output() -> None:
         ("HANDOFF.md", "crlf", "crlf", "text=auto eol=lf"),
         ("诊断写入.ps1", "lf", "crlf", "text eol=crlf"),
         ("xdao/gui.py", "lf", "lf", ""),
+        ("docs/screenshot.png", "-text", "-text", "-text"),
     ]
 
 
@@ -204,6 +206,10 @@ def test_index_and_worktree_line_endings_agree() -> None:
     bad: list[str] = []
     legacy_seen: list[str] = []
     for path, index_eol, worktree_eol, attr in rows:
+        if index_eol == "-text" or "binary" in attr:
+            # 图片、zip、exe 在索引里就是 `-text`（`.gitattributes` 里标了 binary），
+            # 没有「行尾」这个概念，跳过。
+            continue
         if "eol=crlf" in attr:
             # 属性要求工作区就是 CRLF（Windows 的 .ps1 / .cmd），索引里是 LF 才正常。
             if worktree_eol != "crlf":

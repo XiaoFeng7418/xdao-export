@@ -1,8 +1,28 @@
 # X岛串导出工具
 
-[![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
+**简体中文** ｜ [English](README.en.md)
 
-一个 Windows 桌面小工具：登录 X 岛（nmbxd1.com）后，把任意一个串**完整**导出为本地文件，突破游客只能看前 100 页的限制。也可以完全用命令行运行，适合脚本和计划任务。
+**X 岛的串，整份存到本地。** 免安装包解压双击就能用 —— 不用装 Python，也不用按 F12 抄饼干。
+
+[![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
+[![latest release](https://img.shields.io/github/v/release/XiaoFeng7418/xdao-export)](https://github.com/XiaoFeng7418/xdao-export/releases/latest)
+[![license](https://img.shields.io/github/license/XiaoFeng7418/xdao-export)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+
+**这是什么**：一个 Windows 桌面小工具（也能纯命令行跑），把 X 岛（nmbxd1.com）上一个串从第一楼取到最后一楼，存成本地文件。
+
+**解决什么问题**：游客只能看前 100 页，长串的后半截根本翻不到；一页页另存既慢又容易漏，图片、楼中楼、引用关系一散就拼不回去；存下来的网页换个地方打开还常常缺图。
+
+**跟别的做法差在哪**：
+
+- **免安装**：下载一个 zip 解压双击就能用，不用装 Python、不用配环境；
+- **登录不用按 F12 抄饼干**：点一下用系统浏览器登录，程序自己把登录状态接回来，验证码仍由本人认一次；
+- **HTML 是单文件**：图片内嵌在同一个文件里，断网、拷到别的机器都能直接翻，也能直接打印或另存为 PDF；
+- **五种格式、断点续传、更新监控**：HTML / PDF / EPUB / Markdown / TXT 任选，中途停了下次接着抓，串有新楼层还能定时提醒。
+
+![界面示意](docs/screenshot.png)
+
+界面示意：左边填串网址与选项，右边是运行日志；导出到一半会显示还剩多久、缺了什么。
 
 ## 用途与声明
 
