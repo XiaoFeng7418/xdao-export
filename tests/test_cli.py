@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -297,7 +296,6 @@ def test_output_dir_falls_back_when_the_configured_one_is_blocked(
     ``[Errno 13]``（受控文件夹访问只放行白名单程序），整趟白跑。
     ``-o`` 是命令行里写死的，所以不换地方；只有配置里的默认值才换。
     """
-    import xdao.exporters as exporters_module
     import xdao.paths as paths_module
 
     exporters_module, cache_module = patch_offline(monkeypatch)
@@ -345,7 +343,6 @@ def test_output_dir_falls_back_when_the_configured_one_is_blocked(
 
 def test_explicit_output_dir_is_never_silently_moved(out_dir, tmp_path, monkeypatch, capsys):
     """``-o`` 指定的目录只提示、不换地方：用户的显式选择不能被程序偷偷改掉。"""
-    import xdao.exporters as exporters_module
     import xdao.paths as paths_module
 
     exporters_module, cache_module = patch_offline(monkeypatch)

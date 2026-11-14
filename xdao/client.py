@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -29,6 +30,34 @@ MAX_IMAGE_BYTES = 24 * 1024 * 1024
 
 # gzip 包固定以这两个字节开头。
 GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _decompress(data: bytes, encoding: str = "") -> bytes:
+    """按 ``Content-Encoding`` 解压响应体。
+
+    请求头里发的是 ``gzip, deflate``，所以两种都要认：以前只判断
+    ``== "gzip"``，服务器真回 deflate 时会把压缩字节当正文交出去
+    （JSON 解析失败、图片变成乱码）。认不出的编码、或者响应本身就是坏的，
+    一律原样返回，让上层按自己的方式报错。
+    """
+    if not data:
+        return data
+    kind = (encoding or "").strip().lower()
+    try:
+        # 先看魔数：头写错了（说 deflate 其实是 gzip）也得能解开。
+        if data[:2] == GZIP_MAGIC:
+            return gzip.decompress(data)
+        if kind == "gzip":
+            return gzip.decompress(data)
+        if kind == "deflate":
+            try:
+                return zlib.decompress(data)
+            except zlib.error:
+                # 有的服务器发的是不带 zlib 头的「裸」deflate。
+                return zlib.decompress(data, -zlib.MAX_WBITS)
+    except (OSError, EOFError, zlib.error):
+        return data
+    return data
 
 
 def _decode_response_body(data: bytes, content_type: str = "") -> bytes:
@@ -145,6 +174,11 @@ class XdaoClient:
         self._api_base: str | None = None
         self.cdn_path = "https://image.nmb.best/"
         self._last_request_at = 0.0
+        # 抓页可以多线程同时发请求（v0.21.21 的「同时抓 N 页」），而节流是
+        # 「读时刻 → 睡差额 → 写时刻」三步。不加锁时几个线程会同时读到旧时刻、
+        # 同时判定「不用等」，实际间隔就短于设定的秒数了 —— 等于悄悄放宽了
+        # 对站点的请求密度。这把锁让节流在多线程下仍然算得准（只会更老实）。
+        self._throttle_lock = threading.Lock()
         # 最近一次取串返回的总页数与页号。
         self.last_page_count = 1
         self.last_page_index = 1
@@ -233,8 +267,10 @@ class XdaoClient:
                             )
                     else:
                         raw = resp.read()
-                    if resp.headers.get("Content-Encoding") == "gzip":
-                        raw = gzip.decompress(raw)
+                    if resp.headers.get("Content-Encoding"):
+                        raw = _decompress(
+                            raw, str(resp.headers.get("Content-Encoding") or "")
+                        )
                     return raw
             except urllib.error.HTTPError as exc:
                 retryable = exc.code == 429 or 500 <= exc.code < 600
@@ -337,20 +373,27 @@ class XdaoClient:
         time.sleep(min(8.0, 0.8 * (2**attempt)))
 
     def _throttle(self) -> None:
+        """等到离上一次请求够久了再放行；多线程下也只有一个线程在等。"""
         if self._throttle_interval <= 0:
             return
-        elapsed = time.monotonic() - self._last_request_at
-        if elapsed < self._throttle_interval:
-            time.sleep(self._throttle_interval - elapsed)
-        self._last_request_at = time.monotonic()
+        with self._throttle_lock:
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < self._throttle_interval:
+                time.sleep(self._throttle_interval - elapsed)
+            self._last_request_at = time.monotonic()
 
     def _resolve_api_base(self) -> str:
-        """确定可用的接口前缀；已选中的前缀失效时会重新探测其它备用地址。"""
-        candidates = list(self.API_BASES)
-        if self._api_base in candidates:
-            candidates.remove(self._api_base)
-            candidates.insert(0, self._api_base)
+        """确定可用的接口前缀；已选中的前缀失效时会重新探测其它备用地址。
 
+        探测本身是一次真实请求（``getCDNPath``），所以选中的前缀要记住、
+        后面直接复用 —— 以前每取一页都重新探一遍，导出 79 页的串就多发
+        79 个请求。前缀真失效时由 :meth:`_api_get_json` 把 ``_api_base``
+        清空，下一轮重新探测。
+        """
+        if self._api_base:
+            return self._api_base
+
+        candidates = list(self.API_BASES)
         last_error: Exception | None = None
         for base in candidates:
             try:
@@ -784,14 +827,22 @@ class XdaoClient:
         data = self._request(url, timeout=max(30.0, self.timeout), max_bytes=MAX_IMAGE_BYTES)
 
         if path is not None:
+            # 临时文件名带上线程号：图片是六线程并发下的（v0.21.16），
+            # 同一张图被两楼引用时两个线程会抢同一个 .part 互相覆盖。
+            tmp = path.with_suffix(path.suffix + f".{threading.get_ident()}.part")
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 # 先写临时文件再替换，避免并发下载留下半截文件。
-                tmp = path.with_suffix(path.suffix + ".part")
                 tmp.write_bytes(data)
                 tmp.replace(path)
             except OSError:
-                pass  # 缓存写入失败不影响本次导出
+                # 缓存写入失败不影响本次导出。Windows 上两个线程同时
+                # replace 同一个目标时，其中一个可能失败 —— 它写下的临时
+                # 文件得自己收掉，否则缓存目录里会攒一堆 .part。
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
         return data
 
     def _cache_path(self, url: str) -> Path | None:

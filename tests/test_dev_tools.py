@@ -234,3 +234,68 @@ def test_sync_from_api_parses_the_response_as_json(monkeypatch: pytest.MonkeyPat
         "commit": {"message": "title"},
     }
     assert calls == [("GET", "/repos/o/r/commits/master")]
+# ---------------------------------------------------------------------------
+# 仓库门面：静态检查配置、CI 里的那一步、issue / PR 模板
+# ---------------------------------------------------------------------------
+#
+# 这三样都是「加了就没人再管」的东西：ruff.toml 被谁删掉、CI 里那一步被谁顺手
+# 注释掉、模板文件被谁重命名，都不会有人报错。2026-11-14 加它们的同时把命中的
+# 37 条告警全清了 —— 那时才知道这份配置以前根本不存在。
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_the_repository_ships_a_narrow_ruff_config() -> None:
+    """``ruff.toml`` 只开「一定是错」的那几组规则，别悄悄扩成全套。"""
+    config = ROOT / "ruff.toml"
+    assert config.is_file(), "仓库根目录应当有 ruff.toml（CI 与 README 都指着它）"
+    text = config.read_text(encoding="utf-8")
+
+    # 取出 select = [...] 那一行里的规则代码。
+    import re
+
+    found = re.search(r"^select\s*=\s*\[(.*?)\]", text, re.MULTILINE)
+    assert found, "ruff.toml 里应当写明选哪些规则（`select = [...]`）"
+    rules = {item.strip().strip('"\'') for item in found.group(1).split(",") if item.strip()}
+    assert rules == {"E4", "E7", "E9", "F", "B"}, (
+        f"规则集变了：现在是 {sorted(rules)}。"
+        "这几组是「一定是错」的（重复定义、未用导入、zip 少了 strict、raise 丢上下文）；"
+        "要扩大范围就得先清掉历史文件里的告警，否则 CI 一推上去就红。"
+    )
+    # 构建产物、缓存目录不该被扫 —— 否则本机跑一次打包，ruff 就会去检查 _internal 里的东西。
+    for ignored in ("build", "dist", ".cache", ".ruff_cache"):
+        assert ignored in text, f"ruff.toml 的 extend-exclude 里应当排除 {ignored}"
+
+
+def test_the_ci_workflow_runs_the_static_check() -> None:
+    """CI 里得真的跑 ruff，而且版本钉住 —— 规则集随上游漂移会让老代码莫名变红。"""
+    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+
+    assert "python -m ruff check ." in workflow, (
+        "tests.yml 里应当有一步跑 `python -m ruff check .`；只写进 README 不算数"
+    )
+    assert "ruff==" in workflow, (
+        "装 ruff 时要钉版本（`ruff==0.17.5` 这种），别让 CI 每次装到的最新版决定规则集"
+    )
+
+
+def test_github_ships_issue_and_pull_request_templates() -> None:
+    """仓库门面：报问题、提想法、交 PR 都有模板可循。"""
+    template_dir = ROOT / ".github" / "ISSUE_TEMPLATE"
+    for name in ("bug_report.yml", "feature_request.yml", "config.yml"):
+        path = template_dir / name
+        assert path.is_file(), f".github/ISSUE_TEMPLATE/{name} 不见了"
+        assert path.read_text(encoding="utf-8").strip(), f"{name} 是空的"
+
+    bug = (template_dir / "bug_report.yml").read_text(encoding="utf-8")
+    # 表单里必须问到「版本」与「日志」—— 这两样缺一样，报的问题都只能靠来回问。
+    assert "程序版本" in bug and "日志" in bug
+    # 公开仓库：贴日志时提醒删掉串号与饼干，这条别被谁顺手删了。
+    assert "userhash" in bug or "饼干" in bug
+
+    pull_request = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
+    assert pull_request.is_file(), ".github/PULL_REQUEST_TEMPLATE.md 不见了"
+    text = pull_request.read_text(encoding="utf-8")
+    assert "python -m pytest -q" in text and "python -m ruff check ." in text, (
+        "PR 模板的自查清单里要写清跑哪两条命令"
+    )

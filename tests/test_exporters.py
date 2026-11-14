@@ -15,13 +15,11 @@ import pytest
 
 from tests import FakeClient, SAMPLE_JPEG, make_post, sample_thread, sample_thread_with_po_reply
 from xdao.cancel import ExportCancelled
-from xdao.client import Post
 from xdao.exporters.html import _style_block
 from xdao.exporters.markdown import MarkdownBuilder
 from xdao.exporters import (
     EXPORTERS,
     HtmlBuilder,
-    OutputDirNotWritable,
     PdfBuilder,
     ThreadData,
     TxtBuilder,
@@ -574,7 +572,7 @@ def test_can_write_dir_probes_a_subdirectory(out_dir, monkeypatch):
 
 def test_can_write_dir_leaves_no_litter(out_dir):
     """探测要自己收拾干净：不留探针文件，也不留探针目录。"""
-    from xdao.exporters._shared import PROBE_NAME, can_write_dir
+    from xdao.exporters._shared import can_write_dir
 
     assert can_write_dir(out_dir) is True
     assert list(out_dir.iterdir()) == []
@@ -814,7 +812,7 @@ def test_txt_save_without_template_uses_title(out_dir):
 
 def test_registry_lists_all_formats():
     assert set(EXPORTERS) == {"html", "pdf", "txt", "markdown", "epub"}
-    for key, (label, suffix, cls) in EXPORTERS.items():
+    for label, suffix, cls in EXPORTERS.values():
         assert label and suffix.startswith(".") and isinstance(cls, type)
     # 格式键与扩展名要一一对应，界面与命令行都靠它推导文件名
     assert EXPORTERS["pdf"][1] == ".pdf"
@@ -957,6 +955,21 @@ def test_preload_reports_progress_for_many_images(out_dir):
     # 进度必须单调上升，不能倒回去
     numbers = [int(m.rsplit("：", 1)[1].split("/")[0]) for m in progress]
     assert numbers == sorted(numbers)
+
+
+def test_download_images_accepts_any_iterable_and_keeps_every_url():
+    """签名收的是 Iterable：生成器传进来也不能在 len() / map 上炸掉。"""
+    from xdao.exporters._shared import download_images
+
+    fetched: list[str] = []
+    messages: list[str] = []
+    urls = (name for name in ["a.jpg", "b.jpg", "c.jpg"])
+
+    download_images(urls, fetched.append, messages.append)
+
+    assert fetched == ["a.jpg", "b.jpg", "c.jpg"]
+    assert messages[0] == "正在下载 3 张图片…"
+    assert messages[-1] == "正在下载图片：3/3"
 
 
 def test_preload_does_nothing_when_images_are_not_embedded(out_dir):

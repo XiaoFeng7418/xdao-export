@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -152,7 +151,7 @@ def test_the_probe_stays_on_the_one_browser_it_was_given(artifacts_dir: Path) ->
         BrowserInfo(name="假浏览器", path=str(artifacts_dir / "不存在.exe")), profile, ""
     )
     browser.fallback_profiles = False
-    with pytest.raises(Exception):  # noqa: BLE001,PT011 —— 起不来是预期的
+    with pytest.raises(Exception):  # noqa: B017,PT011 —— 起不来是预期的
         browser.start()
     browser.stop()
     assert browser.info.name == "假浏览器"  # 没被换掉
