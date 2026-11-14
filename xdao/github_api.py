@@ -252,9 +252,13 @@ def request_bytes(
     url = path if path.startswith("http") else base_url + path
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     if http_failure is None:
-        http_failure = lambda code, detail: f"{method} {path} -> {code}\n{detail}"
+        http_failure = lambda code, detail: (  # noqa: E731  （就地补默认值，不是顶层赋值）
+            f"{method} {path} -> {code}\n{detail}"
+        )
     if gave_up is None:
-        gave_up = lambda last: f"{method} {path} 连续失败：{last}"
+        gave_up = lambda last: (  # noqa: E731
+            f"{method} {path} 连续失败：{last}"
+        )
     last: BaseException | None = None
     for tries in range(1, attempts + 1):
         request = urllib.request.Request(url, data=data, method=method)

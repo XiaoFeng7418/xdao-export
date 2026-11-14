@@ -279,7 +279,7 @@ def _render_with_command_line(
                         raise PdfError(
                             f"渲染 PDF 超时（超过 {timeout} 秒）。"
                             "串太长或图片太多时可能发生，可以改用 HTML 格式。"
-                        )
+                        ) from None
         finally:
             if process.poll() is None:
                 process.kill()

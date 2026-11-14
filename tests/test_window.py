@@ -35,12 +35,10 @@ def make_root(timeout: float = 5.0) -> tk.Tk:
     真的没有显示环境（无头 CI）时重试也救不回来，交给调用方 skip。
     """
     deadline = time.monotonic() + timeout
-    last: Exception | None = None
     while True:
         try:
             return tk.Tk()
-        except tk.TclError as exc:  # pragma: no cover - 取决于运行环境
-            last = exc
+        except tk.TclError:  # pragma: no cover - 取决于运行环境
             if time.monotonic() >= deadline:
                 raise
             time.sleep(0.2)
@@ -1537,7 +1535,6 @@ def test_stop_watching_asks_the_loop_to_end_and_clears_the_flags(
     app.notify_var.set(False)  # noqa: SLF001
 
     started = threading.Event()
-    released = threading.Event()
     outcome: dict[str, bool] = {}
 
     def fake_loop(client, targets, output_dir, interval, **kwargs):  # noqa: ANN001, ANN003
@@ -3325,8 +3322,6 @@ def _login_backend(browser, *, session=None, stop_on_connect=False, stop_on_navi
 
 
 def _login_browser(dialog, *, alive: bool = True):  # noqa: ANN001
-    from types import SimpleNamespace
-
     class _Process:
         def poll(self):  # noqa: ANN201
             return None if alive else 0
@@ -3463,8 +3458,6 @@ def test_worker_reports_a_session_that_cannot_connect(monkeypatch) -> None:
 def _cookie_backend(*, url_value="", merged=None, merged_error: Exception | None = None,
                     named=None):
     """造一个只够 _read_userhash 用的假后端。"""
-    from types import SimpleNamespace
-
     class _Backend:
         @staticmethod
         def cookie_urls_for(session):  # noqa: ANN001

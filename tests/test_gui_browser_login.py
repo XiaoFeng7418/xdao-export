@@ -1385,8 +1385,8 @@ def test_the_forensics_line_names_every_window_and_the_jar_path(
     assert paths and all(path for path in paths), f"罐路径没传下去：{paths}"
     assert all(
         Path(path).name == str(item.get("jar_tag"))
-        for path, item in zip(paths, seen)
-    ), f"罐路径和罐名对不上：{list(zip(paths, [i.get('jar_tag') for i in seen]))}"
+        for path, item in zip(paths, seen, strict=True)
+    ), f"罐路径和罐名对不上：{list(zip(paths, [i.get('jar_tag') for i in seen], strict=True))}"
     line = next(text for text in logged if text.startswith("读罐对账："))
     assert "窗口=第1扇（上下文3f2a1b）" in line, line
     dialog._on_cancel()
@@ -2287,7 +2287,7 @@ def test_the_http_path_is_throttled_by_time_not_by_the_jar(
     ``test_login_finished_late_still_gets_a_chance_to_apply_the_cookie`` 钉住。
     """
     monkeypatch.setattr(gui, "BROWSER_LEAF_HTTP_SECONDS", 30.0)
-    dialog = open_dialog()
+    open_dialog()
     home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
     calls: list[list] = []
 
@@ -2330,7 +2330,7 @@ def test_the_http_path_keeps_trying_even_when_nothing_changes(
     0.05 秒，罐头一个字都不改，看它会不会自己去第二次。
     """
     monkeypatch.setattr(gui, "BROWSER_LEAF_HTTP_SECONDS", 0.05)
-    dialog = open_dialog()
+    open_dialog()
     home = f"{browser_login.COOKIE_SITE}/Member/User/Index/index.html"
     calls: list[list] = []
 

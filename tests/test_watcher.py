@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_cache import FakeApi, build_three_page_api, make_page, make_reply
+from tests.test_cache import build_three_page_api, make_page, make_reply
 from xdao.client import XdaoError
 from xdao.settings import (
     DEFAULT_RETRIES,

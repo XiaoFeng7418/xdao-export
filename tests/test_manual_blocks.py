@@ -92,7 +92,7 @@ def test_the_blocks_are_newest_first() -> None:
     found = blocks()
     bad = [
         f"第 {left.line_no} 行的 v{left.version} 排在 v{right.version} 前面"
-        for left, right in zip(found, found[1:])
+        for left, right in zip(found, found[1:], strict=False)
         if _key(left.version) <= _key(right.version)
     ]
     assert not bad, "版本段要按「新的在上」排：\n  " + "\n  ".join(bad)

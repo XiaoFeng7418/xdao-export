@@ -17,6 +17,7 @@ import threading
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 from ..client import Post, XdaoClient
 
@@ -191,6 +192,54 @@ def fetch_image(client: XdaoClient, url: str) -> bytes | None:
         return None
 
 
+#: 并发下载图片的线程数。图片是「慢、可重试、互不依赖」的，串行下会慢好几倍。
+IMAGE_WORKERS = 6
+
+
+def download_images(
+    urls: Iterable[str],
+    fetch,
+    notify,
+    *,
+    check_cancel=None,
+    workers: int = IMAGE_WORKERS,
+) -> None:
+    """并发下载一批图片，附带进度与取消检查。
+
+    HTML / EPUB / Markdown 目录模式原来各写了一份同样的循环（线程池 + 每 10%
+    报一句 + 取消检查），一处改了三处得跟着改。这里收成一份：
+
+    - ``fetch(url)`` 在下载线程里跑，自己负责把结果存进各自的缓存；
+    - ``check_cancel()`` 也在下载线程里调，抛出的异常由 ``executor.map``
+      带回调用方（取消能立刻生效，不必等主线程走到下一个检查点）；
+    - 进度按「已下好的张数」报，顺序无关，所以日志可能比串行时乱一点，
+      但成品不受影响（落盘仍由各调用方按正文顺序决定）。
+    """
+    total = len(urls)
+    if not total:
+        return
+    notify(f"正在下载 {total} 张图片…")
+    # 每完成约 10% 报一次：从「正在下载 N 张」到结束之间原来一句话都没有，
+    # 图多的串看着像卡住了。步长取整且至少 1，短列表也不会刷屏。
+    step = max(1, total // 10)
+    lock = threading.Lock()
+    done = 0
+
+    def load(url: str) -> None:
+        nonlocal done
+        if check_cancel is not None:
+            check_cancel()
+        fetch(url)
+        with lock:
+            done += 1
+            finished = done
+        if finished % step == 0 or finished == total:
+            notify(f"正在下载图片：{finished}/{total}")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        list(executor.map(load, urls))
+
+
 def guess_mime(url: str, data: bytes | None = None) -> str:
     """判断图片 MIME：优先看魔数，其次看扩展名。"""
     if data:
@@ -280,28 +329,13 @@ class ImageFolderWriter:
                 wanted.append(url)
         if not wanted:
             return
-        total = len(wanted)
-        self._notify(f"正在下载 {total} 张图片…")
-        # 每完成约 10% 报一次进度：从「正在下载 N 张」到结束之间原来一句话都没有，
-        # 图多的串看着像卡住了。步长取整且至少 1，短列表也不会刷屏。
-        step = max(1, total // 10)
-        lock = threading.Lock()
-        done = 0
-
-        def load(url: str) -> None:
-            nonlocal done
-            # 取消时在下载线程里就抛出去，executor.map 会把它带回调用方。
-            if check_cancel is not None:
-                check_cancel()
-            self._data[url] = fetch_image(client, url)
-            with lock:
-                done += 1
-                finished = done
-            if finished % step == 0 or finished == total:
-                self._notify(f"正在下载图片：{finished}/{total}")
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-            list(executor.map(load, wanted))
+        download_images(
+            wanted,
+            lambda url: self._data.__setitem__(url, fetch_image(client, url)),
+            self._notify,
+            check_cancel=check_cancel,
+            workers=workers,
+        )
 
     @property
     def enabled(self) -> bool:
@@ -491,7 +525,7 @@ def output_path(output_dir: Path, name: str, suffix: str) -> Path:
 # 这里保留同名转发，只为兼容既有的导入写法（测试与文档里仍有
 # ``xdao.exporters._shared.PROBE_NAME`` 这类引用）。
 # ---------------------------------------------------------------------------
-from ..paths import (  # noqa: F401  （转发，真源在 xdao/paths.py）
+from ..paths import (  # noqa: E402, F401  （转发，真源在 xdao/paths.py）
     CLASSIC_BLOCK_HINT,
     PROBE_ALT_NAME,
     PROBE_NAME,
