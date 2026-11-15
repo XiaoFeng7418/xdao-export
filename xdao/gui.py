@@ -86,8 +86,24 @@ UNTIL_THREAD_ID_UNIT = "（含它）"
 #: 哪几种导出格式认「图片」这一项（内嵌 / 只留链接 / 丢掉）。TXT 与 Markdown 是纯文本，
 #: 图片本来就只是链接或干脆没有，所以不给它们这一行。
 IMAGE_MODE_FORMATS = ("html", "pdf", "epub", "markdown")
+#: 「存到同名目录」只有这两种格式能真落盘：PDF 在内存里渲染、EPUB 是 zip。
+IMAGE_MODE_FOLDER_FORMATS = ("html", "markdown")
+#: 图片下拉框的取值（与 ``IMAGE_MODE_LABELS`` 同序）。
+IMAGE_MODE_KEYS = ("embed", "url", "drop", "folder")
 #: 「图片」下拉框的显示名，与 ``exporters.html.IMAGE_MODES`` 同序（主窗口与编辑监控共用）。
 IMAGE_MODE_LABELS = ("内嵌图片", "仅保留链接", "丢弃图片", "存到同名目录")
+
+
+def image_mode_options(format_key: str) -> tuple[list[str], list[str]]:
+    """某格式下拉框里该露哪几项：``(取值, 显示名)``。
+
+    「存到同名目录」对 PDF / EPUB 是没有意义的（一个在内存里渲染、一个是 zip），
+    以前仍然露出来，选了之后只在日志里说一句「按内嵌处理」—— 等于让人选一个
+    不会生效的选项。现在干脆不露。
+    """
+    if format_key in IMAGE_MODE_FOLDER_FORMATS:
+        return list(IMAGE_MODE_KEYS), list(IMAGE_MODE_LABELS)
+    return list(IMAGE_MODE_KEYS[:3]), list(IMAGE_MODE_LABELS[:3])
 
 #: 监控线程收尾时往 ``watch_queue`` 里塞的哨兵：主线程收到它就把 ``_watching`` 落回 False。
 #: 为什么要这条：以前只有「用户点停止」和「监控线程抛异常」两处会清这个标志，
@@ -3551,6 +3567,7 @@ class WatchEditDialog(tk.Toplevel):
         self.format_box.bind("<<ComboboxSelected>>", lambda _event: self._sync_image_mode())
 
         label(2, "图片处理")
+        self._image_mode_keys = list(IMAGE_MODE_KEYS)
         self.image_box = ttk.Combobox(
             form,
             state="readonly",
@@ -3594,10 +3611,17 @@ class WatchEditDialog(tk.Toplevel):
     # ---------- 内部 ----------
 
     def _sync_image_mode(self) -> None:
-        """TXT / Markdown 用不上图片处理：那种格式下把下拉框灰掉，免得用户以为能选。"""
+        """按格式给选项：TXT 灰掉整框；PDF / EPUB 不露「存到同名目录」。"""
         index = self.format_box.current()
-        enabled = index >= 0 and self._format_keys[index] in IMAGE_MODE_FORMATS
-        self.image_box.configure(state="readonly" if enabled else "disabled")
+        format_key = self._format_keys[index] if index >= 0 else "html"
+        enabled = format_key in IMAGE_MODE_FORMATS
+        keys, labels = image_mode_options(format_key)
+        current = self._image_mode_keys[self.image_box.current()] if self.image_box.current() >= 0 else "embed"
+        if current not in keys:
+            current = "embed"
+        self._image_mode_keys = keys
+        self.image_box.configure(values=labels, state="readonly" if enabled else "disabled")
+        self.image_box.current(keys.index(current))
 
     def _save(self) -> None:
         scope_key, _ = self.SCOPES[self.scope_box.current()]
@@ -3626,7 +3650,10 @@ class WatchEditDialog(tk.Toplevel):
         target.scope = "po" if scope_key == "po" else "all"
         target.include_hashes = self.app.parse_hashes() if scope_key == "hashes" else []
         target.format_key = self._format_keys[self.format_box.current()]
-        target.image_mode = self.IMAGE_KEYS[self.image_box.current()]
+        choice = self.image_box.current()
+        target.image_mode = (
+            self._image_mode_keys[choice] if 0 <= choice < len(self._image_mode_keys) else "embed"
+        )
         target.max_pages = max_pages
         self.app.persist_watch_targets()
         self.list_dialog._refresh()
@@ -4486,6 +4513,8 @@ class App:
         )
         if self.current_format() in IMAGE_MODE_FORMATS:
             self.image_mode_frame.pack(side="left", padx=(theme.gap(2), 0))
+        # 按当前格式把下拉框的选项与选中值对齐（存的是 PDF/EPUB + 同名目录时不该显示它）。
+        self._sync_image_mode()
 
         # ② 导出目录
         folder_card = Card(inner)
@@ -4563,9 +4592,14 @@ class App:
         画布高度写死（不跟着内容走）是关键：``tk.Canvas`` 的"请求高度"会跟着
         内嵌窗口的实际高度跑，一旦跟着内容长高，父容器就会被撑成内容那么高，
         左边栏不再滚动、右边日志栏还会被挤成一条缝。高度固定后行为才可预期。
+
+        用 ``grid`` 不用 ``pack``：调用方（左栏）的底部按钮区也是 ``grid`` 进来的，
+        同一个容器里两种布局管理器各画各的 —— 曾经因此在最小窗口下把
+        「开始导出」压在导出目录卡片上，缓存那一行永远看不到。``row=0`` 配
+        ``column.rowconfigure(0, weight=1)`` 才能让滚动区真的让出底部按钮的高度。
         """
         holder = ttk.Frame(parent)
-        holder.pack(fill="both", expand=True)
+        holder.grid(row=0, column=0, sticky="nsew")
         canvas = tk.Canvas(
             holder,
             bg=BG,
@@ -4723,13 +4757,19 @@ class App:
     def _sync_image_mode(self) -> None:
         """图片模式对 HTML / PDF / EPUB 有意义：选它们时露出来，其它格式收起来。
 
-        「存到同名目录」只有 HTML 与 Markdown 能真正落盘（PDF 在内存里渲染、
-        EPUB 是 zip），
-        但下拉框仍然让它可选：选它之后导出 PDF / EPUB 会按内嵌处理并在日志里说一句，
-        比让界面按格式变来变去好理解。
+        「存到同名目录」只在 HTML 与 Markdown 下露出来（见 :func:`image_mode_options`）：
+        这两种格式真的能落盘同名目录，PDF 在内存里渲染、EPUB 是 zip，露出来也是白选。
         """
-        enabled = self.current_format() in IMAGE_MODE_FORMATS
-        self.image_mode_box.configure(state="readonly" if enabled else "disabled")
+        format_key = self.current_format()
+        enabled = format_key in IMAGE_MODE_FORMATS
+        keys, labels = image_mode_options(format_key)
+        current = self.current_image_mode()
+        if current not in keys:
+            # 换到不认「同名目录」的格式时自动退回「内嵌图片」，别留一个选中却不生效的值。
+            current = "embed"
+        self._image_mode_keys = keys
+        self.image_mode_box.configure(values=labels, state="readonly" if enabled else "disabled")
+        self.image_mode_box.current(keys.index(current))
         if not hasattr(self, "_scroll_needed"):
             return  # 界面还没搭完（构造过程中会调用一次）
         if enabled:
@@ -5474,9 +5514,20 @@ class App:
         if self._refuse_when_busy("开始导出"):
             return
         if not self.settings.userhash:
-            messagebox.showwarning("提示", "请先登录或设置饼干。")
-            self.open_login()
-            return
+            # 不登录也让导（v0.22.1 起）：公开串不登录能读到前 100 页，命令行一直是
+            # 这么干的，文档也这么写，只有界面在硬拦。拦着等于「明说不登录能用、
+            # 实际上不能用」。要登录的人这时候可以顺手登。
+            wants_login = messagebox.askyesno(
+                "还没登录",
+                "还没登录，也没设置饼干。\n\n"
+                "公开串不登录也能导，只是每个串只能读到前 100 页；\n"
+                "需要登录才看得见的版块读不到。\n\n"
+                "现在就登录吗？选「否」照样开始导出。",
+            )
+            if wants_login:
+                self.open_login()
+                return
+            self.log("提醒：未登录，只能读取每个串的前 100 页。")
 
         urls = urls if urls is not None else self._collect_urls()
         if not urls:

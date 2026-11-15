@@ -346,11 +346,16 @@ def resolve_cache_dir(preferred: Path | str | None = None) -> tuple[Path, str]:
     return first, ""
 
 
-_THREAD_ID_RE = re.compile(r"(?:^|/t/|/thread/|/id/)(\d{3,})")
+_THREAD_ID_RE = re.compile(r"(?:^|/t/|/thread/|/id/)(\d{3,})(?![0-9A-Za-z])")
 
 
 def parse_thread_id(value: str | int | None) -> int | None:
-    """从网址、纯数字字符串或整数中解析串号。"""
+    """从网址、纯数字字符串或整数中解析串号。
+
+    ``"0"`` 与 ``"12345abc"`` 这类既不构成网址、也不是整段数字的输入一律当解析
+    失败：以前 ``isdigit()`` 只拦字母、``^`` 前缀匹配又会把 ``"12345abc"`` 悄悄
+    截成 12345，两种都会让用户拿着一个错的串号跑一趟。
+    """
     if isinstance(value, bool):  # bool 是 int 的子类，单独挡掉
         return None
     if isinstance(value, int):
@@ -360,7 +365,7 @@ def parse_thread_id(value: str | int | None) -> int | None:
     if match:
         return int(match.group(1))
     if value.isdigit():
-        return int(value)
+        return int(value) if int(value) > 0 else None
     return None
 
 
@@ -824,7 +829,16 @@ class CachedThreadFetcher:
         if raw is _MISSING:
             # 没预取到（没开并行，或者并行那趟把这一页漏了）：现抓。
             # 漏掉的页会在这里按原样重试一次，所以并行失败不会丢页。
-            raw = self._client.fetch_thread_page(thread_id, page)
+            # 单页出错只记成失败页（后面还有补抓机会），不能让它掀翻整趟导出：
+            # 以前这里没有 try，一页超时整串就抛出去了。
+            try:
+                raw = self._client.fetch_thread_page(thread_id, page)
+            except ExportCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 单页失败要退回重试队列
+                failed.add(page)
+                self._last_page_error = f"{type(exc).__name__}: {exc}"
+                return "fail"
         if isinstance(raw, str):
             failed.add(page)
             self._last_page_error = raw

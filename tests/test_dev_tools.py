@@ -299,3 +299,16 @@ def test_github_ships_issue_and_pull_request_templates() -> None:
     assert "python -m pytest -q" in text and "python -m ruff check ." in text, (
         "PR 模板的自查清单里要写清跑哪两条命令"
     )
+
+def test_the_workflows_stop_a_stuck_run_and_build_tests_first() -> None:
+    """CI 的两处缺口（见 docs/backlog/07-ci-assessment.md）：卡住没有上限、打包前不跑测试。"""
+    tests_yml = (ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    build_yml = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+
+    assert tests_yml.count("timeout-minutes:") >= 2
+    assert "timeout-minutes:" in build_yml
+    # 依赖版本钉住，否则上游一升规则集/插件行为就变
+    assert "pytest==9.2.0" in tests_yml
+    assert "pyinstaller==" in build_yml
+    # 打包 workflow 必须先跑用例：坏代码不该还能打出一个包
+    assert "python -m pytest -q -rs" in build_yml

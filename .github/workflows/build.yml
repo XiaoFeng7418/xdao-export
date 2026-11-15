@@ -28,6 +28,8 @@ jobs:
   windows:
     name: windows-latest / py3.12
     runs-on: windows-latest
+    # 打包 + 测试 + 上传，正常 7 分钟左右；给到 40 分钟是防卡死（默认 6 小时太长）。
+    timeout-minutes: 40
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
@@ -37,11 +39,18 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: 装 PyInstaller
+      - name: 装打包与测试依赖
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller
+          # PyInstaller 钉住：不同版本打出来的目录结构与体积会变，出问题难复现
+          python -m pip install pyinstaller==6.22.2 pytest==9.2.0
+
+      # 先跑测试再打包：以前这个 workflow 一条用例都不跑，坏代码照样能打出一个包，
+      # 只是「没通过单元测试的包」这件事没人知道。现在它挡在前面。
+      - name: 单元测试（打包前先自测）
+        run: python -m pytest -q -rs
 
       # 打包脚本自己会先核「版本号 / 发布说明 / 使用说明」三处对齐没有，
       # 再核包内三个 Windows 工具文件的 UTF-8 BOM，最后写 .sha256。

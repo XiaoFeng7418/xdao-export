@@ -21,9 +21,19 @@ from typing import Iterable
 
 from ..client import Post, XdaoClient
 
-_TAG_RE = re.compile(r"<[^>]+>")
+_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
 # 文件名里 Windows 不允许出现的字符。
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
+# 控制字符（含 \x00）也不能进文件名：NTFS 会拒，或者在不同工具里表现不一。
+_CONTROL_FILENAME_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# Windows 的设备名：叫这些名字的文件（无论有没有扩展名）都写不出来。
+# 标题恰好是「PRN」「COM1」这类时，导出会以 FileNotFoundError / FileExistsError
+# 收场且提示莫名其妙，所以在后面补一个下划线绕开。
+_RESERVED_FILENAMES = {
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 # 一句话的结束符，中英文都要覆盖。
 _SENTENCE_SPLIT = re.compile(r"[\n。！？!?]")
 # 正文里 <img src="..."> 的提取。
@@ -41,11 +51,18 @@ def plain_text(value: str) -> str:
 
 
 def sanitize_filename(name: str, fallback: str = "xdao-thread") -> str:
-    """把任意字符串规整成安全的 Windows 文件名（不含扩展名）。"""
-    cleaned = _ILLEGAL_FILENAME_CHARS.sub("_", name).strip()
+    """把任意字符串规整成安全的 Windows 文件名（不含扩展名）。
+
+    除了替换 ``\\ / : * ? " < > |``，还挡掉控制字符（``\\x00`` 会让 ``open()``
+    直接抛 ``ValueError``）和 ``CON`` / ``PRN`` / ``COM1`` 这类设备名（标题恰好
+    叫这些时文件写不出来）。改名只在真的撞上时才发生，普通标题逐字不变。
+    """
+    cleaned = _ILLEGAL_FILENAME_CHARS.sub("_", _CONTROL_FILENAME_CHARS.sub("_", name)).strip()
     cleaned = cleaned.strip(" .")
     if len(cleaned) > 80:
         cleaned = cleaned[:80].strip(" .")
+    if cleaned.upper() in _RESERVED_FILENAMES:
+        cleaned += "_"
     return cleaned or fallback
 
 

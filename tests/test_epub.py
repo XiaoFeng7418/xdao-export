@@ -213,7 +213,12 @@ def test_special_characters_stay_valid_and_readable(artifacts_dir: Path):
 # ---------- 图片 ----------
 
 
-def test_embed_mode_inlines_images_and_writes_files(artifacts_dir: Path):
+def test_embed_mode_inlines_images_and_does_not_store_them_twice(artifacts_dir: Path):
+    """embed 模式只把图内联进 XHTML 一处，不再往 OEBPS/images/ 存第二份。
+
+    v0.22.1 之前同一张图既写进 OEBPS/images/img-NNNN.ext，又编码成 data URI 塞进
+    正文 —— 电子书体积是实际内容的 2.01 倍。
+    """
     client = FakeClient(
         images={
             "https://image.nmb.best/image/attach.jpg": SAMPLE_JPEG,
@@ -235,14 +240,10 @@ def test_embed_mode_inlines_images_and_writes_files(artifacts_dir: Path):
         assert data_uri_bytes(srcs[1]) == SAMPLE_JPEG
 
         stored = [name for name in names if name.startswith("OEBPS/images/")]
-        assert len(stored) == 2
-        blobs = {archive.read(name) for name in stored}
-        assert blobs == {SAMPLE_JPEG, SAMPLE_PNG}
-        # 扩展名必须跟 MIME 对得上：PNG 数据不能存成 .jpg。
-        for name in stored:
-            data = archive.read(name)
-            suffix = Path(name).suffix
-            assert suffix == (".png" if data == SAMPLE_PNG else ".jpg"), name
+        assert stored == [], f"embed 模式不该再存图片文件：{stored}"
+        # OPF 里也不能挂这些图片（挂了就不是合法 EPUB：文件根本不存在）。
+        opf = archive.read("OEBPS/content.opf").decode("utf-8")
+        assert "OEBPS/images/" not in opf
 
 
 def test_url_mode_keeps_absolute_urls(artifacts_dir: Path):
@@ -309,13 +310,33 @@ def test_images_are_downloaded_in_parallel(artifacts_dir: Path):
     assert client.max_inflight > 1, "图片下载还是串行的"
 
 
+class NumberedClient(ParallelClient):
+    """每张图给不同的字节，用来核对「正文第 i 张就是第 i 张图」。"""
+
+    def download_image(self, url: str) -> bytes:
+        index = int(url.rsplit("in", 1)[-1].split(".")[0])
+        return super().download_image(url) + f"-{index}".encode("ascii")
+
+
 def test_parallel_download_keeps_the_original_image_order(artifacts_dir: Path):
-    client = ParallelClient()
+    """并发只影响下载快慢：正文里 data URI 的顺序仍按正文出现顺序。
+
+    （v0.22.1 起 embed 模式不再往 OEBPS/images/ 落文件，所以顺序改在正文里看。）
+    """
+    client = NumberedClient()
     path = build_epub(artifacts_dir, many_image_thread(8), client=client, image_mode="embed")
     with zipfile.ZipFile(path) as archive:
-        stored = sorted(name for name in archive.namelist() if name.startswith("OEBPS/images/"))
-    # 并发只影响下载快慢；落盘编号必须仍按正文出现顺序
-    assert [Path(name).name for name in stored] == [f"img-{i:04d}.jpg" for i in range(1, 9)]
+        pages = sorted(
+            name for name in archive.namelist() if name.startswith("OEBPS/text/post-")
+        )
+        srcs: list[str] = []
+        for name in pages:
+            page = ET.fromstring(archive.read(name))
+            srcs.extend(element.get("src") for element in page.iter(f"{{{XHTML_NS}}}img"))
+        assert not [name for name in archive.namelist() if name.startswith("OEBPS/images/")]
+    assert [data_uri_bytes(src) for src in srcs] == [
+        SAMPLE_JPEG + f"-{i}".encode("ascii") for i in range(8)
+    ]
 
 
 def test_missing_images_are_reported_in_one_line(artifacts_dir: Path):

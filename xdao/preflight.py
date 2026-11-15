@@ -210,7 +210,7 @@ def _check_export_dir(output_dir: str) -> Check:
         return Check(
             name="导出目录",
             status="ok",
-            detail="还没选（首次导出时会让你选一个）",
+            detail="还没设置，默认用「文档\\X岛备份」（不存在会自动建）",
         )
     target = Path(output_dir)
     if can_write_dir(target):

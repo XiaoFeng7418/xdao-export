@@ -178,7 +178,7 @@ def test_config_file_is_checked_before_it_is_parsed_as_json(tmp_path) -> None:
 def test_export_dir_not_chosen_yet_is_ok() -> None:
     check = preflight._check_export_dir("")
     assert check.status == "ok"
-    assert "还没选" in check.detail
+    assert "文档" in check.detail and "自动建" in check.detail
 
 
 def test_export_dir_that_cannot_be_written_is_a_failure(tmp_path, monkeypatch) -> None:

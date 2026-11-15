@@ -16,10 +16,20 @@ ttk 样式只由 :func:`apply_theme` 配置，自定义控件从 ``theme.gap`` /
 
 from __future__ import annotations
 
-import tkinter as tk
 from dataclasses import dataclass
-from tkinter import font as tkfont
-from tkinter import ttk
+
+try:  # 没有 tkinter 的 Python（少数自编译版本）也要能 import 这个模块
+    import tkinter as tk
+    from tkinter import font as tkfont
+    from tkinter import ttk
+except ImportError:  # pragma: no cover —— 只在缺 tkinter 的解释器上走到
+    # 注解都在 ``from __future__ import annotations`` 之后是字符串，不会在这里求值；
+    # 只有真去画界面时才会用到 tk/ttk，那时程序本来就起不来。
+    # 需要这个兜底的原因是 :mod:`xdao.settings` 会 import 本模块里的 PALETTES：
+    # 命令行导出用不到界面，不能因为缺 tkinter 就把整份配置丢掉。
+    tk = None  # type: ignore[assignment]
+    tkfont = None  # type: ignore[assignment]
+    ttk = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------- 调色板
 
