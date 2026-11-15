@@ -134,6 +134,9 @@ def build_three_page_api() -> FakeApi:
         (None, None),
         (True, None),  # bool 不能当串号
         (0, None),
+        ("0", None),  # v0.22.1：字符串 "0" 也不再当成串号 0
+        ("12345abc", None),  # 不是网址、也不是整段数字，别截成 12345 去抓
+        ("abcdef12345", None),
     ],
 )
 def test_parse_thread_id(value, expected):

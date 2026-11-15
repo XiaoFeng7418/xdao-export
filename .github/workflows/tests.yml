@@ -24,6 +24,8 @@ jobs:
   test:
     name: ${{ matrix.os }} / py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    # 不设上限的话，卡住的用例会白白占满 6 小时的默认额度（历史上最长一次 12.8 分钟）。
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -51,11 +53,14 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+          # 依赖就 pytest 与 ruff 两个，缓存住能省掉每次 4~12 秒的下载。
+          cache: pip
 
       - name: 安装测试依赖
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest
+          # 钉住版本：pytest 大版本之间对 addopts / 插件行为的改动会直接改变用例结果
+          python -m pip install pytest==9.2.0
           # 静态检查只用开发期，不进运行时依赖；版本钉住，免得规则集随上游漂移
           python -m pip install ruff==0.17.5
 
@@ -104,6 +109,7 @@ jobs:
   version-consistency:
     name: 版本号与最新 Release 一致
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # 只在推送 tag 时检查：代码版本号必须与 tag 相同，避免发错版本
     if: startsWith(github.ref, 'refs/tags/v')
     steps:

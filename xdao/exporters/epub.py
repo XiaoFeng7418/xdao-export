@@ -33,7 +33,6 @@ from ._shared import (
     guess_mime,
     iter_post_image_urls,
     markdown_images_to_xhtml,
-    mime_to_ext,
     plain_text,
     render_inline_content,
 )
@@ -265,14 +264,12 @@ class EpubBuilder(Exporter):
 
         images: list[tuple[str, bytes]] = []
         for url in urls:
-            data = self._data_cache.get(url)
-            if not data:
+            if not self._data_cache.get(url):
                 # 下载失败静默跳过，绝不让导出整体失败；build 结束再汇总一句。
                 self.missing_images.append(url)
-                continue
-            suffix = mime_to_ext(guess_mime(url, data))
-            name = f"{IMAGE_DIR}/img-{len(images) + 1:04d}{suffix}"
-            images.append((name, data))
+        # embed 模式下正文里的 <img src> 已经是 data URI（整张图内联进 XHTML 了），
+        # 再往 OEBPS/images/ 存一份等于同一张图存两遍，电子书体积白翻一倍。
+        # 这一步只负责把图抓下来（供 data URI 用）并记账，不产出要落盘的条目。
         return images
 
     def _image_src(self, url: str, image_mode: str) -> str:

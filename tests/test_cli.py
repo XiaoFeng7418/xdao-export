@@ -1108,7 +1108,10 @@ def test_until_without_the_cutoff_thread_keeps_everything_at_or_below(
 
 
 def test_until_that_blocks_every_thread_exits_cleanly(out_dir, monkeypatch, capsys):
-    """截止把列表挡光时：不建目录、不连网络，给一句人话并正常退出。"""
+    """截止把列表挡光时：不建目录、不连网络，给一句人话并以 2 退出。
+
+    退出码是 v0.22.1 改的：以前回 0，脚本里分不出「导完了」和「一个都没导」。
+    """
     exporters_module, cache_module = patch_offline(monkeypatch)
     fetcher_class, calls = make_recording_fetcher()
     monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
@@ -1126,12 +1129,50 @@ def test_until_that_blocks_every_thread_exits_cleanly(out_dir, monkeypatch, caps
         ]
     )
 
-    assert code == 0
+    assert code == 2
     assert calls == [], "一个串都被截止挡住了，不该再去抓"
     err = capsys.readouterr().err
     assert "没有要导出的串" in err
     assert "含它" in err
     assert not (out_dir / "xdao-export.log").exists()  # 什么都没导，不该留下日志
+
+
+def test_a_thread_id_that_cannot_be_parsed_says_so(out_dir, monkeypatch, capsys):
+    """认不出串号时要直说「没解析出串号」，不能栽给「串号截止挡光了」。
+
+    v0.22.1 之前 ``abcdef`` 这种输入在合并列表时被静默丢掉，列表因此变空，
+    程序把原因归到 --until 上（而那时根本没给 --until），退出码还是 0。
+    """
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["abcdef", "-f", "html", "-o", str(out_dir)])
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert calls == []
+    assert "没解析出串号" in err and "abcdef" in err
+    assert "一个串号都没认出来" in err
+    assert "串号截止" not in err
+
+
+def test_a_mixed_list_warns_about_the_unreadable_ones_and_still_exports(
+    out_dir, monkeypatch, capsys
+):
+    """一半能认一半认不出：认不出的点到名字提醒一句，剩下的照常导。"""
+    exporters_module, cache_module = patch_offline(monkeypatch)
+    fetcher_class, calls = make_recording_fetcher()
+    monkeypatch.setattr(cache_module, "CachedThreadFetcher", fetcher_class)
+    monkeypatch.setattr(exporters_module, "create_exporter", make_writing_exporter())
+
+    code = main(["https://www.nmbxd1.com/t/7001", "abcdef", "-f", "html", "-o", str(out_dir)])
+
+    err = capsys.readouterr().err
+    assert code == 0
+    assert [url for url, _ in calls] == ["https://www.nmbxd1.com/t/7001"]
+    assert "没解析出串号" in err and "abcdef" in err
 
 
 def test_max_pages_reaches_the_fetcher(out_dir, monkeypatch):

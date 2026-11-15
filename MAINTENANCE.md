@@ -3,6 +3,32 @@
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
 > 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
 
+## 最近一次改动（v0.22.1）
+
+- **左栏底部重叠**（真 bug）：`gui._scroll_area` 用 `holder.pack(...)`，而同容器的底部按钮区是
+  `footer.grid(...)` —— pack 与 grid 混用，两者各画各的，`940x680` 下「开始导出」压住导出目录卡片
+  的缓存行且滚不到。改成 `holder.grid(row=0, column=0, sticky="nsew")`；代价是最小窗口下真的
+  要滚动（内容 521 > 可视 468），测试改成断言「滚动区覆盖全部内容、footer 不压住它」。
+- **未登录不再硬拦导出**：`gui.start()` 改成 `askyesno`，选「否」照样导并写一行「只能读前 100 页」；
+  与 `main.py`（打印提醒后照常导）和 `packaging/使用说明.txt` 的说法对齐。
+- **单页出错不中止**：`cache._process_page` 的现抓分支包 `try/except Exception`，记 `failed` 后继续；
+  收尾仍走 `_retry_failed_pages`。
+- **`parse_thread_id` 收紧**：正则尾部加 `(?![0-9A-Za-z])`，`"0"` / `"12345abc"` 不再被当成串号。
+- **命令行退出码**：`_merge_thread_sources` 返回 `(merged, dropped)`；认不出串号或清单为空时
+  `return 2` 并说清原因，`--until` 挡光也改成 2。
+- **文件名安全**：`sanitize_filename` 先替控制字符、再替非法字符，命中 Windows 保留名
+  （CON/PRN/AUX/NUL/CLOCK$/COM1..9/LPT1..9）时加下划线。
+- **`plain_text` 的标签正则**：`<[^>]+>` → `</?[A-Za-z][^>]*>`，正文里的字面 `<尖括号>` 不再被吞。
+- **EPUB 内嵌不再存两遍图**：`epub._collect_images` 在 embed 模式下下载完只留 `missing_images`，
+  返回 `[]`（正文是 data URI）。
+- **图片下拉框按格式给选项**：新增 `gui.image_mode_options(format_key)`；PDF / EPUB 不再露
+  「存到同名目录」（选了也不生效）。主窗口与 `WatchEditDialog` 都改用它。
+- **没有 tkinter 也能读配置**：`theme.py` 的三个 tkinter 导入包 `try/except ImportError`。
+- **CI**：两个 workflow 都加 `timeout-minutes`、`cache: pip`、钉 `pytest==9.2.0` / `pyinstaller==6.22.2`；
+  `build.yml` 打包前先跑一遍单元测试；`tools/build_zip.py` 的 `--version` 冒烟从「打印」改成「断言」。
+- **文档**：README 下载段补第一次双击的 SmartScreen 提示；自检里「导出目录：还没选（首次导出时
+  会让你选一个）」改成「还没设置，默认用『文档\X岛备份』（不存在会自动建）」—— 界面其实早就预填了。
+
 ## 最近一次改动（v0.22.0）
 
 - **默认两路抓页**：`xdao/cache.py` 的 `DEFAULT_PAGE_WORKERS` 1→2，老配置用

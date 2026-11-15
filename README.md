@@ -226,29 +226,34 @@
 
 https://github.com/XiaoFeng7418/xdao-export/releases
 
-最新版 **v0.22.0** 提供免安装包：
+最新版 **v0.22.1** 提供免安装包：
 
 | 附件 | 什么时候用 |
 |---|---|
-| `xdao-export-v0.22.0-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位），以及协议全文 `LICENSE.txt`。 |
-| `xdao-export-v0.22.0-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
+| `xdao-export-v0.22.1-win64.zip` | **推荐（也是唯一的下载）**。免安装包，解压后双击 `xdao-export.exe`。不做任何解压动作，受限环境也能启动；**功能最全**，附 `诊断写入.ps1` 与 `诊断写入-双击运行.cmd`（写不进去时用来定位），以及协议全文 `LICENSE.txt`。 |
+| `xdao-export-v0.22.1-win64.zip.sha256` | 上面那个包的 SHA256 校验文件。想确认下载到的是原件就照着下面核一遍（一行摘要 + 文件名，用记事本就能看）。 |
 
 
 **下载后核对一下**（v0.13.28 起，每个 Release 都附一份 `.sha256`）：把 zip 和 `.sha256` 放同一个
 文件夹，在 PowerShell 里跑
 
 ```powershell
-Get-FileHash .\xdao-export-v0.22.0-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.22.0-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.22.1-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.22.1-win64.zip.sha256
 ```
 
 第一行输出的字符串应当和 .sha256 里那串一模一样。只想看结论就一条命令：
 
 ```powershell
-$f = 'xdao-export-v0.22.0-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
+$f = 'xdao-export-v0.22.1-win64.zip'; (Get-FileHash $f -Algorithm SHA256).Hash -eq ((Get-Content "$f.sha256") -split '\s+')[0]
 ```
 
 回 `True` 就是原件。（`certutil -hashfile $f SHA256` 也能算，只是它输出大写、还多一行说明。）
+
+> **第一次双击可能被 Windows 拦一下**。这个程序还没有代码签名，双击后可能弹「Windows 已保护你的电脑」——
+> 点「更多信息」→「仍要运行」即可（也可以在文件上右键 → 属性 → 底下勾「解除锁定」）。
+> 该不该信它，唯一的判据是上面那句 `.sha256` 比对结果；签名进展见
+> [`docs/SIGNING.md`](docs/SIGNING.md) 与下文「代码签名政策」一节。
 
 > **单文件版（`xdao-export-vX.Y.Z.exe`）从 v0.5.1 起不再提供**。它的启动器会把内容解压到
 > 系统临时目录，只要解压出来的文件夹路径里带中文/非 ASCII 字符，或者临时目录不可写，就会弹出
@@ -724,7 +729,7 @@ xdao-export/
 ├─ tools/build_zip.py      打免安装包 + 写 .sha256（本机与 CI 都用它）
 ├─ 诊断写入.ps1            导出目录写不进去时用来定位（随免安装包一起发出）
 ├─ 诊断写入-双击运行.cmd   不会用命令行就双击它，跑完留下诊断结果报告
-└─ tests/                  2802 个离线单元测试（2795 通过，另 7 个真机用例默认跳过）
+└─ tests/                  2813 个离线单元测试（2806 通过，另 7 个真机用例默认跳过）
 ```
 
 ## 开发

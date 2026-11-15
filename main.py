@@ -713,10 +713,15 @@ def _resolve_pdf_options(args: argparse.Namespace, settings):
     return options, ""
 
 
-def _merge_thread_sources(args: argparse.Namespace) -> list[str] | str:
+def _merge_thread_sources(args: argparse.Namespace) -> tuple[list[str], list[str]] | str:
     """把命令行上写的串号与 --input 指的清单合成一份（去重、保序）。
 
-    返回字符串表示清单读不了，那个字符串是给人看的原因。
+    返回 ``(留下的那些, 认不出串号的那些)``；返回字符串表示清单读不了，
+    那个字符串是给人看的原因。
+
+    认不出的条目单独还回去：以前它们在 ``run_cli`` 里被静默丢掉，列表因此变空，
+    于是程序把「你写的是 abcdef」报成「串号截止把列表全挡住了」—— 原因完全对不上，
+    退出码还是 0。
     """
     from xdao.cache import parse_thread_id
     from xdao.threadlist import ThreadListError, read_thread_list
@@ -729,14 +734,18 @@ def _merge_thread_sources(args: argparse.Namespace) -> list[str] | str:
         except ThreadListError as exc:
             return str(exc)
     merged: list[str] = []
+    dropped: list[str] = []
     seen: set[int] = set()
     for item in items:
         thread_id = parse_thread_id(item)
-        if thread_id is None or thread_id in seen:
+        if thread_id is None:
+            dropped.append(item)
+            continue
+        if thread_id in seen:
             continue
         seen.add(thread_id)
         merged.append(item)
-    return merged
+    return merged, dropped
 
 
 def run_cli(args: argparse.Namespace) -> int:
@@ -762,7 +771,7 @@ def run_cli(args: argparse.Namespace) -> int:
     until_thread_id = _effective_until(args, settings)
     # 正文字号同理：命令行优先、其次配置，默认 14（＝老版本写死的值）。
     font_size = _effective_font_size(args, settings)
-    # 并行抓页：默认 1 路（串行），命令行优先、其次配置。
+    # 并行抓页：默认 2 路（两页一起抓），命令行优先、其次配置。
     page_workers = _effective_page_workers(args, settings)
     # 断点续跑：--skip-existing 一旦给了就开；没给就看配置里的开关。
     merge_export = bool(getattr(args, "merge", False))
@@ -776,9 +785,25 @@ def run_cli(args: argparse.Namespace) -> int:
         # 清单文件读不了：在连网络之前就把原因摆出来。
         print(f"清单文件有误：{requested}", file=sys.stderr)
         return 2
-    export_urls, skipped_urls = filter_until_thread_id(requested, until_thread_id)
+    requested_urls, dropped_urls = requested
+    if dropped_urls:
+        shown = "、".join(repr(item) for item in dropped_urls[:5])
+        more = f"（还有 {len(dropped_urls) - 5} 条没列出来）" if len(dropped_urls) > 5 else ""
+        print(
+            f"这些输入里没解析出串号，已经跳过：{shown}{more}\n"
+            "串号可以写成纯数字（例如 50000001），也可以整条网址粘过来。",
+            file=sys.stderr,
+        )
+    if not requested_urls:
+        if dropped_urls:
+            print("没有可导出的串：上面的输入里一个串号都没认出来。", file=sys.stderr)
+            return 2
+        print("没有可导出的串：命令行上既没给串号，--input 的清单也是空的。", file=sys.stderr)
+        return 2
+    export_urls, skipped_urls = filter_until_thread_id(requested_urls, until_thread_id)
     if not export_urls:
-        # 不是错误：列表被截止挡光了。说清楚规则，用户改一个数就能重来。
+        # 列表被截止挡光了。说清楚规则，用户改一个数就能重来；但这次确实什么都没导，
+        # 退出码给 2（以前是 0，脚本里看不出「压根没跑」）。
         print(
             "串号截止把列表里的串全都挡住了，没有要导出的串。\n"
             f"截止是「抓到串号 {until_thread_id} 为止（含它）」："
@@ -786,7 +811,7 @@ def run_cli(args: argparse.Namespace) -> int:
             "把 --until 改成更大的串号、或去掉这个开关后重试。",
             file=sys.stderr,
         )
-        return 0
+        return 2
     client = XdaoClient(
         timeout=settings.timeout,
         retries=settings.retries,

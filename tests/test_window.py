@@ -205,12 +205,27 @@ def test_columns_do_not_overlap(columns) -> None:  # noqa: ANN001
     assert left.winfo_x() + left.winfo_width() <= right.winfo_x() + 1
 
 
+def scroll_canvas(app: gui.App) -> tk.Canvas:
+    """左栏滚动区那块 ``tk.Canvas``（底部按钮区是它的兄弟）。"""
+    columns = _grid_child(app.root.winfo_children()[0], 1, 0)
+    holder = _grid_child(columns, 0, 0)
+    for child in holder.winfo_children():
+        if isinstance(child, tk.Canvas):
+            return child
+    raise AssertionError("左栏里没找到滚动区的画布")
+
+
 def test_scroll_area_does_not_show_a_scrollbar_when_it_fits(app: gui.App) -> None:
     assert app._scroll_needed is False  # noqa: SLF001
 
 
 def test_layout_fits_at_the_minimum_window_size(app: gui.App) -> None:
-    """最小尺寸（1366x768 笔记本也要能用）下按钮区仍然完整可见。"""
+    """最小尺寸（1366x768 笔记本也要能用）下按钮区仍然完整可见。
+
+    左栏内容（输入串、抓取范围、导出格式、导出目录、缓存）在 940x680 下确实比
+    可视区高几十像素，所以让它滚动 —— 关键是不能再像以前那样把底部按钮压在
+    缓存那一行上（见 :func:`test_footer_does_not_cover_the_scroll_area`）。
+    """
     app.root.geometry("940x680")
     for _ in range(3):
         app.root.update_idletasks()
@@ -221,8 +236,31 @@ def test_layout_fits_at_the_minimum_window_size(app: gui.App) -> None:
     assert bottom <= app.root.winfo_height(), (
         f"最小尺寸下进度条底边 {bottom} 超出了窗口高度 {app.root.winfo_height()}"
     )
-    # 装不下时应该出现滚动条（而不是把内容裁掉）
-    assert app._scroll_needed is False  # noqa: SLF001
+    # 装不下就滚动（而不是把内容裁掉）：滚动区必须覆盖全部内容高度
+    canvas = scroll_canvas(app)
+    assert app._scroll_needed is True  # noqa: SLF001
+    region = [int(float(part)) for part in str(canvas.cget("scrollregion")).split()]
+    assert region[3] >= canvas.winfo_height(), f"滚动区没覆盖全部内容：{region}"
+
+
+def test_footer_does_not_cover_the_scroll_area(app: gui.App) -> None:
+    """底部按钮区必须在滚动区下面，不能压住它。
+
+    v0.22.1 之前左栏的滚动区用 ``pack``、底部按钮区用 ``grid``，同一个容器里两种
+    布局管理器各画各的：真机 940x680 时「开始导出」压在导出目录卡片上，缓存那一行
+    永远看不见，滚动也滚不到。
+    """
+    app.root.geometry("940x680")
+    for _ in range(3):
+        app.root.update_idletasks()
+        app.root.update()
+    canvas = scroll_canvas(app)
+    footer = _grid_child(_grid_child(app.root.winfo_children()[0], 1, 0), 1, 0)
+    canvas_bottom = canvas.winfo_rooty() - app.root.winfo_rooty() + canvas.winfo_height()
+    footer_top = footer.winfo_rooty() - app.root.winfo_rooty()
+    assert footer_top >= canvas_bottom - 1, (
+        f"底部按钮区顶边 {footer_top} 压在了滚动区底边 {canvas_bottom} 上"
+    )
 
 
 # ---------------------------------------------------------------- 底部按钮区
@@ -2708,18 +2746,43 @@ def test_worker_closes_the_window_when_cancelled_mid_start(monkeypatch) -> None:
 # ---------- 导出与监控的早期退出分支（v0.21.12）----------
 
 
-def test_start_asks_for_a_cookie_before_doing_anything(app: gui.App, monkeypatch) -> None:
-    """没登录就先别抓：弹一句并把登录窗打开，用户少一次「点了没反应」。"""
-    warned: list[tuple] = []
+def test_start_offers_to_log_in_instead_of_blocking_export(app: gui.App, monkeypatch) -> None:
+    """没登录时给个二选一：现在登录，或者照样导（公开串能读前 100 页）。
+
+    v0.22.1 之前这里是硬拦（弹「请先登录或设置饼干。」再把登录窗打开），
+    可是命令行与使用说明都写着「不登录也能用，只能读到前 100 页」——
+    同一个程序两种说法，界面那条还让「不登录能不能导」变成不能。
+    """
+    asked: list[tuple] = []
     opened: list[bool] = []
-    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warned.append(a))
+    monkeypatch.setattr(
+        gui.messagebox, "askyesno", lambda *a, **k: asked.append(a) or True
+    )
     monkeypatch.setattr(app, "open_login", lambda: opened.append(True))
     app.settings.userhash = ""
 
     app.start()
 
-    assert warned == [("提示", "请先登录或设置饼干。")]
+    assert asked and asked[0][0] == "还没登录"
     assert opened == [True]
+
+
+def test_start_exports_anyway_when_the_user_declines_to_log_in(
+    app: gui.App, monkeypatch
+) -> None:
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
+    warned: list[tuple] = []
+    monkeypatch.setattr(gui.messagebox, "showwarning", lambda *a, **k: warned.append(a))
+    monkeypatch.setattr(
+        app, "open_login", lambda: pytest.fail("选了「否」就不该再开登录窗")
+    )
+    monkeypatch.setattr(app, "_collect_urls", lambda: [])
+    app.settings.userhash = ""
+
+    app.start()
+
+    assert "未登录，只能读取每个串的前 100 页" in app.log_text.get("1.0", "end")
+    assert warned == [("提示", "请至少输入一个串网址。")]
 
 
 def test_start_asks_for_at_least_one_url(app: gui.App, monkeypatch) -> None:
@@ -3962,3 +4025,27 @@ def test_watch_check_points_the_client_at_the_image_cache(app: gui.App, monkeypa
     app.check_watch_once()
     assert app.client.image_cache_dir is not None
     assert app.client.image_cache_dir.parent == app.current_cache_dir()
+
+def test_image_mode_options_hide_the_folder_mode_for_pdf_and_epub() -> None:
+    """「存到同名目录」只对 HTML / Markdown 有意义：PDF 在内存里渲染、EPUB 是 zip。"""
+    for key in ("html", "markdown"):
+        keys, labels = gui.image_mode_options(key)
+        assert keys == ["embed", "url", "drop", "folder"]
+        assert labels[-1] == "存到同名目录"
+    for key in ("pdf", "epub", "txt"):
+        keys, labels = gui.image_mode_options(key)
+        assert keys == ["embed", "url", "drop"]
+        assert "存到同名目录" not in labels
+
+
+def test_the_image_box_hides_the_folder_mode_when_the_format_is_epub(app: gui.App) -> None:
+    """选 EPUB 时下拉框里不该留一个选了也不生效的「存到同名目录」。"""
+    app.format_box.current(app._format_keys.index("html"))
+    app._sync_image_mode()
+    app.image_mode_box.current(app._image_mode_keys.index("folder"))
+
+    app.format_box.current(app._format_keys.index("epub"))
+    app._sync_image_mode()
+
+    assert list(app.image_mode_box.cget("values")) == ["内嵌图片", "仅保留链接", "丢弃图片"]
+    assert app.current_image_mode() == "embed"

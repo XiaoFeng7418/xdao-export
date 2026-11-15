@@ -329,13 +329,29 @@ def main(argv: list[str] | None = None) -> int:
 
         exe = stage / LAUNCHER_NAME
         if os.name == "nt":
-            for extra in (["--version"], ["--selftest"]):
-                done = subprocess.run(
-                    [str(exe), *extra], capture_output=True, text=True,
-                    encoding="utf-8", errors="replace",
-                )
-                tail = " | ".join((done.stdout or done.stderr or "").strip().splitlines()[-2:])
-                print(f"  {' '.join(extra)} → 退出码 {done.returncode}：{tail}", flush=True)
+            # --version 必须报出这次的版本号：打错了版本（比如忘了改 xdao/__init__.py）
+            # 以前只是把它打印出来，谁也没看；现在它直接判失败。
+            done = subprocess.run(
+                [str(exe), "--version"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            )
+            text = (done.stdout or "") + (done.stderr or "")
+            tail = " | ".join(text.strip().splitlines()[-2:])
+            print(f"  --version → 退出码 {done.returncode}：{tail}", flush=True)
+            if done.returncode != 0:
+                print("  × 包里的程序起不来（--version 退出码不是 0）", flush=True)
+                return 1
+            if version not in text:
+                print(f"  × --version 没报出 {version}，包里的版本号不对", flush=True)
+                return 1
+            # --selftest 查的是这台机器（有没有浏览器、能不能出网），本机被安全软件
+            # 拦未签名程序时也会报问题，所以只打印不拦（理由见 docs/backlog/07-ci-assessment.md）。
+            done = subprocess.run(
+                [str(exe), "--selftest"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            )
+            tail = " | ".join((done.stdout or done.stderr or "").strip().splitlines()[-2:])
+            print(f"  --selftest → 退出码 {done.returncode}：{tail}", flush=True)
 
         if args.release_dir:
             release_dir = Path(args.release_dir).resolve()
