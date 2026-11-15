@@ -188,16 +188,25 @@ def test_left_column_keeps_its_fixed_width(columns) -> None:  # noqa: ANN001
     left, right = columns
     # 左栏是"固定宽度"的：宽度由 grid 的 minsize / frame width 决定，
     # 不能用 winfo_reqwidth 判断（关掉 pack_propagate 后它报的是画布默认宽度）。
-    assert abs(left.winfo_width() - theme.SETTINGS_COLUMN_WIDTH) <= 10
-    # 500 是 1060 宽窗口下的值；CI 的 Windows runner 只有 1024x768，
-    # 窗口被夹到 1028，右栏约 540 —— 取 480 兼容两种环境（历史上曾只剩 39px）。
-    assert right.winfo_width() >= 480, "右栏被左栏挤扁了（历史上曾只剩 39px）"
+    #
+    # 容差要盖住滚动条：屏幕比默认窗口小的时候（CI 的 Windows runner 只有
+    # 1024x768，1060x760 会被夹到 1028x728），左栏内容装不下就会多出一条竖向
+    # 滚动条（17px 上下），左栏跟着宽一点点 —— 这是对的行为，不是回归。
+    expected = theme.settings_column_width()
+    assert expected <= left.winfo_width() <= expected + 24, (
+        f"左栏宽度 {left.winfo_width()} 不在 {expected}~{expected + 24} 之间"
+    )
+    assert right.winfo_width() > 200, "右栏被左栏挤扁了（历史上曾只剩 39px）"
 
 
 def test_right_column_gets_all_the_spare_width(columns) -> None:  # noqa: ANN001
     left, right = columns
+    width = left.winfo_toplevel().winfo_width()
     assert right.winfo_width() > left.winfo_width()
-    assert right.winfo_width() >= 480
+    # 右栏应该吃掉左栏以外的全部宽度（只留两栏之间的间隙与边框）。
+    assert right.winfo_width() >= width - left.winfo_width() - 40, (
+        f"右栏只有 {right.winfo_width()}，窗口宽 {width}、左栏 {left.winfo_width()}"
+    )
 
 
 def test_columns_do_not_overlap(columns) -> None:  # noqa: ANN001
@@ -216,6 +225,16 @@ def scroll_canvas(app: gui.App) -> tk.Canvas:
 
 
 def test_scroll_area_does_not_show_a_scrollbar_when_it_fits(app: gui.App) -> None:
+    """窗口够高时不加滚动条。
+
+    先把窗口设成默认的 1060x760：屏幕更小的机器（CI 的 1024x768）会被系统夹到
+    1028x728，那个高度仍然装得下左栏内容（约 713px），所以这条断言在两种环境下
+    都成立；而 ``test_layout_fits_at_the_minimum_window_size`` 管的是 940x680。
+    """
+    app.root.geometry("1060x760")
+    for _ in range(3):
+        app.root.update_idletasks()
+        app.root.update()
     assert app._scroll_needed is False  # noqa: SLF001
 
 

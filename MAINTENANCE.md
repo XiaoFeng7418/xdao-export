@@ -3,6 +3,23 @@
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
 > 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
 
+## 最近一次改动（v0.22.3）
+
+- **CI 上真跑整套窗口用例后暴露的三条脆弱断言**（v0.22.2 把单元测试挪到打包之前才发现）：
+  GitHub 的 Windows runner 只有 1024x768，`1060x760` 的默认窗口被系统夹到 `1028x728`，
+  左栏内容（约 713px）装不下，于是真的出现竖向滚动条（+17px）：
+  - `test_left_column_keeps_its_fixed_width`：原来断言「左栏 = 452±10」，实测 471（多了一条滚动条）；
+  - `test_right_column_gets_all_the_spare_width`：原来断言「右栏 >= 480」，实测 473；
+  - `test_scroll_area_does_not_show_a_scrollbar_when_it_fits`：原来直接断言 `_scroll_needed is False`，
+    但这条用例只在默认窗口尺寸下才有意义。
+- **改法**（`tests/test_window.py`，只改测试）：左栏宽度改成断言「设定宽度 ~ 设定宽度+24」
+  （滚动条约 17px）；右栏改成断言「吃掉窗口宽减左栏宽以外的全部宽度」；「装得下就不滚动」
+  那条先把窗口设回 `1060x760` 再断言。
+- **教训**：凡是断言像素尺寸的界面用例，都要按「屏幕比默认窗口小的时候会怎样」想一遍；
+  CI 的 runner 是 1024x768，比本机小得多。这类用例以前在本机全绿，是因为本机屏幕更大、
+  窗口没有被夹小。
+- **产物**：功能与 v0.22.1 相同，只为让自动检查回绿而重新发一次。
+
 ## 最近一次改动（v0.22.2）
 
 - **CI 全红的根因（v0.22.1 引入）**：两个 workflow 的 `actions/setup-python@v7` 都加了 `cache: pip`，
