@@ -2,12 +2,17 @@
 
 **简体中文** ｜ [English](README.en.md)
 
-**X 岛的串，整份存到本地。** 免安装包解压双击就能用 —— 不用装 Python，也不用按 F12 抄饼干。
+**X 岛的串，整份存到本地。** 游客只能看前 100 页，它从第一楼取到最后一楼；图片内嵌成单文件，断了下次接着抓。
 
 [![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
 [![latest release](https://img.shields.io/github/v/release/XiaoFeng7418/xdao-export)](https://github.com/XiaoFeng7418/xdao-export/releases/latest)
 [![license](https://img.shields.io/github/license/XiaoFeng7418/xdao-export)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+
+**两条路径，按需要选一条：**
+
+- **直接下载使用（推荐，不需要 Python）** → 到 [Releases 页](https://github.com/XiaoFeng7418/xdao-export/releases/latest) 下载最新免安装包 `xdao-export-vX.Y.Z-win64.zip`，解压后双击 `xdao-export.exe`。下面[下载（打包版）](#下载打包版)一节有校验方法。
+- **源码运行（开发者/高级用户）** → 需要 Python 3.10+（官方安装包自带 tkinter），无第三方依赖，`python main.py`。下面[从源码运行](#从源码运行)一节有说明。
 
 **这是什么**：一个 Windows 桌面小工具（也能纯命令行跑），把 X 岛（nmbxd1.com）上一个串从第一楼取到最后一楼，存成本地文件。
 
