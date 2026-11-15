@@ -3,6 +3,23 @@
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
 > 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
 
+## 最近一次改动（v0.22.4）
+
+- **build job 红的根因（v0.22.1 引入）**：发给包之前的冒烟检查里，`--version` 的判定从
+  「只打印」改成了「判失败」。可是 PyInstaller 用 `--windowed` 打出来的程序没有控制台，
+  GitHub 的 Windows runner 上抓不到它的 stdout（日志里是 `--version → 退出码 0：` 后面空白），
+  于是断言必然失败；本机抓得到，所以本机一直是绿的。v0.22.0 的成功构建里同样是空白，
+  只是那时这行不判。
+- **改法**（`tools/build_zip.py`）：新增 `pe_product_version()`，用 ctypes 读 exe 的 PE 版本
+  资源（`ProductVersion`）；`--version` 的输出里认不出当前版本时按它判。语言块名要按
+  「langid 小端 WORD + 代码页小端 WORD」解码（`04 08 b0 04` ⇒ `080404B0`），第一版直接拼
+  字节十六进制查不到东西、读出 None。
+- **判定抽成纯函数** `version_check(version, output, pe_version)`，`main()` 只负责打印；
+  `tests/test_build_zip.py` 补 6 条用例把四种组合钉住（含「输出空的但 PE 版本对得上」）。
+- **教训**：凡是「本机跑得通」的冒烟检查，先想一遍 CI 的 runner 有没有同样的条件；
+  依赖程序自身 stdout 的检查在窗口程序上天生不可靠。
+- **产物**：功能与 v0.22.3 相同，只为让自动检查回绿而重新发一次。
+
 ## 最近一次改动（v0.22.3）
 
 - **CI 上真跑整套窗口用例后暴露的三条脆弱断言**（v0.22.2 把单元测试挪到打包之前才发现）：
