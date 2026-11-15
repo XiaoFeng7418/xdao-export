@@ -169,6 +169,75 @@ def check_docs(repo: Path, version: str) -> list[str]:
     return problems
 
 
+def pe_product_version(path: Path) -> str | None:
+    """读 Windows PE 版本资源里的 ``ProductVersion``；读不到返回 None。
+
+    PyInstaller 用 ``--windowed`` 打出来的程序没有控制台，``--version`` 的输出在有些
+    环境（CI 的 runner）里抓不到 —— v0.22.3 的构建因此误判过一次（本机抓得到、
+    CI 抓不到）。PE 版本资源是 exe 里真实带着的东西，抓不到 stdout 时拿它兜底。
+    """
+    if os.name != "nt":  # pragma: no cover - 只在 Windows 上有意义
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        api = ctypes.windll.version
+        size = api.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+        buffer = ctypes.create_string_buffer(size)
+        if not api.GetFileVersionInfoW(str(path), 0, size, buffer):
+            return None
+        value = ctypes.c_void_p()
+        length = wintypes.UINT()
+        # Translation 里的每一项是「langid（小端 WORD）+ 代码页（小端 WORD）」，
+        # 例如 04 08 b0 04 表示 0x0804 / 0x04B0，块名要写成 080404B0。
+        chips = [(0x0804, 0x04B0)]
+        if api.VerQueryValueW(
+            buffer, "\\VarFileInfo\\Translation",
+            ctypes.byref(value), ctypes.byref(length),
+        ) and value and length.value:
+            table = ctypes.string_at(value, length.value)
+            found = [
+                (
+                    int.from_bytes(table[i:i + 2], "little"),
+                    int.from_bytes(table[i + 2:i + 4], "little"),
+                )
+                for i in range(0, len(table) - 3, 4)
+            ]
+            if found:
+                chips = found
+        for langid, codepage in chips:
+            block = (
+                f"\\StringFileInfo\\{langid:04X}{codepage:04X}\\ProductVersion"
+            )
+            ok = api.VerQueryValueW(
+                buffer, block, ctypes.byref(value), ctypes.byref(length)
+            )
+            if ok and value and length.value:
+                return ctypes.wstring_at(value, length.value).split("\x00")[0].strip()
+    except Exception:  # pragma: no cover - 读 PE 失败不该拦住打包
+        return None
+    return None
+
+
+def version_check(
+    version: str, output: str, pe_version: str | None
+) -> tuple[bool, str]:
+    """判断包里程序的版本号对不对，返回 ``(是否通过, 一行说明)``。
+
+    ``output`` 是 ``--version`` 抓到的输出，``pe_version`` 是 exe 里 PE 版本资源的
+    ``ProductVersion``（抓不到就是 None）。有些环境（CI 的 runner）抓不到
+    ``--windowed`` 程序的 stdout，那时只能按 PE 版本判。
+    """
+    if version in output:
+        return True, ""
+    if pe_version and pe_version.startswith(version):
+        return True, f"抓不到 --version 的输出，改按 exe 的 ProductVersion 判：{pe_version}"
+    return False, f"--version 没报出 {version}，exe 的 ProductVersion 是 {pe_version}"
+
+
 def kill_leftover_exe() -> None:
     """清掉还在跑的打包版进程。
 
@@ -341,8 +410,14 @@ def main(argv: list[str] | None = None) -> int:
             if done.returncode != 0:
                 print("  × 包里的程序起不来（--version 退出码不是 0）", flush=True)
                 return 1
-            if version not in text:
-                print(f"  × --version 没报出 {version}，包里的版本号不对", flush=True)
+            # 抓不到 stdout 时（--windowed 的程序在 CI 上没有控制台）用 PE 版本
+            # 资源兜底：ProductVersion 同样是 exe 里真实带着的版本号。
+            ok, note = version_check(version, text, pe_product_version(exe))
+            if ok:
+                if note:
+                    print(f"  （{note}）", flush=True)
+            else:
+                print(f"  × {note}", flush=True)
                 return 1
             # --selftest 查的是这台机器（有没有浏览器、能不能出网），本机被安全软件
             # 拦未签名程序时也会报问题，所以只打印不拦（理由见 docs/backlog/07-ci-assessment.md）。
