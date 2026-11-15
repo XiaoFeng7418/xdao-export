@@ -53,8 +53,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
-          # 依赖就 pytest 与 ruff 两个，缓存住能省掉每次 4~12 秒的下载。
-          cache: pip
+          # 不写 cache: pip —— 仓库没有 requirements.txt / pyproject.toml，
+          # setup-python 找不到依赖清单会直接报错（v0.22.1 的 CI 就是这么红的）。
+          # 依赖只有 pytest 与 ruff 两个，装一次 4~12 秒，不值得为它维护清单。
 
       - name: 安装测试依赖
         run: |
