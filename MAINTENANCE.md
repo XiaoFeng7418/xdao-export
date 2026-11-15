@@ -3,6 +3,18 @@
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
 > 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
 
+## 最近一次改动（v0.22.2）
+
+- **CI 全红的根因（v0.22.1 引入）**：两个 workflow 的 `actions/setup-python@v7` 都加了 `cache: pip`，
+  而本仓库没有 `requirements.txt` / `pyproject.toml`（只用标准库），setup-python 找不到依赖清单会
+  直接报 `No file ... matched to [**/requirements.txt or **/pyproject.toml] for pip`，于是推 `v0.22.1`
+  之后 build / tests@master / tests@tag 三条 run 一开始就红。
+- **改法**：`.github/workflows/tests.yml` 与 `build.yml` 都去掉 `cache: pip`，并在原处写明原因
+  「仓库没有依赖清单、依赖只有 pytest 与 ruff、装一次 4~12 秒不值得维护清单」。
+- **教训**：给 workflow 加缓存这类「顺手优化」，必须在本机先确认它依赖的文件真的存在；CI 的失败
+  点会在第一步（setup-python）就炸，而不是在测试步骤，容易误判成用例问题。
+- **产物**：功能与 v0.22.1 完全相同，只为让自动检查回绿而重新发一次。
+
 ## 最近一次改动（v0.22.1）
 
 - **左栏底部重叠**（真 bug）：`gui._scroll_area` 用 `holder.pack(...)`，而同容器的底部按钮区是

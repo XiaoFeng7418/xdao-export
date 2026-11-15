@@ -39,7 +39,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
+          # 不写 cache: pip —— 仓库没有依赖清单，setup-python 会报错（见 tests.yml 的说明）。
 
       - name: 装打包与测试依赖
         run: |
