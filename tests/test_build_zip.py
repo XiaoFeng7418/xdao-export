@@ -272,3 +272,54 @@ def test_the_command_line_still_has_the_hidden_pdf_diagnose_switch() -> None:
     parser = build_parser()
     action = next(item for item in parser._actions if "--pdfdiag" in item.option_strings)
     assert action.help == argparse.SUPPRESS
+
+
+# ---------------------------------------------------------------------------
+# 版本号判定（CI 上抓不到 --windowed 程序的 stdout，见 v0.22.3 的 build job）
+
+
+def test_version_check_passes_when_the_output_names_the_version() -> None:
+    ok, note = build_zip.version_check("0.22.3", "X岛串导出工具 0.22.3\n", None)
+    assert ok is True
+    assert note == ""
+
+
+def test_version_check_falls_back_to_the_pe_version_when_the_output_is_empty() -> None:
+    # CI 上就是这个样子：退出码 0，但抓不到任何输出。
+    ok, note = build_zip.version_check("0.22.3", "", "0.22.3")
+    assert ok is True
+    assert "ProductVersion" in note
+
+
+def test_version_check_rejects_a_pe_version_that_does_not_match() -> None:
+    ok, note = build_zip.version_check("0.22.3", "", "0.22.2")
+    assert ok is False
+    assert "0.22.2" in note
+    assert "0.22.3" in note
+
+
+def test_version_check_rejects_a_build_without_any_version_at_all() -> None:
+    ok, note = build_zip.version_check("0.22.3", "", None)
+    assert ok is False
+    assert "None" in note
+
+
+def test_version_check_accepts_the_output_even_when_the_pe_version_is_missing() -> None:
+    ok, note = build_zip.version_check("0.22.3", "X岛串导出工具 0.22.3 ", None)
+    assert ok is True
+    assert note == ""
+
+
+def test_pe_product_version_reads_the_exe_of_this_repository_when_there_is_one() -> None:
+    # 本机没打过包时跳过（CI 与干净环境里没有 dist/）。只看当前这一版的目录：
+    # dist/ 里躺着从 v0.13 起的所有旧包，随便抓一个会读到上个版本的号。
+    version = build_zip.read_version(ROOT)
+    exe = next(
+        iter(sorted((ROOT / "dist" / f"xdao-export-v{version}").glob("**/xdao-export.exe"))),
+        None,
+    )
+    if exe is None:
+        pytest.skip(f"这台机器上没有打过 v{version} 的包，读不到 exe 的版本资源")
+    found = build_zip.pe_product_version(exe)
+    assert found is not None
+    assert found.startswith(version)
