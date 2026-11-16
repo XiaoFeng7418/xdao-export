@@ -15,6 +15,8 @@ import tkinter as tk
 import pytest
 
 from xdao import theme
+
+from . import conftest
 from xdao.widgets import (
     Card,
     FlatText,
@@ -30,6 +32,9 @@ from xdao.widgets import (
 @pytest.fixture(scope="module")
 def window() -> tk.Tk:
     """真根窗口（隐藏）；没有显示环境时跳过整组。"""
+    problem = conftest.display_problem()
+    if problem is not None:
+        pytest.skip(f"没有可用的显示环境：{problem}")
     try:
         root = tk.Tk()
     except tk.TclError as exc:  # pragma: no cover - 取决于运行环境

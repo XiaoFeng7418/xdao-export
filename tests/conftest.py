@@ -248,6 +248,45 @@ def _tk_module():
     return tkinter
 
 
+# 「这台机器能不能建 Tk 根窗口」的结论只探一次，存这里（None = 能建）。
+_DISPLAY_PROBE: dict[str, str | None] = {}
+
+
+def display_problem(timeout: float = 5.0) -> str | None:
+    """探一次有没有可用的显示环境；能建窗口返回 None，否则返回失败原因。
+
+    为什么要缓存：没有 $DISPLAY 的机器上 ``tk.Tk()`` 抛 ``TclError``，而各模块
+    的建窗助手都会「重试几秒再放弃」——2026-11-16 用 ``--durations=0`` 量到
+    ``tests/test_gui_entry.py`` 有 110 条 setup 各 5.04 秒（CI 的 ubuntu 矩阵
+    12 分钟里 9 分钟是这个空转）。探一次、全班秒跳，行为与跳过理由都不变。
+
+    注意：确认「能建」时不缓存结论，各模块该重试还是重试 —— 真桌面上
+    ``Tk()`` 偶发抖动是本机实测过的，那种情况重试就能过。
+    """
+    if "reason" in _DISPLAY_PROBE:
+        return _DISPLAY_PROBE["reason"]
+    import time
+
+    tkinter = _tk_module()
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            root = tkinter.Tk()
+        except tkinter.TclError as exc:  # pragma: no cover - 取决于运行环境
+            if time.monotonic() >= deadline:
+                _DISPLAY_PROBE["reason"] = str(exc)
+                return _DISPLAY_PROBE["reason"]
+            time.sleep(0.2)
+            continue
+        try:
+            root.withdraw()
+            root.destroy()
+        except tkinter.TclError:  # pragma: no cover - 已经没了
+            pass
+        _DISPLAY_PROBE["reason"] = None
+        return None
+
+
 def _tk_objects() -> list:
     """把还活着的 Tk 部件/变量都捞出来（要自己先 gc 一次）。"""
     tkinter = _tk_module()

@@ -25,6 +25,8 @@ import xdao.gui as gui
 from xdao import pdf_opts
 from xdao.settings import AppSettings
 
+from . import conftest
+
 
 class FakeRoot:
     """最小可用的 Tk 替身：只记录 after/mainloop 有没有被调用。"""
@@ -475,6 +477,9 @@ def test_pdf_page_ranges_text_normalizes_and_keeps_good_values():
 
 def _make_root(timeout: float = 5.0) -> tk.Tk:
     """建根窗口；偶发 ``TclError`` 是环境抖动，重试几秒再放弃。"""
+    problem = conftest.display_problem(timeout)
+    if problem is not None:
+        raise tk.TclError(problem)
     deadline = time.monotonic() + timeout
     while True:
         try:
