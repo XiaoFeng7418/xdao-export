@@ -300,6 +300,7 @@ def test_github_ships_issue_and_pull_request_templates() -> None:
         "PR 模板的自查清单里要写清跑哪两条命令"
     )
 
+
 def test_the_workflows_stop_a_stuck_run_and_build_tests_first() -> None:
     """CI 的两处缺口（见 docs/backlog/07-ci-assessment.md）：卡住没有上限、打包前不跑测试。"""
     tests_yml = (ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
@@ -312,3 +313,32 @@ def test_the_workflows_stop_a_stuck_run_and_build_tests_first() -> None:
     assert "pyinstaller==" in build_yml
     # 打包 workflow 必须先跑用例：坏代码不该还能打出一个包
     assert "python -m pytest -q -rs" in build_yml
+
+# ---------------------------------------------------------------- selftest guard
+
+
+def test_the_selftest_step_is_a_real_check_not_a_decoration() -> None:
+    """自检那一步不能又变成「失败也不阻断」的摆设。
+
+    以前 CI 里跑的是 ``python main.py --selftest`` 再挂 ``continue-on-error``：
+    ``--selftest`` 查的是**这台机器**（有没有浏览器、能不能出网），CI 机器上随时会红，
+    于是只能不阻断 —— 结果就是它红了几个月也没人知道。现在改成
+    ``--selftest --offline --selftest-json``（只验这条命令跑得通、JSON 形状没变形），
+    确定性的检查就不该再挂 ``continue-on-error``。
+    """
+    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    # `>-` 折行之后是一整行，所以这里按子串找就够。
+    assert "--selftest-json" in workflow, (
+        "自检那一步要跑 `--selftest --offline --selftest-json`：只验 JSON 结构，"
+        "不判断 runner 上有没有浏览器 —— 否则它只能挂 continue-on-error，等于没检查"
+    )
+    assert "--offline" in workflow, "`--selftest-json` 要配 `--offline` 一起用"
+
+    # 取出那一步，确认它不再被挂 continue-on-error。
+    start = workflow.find("源码版自检")
+    assert start != -1, "tests.yml 里应当还有「源码版自检」那一步"
+    step = workflow[start : start + 1200]
+    assert "continue-on-error" not in step, (
+        "自检那一步不该再挂 continue-on-error：它已经是确定性的检查了，"
+        "挂上就等于把唯一的信号也丢掉"
+    )

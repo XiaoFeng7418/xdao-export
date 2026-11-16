@@ -84,8 +84,11 @@ jobs:
       - name: 静态检查
         run: python -m ruff check .
 
+      # 带上 --durations：ubuntu 上这步要 12 分钟、windows 只 7 分钟，
+      # 看不出慢在哪就没法优化。末尾那 10 行不影响成败，只是把最慢的
+      # 用例列出来。
       - name: 单元测试
-        run: python -m pytest -q -rs
+        run: python -m pytest -q -rs --durations=10
 
       - name: 命令行入口可用
         run: |
@@ -96,16 +99,23 @@ jobs:
         run: |
           python -c "from xdao.exporters import EXPORTERS; expected={'html','pdf','txt','markdown','epub'}; got=set(EXPORTERS); assert got==expected, f'格式注册表不一致: {got}'; print('格式:', ', '.join(EXPORTERS))"
 
-      # 这一步查的是**这台 runner 的环境**（有没有 Edge/Chrome、能不能写盘、
-      # 能不能连上 GitHub 与站点），不是我们的代码：CI 机器上随时会因为缺浏览器
-      # 或出网受限而红。所以只当参考，不阻断 —— 真正拦代码问题的是上面那步
-      # 「单元测试」，它一点没放水。
-      # 想让它确定性地跑，可以改成 `--selftest --offline --selftest-json`
-      # （只验 JSON 结构，不判断各项成败），那样就能去掉 continue-on-error。
-      - name: 源码版自检（仅联网可用时跑，失败不阻断）
+      # 这一步验的是「自检这条命令本身」：跑得通、JSON 形状没变形、项数没少。
+      # 不判断「runner 上有没有浏览器」「能不能连外网」这类环境项 —— 那些在 CI
+      # 机器上随时会变，拿来当门禁只会时红时绿；而 selftest 崩了、少了一项、
+      # JSON 结构改了，这里会红。原来那条 `--selftest` 带 continue-on-error，
+      # 等于什么都没拦，所以换掉。
+      - name: 源码版自检（离线，只验 JSON 结构）
         if: matrix.os == 'windows-latest'
-        continue-on-error: true
-        run: python main.py --selftest
+        run: >-
+          python -c "import json, subprocess, sys;
+          out = subprocess.run([sys.executable, 'main.py', '--selftest', '--offline', '--selftest-json'], capture_output=True, text=True, encoding='utf-8');
+          data = json.loads(out.stdout);
+          keys = list(data);
+          assert len(keys) == 2, keys;
+          rows = data[keys[1]];
+          assert len(rows) >= 5, len(rows);
+          assert all(isinstance(row, dict) and len(row) >= 4 for row in rows), rows;
+          print('selftest json ok:', len(rows), 'checks')"
 
   version-consistency:
     name: 版本号与最新 Release 一致
