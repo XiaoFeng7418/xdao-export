@@ -24,6 +24,7 @@ from xdao.settings import AppSettings
 
 from tests import make_post
 
+from . import conftest
 from .conftest import ARTIFACTS_ROOT
 
 
@@ -34,6 +35,9 @@ def make_root(timeout: float = 5.0) -> tk.Tk:
     偶发一两次 ``TclError``；这是环境抖动，不是代码问题，重试就能过。
     真的没有显示环境（无头 CI）时重试也救不回来，交给调用方 skip。
     """
+    problem = conftest.display_problem(timeout)
+    if problem is not None:
+        raise tk.TclError(problem)
     deadline = time.monotonic() + timeout
     while True:
         try:

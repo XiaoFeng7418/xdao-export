@@ -100,6 +100,9 @@ def test_the_real_config_file_is_not_touched_by_this_module():
 def _tk_or_skip():
     """拿一个真 Tk 根窗口；这机器上起不来就跳过（CI 的 Linux 矩阵就是这样）。"""
     tkinter = pytest.importorskip("tkinter", reason="没有可用的显示环境")
+    problem = conftest.display_problem()
+    if problem is not None:
+        pytest.skip(f"没有可用的显示环境：{problem}")
     try:
         root = tkinter.Tk()
     except Exception as exc:  # pragma: no cover - 无头机器
@@ -141,3 +144,73 @@ def test_silence_tk_variables_replaces_the_destructor():
     conftest._silence_tk_variables()
 
     assert tkinter.Variable.__del__(variable) is None, "兜底实现不该调 Tcl"
+
+
+# ---------------------------------------------------------------- display probe
+#
+# 这两条钉住的是「无头机器上只探一次显示环境」这个优化本身：它把 CI 的 ubuntu
+# 矩阵从 12 分钟压到 2 分钟（110 条用例各空转 5 秒 → 只探一次）。写坏的后果是
+# 整组界面用例被静默跳过，比慢更糟，所以单独钉住。
+
+
+class _NoDisplayTk:
+    """只会抛 ``TclError`` 的假 tkinter 模块（模拟没有 $DISPLAY 的机器）。"""
+
+    TclError = RuntimeError
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def Tk(self):  # noqa: N802 —— 照着真模块的方法名
+        self.attempts += 1
+        raise RuntimeError("no display name and no $DISPLAY environment variable")
+
+
+class _FakeWindow:
+    def withdraw(self) -> None:
+        return None
+
+    def destroy(self) -> None:
+        return None
+
+
+class _WorkingTk:
+    """能建窗口的假 tkinter 模块。"""
+
+    TclError = RuntimeError
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def Tk(self):  # noqa: N802
+        self.attempts += 1
+        return _FakeWindow()
+
+
+def test_display_problem_remembers_a_missing_display(monkeypatch):
+    """探到没有显示环境就把结论存住：第二次直接返回，不再去建窗口。"""
+    fake = _NoDisplayTk()
+    monkeypatch.setattr(conftest, "_DISPLAY_PROBE", {})
+    monkeypatch.setattr(conftest, "_tk_module", lambda: fake)
+
+    first = conftest.display_problem(timeout=0.0)
+    second = conftest.display_problem(timeout=0.0)
+
+    assert first and "DISPLAY" in first
+    assert second == first, "第二次拿到的该是同一个理由"
+    assert fake.attempts == 1, f"只该探一次，实际试了 {fake.attempts} 次"
+
+
+def test_display_problem_remembers_a_working_display_too(monkeypatch):
+    """能建窗口时也把结论存住：否则每条界面用例都白开一个探针窗口。
+
+    真桌面上 ``Tk()`` 偶发抖动由各模块自己的重试兜（它们照旧重试），不必让
+    探针也去重试 —— 探针的职责只是回答「这台机器到底有没有显示环境」。
+    """
+    fake = _WorkingTk()
+    monkeypatch.setattr(conftest, "_DISPLAY_PROBE", {})
+    monkeypatch.setattr(conftest, "_tk_module", lambda: fake)
+
+    assert conftest.display_problem(timeout=0.0) is None
+    assert conftest.display_problem(timeout=0.0) is None
+    assert fake.attempts == 1, f"只该探一次，实际试了 {fake.attempts} 次"

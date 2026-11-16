@@ -30,6 +30,8 @@ from xdao.client import XdaoClient
 from xdao.gui import verify_userhash_live as real_verify_userhash_live
 from xdao.settings import AppSettings
 
+from . import conftest
+
 # 假的调试端口与 userhash：只在本进程里用，不指向任何真实东西。
 FAKE_PORT = 32123
 FAKE_WS_PATH = "/devtools/browser/fake-tab"
@@ -262,6 +264,9 @@ class _FakeSession:
 
 def _make_root(timeout: float = 5.0) -> tk.Tk:
     """建一个 Tk 根窗口；没有可用显示环境时跳过（照 tests/test_window.py）。"""
+    problem = conftest.display_problem(timeout)
+    if problem is not None:
+        pytest.skip(f"没有可用的显示环境：{problem}")
     deadline = time.monotonic() + timeout
     while True:
         try:
