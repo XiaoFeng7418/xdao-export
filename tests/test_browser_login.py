@@ -5989,3 +5989,958 @@ def test_a_good_launch_leaves_no_attempt_notes(
         info, artifacts_dir / "browser-profile", timeout=5.0, attach_live=False
     ) as browser:
         assert browser.attempt_notes == ()
+
+
+# ---------------------------------------------------------------- v0.22.5
+# 覆盖率体检：下面每一组都钉住一条**只在真机或异常路径上才会走到**的分支。
+# 它们的共同点是「出错也不许往外抛」—— 这些函数都在普查、清扫、兜底的位置上，
+# 抛一次就会把登录正路拦下来，所以在用例里把异常真的喂进去。
+
+
+def test_env_lookup_finds_a_name_in_another_case() -> None:
+    """环境变量名在 Windows 上不分大小写：映射写小写也得认出来。"""
+    assert bl._env_lookup({"programfiles": r"C:\x"}, "PROGRAMFILES") == r"C:\x"
+    assert bl._env_lookup({"PROGRAMFILES": ""}, "PROGRAMFILES") == ""
+
+
+def test_known_paths_dedupes_two_variables_pointing_at_the_same_folder(
+    artifacts_dir: Path,
+) -> None:
+    """两个变量指同一个目录时，同一份 exe 只列一次（Edge 在候选表里占两格）。"""
+    shared = artifacts_dir / "shared"
+    edge = _touch(shared, r"Microsoft\Edge\Application\msedge.exe")
+    env = {
+        "PROGRAMFILES": str(shared),
+        "PROGRAMFILES(X86)": str(shared),
+        "LOCALAPPDATA": "",
+    }
+    assert [info.path for info in bl.known_paths(env)] == [str(edge)]
+
+
+def test_name_of_executable_gives_up_on_a_command_line_made_of_quotes() -> None:
+    """只有引号、没有名字：认不出就回空串，别把引号当浏览器名字。"""
+    assert bl._name_of_executable('"') == ""
+    assert bl._name_of_executable('""') == ""
+
+
+def test_name_of_executable_still_recognises_a_chromium_flavour_name() -> None:
+    """``chrome-beta.exe`` 这种加料名字靠第二圈模糊匹配兜住。"""
+    assert bl._name_of_executable(r"C:\x\chrome-beta.exe") == "Chrome"
+    assert bl._name_of_executable(r"C:\x\msedge-beta.exe") == "Edge"
+
+
+def test_windows_default_exe_gives_up_when_the_prog_id_is_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UserChoice 里 ProgId 是空的（被安全软件清过）：当作没有默认浏览器。"""
+    _fake_registry(
+        monkeypatch,
+        {(_FakeRegistry.HKEY_CURRENT_USER, bl._DEFAULT_BROWSER_KEY): {"ProgId": ""}},
+    )
+    assert bl._windows_default_exe() == ""
+
+
+def test_windows_default_exe_takes_the_bare_command_when_it_has_no_quotes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """命令行不带引号时取第一个空格前的部分（真机上真有这么写的 ProgId）。"""
+    prog_id = "ChromeHTML"
+    _fake_registry(
+        monkeypatch,
+        {
+            (_FakeRegistry.HKEY_CURRENT_USER, bl._DEFAULT_BROWSER_KEY): {"ProgId": prog_id},
+            (
+                _FakeRegistry.HKEY_LOCAL_MACHINE,
+                rf"SOFTWARE\Classes\{prog_id}\shell\open\command",
+            ): {"": r"C:\x\chrome.exe --single-argument %1"},
+        },
+    )
+    assert bl._windows_default_exe() == r"C:\x\chrome.exe"
+
+
+def test_ordered_browsers_keeps_the_order_when_the_default_is_not_installed(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认浏览器是 Edge、可这台机器只装了 Chrome 与 Chromium：顺序原样不动。"""
+    pf = artifacts_dir / "pf"
+    chrome = _touch(pf, r"Google\Chrome\Application\chrome.exe")
+    chromium = _touch(pf, r"Chromium\Application\chrome.exe")
+    env = {"PROGRAMFILES": str(pf), "PROGRAMFILES(X86)": "", "LOCALAPPDATA": ""}
+    monkeypatch.setattr(bl, "_default_browser_label", lambda: "Edge")
+    assert [info.path for info in bl.ordered_browsers(env)] == [str(chrome), str(chromium)]
+
+
+def test_dead_profile_strikes_skips_blank_lines_and_stops_at_the_first_junk(
+    tmp_path: Path,
+) -> None:
+    """账本第一行是空行也认（跳过继续读）；读到非数字就整本算 0 次。"""
+    profile = tmp_path / "browser-profile"
+    profile.mkdir()
+    marker = profile / bl.DEAD_PROFILE_MARKER
+    marker.write_text("\n\n2\n后面写的都不算\n", encoding="utf-8")
+    assert bl._dead_profile_strikes(profile) == 2
+    marker.write_text("\n\n\n", encoding="utf-8")
+    assert bl._dead_profile_strikes(profile) == 0
+    marker.write_text("不是数字\n", encoding="utf-8")
+    assert bl._dead_profile_strikes(profile) == 0
+
+
+def test_note_dead_profile_strike_returns_zero_when_the_folder_is_actually_a_file(
+    tmp_path: Path,
+) -> None:
+    """那只「目录」其实是个文件（用户手滑建的）：写不进去就回 0，不拿它赌任何事。"""
+    profile = tmp_path / "not-a-folder"
+    profile.write_text("x", encoding="utf-8")
+    assert bl._note_dead_profile_strike(profile) == 0
+
+
+def test_quarantine_profile_dir_returns_none_when_the_folder_is_gone(
+    tmp_path: Path,
+) -> None:
+    """要改名的目录已经不存在了（被别处清掉）：回 None，绝不抛。"""
+    assert bl._quarantine_profile_dir(tmp_path / "browser-profile", stamp="x") is None
+
+
+def test_window_candidates_lists_each_folder_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """备用目录表里重复出现同一个路径时，候选表里也只留一份。"""
+    profile = tmp_path / "browser-profile"
+    empty_temp = tmp_path / "temp"
+    empty_temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(empty_temp))
+    monkeypatch.setattr(bl, "fallback_profile_dirs", lambda wanted: [profile])
+    assert bl._window_candidates(profile) == [profile]
+
+
+def test_is_starting_window_treats_an_old_port_file_as_not_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口文件太老（超过宽限）：不算「正在启动」，别为它多等一轮。"""
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: False)
+    window = _fake_window(tmp_path, "browser-profile", age=600.0)
+    assert bl._is_starting_window(window, grace=120.0) is False
+    fresh = _fake_window(tmp_path, "browser-profile-2-3", age=1.0)
+    assert bl._is_starting_window(fresh, grace=120.0) is True
+
+
+def test_remove_dir_keeps_trying_while_the_folder_is_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """前两次删不动（Windows 上被占用就是这样）就再试，第三次成了就算删掉。"""
+    target = tmp_path / "browser-profile"
+    target.mkdir()
+    calls: list[Path] = []
+    naps: list[float] = []
+
+    def flaky(path) -> None:
+        calls.append(Path(path))
+        if len(calls) < 3:
+            raise OSError("被占着")
+
+    monkeypatch.setattr(bl.shutil, "rmtree", flaky)
+    monkeypatch.setattr(bl.time, "sleep", naps.append)
+    assert bl._remove_dir(target) is True
+    assert len(calls) == 3
+    assert naps == [0.2, 0.2], "两次失败各等 0.2 秒，第三次成功不再等"
+
+
+def test_remove_dir_gives_up_after_the_third_try(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """三次都删不动就回 False（调用方按「没删掉」处理，不抛）。"""
+    target = tmp_path / "browser-profile"
+    target.mkdir()
+    calls: list[Path] = []
+    naps: list[float] = []
+
+    def always_locked(path) -> None:
+        calls.append(Path(path))
+        raise OSError("还被占着")
+
+    monkeypatch.setattr(bl.shutil, "rmtree", always_locked)
+    monkeypatch.setattr(bl.time, "sleep", naps.append)
+    assert bl._remove_dir(target) is False
+    assert len(calls) == 3
+    assert naps == [0.2, 0.2], "第三次失败直接放弃，不再等"
+
+
+def test_sweep_orphan_profiles_spares_a_window_that_just_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """宽限内的目录可能是这一轮正在开的窗：一个都不动、也不去问罐。"""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    profile = tmp_path / "browser-profile"
+    window = _fake_window(temp, "xdao-export-browser-profile-starting", age=1.0)
+    asked: list[Path] = []
+    killed: list[Path] = []
+
+    def ask(path) -> bool:
+        asked.append(Path(path))
+        return True
+
+    cleaned, kept = bl.sweep_orphan_profiles(
+        profile, probe=ask, kill=killed.append, grace=120.0
+    )
+    assert (cleaned, kept) == ([], [])
+    assert asked == [] and killed == []
+    assert window.exists()
+
+
+def test_sweep_orphan_profiles_survives_a_port_file_it_cannot_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口文件内容是垃圾（``not-a-port``）：当成「没有登录痕迹」，照旧清掉。"""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    profile = tmp_path / "browser-profile"
+    window = _fake_window(temp, "xdao-export-browser-profile-junk", age=600.0)
+    port_file = window / "DevToolsActivePort"
+    port_file.write_text("not-a-port\n", encoding="utf-8")
+    # 刚写过的文件 mtime 是「现在」，会被宽限当成正在启动的窗 —— 手工回拨一次。
+    stamp = time.time() - 600.0
+    os.utime(port_file, (stamp, stamp))
+    killed: list[Path] = []
+    cleaned, kept = bl.sweep_orphan_profiles(
+        profile, probe=lambda path: True, kill=killed.append, grace=120.0
+    )
+    assert cleaned == [window]
+    assert kept == []
+    assert killed == [window]
+
+
+def test_sweep_orphan_profiles_keeps_a_folder_it_could_not_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """进程杀了、目录却删不掉（被占用）：记进「留下的」那一栏，不假装清干净了。"""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    profile = tmp_path / "browser-profile"
+    window = _fake_window(temp, "xdao-export-browser-profile-stuck", age=600.0)
+    killed: list[Path] = []
+    monkeypatch.setattr(bl, "_remove_dir", lambda path: False)
+    cleaned, kept = bl.sweep_orphan_profiles(
+        profile, probe=lambda path: False, kill=killed.append, grace=120.0
+    )
+    assert cleaned == []
+    assert kept == [window]
+    assert killed == [window]
+
+
+class _ProcessTableDone:
+    """``subprocess.run`` 的替身：装一份 powershell 的输出。"""
+
+    def __init__(self, stdout: bytes) -> None:
+        self.stdout = stdout
+
+
+# 抓一份还没被 autouse fixture 换掉的真实实现，给「专测进程侧普查」的用例用。
+_REAL_PROGRAM_PROFILE_DIRS = bl.program_profile_dirs
+
+
+def test_program_profile_dirs_reports_the_folder_from_the_process_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """进程侧普查：命令行里带着自家资料目录的那一行要被认出来（v0.13.37）。"""
+    profile = tmp_path / "browser-profile"
+    lines = [
+        "1111\t\"msedge.exe\" --user-data-dir=\"C:\\Users\\me\\AppData\\Local\\Other\\x\"",
+        "2222\t\"msedge.exe\" --user-data-dir=\"" + str(profile) + "\"",
+        "没有 TAB 的一行（真机上不会出现，只在输出被截断时见过）",
+        "3333\t\"msedge.exe\" --user-data-dir=\"\"",
+    ]
+    payload = ("\n".join(lines) + "\n").encode("utf-8")
+    monkeypatch.setattr(bl, "_PROCESS_CENSUS", True)
+    monkeypatch.setattr(
+        bl.subprocess, "run", lambda *a, **k: _ProcessTableDone(payload)
+    )
+    assert _REAL_PROGRAM_PROFILE_DIRS(profile) == [profile]
+
+
+def test_program_profile_dirs_does_nothing_when_the_census_is_switched_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非 Windows、或者用户把这一手关掉：连 powershell 都不去起。"""
+    monkeypatch.setattr(bl, "_PROCESS_CENSUS", False)
+    monkeypatch.setattr(
+        bl.subprocess, "run", lambda *a, **k: pytest.fail("这一手该在起进程之前就返回")
+    )
+    assert bl.program_profile_dirs(tmp_path / "browser-profile") == []
+
+
+def test_pick_helpers_fall_back_the_way_the_cdp_layer_does() -> None:
+    """两个挑选助手只是转发给 ``cdp``：站内页优先，全是内部页就兜底第一个。"""
+    site = {"url": "https://www.nmbxd1.com/t/1"}
+    edge = {"url": "edge://sync-confirmation-dialog/"}
+    assert bl._pick_page([edge, site]) == site
+    assert bl._pick_page([edge]) == edge
+    assert bl._pick_site_page([site]) == site
+    assert bl._pick_site_page([edge]) is None
+    assert bl._pick_site_page([{"url": "about:blank"}]) is None
+
+
+def test_reset_process_clears_the_handle_when_stopping_fails(
+    artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """收尾本身失败也要把句柄放掉，否则下一个候选目录根本没机会试。"""
+    info = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    browser = bl.LoginBrowser(info, artifacts_dir / "browser-profile", attach_live=False)
+    browser.process = object()  # type: ignore[assignment]
+
+    def boom() -> None:
+        raise RuntimeError("进程已经自己退了")
+
+    monkeypatch.setattr(browser, "stop", boom)
+    browser._reset_process()
+    assert browser.process is None
+
+
+def test_launch_says_the_profile_folder_is_unusable(
+    artifacts_dir: Path,
+) -> None:
+    """要用的「目录」其实是文件：抛一句人话，交给 start() 换下一个候选。"""
+    info = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
+    browser = bl.LoginBrowser(info, artifacts_dir / "browser-profile", attach_live=False)
+    blocked = artifacts_dir / "not-a-folder"
+    blocked.write_text("x", encoding="utf-8")
+    with pytest.raises(bl.CdpError) as caught:
+        browser._launch(blocked)
+    assert "浏览器资料目录用不了" in str(caught.value)
+
+
+def test_window_userhash_returns_empty_when_the_session_cannot_be_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连会话对象都造不出来（地址是垃圾）：回空串，绝不往外抛。"""
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise bl.CdpError("地址不合法")
+
+    monkeypatch.setattr(bl, "CDPSession", boom)
+    assert bl.window_userhash("ws://127.0.0.1:1/devtools/page/x") == ""
+
+
+def test_window_userhash_returns_empty_when_reading_the_jar_blows_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连上了、读罐时炸了：回空串，会话照样关掉。"""
+
+    closed: list[bool] = []
+
+    class _Window:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def connect(self) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append(True)
+
+    def boom(session, urls=None):
+        raise RuntimeError("读罐时连接断了")
+
+    monkeypatch.setattr(bl, "CDPSession", _Window)
+    monkeypatch.setattr(bl, "read_userhash_cookie", boom)
+    assert bl.window_userhash("ws://127.0.0.1:1/devtools/page/x") == ""
+    assert closed == [True], "读失败也要把会话关掉"
+
+
+def test_window_userhash_keeps_the_value_even_when_closing_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """值已经读到了、关会话时才出错：照样把值交出去（关不上不该吃掉结果）。"""
+
+    class _Window:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def connect(self) -> None:
+            pass
+
+        def close(self) -> None:
+            raise RuntimeError("关的时候连接已经没了")
+
+    monkeypatch.setattr(bl, "CDPSession", _Window)
+    monkeypatch.setattr(bl, "read_userhash_cookie", lambda session, urls=None: "ABC12345")
+    assert bl.window_userhash("ws://127.0.0.1:1/devtools/page/x") == "ABC12345"
+
+
+def test_browser_endpoint_gives_up_on_addresses_it_cannot_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """空地址、没有主机端口的地址：回空串，连探都不探。"""
+    probed: list[str] = []
+
+    def probe(url: str, timeout: float = 5.0) -> dict:
+        probed.append(url)
+        return {}
+
+    monkeypatch.setattr(bl, "_probe_http_json", probe)
+    assert bl._browser_endpoint("", 1.0) == ""
+    assert bl._browser_endpoint("ws:///devtools/page/x", 1.0) == ""
+    assert probed == [], "这两种地址问都不用问"
+
+
+def test_browser_endpoint_gives_up_when_the_version_probe_has_no_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/json/version`` 答话了、却没给 ``webSocketDebuggerUrl``：回空串。"""
+    monkeypatch.setattr(bl, "_probe_http_json", lambda url, timeout=5.0: {"Browser": "Edge/1"})
+    assert bl._browser_endpoint("ws://127.0.0.1:7001/devtools/page/x", 1.0) == ""
+
+
+def test_browser_endpoint_takes_the_address_from_the_version_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wanted = "ws://127.0.0.1:7001/devtools/browser/abc"
+    monkeypatch.setattr(
+        bl, "_probe_http_json", lambda url, timeout=5.0: {"webSocketDebuggerUrl": wanted}
+    )
+    assert bl._browser_endpoint("ws://127.0.0.1:7001/devtools/page/x", 1.0) == wanted
+
+
+class _HalfDeadJarWindow:
+    """浏览器级会话的替身：默认那份罐读不动、某一份上下文也读不动。"""
+
+    def __init__(self, ws_url: str, **kwargs: object) -> None:
+        self.ws_url = ws_url
+        self.closed = False
+
+    def connect(self) -> None:
+        pass
+
+    def browser_context_ids(self) -> list[str]:
+        return ["3f2a1b77", "9c0d5e11"]
+
+    def read_storage_cookies(self, browser_context_id: str = "") -> list[dict]:
+        if not browser_context_id:
+            raise bl.CdpError("默认那份读不动")
+        if browser_context_id == "3f2a1b77":
+            raise bl.CdpError("那一份刚好没了")
+        return _site_cookies("userhash")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_browser_level_jars_skips_the_jar_it_could_not_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认那份读不到、某一份上下文也没了：只跳过这两份，别的照读（v0.13.47）。"""
+    monkeypatch.setattr(bl, "CDPSession", _HalfDeadJarWindow)
+    jars = bl.browser_level_jars("ws://127.0.0.1:7001/devtools/browser/abc")
+    assert [(label, [item["name"] for item in cookies]) for label, cookies in jars] == [
+        ("上下文9c0d5e", ["userhash"])
+    ]
+
+
+def test_browser_page_targets_returns_empty_when_the_session_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连不上浏览器级端点：回空表（``页=`` 那一段就当没这一问）。"""
+    monkeypatch.setattr(bl, "_open_window_session", lambda *a, **k: None)
+    assert bl.browser_page_targets("ws://127.0.0.1:7001/devtools/browser/abc") == []
+
+
+def test_browser_jar_witness_returns_empty_when_no_jar_could_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一份罐都读不到：交空串，别写出「默认=」这种半截对账行。"""
+    monkeypatch.setattr(bl, "browser_level_jars", lambda *a, **k: [])
+    assert bl.browser_jar_witness("ws://127.0.0.1:7001/devtools/browser/abc") == ""
+
+
+class _BlindSession(_ScriptedSession):
+    """地址读不出来的会话（真机上标签正在换文档时会这样）。"""
+
+    def current_url(self) -> str:
+        raise RuntimeError("页面正在换文档")
+
+
+def test_apply_leaf_cookie_in_browser_treats_an_unreadable_address_as_nothing() -> None:
+    """连当前地址都读不到：按「没有可读的页面」处理，一个请求都不发。"""
+    session = _BlindSession()
+    result = bl.apply_leaf_cookie_in_browser(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert "没有可读的页面" in result.detail, result.detail
+    assert session.evaluations == []
+
+
+def test_apply_leaf_cookie_in_browser_says_when_a_jump_page_could_not_be_fetched() -> None:
+    """列表页是「跳转提示」、跳过去那一趟 fetch 却没送出去：如实说没问动。"""
+    base = bl._cookie_action_base()
+    session = _ScriptedSession(url=bl.COOKIE_SITE + bl.COOKIE_LIST_PATH)
+    session.fetch_pages = {
+        base + "index.html": {
+            "url": base + "index.html",
+            "status": 200,
+            "text": (
+                "<html><title>跳转提示</title>"
+                '<a id="href" href="index.html?page=2"></a></html>'
+            ),
+        },
+        # 目标页故意不登记 —— 真机上就是这一趟 fetch 被 CSP 或换文档吞掉
+    }
+    result = bl.apply_leaf_cookie_in_browser(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert "跳转提示" in result.detail and "没问动" in result.detail, result.detail
+
+
+def test_apply_leaf_cookie_in_browser_accepts_a_table_without_links() -> None:
+    """列表页只有表格、没有 ``Cookie/...`` 链接：取每行第二格当 id（同 apply_cookie）。"""
+    base = bl._cookie_action_base()
+    session = _ScriptedSession(url=bl.COOKIE_SITE + bl.COOKIE_LIST_PATH)
+    session.fetch_pages = {
+        base + "index.html": {
+            "url": base + "index.html",
+            "status": 200,
+            "text": (
+                "<html><table>"
+                "<tr><td>饼干 A</td><td>40618</td></tr>"
+                "<tr><td>饼干 B</td><td>40619</td></tr>"
+                "</table></html>"
+            ),
+        },
+        base + "switchTo/id/40618.html": {
+            "url": base + "switchTo/id/40618.html",
+            "status": 200,
+            "text": "<html>饼干切换成功!</html>",
+        },
+        base + "export/id/40618.html": {
+            "url": base + "export/id/40618.html",
+            "status": 200,
+            "text": '{"cookie": "ABC12345"}',
+        },
+    }
+    result = bl.apply_leaf_cookie_in_browser(session)  # type: ignore[arg-type]
+    assert result.value == "ABC12345", "取的是第一行的 id，拼的是 .html 后缀"
+
+
+def test_apply_leaf_cookie_in_browser_says_when_nothing_holds_a_value() -> None:
+    """switchTo 与 export 都问了、正文与罐里都没有 userhash：最后那句人话。"""
+    base = bl._cookie_action_base()
+    session = _ScriptedSession(url=bl.COOKIE_SITE + bl.COOKIE_LIST_PATH)
+    session.fetch_pages = {
+        base + "index.html": {
+            "url": base + "index.html",
+            "status": 200,
+            "text": '<html><a href="/Member/User/Cookie/switchTo/id/9.html">应用</a></html>',
+        },
+        base + "switchTo/id/9.html": {
+            "url": base + "switchTo/id/9.html",
+            "status": 200,
+            "text": "<html>饼干切换成功!</html>",
+        },
+        base + "export/id/9.html": {
+            "url": base + "export/id/9.html",
+            "status": 200,
+            "text": "<html>已应用</html>",
+        },
+    }
+    result = bl.apply_leaf_cookie_in_browser(session)  # type: ignore[arg-type]
+    assert result.value is None
+    assert "都没看到 userhash" in result.detail, result.detail
+
+
+# ---------------------------------------------------------------- v0.22.5b
+# 第二轮：把覆盖率报告里还剩的「失败兜底 / 读不到就当没有」那一族补上。
+# 全是只读或打桩替身的用例，不碰真机、不联网。
+
+
+def test_program_profile_dirs_does_nothing_when_the_census_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """普查被关掉（非 Windows 或用户关掉）：连 powershell 都不起，直接回空表。"""
+    monkeypatch.setattr(bl, "_PROCESS_CENSUS", False)
+    monkeypatch.setattr(
+        bl.subprocess, "run", lambda *a, **k: pytest.fail("这一步不该起进程")
+    )
+    assert _REAL_PROGRAM_PROFILE_DIRS(tmp_path / "browser-profile") == []
+
+
+def test_parse_profile_process_pids_skips_a_line_without_a_tab(
+    tmp_path: Path,
+) -> None:
+    """输出里混进没有 TAB 的行（被截断的表头）：跳过它，别把整段解析带崩。"""
+    profile = tmp_path / "browser-profile"
+    text = (
+        "这是一行表头，没有 TAB\n"
+        f"4321\t\"msedge.exe\" --user-data-dir=\"{profile}\"\n"
+    )
+    assert bl._parse_profile_process_pids(text, profile) == [4321]
+
+
+def test_read_userhash_cookie_answers_none_when_the_jar_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """读罐本身抛错：只回答「没有」，不往上抛（登录不能被一次读失败带崩）。"""
+
+    def boom(session: object, urls: list[str] | None = None) -> list[dict]:
+        raise bl.CdpError("读不动")
+
+    monkeypatch.setattr(bl, "read_site_cookies", boom)
+    assert bl.read_userhash_cookie(object()) is None  # type: ignore[arg-type]
+
+
+def test_probe_http_json_forwards_to_the_single_shot_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """挑窗时只问一句就走：不该走带 8 秒预算的那条路。"""
+    seen: list[tuple[str, float]] = []
+
+    def fake_once(url: str, timeout: float) -> object:
+        seen.append((url, timeout))
+        return {"ok": True}
+
+    monkeypatch.setattr(cdp, "_http_json_once", fake_once)
+    assert bl._probe_http_json("http://127.0.0.1:1/json/version", 2.5) == {"ok": True}
+    assert seen == [("http://127.0.0.1:1/json/version", 2.5)]
+
+
+def test_open_window_session_answers_none_when_the_session_cannot_be_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """会话都建不起来（地址不对）：回 None，调用方按「这扇问不出来」处理。"""
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise bl.CdpError("地址不对")
+
+    monkeypatch.setattr(bl, "CDPSession", boom)
+    assert bl._open_window_session("ws://127.0.0.1:1/devtools/page/x", 1.0) is None
+
+
+def test_close_window_session_swallows_a_close_that_fails() -> None:
+    """关连接失败不值得往上抛。"""
+
+    class _Grumpy:
+        def close(self) -> None:
+            raise OSError("句柄已经没了")
+
+    bl._close_window_session(_Grumpy())  # type: ignore[arg-type]
+
+
+def test_window_jar_answers_empty_when_the_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连上了、读整罐时那扇窗退了：回空表，不抛。"""
+
+    class _Half:
+        def connect(self) -> None:
+            return None
+
+        def read_all_cookies(self) -> list[dict]:
+            raise bl.CdpError("窗退了")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(bl, "CDPSession", lambda *a, **k: _Half())
+    assert bl.window_jar("ws://127.0.0.1:1/devtools/page/x", 1.0) == []
+
+
+def test_parse_userhash_input_finds_a_quoted_cookie_field_in_broken_json() -> None:
+    """整段不是合法 JSON、但里面有一对引号包着的 cookie 字段：照样抠出来。"""
+    text = '有点别的东西在前面 "cookie": "abc12345" 后面还有'
+    assert bl.parse_userhash_input(text) == "abc12345"
+
+
+def test_fetch_in_page_answers_none_for_a_shape_it_does_not_know() -> None:
+    """浏览器回了个认不出的形状（没有 text）：按「没问动」处理。"""
+
+    class _Weird:
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            return '["不是对象"]'
+
+    assert bl._fetch_in_page(_Weird(), "https://example.com/") is None  # type: ignore[arg-type]
+
+
+def test_page_state_answers_empty_when_the_page_returns_junk() -> None:
+    """页面回的 JSON 坏了：按「认不出来」处理，不抛。"""
+
+    class _Junk:
+        def evaluate(self, expression: str) -> str:
+            return "{这不是 JSON"
+
+    assert bl._page_state(_Junk()) == {}  # type: ignore[arg-type]
+
+
+def test_page_text_answers_empty_when_the_read_fails() -> None:
+    """页面正文读不动（导航中 / 已关闭）：回空串。"""
+
+    class _Mute:
+        def evaluate(self, expression: str) -> str:
+            raise bl.CdpError("读不动")
+
+    assert bl._page_text(_Mute()) == ""  # type: ignore[arg-type]
+
+
+def test_read_site_cookies_skips_a_non_dict_in_the_whole_jar() -> None:
+    """整罐读里混进非字典项（旧格式）：跳过它，别让合并炸掉。"""
+
+    class _Mixed:
+        def read_cookies(self, urls: list[str] | None = None) -> list[dict]:
+            return [{"name": "a", "value": "1", "domain": ".nmbxd1.com", "path": "/"}]
+
+        def read_all_cookies(self) -> list:
+            return [
+                "不是字典",
+                {"name": "b", "value": "2", "domain": ".nmbxd1.com", "path": "/"},
+            ]
+
+        def evaluate(self, expression: str) -> str:
+            return ""
+
+        def current_url(self) -> str:
+            return bl.COOKIE_SITE + "/"
+
+    names = [item.get("name") for item in bl.read_site_cookies(_Mixed())]  # type: ignore[arg-type]
+    assert names == ["a", "b"]
+
+
+def test_read_page_document_cookies_answers_empty_when_the_address_fails() -> None:
+    """连当前地址都读不到：这一读直接放弃，回空列表。"""
+
+    class _Blind:
+        def current_url(self) -> str:
+            raise RuntimeError("换文档")
+
+    assert bl.read_page_document_cookies(_Blind()) == []  # type: ignore[arg-type]
+
+
+def test_userhash_from_page_storage_answers_empty_for_shapes_it_cannot_use() -> None:
+    """本地存储那一路的四种「不成」：非字符串、非 JSON、非对象、值全空。"""
+
+    class _Scripted:
+        def __init__(self, answer: object) -> None:
+            self.answer = answer
+
+        def evaluate(self, expression: str) -> object:
+            return self.answer
+
+    assert bl.userhash_from_page_storage(_Scripted([])) == ""  # type: ignore[arg-type]
+    assert bl.userhash_from_page_storage(_Scripted("{坏 JSON")) == ""  # type: ignore[arg-type]
+    assert bl.userhash_from_page_storage(_Scripted('["不是对象"]')) == ""  # type: ignore[arg-type]
+    assert (
+        bl.userhash_from_page_storage(_Scripted('{"l": {"k": "  "}, "s": {}}')) == ""
+    )  # type: ignore[arg-type]
+
+
+def test_jar_forensics_survives_an_address_it_cannot_read() -> None:
+    """挂= 那一段读地址就抛错：写「读不到」，对账行照旧出得来。"""
+
+    class _Blind(_ScriptedSession):
+        def current_url(self) -> str:
+            raise RuntimeError("换文档")
+
+    line = bl.jar_forensics(_Blind())  # type: ignore[arg-type]
+    assert "挂=<读不到（RuntimeError）>" in line, line
+
+
+def test_jar_forensics_names_a_page_js_read_that_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """页面 JS 那一路抛错：写「出错」，别把整行对账带崩。"""
+
+    def boom(session: object) -> list[dict]:
+        raise RuntimeError("JS 挂了")
+
+    session = _ScriptedSession(cookies=[], url=bl.COOKIE_SITE + "/")
+    monkeypatch.setattr(bl, "read_page_document_cookies", boom)
+    line = bl.jar_forensics(session)  # type: ignore[arg-type]
+    assert "页面JS=出错（RuntimeError）" in line, line
+
+
+def test_jar_dump_records_a_page_js_read_that_failed() -> None:
+    """对账数据里页面 JS 那一路抛错：写成「出错」，其余几路照旧。"""
+
+    class _BadJs(_ScriptedSession):
+        def evaluate(self, expression: str, await_promise: bool = False) -> str:
+            if expression == "document.cookie":
+                raise RuntimeError("JS 挂了")
+            return super().evaluate(expression, await_promise)
+
+    dump = bl.jar_dump(_BadJs(cookies=[], url=bl.COOKIE_SITE + "/"))  # type: ignore[arg-type]
+    assert "出错（RuntimeError）" in str(dump["页面JS"]), dump["页面JS"]
+
+
+def test_stderr_tail_note_answers_empty_when_there_is_no_log() -> None:
+    """这次启动没留浏览器日志：回空串，别去读一个不存在的文件。"""
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "C:/x/msedge.exe"), Path("C:/tmp/none"), timeout=1.0
+    )
+    assert browser._stderr_tail_note() == ""
+
+
+def test_browser_open_hands_the_arguments_to_a_login_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``browser_open`` 只是「启动并回句柄」的薄封装：参数原样传下去。"""
+    seen: list[tuple] = []
+
+    class _Handle:
+        def __init__(self, info, profile, proxy="", timeout=20.0) -> None:
+            seen.append((info, profile, proxy, timeout))
+
+        def start(self) -> "_Handle":
+            return self
+
+    monkeypatch.setattr(bl, "LoginBrowser", _Handle)
+    info = bl.BrowserInfo("Edge", "C:/x/msedge.exe")
+    got = bl.browser_open(info, tmp_path / "profile", "http://127.0.0.1:7890", 7.0)
+    assert isinstance(got, _Handle)
+    assert seen == [(info, tmp_path / "profile", "http://127.0.0.1:7890", 7.0)]
+
+
+def test_start_is_idempotent_once_a_process_is_held(tmp_path: Path) -> None:
+    """已经有进程了再调 start：原样返回自己，不再起第二个浏览器。"""
+    info = bl.BrowserInfo("Edge", "C:/x/msedge.exe")
+    browser = bl.LoginBrowser(info, tmp_path / "profile", timeout=5.0)
+    browser.process = object()  # type: ignore[assignment]
+    assert browser.start() is browser
+
+
+def test_stop_tolerates_a_process_that_refuses_to_terminate(tmp_path: Path) -> None:
+    """terminate 抛 OSError（进程刚好没了）：咽下去，不当成失败。"""
+
+    class _Stubborn:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            raise OSError("进程已经没了")
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    info = bl.BrowserInfo("Edge", "C:/x/msedge.exe")
+    browser = bl.LoginBrowser(info, tmp_path / "profile", timeout=5.0)
+    browser.process = _Stubborn()  # type: ignore[assignment]
+    browser.stop()
+    assert browser.process is None
+
+
+def test_navigate_keeps_polling_through_a_document_swap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """导航途中 evaluate 抛 CdpError（换文档）：接着等，加载完把地址报回来。"""
+    monkeypatch.setattr(bl, "NAVIGATE_POLL", 0.0)
+    # 上限给足，让循环靠「加载完成」退出而不是靠超时 —— 否则满负载跑全量时
+    # 第一条 evaluate 抛异常就把 50 毫秒耗光，第二次迭代根本没轮到。
+    monkeypatch.setattr(bl, "NAVIGATE_TIMEOUT", 30.0)
+    calls: list[str] = []
+    ready_states = ["loading", "complete"]
+
+    class _Swapping:
+        def call(
+            self, method: str, params: dict | None = None, timeout: float = 15.0
+        ) -> dict:
+            return {}
+
+        def evaluate(self, expression: str) -> str:
+            calls.append(expression)
+            if len(calls) == 1:
+                raise bl.CdpError("换了文档")
+            if expression == "document.readyState":
+                return ready_states.pop(0) if ready_states else "complete"
+            return "https://www.nmbxd1.com/t/1"
+
+    href = bl._navigate(_Swapping(), "https://www.nmbxd1.com/t/1")  # type: ignore[arg-type]
+    assert href == "https://www.nmbxd1.com/t/1"
+    assert calls[0] == "document.readyState"
+    # 第一条抛异常之后还继续轮询过，最后是看到 complete 才收手。
+    assert calls.count("document.readyState") == 3
+
+
+def test_follow_jumps_keeps_waiting_when_a_state_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """倒计时页读状态失败一次（站点正在跳）：接着等，不退出、不抛。"""
+    monkeypatch.setattr(bl, "NAVIGATE_POLL", 0.0)
+    monkeypatch.setattr(bl, "MAX_COOKIE_JUMPS", 3)
+    answers: list[object] = [bl.CdpError("正在跳"), {"jump": "", "countdown": False}]
+
+    def fake_state(session: object) -> dict:
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer  # type: ignore[return-value]
+
+    monkeypatch.setattr(bl, "_page_state", fake_state)
+    state, hops = bl._follow_jumps(None, {"countdown": True}, 0, budget=1.0)  # type: ignore[arg-type]
+    assert hops == 0
+    assert state == {"jump": "", "countdown": False}
+
+
+def test_fetch_leaf_cookie_survives_a_page_state_it_cannot_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``navigate=False`` 时读页面状态抛 CdpError：当成「认不出来」，把话说清楚。"""
+
+    def boom(session: object) -> dict:
+        raise bl.CdpError("读不动")
+
+    monkeypatch.setattr(bl, "_page_state", boom)
+    result = bl.fetch_leaf_cookie(_ScriptedSession(cookies=[]), navigate=False)  # type: ignore[arg-type]
+    assert result.value is None
+    assert "还是没有 userhash" in result.detail, result.detail
+
+
+def test_fetch_leaf_cookie_says_so_when_the_tab_is_on_another_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``navigate=False`` 时页面停在别的网站：点名那个站，让用户先回站内。"""
+    monkeypatch.setattr(
+        bl,
+        "_page_state",
+        lambda session: {"url": "https://example.com/x", "kind": "other"},
+    )
+    result = bl.fetch_leaf_cookie(_ScriptedSession(cookies=[]), navigate=False)  # type: ignore[arg-type]
+    assert result.value is None
+    assert "example.com" in result.detail, result.detail
+
+
+def test_cleanup_temp_profile_retries_before_giving_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """第一次删不掉（句柄还没松）：睡一下就再试，第二次删掉就立刻返回。"""
+    profile = tmp_path / "xdao-export-browser-profile-1"
+    profile.mkdir()
+    real_rmtree = bl.shutil.rmtree
+    calls: list[int] = []
+
+    def flaky(path, **kwargs):
+        calls.append(1)
+        if len(calls) >= 2:
+            real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(bl, "_profile_in_use", lambda path: False)
+    monkeypatch.setattr(bl, "_IS_WINDOWS", False)
+    monkeypatch.setattr(bl, "TEMP_PROFILE_WAIT", 30.0)
+    monkeypatch.setattr(bl.shutil, "rmtree", flaky)
+    monkeypatch.setattr(bl.time, "sleep", lambda seconds: None)
+    browser = bl.LoginBrowser(
+        bl.BrowserInfo("Edge", "C:/x/msedge.exe"), profile, timeout=1.0
+    )
+    browser.temp_profile = profile
+    assert browser.cleanup_temp_profile() is True
+    assert len(calls) >= 2
+    assert not profile.exists()
+
+
+def test_adopt_process_side_findings_skips_a_folder_it_already_knows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口普查已经认下的目录，进程侧又报一遍：不重复塞进接手名单。"""
+    info = bl.BrowserInfo("Edge", "C:/x/msedge.exe")
+    profile = tmp_path / "browser-profile"
+    browser = bl.LoginBrowser(info, profile, timeout=5.0)
+    monkeypatch.setattr(bl, "program_profile_dirs", lambda p: [profile])
+    monkeypatch.setattr(bl, "_profile_in_use", lambda p: True)
+    live = [profile]
+    assert browser._adopt_process_side_findings(live) == []
+    assert live == [profile]

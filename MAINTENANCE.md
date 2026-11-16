@@ -3,6 +3,37 @@
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
 > 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
 
+## 最近一次改动（v0.22.5）
+
+- **只补测试，不改行为**：`xdao/browser_login.py` 行覆盖 93% → 99%（1711 条语句，
+  未覆盖从 124 行降到 9 行）。`tests/test_browser_login.py` 358 → 420 条。
+- **补的分支**：`_env_lookup` 的环境变量名大小写不敏感查找、`known_paths` 的重复路径
+  去重、`_name_of_executable` 的「只有引号没有内容」与带后缀的模糊匹配、
+  `_windows_default_exe` 的 ProgId 空值与不带引号的命令行、`ordered_browsers` 的
+  「默认浏览器不在候选表里」、`_dead_profile_strikes` 的空行与非数字、
+  `_note_dead_profile_strike` 写盘失败、`_quarantine_profile_dir` 目录已不在、
+  `_window_candidates` 的去重、`_is_starting_window` 的老端口文件、`_remove_dir` 的
+  三次重试、`sweep_orphan_profiles` 的三条放弃分支、`program_profile_dirs` 的进程表
+  普查（含关掉普查时的早退）、`_pick_page`/`_pick_site_page` 的兜底、
+  `_reset_process`、`_launch` 的建目录失败、`window_userhash` 的三条兜底、
+  `_browser_endpoint` 的四条放弃、`browser_level_jars` 的半死窗口、
+  `browser_page_targets` 连不上浏览器端点、`browser_jar_witness` 一份罐都没有、
+  `apply_leaf_cookie_in_browser` 的「读不到地址」「跳转页 fetch 失败」
+  「只有表格没有链接」「全都没值」。
+- **测试侧的坑**：`tests/test_browser_login.py` 有一条 autouse fixture
+  （`_no_reuse_of_live_windows`）在 module 级把 `bl.program_profile_dirs` 换成空实现，
+  所以测它本体要先存一份 `_REAL_PROGRAM_PROFILE_DIRS = bl.program_profile_dirs`
+  （写法照已有的 `_REAL_LIVE_BROWSER_DIRS`）。另外 `_fake_window(age=600.0)` 之后
+  再写端口文件会把 mtime 刷成「现在」，得再用 `os.utime` 回拨，否则会被
+  `sweep_orphan_profiles` 当成正在启动的窗跳过。
+- **一条用例自己的时好时坏**：`test_navigate_keeps_polling_through_a_document_swap`
+  原来靠 `NAVIGATE_TIMEOUT=0.05` 结束循环，满负载跑全量时第一条 `evaluate` 抛完异常
+  就把 50 毫秒耗光、第二次迭代没轮到而空手返回。改成让 `readyState` 先回 `loading`
+  再回 `complete`、上限给到 30 秒，从此与机器快慢无关。
+- **读数的口径**：收集 2881 项，本机 2874 通过、7 项真机用例默认跳过
+  （另有一条「建符号链接」的用例在没有权限的机器上也会跳过，所以本机偶尔是 8 跳过）。
+- **产物**：功能与 v0.22.4 相同。
+
 ## 最近一次改动（v0.22.4）
 
 - **build job 红的根因（v0.22.1 引入）**：发给包之前的冒烟检查里，`--version` 的判定从
