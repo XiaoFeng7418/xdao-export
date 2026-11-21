@@ -297,6 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="抓取范围：all 全部发言，po 仅发串人",
     )
     parser.add_argument(
+        "--site",
+        default="auto",
+        choices=["auto", "xdao", "bog"],
+        help="站点：auto 自动识别（默认），也可指定 xdao 或 bog",
+    )
+    parser.add_argument(
         "--max-pages",
         type=_page_limit,
         default=None,
@@ -723,7 +729,7 @@ def _merge_thread_sources(args: argparse.Namespace) -> tuple[list[str], list[str
     于是程序把「你写的是 abcdef」报成「串号截止把列表全挡住了」—— 原因完全对不上，
     退出码还是 0。
     """
-    from xdao.cache import parse_thread_id
+    from xdao.sites import resolve_thread_ref
     from xdao.threadlist import ThreadListError, read_thread_list
 
     items = list(args.threads)
@@ -735,15 +741,17 @@ def _merge_thread_sources(args: argparse.Namespace) -> tuple[list[str], list[str
             return str(exc)
     merged: list[str] = []
     dropped: list[str] = []
-    seen: set[int] = set()
+    site = str(getattr(args, "site", "auto") or "auto").lower()
+    seen: set[tuple[str, int]] = set()
     for item in items:
-        thread_id = parse_thread_id(item)
-        if thread_id is None:
+        ref = resolve_thread_ref(item, site=site)
+        if ref is None:
             dropped.append(item)
             continue
-        if thread_id in seen:
+        key = (ref.site, ref.thread_id)
+        if key in seen:
             continue
-        seen.add(thread_id)
+        seen.add(key)
         merged.append(item)
     return merged, dropped
 
@@ -786,6 +794,7 @@ def run_cli(args: argparse.Namespace) -> int:
         print(f"清单文件有误：{requested}", file=sys.stderr)
         return 2
     requested_urls, dropped_urls = requested
+    site = str(getattr(args, "site", "auto") or "auto").lower()
     if dropped_urls:
         shown = "、".join(repr(item) for item in dropped_urls[:5])
         more = f"（还有 {len(dropped_urls) - 5} 条没列出来）" if len(dropped_urls) > 5 else ""
@@ -822,7 +831,15 @@ def run_cli(args: argparse.Namespace) -> int:
     if userhash:
         client.set_userhash(userhash)
     else:
-        print("提醒：未登录，只能读取每个串的前 100 页。用 --cookie 或先运行图形界面登录。", file=sys.stderr)
+        from xdao.sites import resolve_thread_ref
+
+        # B 岛公开 API 不需要登录；仅当本次输入包含 X 岛目标时才显示旧的登录提醒。
+        requires_login = any(
+            (ref := resolve_thread_ref(raw, site=site)) is None or ref.site == "xdao"
+            for raw in requested_urls
+        )
+        if requires_login:
+            print("提醒：未登录，只能读取每个串的前 100 页。用 --cookie 或先运行图形界面登录。", file=sys.stderr)
 
     output_dir = Path(args.output or settings.output_dir or (Path.home() / "Documents" / "X岛备份"))
     try:
@@ -910,6 +927,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 image_mode=image_mode,
                 # 每轮都按命令行的「最多页数」抓（0＝不限），和单次导出同一套语义。
                 max_pages=max_pages,
+                site=site,
             )
             for url in args.threads
         ]
@@ -961,7 +979,7 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
 
     fetcher = CachedThreadFetcher(client, cache_dir=cache_dir, progress=lambda m: print(f"    {m}"),
-                                 use_cache=use_cache, page_workers=page_workers)
+                                 use_cache=use_cache, page_workers=page_workers, site=site)
     exporter = create_exporter(
         format_key,
         client,
@@ -1015,13 +1033,14 @@ def run_cli(args: argparse.Namespace) -> int:
             # 页数上限（0＝不限）交给抓取层：它是唯一知道"到没到上限"的地方，
             # 撞上时结果里的 retry_note 会写清楚停在那一页。
             result = fetcher.fetch(
-                raw, max_pages=max_pages, verify_cached=args.verify
+                raw, max_pages=max_pages, verify_cached=args.verify, site=site
             )
             thread = ThreadData(
                 thread_id=result.meta.thread_id,
                 title=result.meta.title,
                 po_hash=result.meta.po_hash,
                 posts=list(result.posts),
+                site=getattr(result.meta, "site", "xdao"),
             )
             print(f"    {len(thread.posts)} 楼 · {result.reason}")
             log_lines.append(f"    抓取：{len(thread.posts)} 楼 · {result.reason}")

@@ -12,7 +12,7 @@
 
 ![Xdao Thread Exporter in light mode: export options on the left, progress and logs on the right](docs/screenshot.png)
 
-Actual v0.23.0 interface, shown with demo settings; [dark mode](docs/screenshot-dark.png).
+Actual v0.24.0 interface, shown with demo settings; [dark mode](docs/screenshot-dark.png).
 
 ## What it does
 
@@ -28,12 +28,12 @@ PDF requires a local Chromium browser such as Edge or Chrome. If the browser can
 
 ## Download and export
 
-The latest release, **v0.23.0**, provides these files:
+The latest release, **v0.24.0**, provides these files:
 
 | File | Purpose |
 | --- | --- |
-| `xdao-export-v0.23.0-win64.zip` | Portable Windows 64-bit build; unzip and run `xdao-export.exe` |
-| `xdao-export-v0.23.0-win64.zip.sha256` | SHA256 checksum for that zip |
+| `xdao-export-v0.24.0-win64.zip` | Portable Windows 64-bit build; unzip and run `xdao-export.exe` |
+| `xdao-export-v0.24.0-win64.zip.sha256` | SHA256 checksum for that zip |
 
 1. Download both files from the [official Releases page](https://github.com/XiaoFeng7418/xdao-export/releases/latest).
 2. Verify the checksum and extract the zip to a writable folder. Keep `xdao-export.exe` beside its `_internal` folder.
@@ -49,8 +49,8 @@ Browser login supports Chromium-based browsers such as Edge and Chrome; Firefox 
 Put the zip and checksum file in the same folder, then run in PowerShell:
 
 ```powershell
-Get-FileHash .\xdao-export-v0.23.0-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.23.0-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.24.0-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.24.0-win64.zip.sha256
 ```
 
 The SHA256 values should match. This verifies the downloaded bytes against the published checksum; it does not replace checking the download source or protect against both release assets being replaced together.
@@ -69,12 +69,13 @@ Requires **Python 3.10+**, plus tkinter for the GUI (normally included in the of
 python main.py
 ```
 
-The command line supports batches and long-running watches. Examples use the official test thread `50000001`:
+The command line supports batches and long-running watches. Numeric IDs and X-island URLs default to X island; public B-island threads use URLs such as `https://bog.ac/t/7001234`. Examples use the official test thread `50000001`:
 
 ```powershell
 python main.py 50000001 -f html -o exports
 python main.py 50000001 --scope po -f markdown -o exports
 python main.py 50000001 --watch --interval 600 -f html
+python main.py https://bog.ac/t/7001234 --site auto -f html -o exports
 python main.py --selftest --offline
 python main.py --help
 ```
@@ -95,7 +96,7 @@ For the portable build, replace `python main.py` with `xdao-export.exe`. The [us
 | --- | --- |
 | [User guide (Chinese)](docs/USAGE.md) | Login, export formats, all CLI flags, configuration, caches and common problems |
 | [Documentation index](docs/README.md) | Release notes, privacy, signing, audits and engineering tools |
-| [Latest release notes (Chinese)](docs/RELEASE_NOTES_v0.23.0.md) | v0.23.0 changes and assets |
+| [Latest release notes (Chinese)](docs/RELEASE_NOTES_v0.24.0.md) | v0.24.0 changes and assets |
 | [Maintenance](MAINTENANCE.md) / [Handoff](HANDOFF.md) | Architecture, project rules, tests and maintenance workflows (Chinese) |
 
 `main.py` is the GUI/CLI entry point; `xdao/` contains the application, `docs/` the documentation, `tools/` the maintenance utilities, and `tests/` the offline suite. Tests use fake services and isolated configuration, with artifacts kept in `.test-artifacts/`.

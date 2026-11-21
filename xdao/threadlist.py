@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .cache import parse_thread_id
+from .sites import resolve_thread_ref
 
 #: 报错时最多列出几行（再多就把信息淹没了）。
 MAX_REPORTED_LINES = 5
@@ -26,20 +27,22 @@ class ThreadListError(Exception):
 def parse_thread_list(text: str) -> list[str]:
     """把清单文本解析成串号列表（去重、保序、跳过空行与注释）。"""
     entries: list[str] = []
-    seen: set[int] = set()
+    seen: set[tuple[str, int]] = set()
     problems: list[str] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#") or line.startswith("//"):
             continue
-        thread_id = parse_thread_id(line)
+        ref = resolve_thread_ref(line)
+        thread_id = ref.thread_id if ref is not None else parse_thread_id(line)
         if thread_id is None:
             problems.append(f"第 {lineno} 行：{line}")
             continue
-        if thread_id in seen:
+        site_key = (ref.site if ref is not None else "xdao", thread_id)
+        if site_key in seen:
             continue
-        seen.add(thread_id)
-        entries.append(str(thread_id))
+        seen.add(site_key)
+        entries.append(line if ref is not None and ref.site == "bog" else str(thread_id))
 
     if problems:
         shown = "\n".join(problems[:MAX_REPORTED_LINES])

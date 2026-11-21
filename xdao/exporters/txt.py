@@ -58,6 +58,8 @@ class TxtBuilder(Exporter):
                 parts.append(f"作者 {plain_text(post.name)}")
             if post.title and post.title not in ("无标题", ""):
                 parts.append(f"标题 {plain_text(post.title)}")
+            if getattr(post, "emoji", ""):
+                parts.append(post.emoji)
             parts.append(str(post.now))
             parts.append(f"No.{post.id}")
 

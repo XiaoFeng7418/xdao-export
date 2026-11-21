@@ -102,6 +102,7 @@ class ThreadData:
     title: str
     po_hash: str
     posts: list[Post]
+    site: str = "xdao"
 
     @property
     def reply_count(self) -> int:
@@ -167,8 +168,7 @@ def resolve_image_url(client: XdaoClient, src: str) -> str:
 def iter_post_image_urls(client: XdaoClient, post: Post) -> list[str]:
     """收集一楼涉及的全部图片绝对 URL（去重、保序）。"""
     urls: list[str] = []
-    if post.img and post.ext:
-        urls.append(client.image_url(post.img, post.ext))
+    urls.extend(attachment_image_urls(client, post))
     for match in _IMG_SRC_RE.findall(post.content or ""):
         urls.append(resolve_image_url(client, html_lib.unescape(match)))
 
@@ -181,26 +181,59 @@ def iter_post_image_urls(client: XdaoClient, post: Post) -> list[str]:
     return unique
 
 
+def attachment_image_urls(client: XdaoClient, post: Post) -> list[str]:
+    """Return normalized attachment URLs, with the legacy single-image fallback."""
+    normalized = getattr(post, "images", None) or []
+    if normalized:
+        urls = [image.url for image in normalized if image.url]
+    elif post.img and post.ext:
+        try:
+            urls = [client.image_url(post.img, post.ext)]
+        except Exception:
+            return []
+    else:
+        return []
+    return list(dict.fromkeys(url for url in urls if url))
+
+
 def attachment_image_url(client: XdaoClient, post: Post) -> str:
-    """一楼的附件图（``post.img`` / ``post.ext``）地址，没有则空串。
+    """Compatibility helper returning the first attachment, or an empty string."""
+    urls = attachment_image_urls(client, post)
+    return urls[0] if urls else ""
 
-    Markdown 与 EPUB 两处原先各抄了一份逐字相同的实现（2026-10-07 架构评审 §6.2-2），
-    收在这里。两个细节都是有意的：
 
-    * 附件图地址算不出来时返回空串 —— 导出流程不该因为一张附件图崩掉；
-    * 地址必须以 :func:`iter_post_image_urls` 的公共收集结果为准，否则正文里出现同名
-      图片时会把同一张图附两遍。
-    """
-    if not (post.img and post.ext):
-        return ""
-    try:
-        url = client.image_url(post.img, post.ext)
-    except Exception:
-        # 附件图地址异常不该影响导出。
-        return ""
-    if not url:
-        return ""
-    return url if url in iter_post_image_urls(client, post) else ""
+_REFERENCE_RE = re.compile(r">>(?:No|Po)\.(\d+)")
+
+
+def render_reference_html(text: str, href_for_id) -> str:
+    """Escape text while turning normalized references into local links."""
+    result: list[str] = []
+    previous = 0
+    for match in _REFERENCE_RE.finditer(text):
+        result.append(html_lib.escape(text[previous:match.start()], quote=False))
+        label = html_lib.escape(match.group(0), quote=False)
+        href = href_for_id(int(match.group(1)))
+        if href:
+            result.append(f'<a class="quote" href="{html_lib.escape(href, quote=True)}">{label}</a>')
+        else:
+            result.append(label)
+        previous = match.end()
+    result.append(html_lib.escape(text[previous:], quote=False))
+    return "".join(result)
+
+
+def render_reference_markdown(text: str, href_for_id=None) -> str:
+    """Link normalized references when their target is present in the export."""
+
+    if href_for_id is None:
+        def href_for_id(post_id):
+            return f"#p{post_id}"
+
+    def replace(match: re.Match[str]) -> str:
+        href = href_for_id(int(match.group(1)))
+        return f"[{match.group(0)}]({href})" if href else match.group(0)
+
+    return _REFERENCE_RE.sub(replace, text)
 
 
 def fetch_image(client: XdaoClient, url: str) -> bytes | None:
@@ -499,7 +532,7 @@ def render_inline_content(
     return collapse_blank_lines(text)
 
 
-def markdown_images_to_xhtml(text: str, image_attr) -> str:
+def markdown_images_to_xhtml(text: str, image_attr, reference_link=None) -> str:
     """把 Markdown 文本转成 XHTML 片段（EPUB 用）。
 
     ``image_attr(url) -> str`` 由调用方给出 ``<img>`` 的 src（可能是内嵌 data URI），
@@ -527,7 +560,9 @@ def markdown_images_to_xhtml(text: str, image_attr) -> str:
                     f'<div class="img"><img src="{html_lib.escape(src, quote=True)}" alt="图片"/></div>'
                 )
             continue
-        paragraph.append(_escape_xhtml_line(line))
+        paragraph.append(
+            render_reference_html(line, reference_link) if reference_link else _escape_xhtml_line(line)
+        )
     flush()
     return "\n".join(blocks)
 
@@ -571,6 +606,7 @@ __all__ = [
     "ThreadData",
     "can_write_dir",
     "attachment_image_url",
+    "attachment_image_urls",
     "choose_writable_dir",
     "collapse_blank_lines",
     "derive_filename",

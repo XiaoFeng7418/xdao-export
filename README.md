@@ -12,7 +12,7 @@
 
 ![X岛串导出工具浅色界面：左侧输入与导出选项，右侧进度与运行日志](docs/screenshot.png)
 
-v0.23.0 的真实界面，使用演示配置截图；[查看深色模式](docs/screenshot-dark.png)。
+v0.24.0 的真实界面，使用演示配置截图；[查看深色模式](docs/screenshot-dark.png)。
 
 ## 为什么用它
 
@@ -28,12 +28,12 @@ PDF 需要本机 Edge / Chrome 等 Chromium 浏览器；浏览器不可用时会
 
 ## 下载与第一次导出
 
-最新版 **v0.23.0** 提供免安装包：
+最新版 **v0.24.0** 提供免安装包：
 
 | 附件 | 用途 |
 | --- | --- |
-| `xdao-export-v0.23.0-win64.zip` | Windows 64 位免安装包，解压后双击 `xdao-export.exe` |
-| `xdao-export-v0.23.0-win64.zip.sha256` | 与 zip 配套的 SHA256 校验文件 |
+| `xdao-export-v0.24.0-win64.zip` | Windows 64 位免安装包，解压后双击 `xdao-export.exe` |
+| `xdao-export-v0.24.0-win64.zip.sha256` | 与 zip 配套的 SHA256 校验文件 |
 
 1. 从[官方 Releases 页面](https://github.com/XiaoFeng7418/xdao-export/releases/latest)下载 zip 和同名 `.sha256`。
 2. 核对摘要后解压到可写目录；`xdao-export.exe` 与 `_internal` 文件夹必须放在一起。
@@ -49,8 +49,8 @@ PDF 需要本机 Edge / Chrome 等 Chromium 浏览器；浏览器不可用时会
 把两个附件放在同一文件夹，在 PowerShell 中运行：
 
 ```powershell
-Get-FileHash .\xdao-export-v0.23.0-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.23.0-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.24.0-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.24.0-win64.zip.sha256
 ```
 
 比较两处的 SHA256 摘要。相同表示文件与发布页上的校验值一致；它不能替代对下载来源的确认，也不能防止 zip 与校验文件同时被替换。
@@ -69,12 +69,13 @@ SignPath Foundation 的免费签名申请于 2026-10-02 未获批准，仓库保
 python main.py
 ```
 
-命令行可用于批量导出和长期监控；示例使用官方测试串 `50000001`：
+命令行可用于批量导出和长期监控；纯数字或 X 岛网址默认走 X 岛，B 岛公开串可用 `https://bog.ac/t/7001234`；示例使用官方测试串 `50000001`：
 
 ```powershell
 python main.py 50000001 -f html -o exports
 python main.py 50000001 --scope po -f markdown -o exports
 python main.py 50000001 --watch --interval 600 -f html
+python main.py https://bog.ac/t/7001234 --site auto -f html -o exports
 python main.py --selftest --offline
 python main.py --help
 ```
@@ -95,7 +96,7 @@ python main.py --help
 | --- | --- |
 | [使用指南](docs/USAGE.md) | 登录、导出格式、全部 CLI 参数、配置与缓存、常见问题 |
 | [文档导航](docs/README.md) | 发布说明、隐私与签名、审计报告、工程工具 |
-| [最新发布说明](docs/RELEASE_NOTES_v0.23.0.md) | v0.23.0 的发布内容与附件 |
+| [最新发布说明](docs/RELEASE_NOTES_v0.24.0.md) | v0.24.0 的发布内容与附件 |
 | [维护规范](MAINTENANCE.md) / [技术交接](HANDOFF.md) | 架构、硬性约定、测试清单与维护流程 |
 
 ```text
@@ -103,10 +104,10 @@ main.py       图形界面与命令行入口
 xdao/         网络、缓存、监控、导出器与 Tkinter 界面
 docs/         使用指南、发布说明与审计资产
 tools/        构建、截图、仓库检查与维护工具
-tests/        2900 个离线单元测试（2892 通过，另 8 项默认跳过）
+tests/        3003 个离线单元测试（2995 通过，另 8 项默认跳过）
 ```
 
-上面的读数来自 2026-11-21 的 Windows 全量运行：2892 通过、8 跳过，其中 7 个真机或权限用例按条件跳过，另 1 个版本资源用例需先有 v0.23.0 可执行文件。无显示环境会额外跳过 Tk 用例，不能视作已验证界面。开发检查（pytest / Ruff 仅为开发工具）：
+上面的读数来自 2026-11-21 的 Windows 全量运行：2995 通过、8 跳过，其中真机或权限用例按条件跳过。无显示环境会额外跳过 Tk 用例，不能视作已验证界面。开发检查（pytest / Ruff 仅为开发工具）：
 
 ```powershell
 python -m pytest -q -rs

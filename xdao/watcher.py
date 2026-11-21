@@ -18,10 +18,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .cache import CachedThreadFetcher, default_cache_dir, parse_thread_id
+from .cache import CachedThreadFetcher, default_cache_dir, parse_thread_id  # noqa: F401
 from .client import XdaoClient, XdaoError
 from .exporters import EXPORTERS, ThreadData, create_exporter
 from .notifications import Notifier, message_for
+from .sites import resolve_thread_ref
 
 
 def _target_max_pages(value) -> int:
@@ -50,14 +51,28 @@ class WatchTarget:
     last_export_path: str = ""
     exports: int = 0
     thread_id: int | None = None
+    #: Optional site override; append it to retain all legacy positional arguments.
+    site: str = "auto"
 
     def __post_init__(self) -> None:
+        self.site = str(self.site or "auto").lower()
+        if self.site not in ("auto", "xdao", "bog"):
+            raise ValueError(f"站点认不出：{self.site}")
         if self.thread_id is None:
-            self.thread_id = parse_thread_id(self.url_or_id)
+            ref = resolve_thread_ref(self.url_or_id, site=self.site)
+            self.thread_id = ref.thread_id if ref is not None else None
+        if self.image_mode == "dir":
+            self.image_mode = "folder"
+
+    @property
+    def resolved_site(self) -> str:
+        ref = resolve_thread_ref(self.url_or_id, site=self.site)
+        return ref.site if ref is not None else (self.site if self.site != "auto" else "xdao")
 
     @property
     def label(self) -> str:
-        return str(self.thread_id or self.url_or_id)
+        label = str(self.thread_id or self.url_or_id)
+        return f"B岛 {label}" if self.resolved_site == "bog" else label
 
     def to_dict(self) -> dict:
         """存进配置文件的形态。饼干筛选一律写成 ``hashes``（v0.13.49 起统一）。
@@ -65,7 +80,7 @@ class WatchTarget:
         历史上这里写的是 ``include_hashes``，与监控列表导入导出文件里的 ``hashes``
         两个名字并存过一阵；``from_dict`` 两个都认，写只写一个。
         """
-        return {
+        record = {
             "url_or_id": self.url_or_id,
             "scope": self.scope,
             "format_key": self.format_key,
@@ -73,6 +88,12 @@ class WatchTarget:
             "image_mode": self.image_mode,
             "max_pages": self.max_pages,
         }
+        inferred = resolve_thread_ref(self.url_or_id)
+        if self.site != "auto" and (
+            self.site != "xdao" or (inferred is not None and inferred.site != "xdao")
+        ):
+            record["site"] = self.site
+        return record
 
     @classmethod
     def from_dict(cls, data: dict) -> "WatchTarget":
@@ -83,8 +104,10 @@ class WatchTarget:
             scope=str(data.get("scope") or "all"),
             format_key=str(data.get("format_key") or "html"),
             include_hashes=[str(h) for h in (raw_hashes or [])],
-            image_mode=image_mode if image_mode in ("embed", "url", "drop") else "embed",
+            # 监控历史格式不支持目录图片；保留旧的降级行为。
+            image_mode=image_mode if image_mode in ("embed", "url", "drop", "dir") else "embed",
             max_pages=_target_max_pages(data.get("max_pages")),
+            site=str(data.get("site") or "auto"),
         )
 
 
@@ -114,7 +137,10 @@ def target_key(target: WatchTarget) -> str:
     否则第二种格式会因为"缓存里已是最新"而被永久跳过。
     """
     hashes = "-".join(sorted(target.include_hashes)) or "-"
-    return f"{target.thread_id}-{target.scope}-{target.format_key}-{target.image_mode}-{hashes}"
+    thread_key = str(target.thread_id)
+    if target.resolved_site != "xdao":
+        thread_key = f"{target.resolved_site}_{thread_key}"
+    return f"{thread_key}-{target.scope}-{target.format_key}-{target.image_mode}-{hashes}"
 
 
 def _export_state_path(cache_dir: Path, target: WatchTarget) -> Path:
@@ -186,16 +212,16 @@ def check_once(
             progress=progress,
             page_workers=page_workers,
         )
-        fetched = fetcher.fetch(
-            target.url_or_id,
-            max_pages=target.max_pages,
-            verify_cached=verify_cached,
-        )
+        fetch_options = {"max_pages": target.max_pages, "verify_cached": verify_cached}
+        if target.site != "auto":
+            fetch_options["site"] = target.site
+        fetched = fetcher.fetch(target.url_or_id, **fetch_options)
         thread: ThreadData = ThreadData(
             thread_id=fetched.meta.thread_id,
             title=fetched.meta.title,
             po_hash=fetched.meta.po_hash,
             posts=list(fetched.posts),
+            site=getattr(fetched.meta, "site", "xdao"),
         )
         result.total_posts = len(thread.posts)
         result.new_posts = fetched.new_posts

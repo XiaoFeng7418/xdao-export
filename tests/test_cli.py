@@ -50,6 +50,17 @@ def test_parser_watch_and_scope():
     assert args.scope == "po"
 
 
+def test_cli_merge_keeps_same_numeric_id_for_different_sites():
+    from main import _merge_thread_sources
+
+    args = SimpleNamespace(
+        threads=["12345678", "https://bog.ac/t/12345678", "https://bog.ac/t/12345678/2"],
+        input=None,
+    )
+
+    assert _merge_thread_sources(args) == (["12345678", "https://bog.ac/t/12345678"], [])
+
+
 def test_version_flag_exits_zero(capsys):
     from xdao import __version__
 

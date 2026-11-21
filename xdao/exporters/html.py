@@ -12,12 +12,14 @@ from ..client import Post, XdaoClient
 from ..paths import ensure_writable
 from ._shared import (
     ThreadData,
+    attachment_image_urls,
     download_images,
     fetch_image,
     guess_mime,
     iter_post_image_urls,
     plain_text,
     resolve_image_url,
+    render_reference_html,
     sanitize_filename,
 )
 from .base import Exporter
@@ -53,6 +55,8 @@ IMAGE_MODES = ("embed", "url", "drop", "folder")
 def _image_mode(value, fallback: str = "embed") -> str:
     """认一下图片处理方式；认不出就回落默认（内嵌）。"""
     mode = str(value or "").strip().lower()
+    if mode == "dir":
+        mode = "folder"
     return mode if mode in IMAGE_MODES else fallback
 
 
@@ -251,7 +255,7 @@ class HtmlBuilder(Exporter):
 
     # ---------- 正文 ----------
 
-    def render_content(self, content: str, po_hash: str) -> str:
+    def render_content(self, content: str, po_hash: str, reference_link=None) -> str:
         """渲染一楼正文：保留换行与图片，丢弃其它标签与样式。"""
         if not content:
             return ""
@@ -267,6 +271,8 @@ class HtmlBuilder(Exporter):
 
             def handle_starttag(self, tag, attrs) -> None:
                 tag = tag.lower()
+                if tag == "a" and reference_link:
+                    return
                 if tag == "br":
                     self.out.append("<br>")
                 elif tag == "img":
@@ -293,12 +299,14 @@ class HtmlBuilder(Exporter):
 
             def handle_endtag(self, tag) -> None:
                 tag = tag.lower()
-                if tag in ("br", "img"):
+                if tag in ("br", "img") or (tag == "a" and reference_link):
                     return
                 self.out.append(html_lib.escape(f"</{tag}>"))
 
             def handle_data(self, data: str) -> None:
-                self.out.append(html_lib.escape(data))
+                self.out.append(
+                    render_reference_html(data, reference_link) if reference_link else html_lib.escape(data)
+                )
 
         renderer = _Renderer(self)
         renderer.feed(content)
@@ -320,16 +328,33 @@ class HtmlBuilder(Exporter):
             parts.append(f'<span class="aname">作者 {html_lib.escape(plain_text(post.name))}</span>')
         if post.title and post.title not in ("无标题",):
             parts.append(f'<span class="ptitle">{html_lib.escape(plain_text(post.title))}</span>')
+        if getattr(post, "emoji", ""):
+            parts.append(f'<span class="emoji">{html_lib.escape(post.emoji)}</span>')
         parts.append(f'<span class="time">{html_lib.escape(post.now)}</span>')
         parts.append(f'<span class="no">No.{post.id}</span>')
         return "".join(parts)
 
-    def _article_html(self, thread: ThreadData, post: Post, floor: int) -> str:
+    def _article_html(
+        self,
+        thread: ThreadData,
+        post: Post,
+        floor: int,
+        reference_targets: dict[int, int] | None = None,
+        anchor_prefix: str = "",
+    ) -> str:
         """一楼成品 HTML（单串、合并、流式三条路径共用同一份，输出才对得上）。"""
         is_po = thread.is_po_post(post)
-        body = self.render_content(post.content, thread.po_hash)
-        if post.img and post.ext:
-            url = self._client.image_url(post.img, post.ext)
+        reference_targets = reference_targets or {}
+        anchor_name = f"{anchor_prefix}{post.id}" if anchor_prefix else f"p{post.id}"
+        reference_link = (
+            lambda post_id: (
+                (f"#{anchor_prefix}{post_id}" if anchor_prefix else f"#p{post_id}")
+                if post_id in reference_targets
+                else ""
+            )
+        ) if thread.site != "xdao" else None
+        body = self.render_content(post.content, thread.po_hash, reference_link)
+        for url in attachment_image_urls(self._client, post):
             embedded = self.embed_image(url)
             if embedded:
                 body += (
@@ -338,7 +363,7 @@ class HtmlBuilder(Exporter):
                 )
         cls = "post po" if is_po else "post"
         return (
-            f'<article class="{cls}" id="p{post.id}">'
+            f'<article class="{cls}" id="{anchor_name}">'
             f'<header class="meta"><span class="floor">#{floor}</span>'
             f"{self._post_meta_html(post, is_po)}</header>"
             f'<div class="content">{body}</div>'
@@ -427,10 +452,18 @@ class HtmlBuilder(Exporter):
         posts = thread.filter_posts(scope, include_hashes)
         self._preload_images(thread, posts)
         heading = self._heading_of(thread)
-        rows = [self._article_html(thread, post, floor) for floor, post in enumerate(posts, start=1)]
+        anchor_prefix = f"bog-{index}-" if thread.site == "bog" else ""
+        reference_targets = {post.id: post.id for post in posts}
+        rows = [
+            self._article_html(
+                thread, post, floor, reference_targets, anchor_prefix
+            )
+            for floor, post in enumerate(posts, start=1)
+        ]
         joined = "\n".join(rows)
+        section_id = f"tbog-{index}-{thread.thread_id}" if thread.site == "bog" else f"t{thread.thread_id}"
         return (
-            f'<section class="thread" id="t{thread.thread_id}">'
+            f'<section class="thread" id="{section_id}">'
             f'<h2 class="thread-title">{index}. {html_lib.escape(heading)}</h2>'
             f'<div class="sub">串号 No.{thread.thread_id} · 共 {len(rows)} 楼 · '
             f'{html_lib.escape(scope_label)} · PO 饼干 '
@@ -448,7 +481,11 @@ class HtmlBuilder(Exporter):
         """生成完整 HTML 文档。"""
         posts = thread.filter_posts(scope, include_hashes)
         self._preload_images(thread, posts)
-        rows = [self._article_html(thread, post, floor) for floor, post in enumerate(posts, start=1)]
+        reference_targets = {post.id: post.id for post in posts}
+        rows = [
+            self._article_html(thread, post, floor, reference_targets)
+            for floor, post in enumerate(posts, start=1)
+        ]
         document = (
             self._single_head(
                 thread, len(rows), self._heading_of(thread), self._scope_label(scope, include_hashes)
@@ -494,6 +531,7 @@ class HtmlBuilder(Exporter):
         """
         posts = thread.filter_posts(scope, include_hashes)
         self._preload_images(thread, posts)
+        reference_targets = {post.id: post.id for post in posts}
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(
                 self._single_head(
@@ -507,7 +545,7 @@ class HtmlBuilder(Exporter):
                 self.check_cancel()
                 if floor > 1:
                     handle.write("\n")
-                handle.write(self._article_html(thread, post, floor))
+                handle.write(self._article_html(thread, post, floor, reference_targets))
             handle.write(self._single_tail())
         self._report_missing_images()
         return path
@@ -529,8 +567,15 @@ class HtmlBuilder(Exporter):
                 posts = thread.filter_posts(scope, include_hashes)
                 self._preload_images(thread, posts)
                 heading = self._heading_of(thread)
+                anchor_prefix = f"bog-{index}-" if thread.site == "bog" else ""
+                reference_targets = {post.id: post.id for post in posts}
+                section_id = (
+                    f"tbog-{index}-{thread.thread_id}"
+                    if thread.site == "bog"
+                    else f"t{thread.thread_id}"
+                )
                 handle.write(
-                    f'<section class="thread" id="t{thread.thread_id}">'
+                    f'<section class="thread" id="{section_id}">'
                     f'<h2 class="thread-title">{index}. {html_lib.escape(heading)}</h2>'
                     f'<div class="sub">串号 No.{thread.thread_id} · 共 {len(posts)} 楼 · '
                     f'{html_lib.escape(scope_label)} · PO 饼干 '
@@ -540,7 +585,11 @@ class HtmlBuilder(Exporter):
                     self.check_cancel()
                     if floor > 1:
                         handle.write("\n")
-                    handle.write(self._article_html(thread, post, floor))
+                    handle.write(
+                        self._article_html(
+                            thread, post, floor, reference_targets, anchor_prefix
+                        )
+                    )
                 handle.write("</section>")
             handle.write(self._merged_tail())
         self._report_missing_images()

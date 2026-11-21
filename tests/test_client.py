@@ -635,6 +635,20 @@ def test_download_image_relaxes_the_timeout_and_caps_the_size(tmp_path):
     assert call["url"] == "https://img.example/e.png"
 
 
+def test_download_image_uses_site_adapter_headers_for_bog_images() -> None:
+    client = XdaoClient()
+    fake = _FakeImageDownloader()
+    client._request = fake  # type: ignore[method-assign]
+
+    client.download_image(
+        "https://bog.ac/image/large/sample.jpg", use_cache=False
+    )
+    client.download_image("https://image.nmb.best/image/sample.jpg", use_cache=False)
+
+    assert fake.calls[0].get("headers") == {"Referer": "https://bog.ac/"}
+    assert "headers" not in fake.calls[1]
+
+
 
 # ---------- 覆盖率体检补的分支（v0.19.6）----------
 

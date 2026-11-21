@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Iterable
@@ -109,6 +109,14 @@ class LoginForm:
     login_url: str
 
 
+@dataclass(frozen=True)
+class PostImage:
+    """一张归一化的附件图片，url 是可直接下载的完整地址。"""
+
+    url: str
+    ext: str = ""
+
+
 @dataclass
 class Post:
     """一条发言。"""
@@ -126,6 +134,9 @@ class Post:
     is_po: bool = False
     # 该发言来自第几页（缓存与去重使用）。
     page: int = 1
+    # 附件图片；旧 X 岛调用方仍可继续读写 img / ext。
+    images: list[PostImage] = field(default_factory=list)
+    emoji: str = ""
 
 
 class XdaoClient:
@@ -824,7 +835,16 @@ class XdaoClient:
             except OSError:
                 pass  # 缓存损坏就重新下载
 
-        data = self._request(url, timeout=max(30.0, self.timeout), max_bytes=MAX_IMAGE_BYTES)
+        request_options = {
+            "timeout": max(30.0, self.timeout),
+            "max_bytes": MAX_IMAGE_BYTES,
+        }
+        from .sites import image_request_headers
+
+        headers = image_request_headers(url)
+        if headers:
+            request_options["headers"] = headers
+        data = self._request(url, **request_options)
 
         if path is not None:
             # 临时文件名带上线程号：图片是六线程并发下的（v0.21.16），

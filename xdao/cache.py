@@ -24,6 +24,7 @@ from pathlib import Path
 from .cancel import ExportCancelled, check as check_cancel
 from .client import Post, XdaoClient, XdaoError, reply_count
 from .paths import OutputDirNotWritable, can_write_dir, ensure_writable
+from .sites import get_site_adapter, resolve_thread_ref
 
 # 缓存格式版本，结构不兼容时旧缓存自动失效。
 CACHE_VERSION = 1
@@ -76,6 +77,12 @@ def post_fingerprint(post: Post) -> str:
             str(post.admin),
         ]
     )
+    # Empty new fields retain the exact legacy X island fingerprint.
+    if post.images or post.emoji:
+        raw += "|" + json.dumps(
+            {"images": [(image.url, image.ext) for image in post.images], "emoji": post.emoji},
+            ensure_ascii=False, sort_keys=True,
+        )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
@@ -89,6 +96,7 @@ class ThreadMeta:
     reply_count: int
     page: int = 1
     pages: int = 1
+    site: str = "xdao"
 
 
 @dataclass
@@ -131,14 +139,19 @@ class ThreadCache:
     write_error: str = ""
     # 连缓存目录本身都没能建出来（例如目录权限只放开到上一级）。
     fetch_error: str = ""
+    site: str = "xdao"
+
+    @property
+    def cache_key(self) -> str:
+        return f"{get_site_adapter(self.site).cache_prefix}{self.thread_id}"
 
     @property
     def path(self) -> Path:
-        return self.cache_dir / "threads" / f"{self.thread_id}.json"
+        return self.cache_dir / "threads" / f"{self.cache_key}.json"
 
     @property
     def pages_dir(self) -> Path:
-        return self.cache_dir / "pages" / str(self.thread_id)
+        return self.cache_dir / "pages" / self.cache_key
 
     def page_path(self, page: int) -> Path:
         return self.pages_dir / f"{page}.json"
@@ -199,8 +212,8 @@ class ThreadCache:
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
     @classmethod
-    def load(cls, cache_dir: Path, thread_id: int) -> "ThreadCache":
-        cache = cls(cache_dir=Path(cache_dir), thread_id=thread_id)
+    def load(cls, cache_dir: Path, thread_id: int, site: str = "xdao") -> "ThreadCache":
+        cache = cls(cache_dir=Path(cache_dir), thread_id=thread_id, site=site)
         try:
             data = json.loads(cache.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -418,7 +431,10 @@ class CachedThreadFetcher:
         retry_delay: float | None = None,
         page_workers: int = DEFAULT_PAGE_WORKERS,
         stop=None,
+        site: str = "auto",
     ) -> None:
+        self.site = site
+        self._adapter = get_site_adapter("xdao")
         self._client = client
         self._progress = progress
         self.use_cache = use_cache
@@ -452,28 +468,32 @@ class CachedThreadFetcher:
         if self._progress:
             self._progress(message)
 
+    def _fetch_page(self, thread_id: int, page: int = 1):
+        check_cancel(self.stop)
+        result = self._adapter.fetch_page(self._client, thread_id, page)
+        check_cancel(self.stop)
+        return result
+
     # ---------- 元信息 ----------
 
-    def fetch_meta(self, thread_id: int) -> ThreadMeta:
+    def fetch_meta(self, thread_id: int, site: str | None = None) -> ThreadMeta:
         """只取第 1 页，得到标题、PO 饼干和回复数（监控轮询用，代价最小）。"""
-        payload = self._client.fetch_thread_page(thread_id, 1)
-        self._raise_if_error(payload, thread_id)
-        parsed = self._client.parse_thread_page(payload)
+        self._adapter = get_site_adapter(site or (self.site if self.site != "auto" else "xdao"))
+        payload = self._fetch_page(thread_id, 1)
+        self._adapter.raise_for_error(payload, thread_id)
+        parsed = self._adapter.parse_thread_page(payload, 1)
         return ThreadMeta(
             thread_id=thread_id,
             title=parsed["title"],
             po_hash=parsed["po_hash"] or "",
             reply_count=parse_reply_count(payload),
             page=1,
-            pages=self._client.last_page_count or 1,
+            pages=self._adapter.page_count(payload),
+            site=self._adapter.name,
         )
 
-    @staticmethod
-    def _raise_if_error(payload, thread_id: int) -> None:
-        if isinstance(payload, str):
-            raise XdaoError(payload)
-        if isinstance(payload, dict) and payload.get("success") is False:
-            raise XdaoError(str(payload.get("error") or f"无法访问串 {thread_id}"))
+    def _raise_if_error(self, payload, thread_id: int) -> None:
+        self._adapter.raise_for_error(payload, thread_id)
 
     # ---------- 抓取 ----------
 
@@ -483,6 +503,7 @@ class CachedThreadFetcher:
         *,
         max_pages: int = SAFETY_MAX_PAGES,
         verify_cached: bool = False,
+        site: str | None = None,
     ) -> CachedThread:
         """抓取（或从缓存取得）一个串的完整内容。
 
@@ -495,9 +516,11 @@ class CachedThreadFetcher:
         原先的样子 —— 调用方要区分"用户填的上限"与"安全阀"，用户上限更小时
         就把更小的那个传进来，没填时照旧用默认值。
         """
-        thread_id = parse_thread_id(url_or_id)
+        ref = resolve_thread_ref(url_or_id, site=site or self.site)
+        thread_id = ref.thread_id if ref else None
         if thread_id is None:
             raise XdaoError(f"无法识别串号：{url_or_id}")
+        self._adapter = get_site_adapter(ref.site)
         check_cancel(self.stop)
 
         # 抓一个长串可能要几分钟，靠的就是缓存能续上；所以先确认缓存目录可写，
@@ -511,8 +534,8 @@ class CachedThreadFetcher:
                     "或在设置里把缓存目录改到一个可写的位置。"
                 ) from exc
 
-        cache = ThreadCache.load(self.cache_dir, thread_id) if self.use_cache else ThreadCache(
-            cache_dir=self.cache_dir, thread_id=thread_id
+        cache = ThreadCache.load(self.cache_dir, thread_id, site=self._adapter.name) if self.use_cache else ThreadCache(
+            cache_dir=self.cache_dir, thread_id=thread_id, site=self._adapter.name
         )
         cached_pages: dict[int, dict] = {}
         if self.use_cache:
@@ -520,16 +543,19 @@ class CachedThreadFetcher:
                 payload = cache.load_page(page)
                 if payload is None:
                     break
-                cached_pages[page] = payload
+                try:
+                    cached_pages[page] = self._adapter.normalize_page(self._client, payload, page)
+                except (XdaoError, TypeError, ValueError, KeyError):
+                    break
 
         self._notify("正在获取第 1 页…")
-        first = self._client.fetch_thread_page(thread_id, 1)
-        self._raise_if_error(first, thread_id)
+        first = self._fetch_page(thread_id, 1)
+        self._adapter.raise_for_error(first, thread_id)
         if not isinstance(first, dict):
             raise XdaoError(f"接口返回了非预期内容：{type(first).__name__}")
 
         reply_count = parse_reply_count(first)
-        page_count = max(1, self._client.last_page_count or 1)
+        page_count = self._adapter.page_count(first)
         # 本轮之前的已知楼层：用于区分"新增楼层"与"被编辑的老楼层"。
         previous_ids = cache.known_post_ids()
 
@@ -584,7 +610,7 @@ class CachedThreadFetcher:
             if page_count in cached_pages and page_count > 1:
                 self._notify(f"正在校验第 {page_count} 页是否有改动…")
                 try:
-                    fresh_last = self._client.fetch_thread_page(thread_id, page_count)
+                    fresh_last = self._fetch_page(thread_id, page_count)
                     self._raise_if_error(fresh_last, thread_id)
                 except XdaoError:
                     payloads = dict(cached_pages)
@@ -782,7 +808,7 @@ class CachedThreadFetcher:
                 cancelled = True
                 return page, "", None
             try:
-                return page, "", self._client.fetch_thread_page(thread_id, page)
+                return page, "", self._fetch_page(thread_id, page)
             except ExportCancelled:
                 cancelled = True
                 return page, "", None
@@ -832,7 +858,7 @@ class CachedThreadFetcher:
             # 单页出错只记成失败页（后面还有补抓机会），不能让它掀翻整趟导出：
             # 以前这里没有 try，一页超时整串就抛出去了。
             try:
-                raw = self._client.fetch_thread_page(thread_id, page)
+                raw = self._fetch_page(thread_id, page)
             except ExportCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 —— 单页失败要退回重试队列
@@ -851,7 +877,13 @@ class CachedThreadFetcher:
             failed.add(page)
             self._last_page_error = f"接口返回了非预期内容：{type(raw).__name__}"
             return "fail"
-        parsed = self._client.parse_thread_page(raw, page)
+        try:
+            self._adapter.raise_for_error(raw, thread_id)
+            parsed = self._adapter.parse_thread_page(raw, page)
+        except XdaoError as exc:
+            failed.add(page)
+            self._last_page_error = str(exc)
+            return "fail"
         if page > 1 and not parsed["posts"]:
             # 空页：接口说这页什么都没有，当作到底。
             return "end"
@@ -947,12 +979,12 @@ class CachedThreadFetcher:
 
         for page in sorted(payloads):
             payload = payloads[page]
-            parsed = self._client.parse_thread_page(payload, page)
+            parsed = self._adapter.parse_thread_page(payload, page)
             parsed_pages[page] = parsed["posts"]
             if page == 1:
                 title = parsed["title"]
                 po_hash = parsed["po_hash"] or ""
-                reply_count = parse_reply_count(payload)
+                reply_count = self._adapter.reply_count(payload)
             for post in parsed["posts"]:
                 key = str(post.id)
                 if key in seen_ids:
@@ -977,6 +1009,7 @@ class CachedThreadFetcher:
             reply_count=reply_count,
             page=1,
             pages=max(1, last_page),
+            site=self._adapter.name,
         )
         changed = bool(pages_fetched) or edited_posts > 0
 

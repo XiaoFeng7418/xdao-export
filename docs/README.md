@@ -13,11 +13,12 @@
 | [代码签名现状](SIGNING.md) | 当前未签名状态、申请记录和待启用流程 |
 | [MIT License](../LICENSE) | 项目许可与版权 |
 
-界面预览：[浅色模式](screenshot.png) · [深色模式](screenshot-dark.png)。截图展示 v0.23.0 的真实界面，使用演示配置。
+界面预览：[浅色模式](screenshot.png) · [深色模式](screenshot-dark.png)。截图展示 v0.24.0 的真实界面，使用演示配置。
 
 ## 版本与维护记录
 
-- [v0.23.0 发布说明](RELEASE_NOTES_v0.23.0.md)：当前版本说明与附件名称。
+- [v0.24.0 发布说明](RELEASE_NOTES_v0.24.0.md)：当前版本说明与附件名称。
+- [v0.23.0 发布说明](RELEASE_NOTES_v0.23.0.md)：上一版的界面与文件名修复记录。
 - [全部发布版本](https://github.com/XiaoFeng7418/xdao-export/releases)：下载及历史变更；对应源码说明保留在本目录的 `RELEASE_NOTES_v*.md`，不合并删除历史。
 - [维护规范](../MAINTENANCE.md)：架构、界面设计系统、公开材料约定、测试与发布护栏。
 - [技术交接](../HANDOFF.md)：功能边界、模块职责、完整测试清单。

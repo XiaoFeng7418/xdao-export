@@ -25,7 +25,7 @@ from pathlib import Path
 from ..client import Post
 from ._shared import (
     ThreadData,
-    attachment_image_url,
+    attachment_image_urls,
     derive_filename,
     download_images,
     ensure_writable,
@@ -137,6 +137,7 @@ class EpubBuilder(Exporter):
         super().__init__(client, progress, filename_template, **options)
         # 构造函数里的设置作为 build()/save() 未显式传参时的默认值。
         self.image_mode = image_mode if image_mode in ("embed", "url", "drop") else "embed"
+        self._reference_targets: dict[int, str] = {}
         # 正文字号（px）；None ＝ 没设过，此时 style.css 保持旧样子（见 _style_css）。
         self.font_size = _font_size(options.get("font_size"))
         # url -> 图片原始字节；None 表示下载失败，不再重试。
@@ -161,7 +162,13 @@ class EpubBuilder(Exporter):
     ) -> Path:
         """生成 .epub 文件，返回写入的路径。"""
         image_mode = image_mode or self.image_mode
+        if image_mode in ("folder", "dir"):
+            image_mode = "embed"
         posts = thread.filter_posts(scope, include_hashes)
+        self._reference_targets = {
+            post.id: f"post-{index:04d}.xhtml#p{post.id}"
+            for index, post in enumerate(posts, start=1)
+        }
         images = self._collect_images(posts, image_mode)
         # 图都下完了才检查取消：取消之后不再往磁盘写半本电子书。
         self.check_cancel()
@@ -290,7 +297,7 @@ class EpubBuilder(Exporter):
 
     # ---------- 正文 ----------
 
-    def _render_body(self, post: Post, image_mode: str) -> str:
+    def _render_body(self, post: Post, image_mode: str, references: bool = False) -> str:
         """正文 HTML → Markdown → XHTML 片段（含附件图）。"""
         markdown = render_inline_content(
             self._client,
@@ -298,8 +305,7 @@ class EpubBuilder(Exporter):
             image_mode=image_mode,
             embedder=self._data_uri_for,
         )
-        attachment = attachment_image_url(self._client, post)
-        if attachment:
+        for attachment in attachment_image_urls(self._client, post):
             # 附件图不在正文里，单独作为一段图片附加在正文后面。
             markdown = (
                 f"{markdown}\n\n![图片]({attachment})" if markdown else f"![图片]({attachment})"
@@ -307,7 +313,8 @@ class EpubBuilder(Exporter):
         if not markdown:
             return ""
         return markdown_images_to_xhtml(
-            markdown, lambda url: self._image_src(url, image_mode)
+            markdown, lambda url: self._image_src(url, image_mode),
+            reference_link=self._reference_targets.get if references else None,
         )
 
     def _render_post_xhtml(
@@ -327,11 +334,14 @@ class EpubBuilder(Exporter):
         title = plain_text(post.title or "")
         if title and title not in ("无标题",):
             meta.append(f'<span class="ptitle">{html_lib.escape(title)}</span>')
+        if getattr(post, "emoji", ""):
+            meta.append(f'<span class="emoji">{html_lib.escape(post.emoji)}</span>')
         meta.append(f'<span class="time">{html_lib.escape(post.now or "")}</span>')
         meta.append(f'<span class="no">No.{post.id}</span>')
 
         # 正文与附件图都在这里渲染，正文为空时也会输出图片。
-        body = self._render_body(post, image_mode)
+        body = self._render_body(post, image_mode, references=thread.site != "xdao")
+        anchor = f"p{post.id}" if thread.site != "xdao" else f"post-{index:04d}"
 
         heading = f"第 {index} 楼"
         return (
@@ -343,7 +353,7 @@ class EpubBuilder(Exporter):
             '<link rel="stylesheet" type="text/css" href="../style.css"/>\n'
             "</head>\n"
             '<body epub:type="bodymatter" xmlns:epub="http://www.idpf.org/2007/ops">\n'
-            f'<section class="post{" po" if is_po else ""}" id="post-{index:04d}">\n'
+            f'<section class="post{" po" if is_po else ""}" id="{anchor}">\n'
             f'<h1 class="post-title">{html_lib.escape(heading)}</h1>\n'
             f'<p class="post-meta">{"".join(meta)}</p>\n'
             f'<div class="post-body">\n{body}\n</div>\n'

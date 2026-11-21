@@ -46,6 +46,7 @@ from .settings import (
     EXPORT_FONT_SIZE_MIN,
     AppSettings,
 )
+from .sites import resolve_thread_ref
 from .theme import apply_theme, font, mono, resolve_fonts
 from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
 from .widgets import Card, FlatText, ModernProgress, SectionHeading, StatusPill
@@ -5595,7 +5596,14 @@ class App:
         # 导出或监控在跑时不许再开：两个线程会同时往缓存与导出目录里写。
         if self._refuse_when_busy("开始导出"):
             return
-        if not self.settings.userhash:
+        urls = urls if urls is not None else self._collect_urls()
+        # B 岛输入是公开串，免登录且不限于 X 岛的未登录页数规则。
+        # 纯 B 岛批次直接开始；混合批次仍保留 X 岛登录提示。
+        public_bog_only = bool(urls) and all(
+            (ref := resolve_thread_ref(url)) is not None and ref.site == "bog"
+            for url in urls
+        )
+        if not self.settings.userhash and not public_bog_only:
             # 不登录也让导（v0.22.1 起）：公开串不登录能读到前 100 页，命令行一直是
             # 这么干的，文档也这么写，只有界面在硬拦。拦着等于「明说不登录能用、
             # 实际上不能用」。要登录的人这时候可以顺手登。
@@ -5611,7 +5619,6 @@ class App:
                 return
             self.log("提醒：未登录，只能读取每个串的前 100 页。")
 
-        urls = urls if urls is not None else self._collect_urls()
         if not urls:
             messagebox.showwarning("提示", "请至少输入一个串网址。")
             return
@@ -5753,6 +5760,7 @@ class App:
                         title=result.meta.title,
                         po_hash=result.meta.po_hash,
                         posts=list(result.posts),
+                        site=getattr(result.meta, "site", "xdao"),
                     )
                     self._export_queue.put(
                         (

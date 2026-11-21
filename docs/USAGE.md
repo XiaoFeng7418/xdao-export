@@ -4,6 +4,10 @@
 
 本页介绍当前源码的使用方式；免安装版可把命令中的 `python main.py` 换成 `xdao-export.exe`。历史版本差异见[发布说明](README.md#版本与维护记录)。例子使用官方测试串 `50000001`，`12345678` 为虚构占位编号。
 
+## B 岛公开串
+
+输入 `https://bog.ac/t/7001234` 或带页码的 B 岛串网址会自动识别为 B 岛，公开串无需登录即可抓取。纯数字和 `nmbxd1.com` / `nmbxd.com` 网址继续默认走 X 岛；可用 `--site auto|xdao|bog` 明确指定站点。B 岛图片支持内嵌、同名目录、链接和丢弃四种模式，缓存与监控使用独立的站点命名空间。
+
 ## 登录与首次导出
 
 1. 打开程序，点击「登录 / 设置饼干」。游客也能导出，但只能读前 100 页；长串应先登录。
@@ -97,6 +101,7 @@ python main.py 50000001 -f pdf --pdf-margin-mm 10 --pdf-scale 1.2 --pdf-pages "1
 ```powershell
 # 每十分钟检查一轮，有新回复时自动导出
 python main.py 50000001 --watch --interval 600 -f html
+python main.py https://bog.ac/t/7001234 --site bog --watch --interval 600 -f html
 
 # 关闭通知；校验旧楼层编辑会额外请求
 python main.py 50000001 --watch --no-notify --verify
@@ -122,6 +127,7 @@ python main.py --watch-import watch-list.json --watch-import-replace
 | `-f` / `--format` | `html` / `pdf` / `txt` / `markdown` / `epub` |
 | `-o` / `--output` | 导出目录 |
 | `--input` | 从文本清单读串号/网址，可与命令行输入合并 |
+| `--site` | `auto` / `xdao` / `bog`，默认按输入自动识别站点 |
 | `--scope` / `--hashes` | `all` 或 `po` / 指定发言饼干筛选 |
 | `--max-pages` | 每串最多页数，0 = 不限 |
 | `--until` | 串号截止（含它）；列表中没有该串时按串号大小筛选 |

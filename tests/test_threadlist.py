@@ -44,6 +44,11 @@ def test_number_and_its_url_count_as_the_same_thread() -> None:
     assert parse_thread_list(text) == ["50000001"]
 
 
+def test_same_number_on_bog_and_xdao_remains_two_targets() -> None:
+    bog_url = "https://bog.ac/t/12345678"
+    assert parse_thread_list(f"12345678\n{bog_url}\n") == ["12345678", bog_url]
+
+
 def test_unknown_lines_name_the_line_number() -> None:
     with pytest.raises(ThreadListError) as caught:
         parse_thread_list("50000001\n不是串号\n7001002\n")

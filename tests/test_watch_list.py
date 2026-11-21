@@ -394,3 +394,51 @@ def test_watch_entry_accepts_the_folder_image_mode() -> None:
 
     got = target_from_entry({"url_or_id": "7001234", "image_mode": "folder"})
     assert got.image_mode == "folder"
+
+
+# ---------- Site-aware optional fields keep schema 1 compatible ----------
+
+
+def test_watch_list_roundtrips_bog_urls_and_explicit_numeric_ids(list_file) -> None:
+    targets = [
+        WatchTarget("https://bog.ac/t/12345678"),
+        WatchTarget("7001235", site="bog"),
+    ]
+    watch_list.export_targets(targets, list_file)
+    back = watch_list.read_targets(list_file)
+    assert [item.resolved_site for item in back] == ["bog", "bog"]
+    assert [item.thread_id for item in back] == [12345678, 7001235]
+    assert json.loads(list_file.read_text(encoding="utf-8"))["schema"] == 1
+
+
+def test_watch_list_merges_same_number_from_different_sites(list_file) -> None:
+    write_payload(list_file, {"targets": [
+        {"url_or_id": "12345678"},
+        {"url_or_id": "https://bog.ac/t/12345678"},
+        {"url_or_id": "12345678", "site": "bog"},
+    ]})
+    result = watch_list.import_targets([], list_file)
+    assert len(result.added) == 2
+    assert len(result.duplicates) == 1
+    assert {item.resolved_site for item in result.added} == {"xdao", "bog"}
+
+
+def test_watch_list_repairs_a_bog_url_using_its_explicit_site(list_file) -> None:
+    write_payload(list_file, {"targets": [
+        {"url_or_id": "broken", "thread_id": 12345678, "site": "bog"},
+    ]})
+    back = watch_list.read_targets(list_file)
+    assert len(back) == 1
+    assert back[0].url_or_id == "https://bog.ac/t/12345678"
+    assert back[0].resolved_site == "bog"
+
+
+def test_watch_list_skips_an_unrecognized_site(list_file) -> None:
+    write_payload(list_file, {"targets": [
+        {"url_or_id": "12345678", "site": "other"},
+        {"url_or_id": "7001235"},
+    ]})
+    result = watch_list.import_targets([], list_file)
+    assert [item.thread_id for item in result.added] == [7001235]
+    assert len(result.skipped) == 1
+    assert "站点" in result.skipped[0][0]

@@ -681,6 +681,21 @@ def test_gui_export_passes_font_size_to_the_exporter(artifacts_dir, monkeypatch)
     assert any("正文字号：20 CSS 像素" in line for line in app.logs)
 
 
+def test_gui_public_bog_export_does_not_prompt_for_xdao_login(artifacts_dir, monkeypatch):
+    _patch_gui_export(monkeypatch)
+    settings = AppSettings(_path=artifacts_dir / "config.json")
+    settings.userhash = None
+    app = _FakeApp(settings, artifacts_dir / "out")
+    prompts = []
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: prompts.append(a))
+
+    gui.App.start(app, ["https://bog.ac/t/12345678"])
+
+    assert prompts == []
+    assert app._exporting is True
+    assert not any("前 100 页" in line for line in app.logs)
+
+
 def test_gui_export_keeps_quiet_about_the_font_size_for_plain_text(
     artifacts_dir, monkeypatch
 ):

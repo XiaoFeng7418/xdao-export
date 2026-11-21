@@ -548,3 +548,89 @@ def test_watch_forever_passes_pdf_options_into_every_check(monkeypatch):
     assert calls, "监控一轮都没跑"
     assert all(call["browser_path"] == "D:/浏览器.exe" for call in calls)
     assert all(call["pdf_options"] is options for call in calls)
+
+
+# ---------- Site namespaces and legacy watch records ----------
+
+
+def test_watch_target_keeps_the_legacy_xdao_record_and_key() -> None:
+    from xdao.watcher import target_key
+
+    target = WatchTarget("12345678")
+    assert target.to_dict() == {
+        "url_or_id": "12345678", "scope": "all", "format_key": "html",
+        "hashes": [], "image_mode": "embed", "max_pages": 0,
+    }
+    assert target_key(target) == "12345678-all-html-embed--"
+    assert target.resolved_site == "xdao"
+
+
+def test_watch_target_isolates_bog_and_xdao_with_the_same_id() -> None:
+    from xdao.watcher import target_key
+
+    xdao = WatchTarget("12345678")
+    bog = WatchTarget("https://bog.ac/t/12345678/2")
+    assert bog.thread_id == xdao.thread_id == 12345678
+    assert bog.resolved_site == "bog"
+    assert bog.label != xdao.label
+    assert "12345678" in bog.label
+    assert target_key(bog) == "bog_12345678-all-html-embed--"
+    assert target_key(bog) != target_key(xdao)
+
+
+def test_watch_target_roundtrips_an_explicit_bog_numeric_id() -> None:
+    target = WatchTarget("12345678", site="bog")
+    record = target.to_dict()
+    assert record["site"] == "bog"
+    restored = WatchTarget.from_dict(json.loads(json.dumps(record)))
+    assert restored.thread_id == 12345678
+    assert restored.resolved_site == "bog"
+    assert restored.site == "bog"
+
+
+def test_watch_export_states_are_isolated_by_site(tmp_path: Path) -> None:
+    from xdao.watcher import load_export_state, save_export_state
+
+    xdao = WatchTarget("12345678")
+    bog = WatchTarget("12345678", site="bog")
+    save_export_state(tmp_path, xdao, posts=4, exports=1)
+    save_export_state(tmp_path, bog, posts=8, exports=2)
+    assert load_export_state(tmp_path, xdao)["posts"] == 4
+    assert load_export_state(tmp_path, bog)["posts"] == 8
+    assert (tmp_path / "watch" / "12345678-all-html-embed--.json").is_file()
+    assert (tmp_path / "watch" / "bog_12345678-all-html-embed--.json").is_file()
+
+
+def test_check_once_preserves_bog_site_into_fetching_and_exporting(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    import xdao.watcher as watcher_module
+    from xdao.client import Post
+
+    calls = []
+    seen = []
+    post = Post(12345678, "PO", "name", "title", "content", "now", "", "", 0)
+
+    class Fetcher:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def fetch(self, value, **kwargs):
+            calls.append((value, kwargs))
+            return SimpleNamespace(
+                meta=SimpleNamespace(thread_id=12345678, title="title", po_hash="PO", site="bog"),
+                posts=[post], new_posts=1, edited_posts=0, reason="new", changed=True,
+            )
+
+    class Exporter:
+        def save(self, thread, *args, **kwargs):
+            seen.append(thread)
+            return tmp_path / "bog.html"
+
+    monkeypatch.setattr(watcher_module, "CachedThreadFetcher", Fetcher)
+    monkeypatch.setattr(watcher_module, "create_exporter", lambda *args, **kwargs: Exporter())
+    target = WatchTarget("12345678", site="bog")
+    result = check_once(object(), target, tmp_path, cache_dir=tmp_path / "cache")
+    assert result.ok, result.error
+    assert calls[0][1]["site"] == "bog"
+    assert seen[0].site == "bog"

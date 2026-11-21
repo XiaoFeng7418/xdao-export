@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cache import parse_thread_id
-from .client import XdaoClient
 from .exporters import EXPORTERS
+from .sites import get_site_adapter, resolve_thread_ref
 from .watcher import WatchTarget, target_key
 
 #: 导出文件的格式版本。以后字段变了靠它认，不认识就明确拒绝而不是猜着读。
@@ -89,11 +89,11 @@ def _normalize_text(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def _clean_url(raw: object, thread_id: int) -> str:
+def _clean_url(raw: object, thread_id: int, site: str = "auto") -> str:
     """把条目里的网址收拾成 :class:`WatchTarget` 认的样子。
 
-    抓取只用到串号（``cache.CachedThreadFetcher.fetch`` 一进门就 ``parse_thread_id``），
-    所以网址本身写得不规范也不影响监控。这里只在两种情况下去动手改它：
+    抓取按已识别的站点与串号定位，网址写得不规范时可由条目里的串号修复。
+    这里只在两种情况下去动手改它：
 
     - **压根没写网址**（手写文件时最常见的就是只写一个号）：补一个裸串号，
       不去编一个网址 —— 用户看到的就是自己写的东西；
@@ -105,7 +105,8 @@ def _clean_url(raw: object, thread_id: int) -> str:
         return str(thread_id)
     if parse_thread_id(text) is not None:
         return text
-    return f"{XdaoClient.SITE}/t/{thread_id}"
+    ref = resolve_thread_ref(thread_id, site=site)
+    return get_site_adapter(ref.site).thread_url(thread_id)
 
 
 def _clean_hashes(raw: object) -> list[str] | None:
@@ -143,7 +144,12 @@ def target_from_entry(entry: dict) -> WatchTarget:
     if not isinstance(entry, dict):
         raise WatchListError("这一条不是一段配置（应该是一个 {} 包起来的小节）")
 
-    thread_id = parse_thread_id(entry.get("url_or_id"))
+    site = _normalize_text(entry.get("site")).lower() or "auto"
+    if site not in ("auto", "xdao", "bog"):
+        raise WatchListError(f"站点认不出：{site}（只能是 auto、xdao 或 bog）")
+
+    ref = resolve_thread_ref(entry.get("url_or_id"), site=site)
+    thread_id = ref.thread_id if ref is not None else None
     if thread_id is None:
         thread_id = parse_thread_id(entry.get("thread_id"))
     if thread_id is None:
@@ -176,12 +182,13 @@ def target_from_entry(entry: dict) -> WatchTarget:
         )
 
     return WatchTarget(
-        url_or_id=_clean_url(entry.get("url_or_id"), thread_id),
+        url_or_id=_clean_url(entry.get("url_or_id"), thread_id, site),
         scope=scope,
         format_key=format_key,
         include_hashes=hashes,
         image_mode=image_mode,
         max_pages=max_pages,
+        site=site,
     )
 
 
