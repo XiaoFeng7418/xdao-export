@@ -9,7 +9,7 @@ body:
         谢谢反馈。这类工具的问题九成与**本机环境**和**具体那一次操作**有关，
         下面几栏填得越具体，越容易一次定位。
 
-        填之前请先看一眼 [README](https://github.com/XiaoFeng7418/xdao-export#readme)
+        填之前请先看一眼 [使用与排错指南](https://github.com/XiaoFeng7418/xdao-export/blob/master/docs/USAGE.md)
         与包里的 `使用说明.txt`，常见问题（登录、导出目录写不进去、PDF 渲染）那里都有说明。
 
   - type: input
@@ -68,7 +68,7 @@ body:
       label: 日志
       description: |
         程序目录下的 `xdao-export.log` 最有用（一路记着抓取与导出的每一步）。
-        导出目录里如果有 `导出缺页清单-*.txt`，也一并贴上。
+        导出目录里如果有 `导出报告-*.txt`，也一并贴上。
         **贴之前请把串号、饼干（userhash）、本机路径删掉或改成占位符。**
       render: text
     validations:

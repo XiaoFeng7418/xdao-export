@@ -1,14 +1,14 @@
 """文档里写的命令行开关必须真的存在，解析器里的开关也得在文档里露过面。
 
-为什么要有这份检查：``README.md`` 的「命令行」一节与随包发出去的
-``packaging/使用说明.txt``，是用户唯一会照着抄的两个地方。开关改名、删掉、
+为什么要有这份检查：两份 README、进阶使用指南与随包发出去的
+``packaging/使用说明.txt``，是面向用户的命令参考。开关改名、删掉、
 或者新加一个却忘了写进文档 —— 这两种漂移都不会让别的用例变红，只会在用户那里
 变成「照着文档抄一遍，程序说没有这个开关」。2026-10-02 起由这份用例把关，
 ``main.build_parser()`` 是唯一的事实来源。
 
 两条规则：
 
-1. 两份文档里的**命令行示例行**（以 ``python main.py`` / ``main.py`` /
+1. 这些文档里的**命令行示例行**（以 ``python main.py`` / ``main.py`` /
    ``xdao-export.exe`` 开头那几行）用到的每个开关，解析器里都得有；
 2. 解析器里每个不是内部开关的选项，至少要在其中一份文档里露过面
    （长写或短写有一个就行）。
@@ -27,8 +27,8 @@ import main
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: 两份面向用户的文档，相对仓库根。
-DOCS = ("README.md", "packaging/使用说明.txt")
+#: 面向用户的文档，相对仓库根；长篇示例迁入指南后仍须完整验证。
+DOCS = ("README.md", "README.en.md", "docs/USAGE.md", "packaging/使用说明.txt")
 
 #: 命令行示例行的开头。文档里就这三种写法（``python main.py`` 是源码运行，
 #: ``xdao-export.exe`` 是免安装版）。
@@ -111,6 +111,6 @@ def test_every_option_is_mentioned_in_the_docs() -> None:
         missing.append("/".join(action.option_strings))
 
     assert missing == [], (
-        "这些开关在 README.md 和 packaging/使用说明.txt 里都没出现过，"
+        "这些开关在 README、使用指南和 packaging/使用说明.txt 里都没出现过，"
         "要么写进文档、要么在解析器里标成 argparse.SUPPRESS：\n  " + "\n  ".join(missing)
     )
