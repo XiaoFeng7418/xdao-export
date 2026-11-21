@@ -532,6 +532,21 @@ def test_settings_dialog_starts_from_a_clean_config(dialog_root, artifacts_dir):
         assert dialog.pdf_scale_var.get() == "1"
         assert dialog.pdf_pages_var.get() == ""
         assert dialog.pdf_background_var.get() is True
+        notebook = next(
+            child for outer in dialog.winfo_children() for child in outer.winfo_children()
+            if child.winfo_class() == "TNotebook"
+        )
+        tabs = notebook.tabs()
+        assert [notebook.tab(tab, "text") for tab in tabs] == ["网络", "缓存", "导出", "PDF 页面"]
+        size = dialog.winfo_width(), dialog.winfo_height()
+        for tab in tabs:
+            notebook.select(tab)
+            dialog_root.update()
+            assert (dialog.winfo_width(), dialog.winfo_height()) == size
+            for button in notebook.nametowidget(tab).winfo_children():
+                if button.winfo_class() in {"TCheckbutton", "TButton"}:
+                    assert button.winfo_width() + 1 >= button.winfo_reqwidth()
+        assert dialog.winfo_height() < 680, "设置保存按钮必须留在最小主窗口的高度范围内"
     finally:
         _close(dialog)
 
@@ -663,7 +678,7 @@ def test_gui_export_passes_font_size_to_the_exporter(artifacts_dir, monkeypatch)
     gui.App.start(app, ["https://www.nmbxd1.com/t/50000001"])
 
     assert [kwargs["font_size"] for kwargs in recorded] == [20]
-    assert any("正文字号：20 磅" in line for line in app.logs)
+    assert any("正文字号：20 CSS 像素" in line for line in app.logs)
 
 
 def test_gui_export_keeps_quiet_about_the_font_size_for_plain_text(
@@ -1512,11 +1527,12 @@ def _text_of(widget) -> str:
 
 
 def _content_root(dialog):
-    """找到真正装内容的那个框（对话框里是个可滚动的 Card）。"""
-    assert len(dialog.winfo_children()) == 1, "对话框结构变了，这条断言要跟着改"
-    box = dialog.winfo_children()[0]
-    assert len(box.winfo_children()) == 1, "对话框结构变了，这条断言要跟着改"
-    return box.winfo_children()[0]
+    """监控列表外层同时管理标题、弹性表格和固定底栏。"""
+    children = dialog.winfo_children()
+    assert len(children) == 1, "监控窗口必须只有一个外层容器"
+    outer = children[0]
+    assert [type(child) for child in outer.winfo_children()] == [gui.ttk.Label, gui.ttk.Frame, gui.Card]
+    return outer
 
 
 def test_watch_dialog_leaves_room_for_every_row(dialog_root, artifacts_dir):
@@ -3381,7 +3397,12 @@ def test_edit_selected_opens_the_editor_for_the_chosen_row(
     opened: list[tuple] = []
     monkeypatch.setattr(gui, "WatchEditDialog", lambda *args: opened.append(args))
     try:
-        dialog.tree.selection_set(str(id(target)))
+        selected = str(id(target))
+        dialog.tree.selection_set(selected)
+        dialog.tree.focus(selected)
+        dialog._refresh()
+        assert dialog.tree.selection() == (selected,), "自动刷新不能清掉正在操作的那一行"
+        assert dialog.tree.focus() == selected
         dialog._edit_selected()
     finally:
         _close(dialog)

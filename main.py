@@ -331,8 +331,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--font-size",
         type=_font_size,
         default=None,
-        metavar="磅值",
-        help="导出成品的正文字号（10~28，默认 14）；只影响 HTML / PDF / EPUB",
+        metavar="像素",
+        help="导出成品的正文字号（10~28 CSS 像素，默认 14）；只影响 HTML / PDF / EPUB",
     )
     parser.add_argument(
         "--skip-existing",

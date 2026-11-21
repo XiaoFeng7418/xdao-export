@@ -162,8 +162,10 @@ def test_card_stretch_syncs_both_width_and_height_of_the_window(host: tk.Frame) 
 
     card._on_canvas_configure()
 
-    assert int(card._canvas.itemcget(card._window, "width")) == 300
-    assert int(card._canvas.itemcget(card._window, "height")) == 160
+    inset = theme.gap(0.5)
+    assert int(card._canvas.itemcget(card._window, "width")) == 300 - inset * 2
+    assert int(card._canvas.itemcget(card._window, "height")) == 160 - inset * 2
+    assert card._canvas.coords(card._window) == [inset, inset]
 
 
 def test_card_follows_the_width_of_its_canvas(host: tk.Frame) -> None:
@@ -171,7 +173,9 @@ def test_card_follows_the_width_of_its_canvas(host: tk.Frame) -> None:
 
     card._on_canvas_configure()
 
-    assert int(card._canvas.itemcget(card._window, "width")) == 260
+    inset = theme.gap(0.5)
+    assert int(card._canvas.itemcget(card._window, "width")) == 260 - inset * 2
+    assert card._canvas.coords(card._window) == [inset, inset]
 
 
 def test_card_body_height_becomes_the_canvas_height(host: tk.Frame) -> None:
@@ -181,7 +185,7 @@ def test_card_body_height_becomes_the_canvas_height(host: tk.Frame) -> None:
 
     card._on_body_configure()
 
-    assert int(card._canvas.cget("height")) == card.body.winfo_reqheight()
+    assert int(card._canvas.cget("height")) == card.body.winfo_reqheight() + theme.gap(0.5) * 2
 
 
 def test_card_widens_itself_for_wrapped_text(host: tk.Frame) -> None:
@@ -263,7 +267,7 @@ def test_status_pill_set_swaps_the_text_and_the_tone(window: tk.Tk) -> None:
 
     assert pill._text == "出错了"
     assert pill._tone == "danger"
-    assert pill._tone_colors() == (theme.PALETTE.accent_soft, theme.PALETTE.danger)
+    assert pill._tone_colors() == (theme.PALETTE.danger_soft, theme.PALETTE.danger)
 
 
 @pytest.mark.parametrize("tone", ["ok", "warn", "danger", "accent", "muted"])
@@ -393,14 +397,17 @@ def test_progress_animation_advances_the_offset_and_schedules_the_next_frame(
     assert scheduled and scheduled[0][0] == 30
 
 
-def test_progress_set_value_keeps_animating_when_it_was_animating(window: tk.Tk) -> None:
+def test_progress_set_value_cancels_the_indeterminate_timer(window: tk.Tk) -> None:
     bar = _progress(window)
-    bar._animating = True
+    bar.start()
+    timer_id = bar._animation_id
+    assert timer_id in bar.tk.splitlist(bar.tk.call("after", "info"))
 
     bar.set_value(3, 10)
 
-    assert bar._animating is True
+    assert bar._animating is False
     assert bar._mode == "determinate"
+    assert timer_id not in bar.tk.splitlist(bar.tk.call("after", "info"))
 
 
 def test_progress_draws_nothing_while_the_canvas_is_still_tiny(window: tk.Tk) -> None:
@@ -450,10 +457,20 @@ def test_flat_text_focus_switches_the_border_colour(window: tk.Tk) -> None:
 
     assert field._focused is True
     assert focused
+    assert field._canvas.itemcget(focused[0], "outline") == theme.PALETTE.accent
 
     field._set_focus(False)
 
     assert field._focused is False
+    hovered = field._canvas.find_withtag("border")
+    assert field._canvas.itemcget(hovered[0], "outline") == theme.PALETTE.border
+    field._set_hover(True)
+    hovered = field._canvas.find_withtag("border")
+    assert field._canvas.itemcget(hovered[0], "outline") == theme.PALETTE.border_strong
+    field.set_enabled(False)
+    disabled = field._canvas.find_withtag("border")
+    assert field._canvas.itemcget(disabled[0], "outline") == theme.PALETTE.border
+    assert field.text.cget("bg") == theme.PALETTE.disabled_surface
 
 
 def test_flat_text_configure_syncs_the_inner_window(window: tk.Tk) -> None:

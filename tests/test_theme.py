@@ -84,6 +84,27 @@ def test_text_has_enough_contrast_on_surfaces() -> None:
         assert abs(luminance(pal.muted) - luminance(pal.surface)) > 60
         assert abs(luminance(pal.on_accent) - luminance(pal.accent)) > 100
 
+    def relative_luminance(color: str) -> float:
+        values = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+                  for value in values]
+        return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722), strict=True))
+
+    def contrast(first: str, second: str) -> float:
+        high, low = sorted((relative_luminance(first), relative_luminance(second)), reverse=True)
+        return (high + 0.05) / (low + 0.05)
+
+    # 辅助说明、日志语义和状态胶囊也是可读正文；不能只保证大标题的对比。
+    for pal in theme.PALETTES.values():
+        for foreground in (pal.text, pal.muted, pal.faint):
+            for background in (pal.bg, pal.surface, pal.surface_sunken):
+                assert contrast(foreground, background) >= 4.5
+        for tone in ("accent", "ok", "warn", "danger"):
+            foreground = getattr(pal, tone)
+            assert contrast(foreground, pal.surface_sunken) >= 4.5
+            assert contrast(foreground, getattr(pal, f"{tone}_soft")) >= 4.5
+        assert contrast(pal.on_accent, pal.accent) >= 4.5
+
 
 def test_palette_lookup_by_name() -> None:
     assert theme.palette("dark") is theme.DARK
@@ -126,8 +147,15 @@ def test_resolve_fonts_without_window_keeps_working() -> None:
     assert isinstance(ui, str) and ui
     assert isinstance(mono, str) and mono
 
+    # 无显示环境或不支持 DWM 的系统必须可以安全忽略窗口装饰请求。
+    class MissingWindow:
+        def winfo_id(self):
+            raise RuntimeError("窗口尚未创建")
 
-def test_font_detection_is_cached_after_the_root_is_gone(window: tk.Tk) -> None:
+    theme.apply_titlebar(MissingWindow())  # type: ignore[arg-type]
+
+
+def test_font_detection_is_cached_after_the_root_is_gone(window: tk.Tk, monkeypatch) -> None:
     """字体探测结果在进程内缓存：根窗口销毁后再调用也不会变、不会抛。
 
     这条是为了防回归：曾经 `_first_available` 每次都重新枚举字体，
@@ -141,6 +169,15 @@ def test_font_detection_is_cached_after_the_root_is_gone(window: tk.Tk) -> None:
     assert after == first
     assert theme.mono()[0] == first[1]
 
+    # 两组候选必须分别解析：界面字体命中后，不得直接把等宽候选首项当成已安装字体。
+    with monkeypatch.context() as patched:
+        patched.setattr(theme, "_FONT_CACHE", {})
+        patched.setattr(theme, "_available_families", lambda _root: {"microsoft yahei ui", "consolas"})
+        assert theme.resolve_fonts(window) == ("Microsoft YaHei UI", "Consolas")
+        patched.setattr(theme, "_available_families", lambda _root: set())
+        assert theme.resolve_fonts(None) == ("Microsoft YaHei UI", "Consolas")
+    theme.resolve_fonts(window)
+
 
 # ---------------------------------------------------------------- ttk 样式
 
@@ -148,15 +185,22 @@ def test_font_detection_is_cached_after_the_root_is_gone(window: tk.Tk) -> None:
 def test_apply_theme_sets_every_documented_style(interp: tk.Tcl) -> None:
     style = theme.apply_theme(interp)
     missing = [name for name in theme.STYLE_NAMES if not style.configure(name)]
-    # 基础样式 "." 是可配置的，上面已经相当于逐条读过了；这里只确认没有报错
-    assert isinstance(missing, list)
+    assert missing == []
+    for prefix, background in (("", theme.PALETTE.bg), ("Card", theme.PALETTE.surface)):
+        for tone in ("Accent", "Ok", "Warn", "Danger"):
+            name = f"{prefix}{tone}.TLabel"
+            assert style.lookup(name, "background") == background
+            assert style.lookup(name, "foreground") == getattr(theme.PALETTE, tone.lower())
 
 
 def test_apply_theme_is_idempotent(interp: tk.Tcl) -> None:
     first = theme.apply_theme(interp)
     before = theme.style_colors(first, "TButton")
+    images_before = interp.tk.call("image", "names")
     second = theme.apply_theme(interp)
     assert theme.style_colors(second, "TButton") == before
+    # 指示器引用 Tcl 图像，多次设置主题必须复用图像而不是累积隐藏资源。
+    assert interp.tk.call("image", "names") == images_before
 
 
 def test_primary_button_uses_the_accent_colour(interp: tk.Tcl) -> None:
@@ -181,6 +225,19 @@ def test_button_states_are_mapped(interp: tk.Tcl) -> None:
     active = style.lookup("TButton", "background", ("active",))
     assert disabled == theme.PALETTE.track
     assert active == theme.PALETTE.accent_hover
+    pal = theme.PALETTE
+    for name in ("TButton", "Secondary.TButton", "Ghost.TButton", "Danger.TButton"):
+        assert style.lookup(name, "foreground", ("disabled", "active")) == pal.disabled_text
+        assert style.lookup(name, "focuscolor", ("focus",)) in (pal.accent, pal.on_accent, pal.danger)
+        assert int(style.lookup(name, "focusthickness")) > 0
+    for name in ("TEntry", "TCombobox"):
+        assert style.lookup(name, "fieldbackground", ("disabled", "readonly")) == pal.disabled_surface
+        assert style.lookup(name, "bordercolor", ("focus",)) == pal.accent
+        assert style.lookup(name, "bordercolor", ("active",)) == pal.border_strong
+    for name in ("TCheckbutton", "Card.TCheckbutton", "TRadiobutton", "Card.TRadiobutton"):
+        assert style.lookup(name, "indicatorbackground", ("selected",)) == pal.accent
+        assert style.lookup(name, "indicatorbackground", ("disabled", "selected")) == pal.disabled_surface
+        assert style.lookup(name, "focuscolor", ("focus",)) == pal.accent
 
 
 def test_style_colors_only_returns_configured_keys(interp: tk.Tcl) -> None:
@@ -196,6 +253,9 @@ def test_apply_theme_can_take_another_palette(interp: tk.Tcl) -> None:
         style = theme.apply_theme(interp, theme.DARK)
         assert theme.PALETTE is theme.DARK
         assert theme.style_colors(style, "TButton")["background"] == theme.DARK.accent
+        check_image = interp._xdao_indicator_images["Check", "selected"]  # noqa: SLF001
+        assert check_image.get(theme.gap(0.75), theme.gap(0.75)) == (155, 188, 255)
+        assert check_image.transparency_get(0, 0)
     finally:
         theme.PALETTE = original
 
@@ -249,9 +309,7 @@ def test_combobox_popdown_gets_palette_colours(window: tk.Tk) -> None:
 
     直接查选项库查不到（``option_get`` 是空的），要看真正的那个
     Listbox 控件 —— 选项库是在它创建时才生效的。
-    **已知边界**：选项库只对"之后创建"的控件生效，已经弹出来过的那个
-    Listbox 会留到它下次重建；所以这里换回浅色后不跟着变，只保证
-    "新窗口/新弹出的候选表用的是当前配色"。
+    已经弹出来过的列表也必须跟着换肤，不得保留上一次的深浅底色。
     """
     original = theme.PALETTE
     combo = ttk.Combobox(window, values=["light", "dark"])
@@ -264,6 +322,10 @@ def test_combobox_popdown_gets_palette_colours(window: tk.Tk) -> None:
         assert combo.tk.call(listbox, "cget", "-background") == theme.DARK.surface
         assert combo.tk.call(listbox, "cget", "-foreground") == theme.DARK.text
         assert combo.tk.call(listbox, "cget", "-selectbackground") == theme.DARK.accent
+        theme.apply_theme(window, theme.LIGHT)
+        assert combo.tk.call(listbox, "cget", "-background") == theme.LIGHT.surface
+        assert combo.tk.call(listbox, "cget", "-foreground") == theme.LIGHT.text
+        assert combo.tk.call(listbox, "cget", "-selectbackground") == theme.LIGHT.accent
     finally:
         theme.PALETTE = original
         combo.destroy()
