@@ -3,6 +3,21 @@
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
 > 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
 
+## 最近一次改动（v0.23.0）
+
+- **界面**：主窗口采用左侧输入与导出选项、右侧进度与日志的双栏布局；统一主窗口与
+  设置、登录、串监控等对话框的深浅配色、控件间距与键盘焦点提示，可在顶栏切换界面字号。
+  界面字号与导出字号分别设置，导出字号使用 CSS 像素（px）。
+- **文件名**：修复 Windows 保留设备名带扩展名时仍不能保存的问题；例如 `NUL.txt`
+  改为 `NUL_.txt`，下划线放在首个点之前；保留文件名长度限制。
+- **公开文档**：更新中英文首页、文档导航、使用指南与深浅色实机截图，补充下载、隐私
+  和反馈入口；版本、附件名与随包使用说明统一为 v0.23.0。
+- **自动检查**：Windows 必须实际初始化 Tk 并运行界面用例，初始化失败不能以整组跳过
+  冒充通过；Linux 无显示环境仍允许显式跳过界面用例。
+- **验收范围**：本次核对离线逻辑与桌面界面。X岛服务异常，真站导出验证暂缓；不能据
+  离线用例或界面启动宣称当前站点登录、抓取或导出已恢复。发布前后仍按本文流程核对
+  构建、附件、旧版更新检查与下载回验。
+
 ## 最近一次改动（v0.22.5）
 
 - **只补测试，不改行为**：`xdao/browser_login.py` 行覆盖 93% → 99%（1711 条语句，
@@ -192,7 +207,7 @@ $py = '<本机 Python>\python.exe'
 $env:TCL_LIBRARY='<本机 Python>\tcl\tcl8.6'
 $env:TK_LIBRARY='<本机 Python>\tcl\tk8.6'
 $pypi = '<本机 Python>\python.exe'
-& $pypi -m PyInstaller --onedir --windowed --clean --noconfirm --name "xdao-export" main.py
+& $py -X utf8 tools/build_zip.py --python $pypi --out dist
 
 # 3) 组装免安装包（exe + _internal + 使用说明.txt），压缩成
 #    xdao-export-vX.Y.Z-win64.zip
@@ -218,7 +233,8 @@ $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890
 # 6) 发布
 & $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag vX.Y.Z `
     --name "vX.Y.Z：..." --notes-file docs/RELEASE_NOTES_vX.Y.Z.md `
-    --asset '<盘符>\xdao-export-vX.Y.Z-win64.zip'   # 只有这一个附件
+    --asset '<盘符>\xdao-export-vX.Y.Z-win64.zip' `
+    --asset '<盘符>\xdao-export-vX.Y.Z-win64.zip.sha256'
 #    附件不在就直接不建 Release（先验再动）；发完会再核一遍附件在不在，缺了或者
 #    发布说明是空的，都以退出码 1 结束 —— 别把「跳过」当成发好了。
 

@@ -1,79 +1,120 @@
 # Xdao Thread Exporter
 
-[简体中文](README.md) ｜ **English**
+[简体中文](README.md) · **English**
 
-**Download a whole X island thread and keep it on disk.** A guest session only sees the first 100
-pages; this pulls the thread from the first reply to the last, embeds the images into one file, and
-resumes where the last run stopped.
+**Keep complete X island threads on disk for offline reading.** Log in to read beyond the guest limit of 100 pages, then export to HTML, PDF, EPUB, Markdown or TXT. Embed images, resume interrupted downloads, and follow new replies.
 
 [![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
 [![latest release](https://img.shields.io/github/v/release/XiaoFeng7418/xdao-export)](https://github.com/XiaoFeng7418/xdao-export/releases/latest)
 [![license](https://img.shields.io/github/license/XiaoFeng7418/xdao-export)](LICENSE)
-[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 
-**Two ways in — pick the one that fits:**
+[**Download for Windows**](https://github.com/XiaoFeng7418/xdao-export/releases/latest) · [User guide (Chinese)](docs/USAGE.md) · [Documentation](docs/README.md) · [Report an issue](https://github.com/XiaoFeng7418/xdao-export/issues)
 
-- **Just download and run (recommended, no Python needed)** → grab the latest portable build from the
-  [Releases page](https://github.com/XiaoFeng7418/xdao-export/releases/latest), unzip it and double
-  click `xdao-export.exe`. The [Download](#download) section below covers the hash check.
-- **Run from source (developers)** → needs Python 3.10+ (the official installer ships tkinter), no
-  third party packages, `python main.py`. See [Run from source](#run-from-source) below.
+![Xdao Thread Exporter in light mode: export options on the left, progress and logs on the right](docs/screenshot.png)
 
-**What it is**: a Windows desktop tool (also usable as a plain command line program) that pulls a
-thread on X island (nmbxd1.com / nmbxd.com) from the first reply to the last and writes it to a
-local file.
+Actual v0.23.0 interface, shown with demo settings; [dark mode](docs/screenshot-dark.png).
 
-**What it solves**: a guest session only sees the first 100 pages of a long thread, so the tail end
-is simply unreachable; saving pages one by one is slow and loses the images, the reply tree and the
-quote links; the saved pages often show missing images once opened elsewhere.
+## What it does
 
-**How it differs from the usual workarounds**:
+| Need | Feature |
+| --- | --- |
+| Offline archives | Five formats, reply numbers, author IDs and original-poster markers; HTML can embed images into a single file |
+| Easy setup | Unzip and run on Windows, without installing Python; browser login without copying cookies from developer tools |
+| Recovery | Page and image caches, incremental updates, retrying failed exports, and skipping existing files |
+| Following a thread | Scheduled checks, automatic exports and desktop notifications; import/export watch lists |
+| Focused exports | Original-poster or author filtering, page limits, filename templates, batches and merged exports |
 
-- **Portable**: download one zip, unzip, double click. No Python, no environment setup.
-- **No devtools needed to log in**: click once, log in through the system browser, and the tool
-  picks the session back up. The captcha is still solved by a human, once.
-- **HTML is a single self-contained file**: images are embedded, so it opens offline and on another
-  machine, and it prints or saves to PDF directly.
-- **Five formats, resumable downloads, update watch**: HTML / PDF / EPUB / Markdown / TXT, resume
-  where the last run stopped, and get notified when a watched thread gains new replies.
+PDF requires a local Chromium browser such as Edge or Chrome. If the browser cannot run, the tool saves HTML and explains the fallback. Merged exports support HTML, PDF, Markdown and TXT; EPUB exports remain separate. See [format and image options (Chinese)](docs/USAGE.md#格式与图片模式).
 
-![Screenshot](docs/screenshot.png)
+## Download and export
 
-## Download
+The latest release, **v0.23.0**, provides these files:
 
-Windows portable build: see the [Releases](https://github.com/XiaoFeng7418/xdao-export/releases)
-page. Each release ships `xdao-export-vX.Y.Z-win64.zip` plus a `.sha256` file; verify the hash
-before running if in doubt.
+| File | Purpose |
+| --- | --- |
+| `xdao-export-v0.23.0-win64.zip` | Portable Windows 64-bit build; unzip and run `xdao-export.exe` |
+| `xdao-export-v0.23.0-win64.zip.sha256` | SHA256 checksum for that zip |
+
+1. Download both files from the [official Releases page](https://github.com/XiaoFeng7418/xdao-export/releases/latest).
+2. Verify the checksum and extract the zip to a writable folder. Keep `xdao-export.exe` beside its `_internal` folder.
+3. Open the app, choose “登录 / 设置饼干” → “用浏览器登录”, and log in with an X island account. Pasting a cookie is also supported.
+4. Paste a thread URL or ID, select a format and destination, then click “开始导出”. Guest exports work too, but only cover the first 100 pages.
+
+If Windows shows a SmartScreen warning, first confirm the official download source and verify the SHA256 checksum. Only if both check out, choose “More info” → “Run anyway”; otherwise cancel.
+
+Browser login supports Chromium-based browsers such as Edge and Chrome; Firefox is not supported. Login uses a separate, app-managed browser profile and does not read your everyday browsing profile. It normally starts with a temporary profile, but may reuse an existing app window or fall back to a persistent profile that retains site login data. Complete any CAPTCHA yourself. If no compatible browser is available, use cookie paste or account/password login.
+
+### Verify the download
+
+Put the zip and checksum file in the same folder, then run in PowerShell:
+
+```powershell
+Get-FileHash .\xdao-export-v0.23.0-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.23.0-win64.zip.sha256
+```
+
+The SHA256 values should match. This verifies the downloaded bytes against the published checksum; it does not replace checking the download source or protect against both release assets being replaced together.
+
+### Code signing policy
+
+**Current releases are unsigned.** The publisher is XiaoFeng7418 ([@XiaoFeng7418](https://github.com/XiaoFeng7418)). Windows may show “Unknown publisher” or a SmartScreen warning. Verify the source and checksum before deciding whether to run the program.
+
+The SignPath Foundation application was declined on 2026-10-02. A signing workflow exists but is not enabled, and no active signing service is claimed. If enabled in the future, builds will come from GitHub Actions, require manual approval, and sign only this project's executable. XiaoFeng7418 currently handles maintenance, review and approval. See [signing status and workflow (Chinese)](docs/SIGNING.md).
 
 ## Run from source
 
-Python 3.10+ with tkinter, standard library only:
+Requires **Python 3.10+**, plus tkinter for the GUI (normally included in the official Windows Python installer). The application uses only Python's standard library; no third-party Python runtime packages are required.
 
 ```powershell
-python main.py                              # GUI
-python main.py 50000001 -f markdown -o .    # CLI
+python main.py
 ```
 
-## Formats
+The command line supports batches and long-running watches. Examples use the official test thread `50000001`:
 
-| Format | Notes |
-|---|---|
-| HTML | single file with embedded images, or images in a sibling folder |
-| PDF | rendered with the system Chrome/Edge; can also print from the HTML |
-| EPUB | e-book, images embedded or linked |
-| Markdown | plain text with image links or a folder |
-| TXT | plain text, smallest output |
+```powershell
+python main.py 50000001 -f html -o exports
+python main.py 50000001 --scope po -f markdown -o exports
+python main.py 50000001 --watch --interval 600 -f html
+python main.py --selftest --offline
+python main.py --help
+```
 
-## Be a good citizen
+For the portable build, replace `python main.py` with `xdao-export.exe`. The [user guide (Chinese)](docs/USAGE.md) covers all flags, image folders, PDF settings, watch-list backups and troubleshooting. The desktop interface is currently in Chinese.
 
-The tool keeps a 0.08 s gap between requests, retries at most twice, honours `Retry-After`, and only
-exports what the user is already allowed to read. Please keep those defaults.
+## Privacy and responsible use
 
-## License
+- Login cookies are stored **unencrypted** in a local configuration file. Plaintext account passwords are not saved. Do not share the configuration folder or include cookies, account details or private thread content in an issue.
+- No telemetry, advertising or crash reporting. Cookies are sent only to the site; network activity serves login, thread/image retrieval, GitHub update checks and upgrades explicitly started in the app. Export processing stays local. See the [privacy policy](docs/PRIVACY.md).
+- `--offline` selects local self-checks; it is not a global network-blocking option.
+- Defaults use a 0.08-second request interval, up to two retries, and the server's `Retry-After` response. Watches check every five minutes by default. Keep a reasonable request rate; do not bypass limits or scrape at scale.
+- Follow the [site rules](https://www.nmbxd.com/t/50000001), [official guide](https://www.nmbxd.com/t/50577215) and [site disclaimer](https://www.nmbxd.com/t/11689471). Export only content that is available to your account and that you may lawfully save for personal reading or backup.
 
-MIT. Copyright (c) 2026 XiaoFeng7418 (GitHub [@XiaoFeng7418](https://github.com/XiaoFeng7418)).
-See [`LICENSE`](LICENSE).
+## Documentation and development
 
-This is an unofficial third-party tool; it is not affiliated with, endorsed by or sponsored by
-X island. The Chinese README (`README.md`) is the authoritative document — the policies, the privacy
-note and the code signing policy are only maintained there.
+| Resource | Contents |
+| --- | --- |
+| [User guide (Chinese)](docs/USAGE.md) | Login, export formats, all CLI flags, configuration, caches and common problems |
+| [Documentation index](docs/README.md) | Release notes, privacy, signing, audits and engineering tools |
+| [Latest release notes (Chinese)](docs/RELEASE_NOTES_v0.23.0.md) | v0.23.0 changes and assets |
+| [Maintenance](MAINTENANCE.md) / [Handoff](HANDOFF.md) | Architecture, project rules, tests and maintenance workflows (Chinese) |
+
+`main.py` is the GUI/CLI entry point; `xdao/` contains the application, `docs/` the documentation, `tools/` the maintenance utilities, and `tests/` the offline suite. Tests use fake services and isolated configuration, with artifacts kept in `.test-artifacts/`.
+
+```powershell
+python -m pytest -q -rs
+python -m ruff check .
+```
+
+pytest and Ruff are development tools only. Read the maintenance notes before changing CLI, configuration or exported-document behavior. Headless environments skip Tk tests and do not validate the GUI.
+
+## License and copyright
+
+**MIT License** · Copyright (c) 2026 XiaoFeng7418 ([@XiaoFeng7418](https://github.com/XiaoFeng7418)). Use, modify and redistribute the software, including commercially, while retaining the copyright and license notices. See [`LICENSE`](LICENSE), shipped as `LICENSE.txt` in the portable build.
+
+Bundled Python, Tcl/Tk and PyInstaller components remain subject to their upstream licenses; this project's MIT license does not replace them. Third-party license coverage in the current package still needs improvement; see the [dependency audit (Chinese)](docs/backlog/04-dependency-boundary.md). Exported content belongs to X island and its original authors. Thanks to Python, Tcl/Tk, PyInstaller, Rcrwrate/Xdnmb_downer and the DeepSeek agent that contributed implementation and tests.
+
+## Disclaimer
+
+This is an independent, **unofficial** project, with no affiliation, partnership, sponsorship or authorization from X island or its operators. The software is provided **“as is”**, without warranties of availability, accuracy or fitness for a particular purpose. To the extent permitted by applicable law, the author is not liable for losses caused by using or being unable to use it.
+
+Respect the rights and privacy of content owners. Do not use the tool for harassment, tracking or unlawful activity. Submit rights concerns and bug reports through [repository issues](https://github.com/XiaoFeng7418/xdao-export/issues), after removing credentials and private content.

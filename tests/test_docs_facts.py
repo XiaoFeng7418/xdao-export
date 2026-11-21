@@ -34,8 +34,8 @@ COUNT_PAREN = re.compile(r"（(\d+)")
 COUNT_TIAO = re.compile(r"(\d+) 条")
 #: 表头那句：``单元测试 N 项（……）``
 SUMMARY_COUNT = re.compile(r"单元测试\s*(\d+)\s*项")
-#: ``README.md`` 目录树里那句：``tests/   1119 个离线单元测试（1113 通过，另 6 个真机用例默认跳过）``
-README_TESTS_LINE = re.compile(r"tests/\s+(\d+) 个离线单元测试（(\d+) 通过，另 (\d+) 个真机用例默认跳过）")
+#: ``README.md`` 目录树里那句：``tests/   1119 个离线单元测试（1113 通过，另 6 项默认跳过）``
+README_TESTS_LINE = re.compile(r"tests/\s+(\d+) 个离线单元测试（(\d+) 通过，另 (\d+) 项默认跳过）")
 #: ``HANDOFF.md`` 第二节那句：``其中界面相关的 144 项（`test_theme.py` / `test_window.py` / …）``
 #: v0.13.51 补上这个检查：那串数字不在测试表里（表只管逐文件），加删界面用例时没人提醒
 #: —— v0.13.51 给 ``test_gui_browser_login.py`` 加了 4 条，这句就漏成了旧数（140）。
