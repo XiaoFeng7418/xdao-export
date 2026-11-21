@@ -33,6 +33,7 @@ _RESERVED_FILENAMES = {
     "CON", "PRN", "AUX", "NUL", "CLOCK$",
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
+    *(f"{prefix}{digit}" for prefix in ("COM", "LPT") for digit in "¹²³"),
 }
 # 一句话的结束符，中英文都要覆盖。
 _SENTENCE_SPLIT = re.compile(r"[\n。！？!?]")
@@ -61,8 +62,11 @@ def sanitize_filename(name: str, fallback: str = "xdao-thread") -> str:
     cleaned = cleaned.strip(" .")
     if len(cleaned) > 80:
         cleaned = cleaned[:80].strip(" .")
-    if cleaned.upper() in _RESERVED_FILENAMES:
-        cleaned += "_"
+    # Windows 会把 NUL.txt / NUL.tar.gz 同样解析成 NUL 设备；下划线必须
+    # 放在第一个点之前，附加到整个名字末尾（NUL.txt_）仍会写进设备。
+    stem, dot, suffix = cleaned.partition(".")
+    if stem.rstrip(" ").upper() in _RESERVED_FILENAMES:
+        cleaned = (stem.rstrip(" ") + "_" + dot + suffix)[:80].rstrip(" .")
     return cleaned or fallback
 
 

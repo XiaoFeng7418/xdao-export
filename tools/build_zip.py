@@ -419,14 +419,14 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"  × {note}", flush=True)
                 return 1
-            # --selftest 查的是这台机器（有没有浏览器、能不能出网），本机被安全软件
-            # 拦未签名程序时也会报问题，所以只打印不拦（理由见 docs/backlog/07-ci-assessment.md）。
+            # 打包冒烟只查本机，不依赖站点可用性；浏览器或安全软件等环境项
+            # 仍然只打印不拦（理由见 docs/backlog/07-ci-assessment.md）。
             done = subprocess.run(
-                [str(exe), "--selftest"], capture_output=True, text=True,
+                [str(exe), "--selftest", "--offline"], capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
             )
             tail = " | ".join((done.stdout or done.stderr or "").strip().splitlines()[-2:])
-            print(f"  --selftest → 退出码 {done.returncode}：{tail}", flush=True)
+            print(f"  --selftest --offline → 退出码 {done.returncode}：{tail}", flush=True)
 
         if args.release_dir:
             release_dir = Path(args.release_dir).resolve()
