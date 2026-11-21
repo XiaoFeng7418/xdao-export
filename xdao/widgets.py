@@ -49,6 +49,7 @@ class Card(tk.Frame):
         ttk.Label(card.body, text="标题", style="CardHeading.TLabel").pack(anchor="w")
 
     ``accent`` 为真时，卡片底部会有一条主色短线，用来标记"当前卡片"。
+    ``subtle`` 只保留表面底色，适合次级分组。
     """
 
     def __init__(
@@ -59,13 +60,17 @@ class Card(tk.Frame):
         radius: int | None = None,
         accent: bool = False,
         stretch: bool = False,
+        subtle: bool = False,
         **kwargs,
     ) -> None:
         pal = theme.PALETTE
         super().__init__(master, bg=pal.bg, highlightthickness=0, bd=0, **kwargs)
-        self._radius = theme.RADIUS if radius is None else radius
+        self._radius = theme.gap(theme.RADIUS / theme.GAP_UNIT) if radius is None else radius
         self._accent = accent
-        self._stretch = stretch
+        self._subtle = subtle
+        # Canvas 内嵌窗口始终盖在图形之上，给描边和底部强调线留出空间。
+        self._inset = 0 if subtle else theme.gap(0.5)
+        self._bottom_inset = theme.gap(1) + self._inset if accent else self._inset
         pad = theme.gap(4) if padding is None else padding
 
         self._canvas = tk.Canvas(self, bg=pal.bg, highlightthickness=0, bd=0)
@@ -76,12 +81,16 @@ class Card(tk.Frame):
             # 想撑满的文本区永远只拿到请求高度。中间垫一个铺满画布的
             # 容器，body 再放进容器里 expand，就能真正长到卡片底部。
             self._host = tk.Frame(self._canvas, bg=pal.surface)
-            self._window = self._canvas.create_window(0, 0, anchor="nw", window=self._host)
+            self._window = self._canvas.create_window(
+                self._inset, self._inset, anchor="nw", window=self._host
+            )
             self.body = tk.Frame(self._host, bg=pal.surface, padx=pad, pady=pad)
             self.body.pack(fill="both", expand=True)
         else:
             self.body = tk.Frame(self._canvas, bg=pal.surface, padx=pad, pady=pad)
-            self._window = self._canvas.create_window(0, 0, anchor="nw", window=self.body)
+            self._window = self._canvas.create_window(
+                self._inset, self._inset, anchor="nw", window=self.body
+            )
         self._syncing = False
         self._wrap_width = 0
         self._canvas.bind("<Configure>", self._on_canvas_configure)
@@ -97,13 +106,13 @@ class Card(tk.Frame):
         if self._host is not None:
             options = {}
             if width > 1:
-                options["width"] = width
+                options["width"] = max(1, width - self._inset * 2)
             if height > 1:
-                options["height"] = height
+                options["height"] = max(1, height - self._inset - self._bottom_inset)
             if options:
                 self._canvas.itemconfigure(self._window, **options)
         elif width > 1:
-            self._canvas.itemconfigure(self._window, width=width)
+            self._canvas.itemconfigure(self._window, width=max(1, width - self._inset * 2))
         self._redraw()
 
     def _on_body_configure(self, _event=None) -> None:
@@ -115,8 +124,8 @@ class Card(tk.Frame):
         if self._syncing:
             return
         if self._host is None:
-            needed = self.body.winfo_reqheight()
-            if needed > 1 and self._canvas.cget("height") != needed:
+            needed = self.body.winfo_reqheight() + self._inset + self._bottom_inset
+            if needed > 1 and int(self._canvas.cget("height")) != needed:
                 self._syncing = True
                 try:
                     self._canvas.configure(height=needed)
@@ -133,6 +142,7 @@ class Card(tk.Frame):
             self._wrap_width = self._max_wraplength()
         if self._wrap_width > 0:
             content_width = max(content_width, self._wrap_width + theme.gap(12))
+        content_width += self._inset * 2
         if content_width > self._canvas.winfo_reqwidth() > 1:
             self._syncing = True
             try:
@@ -163,6 +173,10 @@ class Card(tk.Frame):
             yield child
             yield from Card._walk(child)
 
+    def refresh_palette(self) -> None:
+        """主题切换时重绘 Canvas 中的卡片表面和描边。"""
+        self._redraw()
+
     def _redraw(self) -> None:
         canvas = self._canvas
         width = canvas.winfo_width()
@@ -173,12 +187,13 @@ class Card(tk.Frame):
         pal = theme.PALETTE
         draw_round_rect(
             canvas, 0.5, 0.5, width - 0.5, height - 0.5, self._radius,
-            fill=pal.surface, outline=pal.border, width=1, tags="bg",
+            fill=pal.surface, outline="" if self._subtle else pal.border, width=1, tags="bg",
         )
         if self._accent:
-            bar_h = 3
+            bar_h = theme.gap(0.75)
+            bottom = height - self._inset - 0.5
             draw_round_rect(
-                canvas, theme.gap(1), height - bar_h - 1, theme.gap(7), height - 1,
+                canvas, theme.gap(2), bottom - bar_h, theme.gap(9), bottom,
                 bar_h / 2, fill=pal.accent, outline="", tags="bg",
             )
         canvas.tag_lower("bg")
@@ -187,10 +202,11 @@ class Card(tk.Frame):
 class StatusPill(tk.Canvas):
     """状态胶囊：小圆点 + 文字，颜色跟着状态走。"""
 
-    #: 没传 width 时按文字量算出来的宽度（``set`` 更新文字时会重新调整）
     def __init__(self, master: tk.Misc, text: str = "", *, tone: str = "muted", **kwargs) -> None:
         pal = theme.PALETTE
-        self._height = kwargs.pop("height", theme.gap(5.5))
+        self._font = theme.font(theme.SIZE_SMALL, bold=True)
+        linespace = int(master.tk.call("font", "metrics", self._font, "-linespace"))
+        self._height = kwargs.pop("height", max(theme.gap(5.5), linespace + theme.gap(1.5)))
         super().__init__(
             master,
             height=self._height,
@@ -202,7 +218,6 @@ class StatusPill(tk.Canvas):
         )
         self._text = text
         self._tone = tone
-        self._font = theme.font(theme.SIZE_SMALL, bold=True)
         self.bind("<Configure>", lambda _e: self._redraw())
         self._fit_width()
 
@@ -221,14 +236,14 @@ class StatusPill(tk.Canvas):
             needed = self.winfo_toplevel().tk.call("font", "measure", self._font, self._text)
         except tk.TclError:  # pragma: no cover - 没有可用字体时退回估算
             needed = len(self._text) * theme.SIZE_SMALL
-        self.configure(width=max(int(needed) + theme.gap(6.5), theme.gap(10)))
+        self.configure(width=max(int(needed) + theme.gap(7), theme.gap(10)))
 
     def _tone_colors(self) -> tuple[str, str]:
         pal = theme.PALETTE
         mapping = {
-            "ok": (pal.accent_soft, pal.ok),
-            "warn": (pal.accent_soft, pal.warn),
-            "danger": (pal.accent_soft, pal.danger),
+            "ok": (pal.ok_soft, pal.ok),
+            "warn": (pal.warn_soft, pal.warn),
+            "danger": (pal.danger_soft, pal.danger),
             "accent": (pal.accent_soft, pal.accent),
             "muted": (pal.surface_hover, pal.muted),
         }
@@ -246,12 +261,13 @@ class StatusPill(tk.Canvas):
             fill=background, outline="",
         )
         pad = theme.gap(2)
+        dot = theme.gap(1.25)
         self.create_oval(
-            pad, height / 2 - 2.5, pad + 5, height / 2 + 2.5,
+            pad, (height - dot) / 2, pad + dot, (height + dot) / 2,
             fill=foreground, outline="",
         )
         self.create_text(
-            pad + 11, height / 2, text=self._text, anchor="w",
+            pad + dot + theme.gap(1.5), height / 2, text=self._text, anchor="w",
             fill=foreground, font=self._font,
         )
 
@@ -272,9 +288,17 @@ class ModernProgress(tk.Canvas):
         self._value = 0
         self._maximum = 100
         self._mode = "determinate"
+        self._tone = "accent"
         self._offset = 0.0
         self._animating = False
+        self._animation_id: str | None = None
+        self._interval = 30
         self.bind("<Configure>", lambda _e: self._redraw())
+
+    def set_tone(self, tone: str) -> None:
+        """使用运行、成功、警告或错误的颜色。"""
+        self._tone = tone if tone in ("accent", "ok", "warn", "danger") else "accent"
+        self._redraw()
 
     def _redraw(self) -> None:
         pal = theme.PALETTE
@@ -285,43 +309,54 @@ class ModernProgress(tk.Canvas):
             return
         r = h / 2
         draw_round_rect(self, 0, 0, w, h, r, fill=pal.track, outline="")
+        fill = getattr(pal, self._tone)
         if self._mode == "indeterminate":
-            seg_w = max(30.0, w * 0.25)
+            seg_w = max(theme.gap(8), w * 0.25)
             span = w + seg_w
             x = (self._offset * span) % span - seg_w
-            draw_round_rect(self, x, 0, x + seg_w, h, r, fill=pal.accent, outline="")
+            draw_round_rect(self, x, 0, x + seg_w, h, r, fill=fill, outline="")
         else:
-            ratio = min(1.0, self._value / self._maximum) if self._maximum else 0.0
-            fill_w = w * ratio
-            if fill_w >= h:
-                draw_round_rect(self, 0, 0, fill_w, h, r, fill=pal.accent, outline="")
+            ratio = min(1.0, self._value / self._maximum) if self._maximum > 0 else 0.0
+            if ratio > 0:
+                draw_round_rect(self, 0, 0, max(1, w * ratio), h, r, fill=fill, outline="")
 
-    def start(self, interval: int = 12) -> None:
+    def start(self, interval: int = 30) -> None:
+        if self._animating:
+            return
         self._mode = "indeterminate"
         self._animating = True
+        self._interval = max(16, interval)
+        self._offset = 0.0
         self._animate()
 
-    def stop(self) -> None:
+    def _cancel_animation(self) -> None:
         self._animating = False
+        if self._animation_id is not None:
+            self.after_cancel(self._animation_id)
+            self._animation_id = None
+
+    def stop(self) -> None:
+        self._cancel_animation()
         self._mode = "determinate"
         self._redraw()
 
     def set_value(self, value: float, maximum: float = 100) -> None:
-        was_animating = self._animating
-        self._animating = False
+        self._cancel_animation()
         self._mode = "determinate"
         self._value = value
         self._maximum = maximum
         self._redraw()
-        if was_animating:
-            self._animating = True
 
     def _animate(self) -> None:
         if not self._animating:
             return
-        self._offset += 0.025
+        self._offset = (self._offset + self._interval / 1200) % 1
         self._redraw()
-        self.after(30, self._animate)
+        self._animation_id = self.after(self._interval, self._animate)
+
+    def destroy(self) -> None:
+        self._cancel_animation()
+        super().destroy()
 
 
 class FlatText(tk.Frame):
@@ -339,30 +374,36 @@ class FlatText(tk.Frame):
         font: tuple | None = None,
         padding: int | None = None,
         wrap: str = "word",
+        state: str = tk.NORMAL,
         **kwargs,
     ) -> None:
         pal = theme.PALETTE
         super().__init__(master, bg=pal.surface, highlightthickness=0, bd=0, **kwargs)
-        self._radius = theme.RADIUS_SMALL
+        self._radius = theme.gap(theme.RADIUS_SMALL / theme.GAP_UNIT)
         pad = theme.gap(2) if padding is None else padding
         self._focused = False
+        self._hovered = False
         text_font = font or theme.font(theme.SIZE_BODY)
         linespace = self._measure_linespace(text_font)
-        canvas_height = height * linespace + pad * 2 + 2
+        line_gap = theme.gap(0.5)
+        canvas_height = height * (linespace + line_gap) + pad * 2 + 2
 
         self._canvas = tk.Canvas(
-            self, bg=pal.surface, highlightthickness=0, bd=0, height=canvas_height
+            self, bg=pal.surface, highlightthickness=0, bd=0, width=1, height=canvas_height
         )
         self._canvas.pack(fill="x", expand=False)
         self.text = tk.Text(
             self._canvas,
             height=height,
             wrap=wrap,
-            bg=pal.surface_sunken,
-            fg=pal.text,
+            state=state,
+            takefocus=int(state != tk.DISABLED),
+            bg=pal.disabled_surface if state == tk.DISABLED else pal.surface_sunken,
+            fg=pal.disabled_text if state == tk.DISABLED else pal.text,
             insertbackground=pal.text,
             selectbackground=pal.accent_soft,
             selectforeground=pal.text,
+            spacing3=line_gap,
             relief="flat",
             borderwidth=0,
             highlightthickness=0,
@@ -374,6 +415,23 @@ class FlatText(tk.Frame):
         self._canvas.bind("<Configure>", self._on_configure)
         self.text.bind("<FocusIn>", lambda _e: self._set_focus(True))
         self.text.bind("<FocusOut>", lambda _e: self._set_focus(False))
+        self.text.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.text.bind("<Leave>", lambda _e: self._set_hover(False))
+
+    def set_enabled(self, enabled: bool) -> None:
+        """同时切换编辑状态和禁用配色。"""
+        pal = theme.PALETTE
+        self.text.configure(
+            state=tk.NORMAL if enabled else tk.DISABLED,
+            bg=pal.surface_sunken if enabled else pal.disabled_surface,
+            fg=pal.text if enabled else pal.disabled_text,
+            takefocus=int(enabled),
+        )
+        self._redraw()
+
+    def refresh_palette(self) -> None:
+        """主题切换时刷新聚焦描边。"""
+        self._redraw()
 
     @staticmethod
     def _measure_linespace(text_font: tuple) -> int:
@@ -386,6 +444,10 @@ class FlatText(tk.Frame):
 
     def _set_focus(self, focused: bool) -> None:
         self._focused = focused
+        self._redraw()
+
+    def _set_hover(self, hovered: bool) -> None:
+        self._hovered = hovered
         self._redraw()
 
     def _on_configure(self, _event=None) -> None:
@@ -406,10 +468,16 @@ class FlatText(tk.Frame):
             return
         pal = theme.PALETTE
         canvas.delete("border")
-        outline = pal.accent if self._focused else pal.border
+        if self.text.cget("state") == tk.DISABLED:
+            outline = pal.border
+        elif self._focused:
+            outline = pal.accent
+        else:
+            outline = pal.border_strong if self._hovered else pal.border
+        canvas.configure(bg=pal.surface)
         draw_round_rect(
             canvas, 0.5, 0.5, width - 0.5, height - 0.5, self._radius,
-            fill="", outline=outline, width=1, tags="border",
+            fill=self.text.cget("bg"), outline=outline, width=1, tags="border",
         )
         canvas.tag_raise(self._window)
 
@@ -435,18 +503,31 @@ class LinkLabel(tk.Label):
 
     def __init__(self, master: tk.Misc, text: str, command: Callable[[], None], **kwargs) -> None:
         pal = theme.PALETTE
+        background = kwargs.pop("bg", pal.bg)
         super().__init__(
             master,
             text=text,
             fg=pal.accent,
-            bg=kwargs.pop("bg", pal.bg),
+            bg=background,
             font=theme.font(theme.SIZE_SMALL),
             cursor="hand2",
+            takefocus=kwargs.pop("takefocus", 1),
+            highlightthickness=1,
+            highlightbackground=background,
+            highlightcolor=pal.accent,
+            disabledforeground=pal.disabled_text,
             **kwargs,
         )
-        self.bind("<Button-1>", lambda _e: command())
-        self.bind("<Enter>", lambda _e: self.configure(fg=pal.accent_hover))
-        self.bind("<Leave>", lambda _e: self.configure(fg=pal.accent))
+
+        def invoke(_event) -> None:
+            if self.cget("state") != tk.DISABLED:
+                command()
+
+        self.bind("<Button-1>", invoke)
+        self.bind("<Return>", invoke)
+        self.bind("<space>", invoke)
+        self.bind("<Enter>", lambda _e: self.configure(fg=theme.PALETTE.accent_hover))
+        self.bind("<Leave>", lambda _e: self.configure(fg=theme.PALETTE.accent))
 
 
 __all__ = [

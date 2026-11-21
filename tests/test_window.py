@@ -451,6 +451,22 @@ def test_log_widget_is_wired_to_the_log_method(app: gui.App) -> None:
     app.root.update_idletasks()
     content = app.log_text.get("1.0", "end")
     assert "测试用的一行日志" in content
+    for message, tone in (
+        ("导出成功：示例", "ok"),
+        ("提示：接口限流", "warn"),
+        ("导出失败：示例", "danger"),
+    ):
+        app.log(message)
+        ranges = app.log_text.tag_ranges(tone)
+        assert message in app.log_text.get(ranges[-2], ranges[-1])
+        assert app.log_text.tag_cget(tone, "foreground") == getattr(theme.PALETTE, tone)
+    app.log_text.configure(state="normal")
+    app.log_text.insert("end", "示例日志\n" * 100)
+    app.log_text.configure(state="disabled")
+    app.root.update_idletasks()
+    app.log_text.yview_moveto(0)
+    app.log("阅读旧日志时保留滚动位置")
+    assert app.log_text.yview()[0] == 0
 
 
 # ---------------------------------------------------------------- 图片行
@@ -648,6 +664,8 @@ def test_theme_switch_repaints_and_keeps_what_the_user_typed(
     )
     app.urls_text.insert("1.0", "https://www.nmbxd1.com/t/12345678")
     app.log("切主题之前的一行日志")
+    app.log("导出失败：切换主题前")
+    tagged = tuple(str(index) for index in app.log_text.tag_ranges("danger"))
     app.root.update_idletasks()
     light_card = gui.CARD
     light_log_bg = app.log_text.cget("bg")
@@ -663,6 +681,8 @@ def test_theme_switch_repaints_and_keeps_what_the_user_typed(
     assert gui.CARD != light_card
     assert app.log_text.cget("bg") == theme.DARK.surface_sunken
     assert app.log_text.cget("bg") != light_log_bg
+    assert tuple(str(index) for index in app.log_text.tag_ranges("danger")) == tagged
+    assert app.log_text.tag_cget("danger", "foreground") == theme.DARK.danger
     assert app.style.lookup("TFrame", "background") == theme.DARK.bg
     assert "切主题之前的一行日志" in app.log_text.get("1.0", "end")
     assert "https://www.nmbxd1.com/t/12345678" in app.urls_text.get("1.0", "end")
@@ -1087,6 +1107,13 @@ def test_poll_export_shows_progress_and_writes_logs(app: gui.App) -> None:
         app.root.update_idletasks()
         assert "正在抓第 4 页（3/10）" == app.progress_var.get()
         assert "这一行应该出现在日志里" in app.log_text.get("1.0", "end-1c")
+        assert app._activity_metric.cget("text") == "30%"
+        assert app._activity_detail.cget("text") == "正在抓第 4 页"
+        assert app._activity_pill._tone == "accent"
+        app._export_queue.put(("progress", (4, 10, "正在写入成品", 125)))
+        app._poll_export()
+        assert app._activity_metric.cget("text") == "40%"
+        assert "2 分 5 秒" in app._activity_eta.cget("text")
     finally:
         app._exporting = False  # noqa: SLF001
         while not app._export_queue.empty():  # noqa: SLF001
@@ -3864,6 +3891,9 @@ def test_export_poll_finishes_when_the_worker_says_done(app: gui.App, monkeypatc
     app._poll_export()
     assert app._exporting is False
     assert "全部处理完毕：成功 1 / 1 个" in app.log_text.get("1.0", "end-1c")
+    assert app._activity_metric.cget("text") == "100%"
+    assert app._activity_pill._tone == "ok"
+    assert app.progress_bar._tone == "ok"
 
 
 def test_close_does_nothing_when_it_already_began_closing(app: gui.App, monkeypatch) -> None:

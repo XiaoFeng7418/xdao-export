@@ -48,7 +48,7 @@ from .settings import (
 )
 from .theme import apply_theme, font, mono, resolve_fonts
 from .watcher import WatchTarget, check_once, describe_targets, notify_result, watch_forever
-from .widgets import Card, ModernProgress, SectionHeading, StatusPill
+from .widgets import Card, FlatText, ModernProgress, SectionHeading, StatusPill
 
 
 # 当前配色（切换主题时由 refresh_colors 重新绑定）。**代码里一律用 _PAL，
@@ -193,12 +193,16 @@ def _sync_dialog_colors(widget: tk.Misc, old: object = None, new: object = None)
                     widget.configure(**{key: replacement})
                 except tk.TclError:  # pragma: no cover - 个别控件不接受
                     pass
+        if isinstance(widget, tk.Toplevel):
+            theme.apply_titlebar(widget, new)
         try:
             children = widget.winfo_children()
         except tk.TclError:  # pragma: no cover - 控件已销毁
             return
         for child in children:
             fix(child)
+        if isinstance(widget, Card):
+            widget.refresh_palette()
 
     fix(widget)
 
@@ -212,6 +216,25 @@ def refresh_open_dialogs(root: tk.Misc, old: object = None, new: object = None) 
     for child in children:
         if isinstance(child, tk.Toplevel):
             _sync_dialog_colors(child, old, new)
+
+
+def _set_dialog_appearance(dialog: tk.Toplevel) -> None:
+    """设定内容底色，等 Tk 建好外层窗口再同步系统标题栏。"""
+    dialog.configure(bg=BG)
+
+    def on_map(event: tk.Event) -> None:
+        if event.widget is dialog:
+            theme.apply_titlebar(dialog)
+
+    dialog.bind("<Map>", on_map, add="+")
+
+
+def _dialog_menu(widget: tk.Misc) -> tk.Menu:
+    return tk.Menu(
+        widget, tearoff=False, bg=CARD, fg=TEXT, font=BODY_FONT,
+        activebackground=_PAL.accent_soft, activeforeground=TEXT,
+        disabledforeground=_PAL.disabled_text,
+    )
 
 
 FONT_UI = theme.FONT_UI
@@ -340,6 +363,7 @@ def fold_buttons_when_narrow(
     secondary: list[ttk.Button],
     *,
     gap_steps: float = 1.5,
+    row_style: str = "Card.TFrame",
 ) -> None:
     """一行放不下时，把次要按钮折到第二行，别让窗口把两头切掉。
 
@@ -349,8 +373,8 @@ def fold_buttons_when_narrow(
     两组按钮在同一行（``secondary`` 靠右），不够宽时后者整组落到第二行。
     """
     gap = theme.gap(gap_steps)
-    top = ttk.Frame(row, style="Card.TFrame")
-    bottom = ttk.Frame(row, style="Card.TFrame")
+    top = ttk.Frame(row, style=row_style)
+    bottom = ttk.Frame(row, style=row_style)
     top.pack(fill="x")
     state: dict[str, bool | None] = {"narrow": None}
 
@@ -364,11 +388,13 @@ def fold_buttons_when_narrow(
         # 一起挪到下面、第一行空着）。
         for index, button in enumerate(primary):
             button.pack(in_=top, side="left", padx=(gap if index else 0, 0))
+            button.lift()
         target = bottom if narrow else top
         for index, button in enumerate(secondary):
             button.pack(
                 in_=target, side="right", padx=(gap, 0) if index == 0 else (0, gap)
             )
+            button.lift()
         if narrow:
             bottom.pack(fill="x", pady=(gap, 0))
         else:
@@ -411,7 +437,7 @@ class PasteCookieDialog(tk.Toplevel):
 
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         #: 摘出来的 userhash；取消或没粘东西时是 None。
         self.userhash: str | None = None
         self.title("直接粘贴饼干登录")
@@ -421,9 +447,11 @@ class PasteCookieDialog(tk.Toplevel):
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
 
-        card = Card(outer)
+        ttk.Label(outer, text="粘贴登录饼干", style="Section.TLabel").pack(
+            anchor="w", pady=(0, theme.gap(2))
+        )
+        card = Card(outer, padding=theme.gap(3), stretch=True)
         card.pack(fill="both", expand=True)
-        SectionHeading(card.body, "直接粘贴饼干登录").pack(fill="x")
 
         # 两段说明都给保守的初始 wraplength：不给的话 Card 会按整句宽度把窗口
         # 撑到屏幕外；给了再让 wrap_to_width 跟着窗口走（见 tests/test_window.py）。
@@ -437,7 +465,7 @@ class PasteCookieDialog(tk.Toplevel):
             anchor="w",
             wraplength=theme.gap(120),
         )
-        why.pack(fill="x", pady=(theme.gap(2), 0))
+        why.pack(fill="x")
         wrap_to_width(why, minimum=240)
 
         steps = tk.Label(
@@ -468,10 +496,12 @@ class PasteCookieDialog(tk.Toplevel):
             fg=TEXT,
             insertbackground=TEXT,
             selectbackground=_PAL.accent_soft,
+            selectforeground=TEXT,
+            spacing2=theme.gap(0.5),
         )
         self.text.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
         # 这一步就是「贴进来」，右键菜单里没有「粘贴」说不过去。
-        menu = tk.Menu(self.text, tearoff=0)
+        menu = _dialog_menu(self.text)
         menu.add_command(label="粘贴", command=lambda: self.text.event_generate("<<Paste>>"))
         menu.add_command(label="复制", command=lambda: self.text.event_generate("<<Copy>>"))
         menu.add_separator()
@@ -542,7 +572,7 @@ class LoginDialog(tk.Toplevel):
         app: "App | None" = None,
     ) -> None:
         super().__init__(master)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         self.client = client
         # 「用浏览器登录」要知道把浏览器 profile 放哪、要不要走代理，都取自这份设置。
         # 不传就自己读一次配置：老的调用方不必跟着改签名。
@@ -564,19 +594,22 @@ class LoginDialog(tk.Toplevel):
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
 
-        card = Card(outer)
+        ttk.Label(outer, text="登录 X 岛", style="Section.TLabel").pack(
+            anchor="w", pady=(0, theme.gap(2))
+        )
+        card = Card(outer, padding=theme.gap(3))
         card.pack(fill="x")
-        SectionHeading(card.body, "登录 X 岛").pack(fill="x")
 
         form = ttk.Frame(card.body, style="Card.TFrame")
-        form.pack(fill="x", pady=(theme.gap(2), 0))
+        form.pack(fill="x")
         form.columnconfigure(1, weight=1)
 
         ttk.Label(form, text="账号（邮箱）", style="Card.TLabel").grid(
             row=0, column=0, sticky="w", pady=theme.gap(1)
         )
         self.email_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.email_var).grid(
+        email_entry = ttk.Entry(form, textvariable=self.email_var)
+        email_entry.grid(
             row=0, column=1, sticky="ew", padx=(theme.gap(2), 0), pady=theme.gap(1)
         )
 
@@ -631,6 +664,8 @@ class LoginDialog(tk.Toplevel):
             command=self._open_browser_login,
         )
         self.browser_button.pack(side="right", padx=(0, theme.gap(1)))
+        email_entry.focus_set()
+        self.bind("<Escape>", lambda _event: self.destroy())
         self.after(50, self._load_form)
 
     def _refresh_captcha(self) -> None:
@@ -1004,7 +1039,7 @@ class BrowserLoginDialog(tk.Toplevel):
         log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         self.client = client
         self.settings = settings if settings is not None else AppSettings.load()
         # v0.17.3：登记到主窗口上。主窗口被关掉（× / Alt+F4）时 Tk 会直接销毁子窗口，
@@ -1067,44 +1102,33 @@ class BrowserLoginDialog(tk.Toplevel):
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
 
-        card = Card(outer)
+        ttk.Label(outer, text="用浏览器登录", style="Section.TLabel").pack(
+            anchor="w", pady=(0, theme.gap(2))
+        )
+        card = Card(outer, padding=theme.gap(3))
         card.pack(fill="x")
-        SectionHeading(card.body, "用浏览器登录").pack(fill="x")
-        # 这里弹出的其实是同一个 Edge，只是换了份干净的临时资料目录，所以看上去
-        # 「插件、保存的密码全都没有」。而且 Chrome/Edge 136 起不允许在默认资料目录
-        # 上开调试端口（官方为防「偷 Cookie」做的改动），想读饼干就必须换目录。
-        # 所以这里要把「为什么是空的」「你要做什么」直接写清楚，别让人自己猜。
-        # 分成三段：每段一件事，短句子按句号断开，免得折行把「X 岛」这种词劈开。
-        # 分成几行写：Tk 的中文折行是按字符切的，长句容易把「X岛」这种词劈开，
-        # 也容易让下一行以逗号开头 —— 每行控制在一句以内就干净了。
         self.intro = tk.Label(
             card.body,
             text=(
-                "点开后弹出一个独立的浏览器窗口 —— 干净的一次性窗口：\n"
-                "没有你平时装的插件，也没有保存的密码。\n"
-                "用的是机器上的 Chrome / Edge（Chromium、Brave 也行）；\n"
-                "Firefox 内核的浏览器不行，两者不是同一套内核。\n"
-                "请在里面用 X岛账号登录一次（跟微软账号无关，别输微软密码）。\n"
-                "登录成功，站点就自动带上你当前的饼干，程序自己会拿到；\n"
-                "十几秒没拿到就到「我的饼干」列表点一行『应用』，看到「饼干切换成功」。\n"
-                "那一行程序不替你点：点哪一块饼干是账号的事，得你自己定。\n"
-                "程序看的那个窗口，底边会有一条棕色横条写着『程序正在看这个窗口』，\n"
-                "横条末尾带【窗口号】—— 号对不上或没有横条的窗口登了也白登。\n"
-                "横条压不到页面上的按钮（它在窗底），嫌碍事点它右端的「×」就收起。\n"
-                "程序只取一个 X岛的登录饼干；关掉窗口后临时资料就删掉了，\n"
-                "你自己的浏览器一点也不受影响。\n"
-                "不想重输：关掉它，点「直接粘贴饼干登录」，\n"
-                "把你自己浏览器里的 userhash 抄过来就行。"
+                "程序会打开一个独立的浏览器窗口，没有平时保存的密码和插件。\n"
+                "用的是系统里的 Chrome、Edge、Chromium 或 Brave。\n"
+                "Firefox 内核的浏览器不行，两者不是同一套内核。\n\n"
+                "在底部横条写着「程序正在看这个窗口」的窗口里登录 X 岛。"
+                "请核对横条上的窗口号。横条可用右侧的「×」收起。\n"
+                "登录后等程序取饼干。如果十几秒还没拿到，到「我的饼干」选一块点「应用」。"
+                "程序不会替你点。\n\n"
+                "关掉窗口会清理临时资料，你平时使用的浏览器不受影响。"
+                "不想重输账号，可以选择「直接粘贴饼干登录」。"
             ),
             bg=CARD,
             fg=MUTED,
             font=SMALL_FONT,
             justify="left",
             anchor="w",
-            wraplength=420,
+            wraplength=theme.gap(112),
         )
-        self.intro.pack(fill="x", pady=(theme.gap(2), 0))
-        wrap_to_width(self.intro, minimum=260)
+        self.intro.pack(fill="x")
+        wrap_to_width(self.intro, minimum=theme.gap(65))
 
         # 「这次用哪个浏览器」：定下来之前这行是空的，定下来才填上（见 _set_browser_note）。
         # 把系统默认浏览器改成 Chrome、实际打开的却还是 Edge 时（改设置没落地、
@@ -1118,18 +1142,20 @@ class BrowserLoginDialog(tk.Toplevel):
             font=SMALL_FONT,
             justify="left",
             anchor="w",
-            wraplength=420,
+            wraplength=theme.gap(112),
         ).pack(fill="x", pady=(theme.gap(1), 0))
 
         self.status_var = tk.StringVar(value="正在准备…")
-        ttk.Label(
+        status = ttk.Label(
             card.body,
             textvariable=self.status_var,
-            style="CardMuted.TLabel",
-            wraplength=420,
+            style="CardAccent.TLabel",
+            wraplength=theme.gap(112),
             justify="left",
             anchor="w",
-        ).pack(fill="x", pady=(theme.gap(2), 0))
+        )
+        status.pack(fill="x", pady=(theme.gap(2), 0))
+        wrap_to_width(status, minimum=theme.gap(65))
 
         # 常驻的一行「程序刚才试到哪一步」（见 _set_hint）。
         #
@@ -1146,9 +1172,9 @@ class BrowserLoginDialog(tk.Toplevel):
             font=SMALL_FONT,
             justify="left",
             anchor="w",
-            wraplength=420,
+            wraplength=theme.gap(112),
         )
-        wrap_to_width(self.hint_label, minimum=260)
+        wrap_to_width(self.hint_label, minimum=theme.gap(65))
 
         # 「走 HTTP 领饼干」这条路自己的那一行（v0.13.26）。
         #
@@ -1165,9 +1191,9 @@ class BrowserLoginDialog(tk.Toplevel):
             font=SMALL_FONT,
             justify="left",
             anchor="w",
-            wraplength=420,
+            wraplength=theme.gap(112),
         )
-        wrap_to_width(self.http_label, minimum=260)
+        wrap_to_width(self.http_label, minimum=theme.gap(65))
 
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
@@ -1189,6 +1215,7 @@ class BrowserLoginDialog(tk.Toplevel):
         self.retry_button.config(state="disabled")
 
         # 窗口先画出来，再开浏览器：不然点下去要愣一下才有反应。
+        self.bind("<Escape>", lambda _event: self._on_cancel())
         self.after(20, self.start)
 
     # ---------- 主线程：状态与收尾 ----------
@@ -2669,7 +2696,7 @@ class SettingsDialog(tk.Toplevel):
 
     def __init__(self, master: tk.Tk, settings: AppSettings) -> None:
         super().__init__(master)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         self.settings = settings
         self.saved = False
         self.title("设置")
@@ -2680,13 +2707,16 @@ class SettingsDialog(tk.Toplevel):
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
 
-        # ① 网络
-        net_card = Card(outer)
-        net_card.pack(fill="x")
-        SectionHeading(net_card.body, "网络").pack(fill="x")
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True)
+        notebook.enable_traversal()
 
-        net = ttk.Frame(net_card.body, style="Card.TFrame")
-        net.pack(fill="x", pady=(theme.gap(2), 0))
+        def page(title: str) -> ttk.Frame:
+            frame = ttk.Frame(notebook, style="Card.TFrame", padding=theme.gap(4))
+            notebook.add(frame, text=title)
+            return frame
+
+        net = page("网络")
         net.columnconfigure(1, weight=1)
 
         ttk.Label(net, text="代理地址", style="Card.TLabel").grid(
@@ -2703,13 +2733,12 @@ class SettingsDialog(tk.Toplevel):
             net,
             text="例如 http://127.0.0.1:7890；留空则读取系统环境变量，仍为空表示直连。",
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
         proxy_hint.grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(0, theme.gap(1))
         )
-        wrap_to_width(proxy_hint, minimum=220)
 
         # 三个数字项排成一行，省一层高度（小屏上更友好）
         self.timeout_var = tk.StringVar(value=f"{settings.timeout:g}")
@@ -2746,29 +2775,21 @@ class SettingsDialog(tk.Toplevel):
             net,
             text="请求过密会被限流（429）；抓很长的串时把间隔调到 0.3～0.5 更稳。",
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
         throttle_hint.grid(row=3, column=0, columnspan=2, sticky="ew")
-        wrap_to_width(throttle_hint, minimum=220)
         workers_hint = ttk.Label(
             net,
             text="同时抓页数默认 2（两页一起下，长串快将近一倍）；填 1 就是一页一页抓。"
             "真撞上限流会自动退回一页一页抓，并把这次退回记进配置。",
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
         workers_hint.grid(row=4, column=0, columnspan=2, sticky="ew")
-        wrap_to_width(workers_hint, minimum=220)
 
-        # ② 缓存
-        cache_card = Card(outer)
-        cache_card.pack(fill="x", pady=(theme.gap(2), 0))
-        SectionHeading(cache_card.body, "缓存").pack(fill="x")
-
-        cache = ttk.Frame(cache_card.body, style="Card.TFrame")
-        cache.pack(fill="x", pady=(theme.gap(2), 0))
+        cache = page("缓存")
         cache.columnconfigure(1, weight=1)
 
         self.use_cache_var = tk.BooleanVar(value=settings.use_cache)
@@ -2795,21 +2816,14 @@ class SettingsDialog(tk.Toplevel):
             cache,
             text="留空表示放在导出目录下的 .cache，随导出目录一起迁移。",
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
         cache_hint.grid(
             row=2, column=0, columnspan=2, sticky="ew", pady=(theme.gap(1), 0)
         )
-        wrap_to_width(cache_hint, minimum=220)
 
-        # ③ 导出
-        export_card = Card(outer)
-        export_card.pack(fill="x", pady=(theme.gap(2), 0))
-        SectionHeading(export_card.body, "导出").pack(fill="x")
-
-        export = ttk.Frame(export_card.body, style="Card.TFrame")
-        export.pack(fill="x", pady=(theme.gap(2), 0))
+        export = page("导出")
         export.columnconfigure(1, weight=1)
 
         ttk.Label(export, text="文件名模板", style="Card.TLabel").grid(
@@ -2826,13 +2840,12 @@ class SettingsDialog(tk.Toplevel):
                 "例：[{id}] {title}。留空表示用标题，无标题时取第一句话。"
             ),
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
         template_hint.grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(0, theme.gap(1))
         )
-        wrap_to_width(template_hint, minimum=220)
 
         ttk.Label(export, text="PDF 浏览器", style="Card.TLabel").grid(
             row=2, column=0, sticky="w", pady=theme.gap(1)
@@ -2851,18 +2864,15 @@ class SettingsDialog(tk.Toplevel):
             text="导出 PDF 和「用浏览器登录」时调用的浏览器（PDF 用无头模式渲染）。"
             "留空表示跟随系统默认浏览器，认不出来再找 Chrome 或 Edge。",
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
         browser_hint.grid(row=3, column=0, columnspan=2, sticky="ew")
-        wrap_to_width(browser_hint, minimum=220)
 
-        # 导出成品的正文字号：这是「字看不清」那条反馈的一半 —— 另外一半是界面
-        # 字号（顶栏那档）。TXT 与 Markdown 是纯文本、没有字号可言，所以提示里
-        # 明说只影响 HTML / PDF / EPUB。
-        font_row = ttk.Frame(export_card.body, style="Card.TFrame")
-        font_row.pack(fill="x", pady=(theme.gap(2), 0))
-        ttk.Label(font_row, text="正文字号", style="Card.TLabel").pack(side="left")
+        # 导出成品使用 CSS 像素。界面字号由顶栏控制，纯文本成品没有字号设置。
+        font_row = ttk.Frame(export, style="Card.TFrame")
+        font_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(theme.gap(2), 0))
+        ttk.Label(font_row, text="正文字号（CSS 像素）", style="Card.TLabel").pack(side="left")
         self.export_font_var = tk.StringVar(value=str(settings.export_font_size))
         ttk.Spinbox(
             font_row,
@@ -2871,47 +2881,49 @@ class SettingsDialog(tk.Toplevel):
             textvariable=self.export_font_var,
             width=4,
         ).pack(side="left", padx=(theme.gap(2), 0))
-        ttk.Label(font_row, text="磅", style="Card.TLabel").pack(
+        ttk.Label(font_row, text="px", style="Card.TLabel").pack(
             side="left", padx=(theme.gap(0.5), 0)
         )
         font_hint = ttk.Label(
-            export_card.body,
+            export,
             text=(
                 f"导出成品的正文字号（{EXPORT_FONT_SIZE_MIN}~{EXPORT_FONT_SIZE_MAX}，默认 14）。"
                 "只影响 HTML / PDF / EPUB；TXT 与 Markdown 是纯文本，没有字号。"
             ),
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
-        font_hint.pack(fill="x", pady=(theme.gap(1), 0))
-        wrap_to_width(font_hint, minimum=220)
+        font_hint.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(theme.gap(1), 0))
 
         # 批量断点续跑：一次贴很多串、跑到一半断了，重跑时别把前面的重做一遍。
         # 只看「同名成品已存在且非空」；监控那条路不受影响（每轮本来就要重导新回复）。
         self.skip_existing_var = tk.BooleanVar(value=settings.skip_existing)
-        skip_row = ttk.Frame(export_card.body, style="Card.TFrame")
-        skip_row.pack(fill="x", pady=(theme.gap(1.5), 0))
+        skip_row = ttk.Frame(export, style="Card.TFrame")
+        skip_row.grid(row=6, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
         ttk.Checkbutton(
             skip_row,
             text="成品已存在就跳过（批量断点续跑）",
             variable=self.skip_existing_var,
+            style="Card.TCheckbutton",
         ).pack(side="left")
 
         # 合并导出：默认关闭 —— 不勾就是一个串一份文件（与旧版一致）。
         self.merge_export_var = tk.BooleanVar(value=settings.merge_export)
-        merge_row = ttk.Frame(export_card.body, style="Card.TFrame")
-        merge_row.pack(fill="x", pady=(theme.gap(1), 0))
+        merge_row = ttk.Frame(export, style="Card.TFrame")
+        merge_row.grid(row=7, column=0, columnspan=2, sticky="w", pady=(theme.gap(1), 0))
         ttk.Checkbutton(
             merge_row,
             text="把这次导出的串合并成一个文件（HTML / TXT / Markdown / PDF）",
             variable=self.merge_export_var,
+            style="Card.TCheckbutton",
         ).pack(side="left")
 
-        # ④ PDF 页面：默认「跟随网页样式」，导出效果与浏览器打印完全一致 ——
+        # PDF 页面：默认「跟随网页样式」，导出效果与浏览器打印完全一致 ——
         # 老配置（没有这几个键）升级后行为不变，靠的就是这个默认值。
-        pdf_row = ttk.Frame(export, style="Card.TFrame")
-        pdf_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
+        pdf = page("PDF 页面")
+        pdf_row = ttk.Frame(pdf, style="Card.TFrame")
+        pdf_row.pack(fill="x")
         self._paper_keys = list(pdf_opts.PAPER_LABELS)
         self._orientation_keys = list(pdf_opts.ORIENTATION_LABELS)
         self._margin_keys = list(pdf_opts.MARGIN_PRESETS)
@@ -2947,7 +2959,10 @@ class SettingsDialog(tk.Toplevel):
             )
         ):
             group = ttk.Frame(pdf_row, style="Card.TFrame")
-            group.grid(row=0, column=column, sticky="w", padx=(0, theme.gap(3)))
+            group.grid(
+                row=column // 2, column=column % 2, sticky="w",
+                padx=(0, theme.gap(3)), pady=(theme.gap(1), 0),
+            )
             ttk.Label(group, text=text, style="Card.TLabel").pack(anchor="w")
             ttk.Combobox(
                 group,
@@ -2959,14 +2974,14 @@ class SettingsDialog(tk.Toplevel):
 
         self.pdf_margin_mm_var = tk.StringVar(value=str(settings.pdf_margin_mm or ""))
         mm_group = ttk.Frame(pdf_row, style="Card.TFrame")
-        mm_group.grid(row=0, column=3, sticky="w")
+        mm_group.grid(row=1, column=1, sticky="w", pady=(theme.gap(1), 0))
         ttk.Label(mm_group, text="自定义边距（毫米）", style="Card.TLabel").pack(anchor="w")
         ttk.Entry(mm_group, textvariable=self.pdf_margin_mm_var, width=10).pack(
             anchor="w", pady=(theme.gap(0.5), 0)
         )
 
-        page_row = ttk.Frame(export, style="Card.TFrame")
-        page_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
+        page_row = ttk.Frame(pdf, style="Card.TFrame")
+        page_row.pack(fill="x", pady=(theme.gap(1.5), 0))
         scale_group = ttk.Frame(page_row, style="Card.TFrame")
         scale_group.grid(row=0, column=0, sticky="w", padx=(0, theme.gap(3)))
         ttk.Label(
@@ -2989,32 +3004,30 @@ class SettingsDialog(tk.Toplevel):
 
         self.pdf_background_var = tk.BooleanVar(value=bool(settings.pdf_background))
         ttk.Checkbutton(
-            export,
+            pdf,
             text="打印背景（网页底色与图片背景会印出来）",
             variable=self.pdf_background_var,
             style="Card.TCheckbutton",
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(theme.gap(1.5), 0))
+        ).pack(anchor="w", pady=(theme.gap(1.5), 0))
         pdf_hint = ttk.Label(
-            export,
+            pdf,
             text=(
                 "「跟随网页样式」＝与浏览器打印效果一致；自定义边距留空时用左边的预设，"
                 "填了以它为准；页码范围留空表示全部页。这些设置只在导出 PDF 时生效。"
             ),
             style="CardMuted.TLabel",
-            wraplength=theme.gap(80),
+            wraplength=theme.gap(106),
             justify="left",
         )
-        pdf_hint.grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=(theme.gap(1), 0)
-        )
-        wrap_to_width(pdf_hint, minimum=220)
+        pdf_hint.pack(fill="x", pady=(theme.gap(1), 0))
 
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(theme.gap(3), 0))
         ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
             side="right", padx=(theme.gap(1), 0)
         )
-        ttk.Button(buttons, text="保存", command=self._save).pack(side="right")
+        ttk.Button(buttons, text="保存设置", command=self._save).pack(side="right")
+        self.bind("<Escape>", lambda _event: self.destroy())
 
     def _choose_cache(self) -> None:
         chosen = filedialog.askdirectory(title="选择缓存目录", parent=self)
@@ -3106,26 +3119,31 @@ class CookiePicker(tk.Toplevel):
         target_var: tk.StringVar,
     ) -> None:
         super().__init__(master)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         self.target_var = target_var
         self.title("挑选饼干")
-        self.geometry("440x440")
+        self.geometry(f"{theme.gap(110)}x{theme.gap(110)}")
+        self.minsize(theme.gap(95), theme.gap(90))
         self.transient(master)
         self.grab_set()
 
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
 
-        card = Card(outer)
+        ttk.Label(outer, text="第一页出现的饼干", style="Section.TLabel").pack(
+            anchor="w", pady=(0, theme.gap(2))
+        )
+        card = Card(outer, padding=theme.gap(3), stretch=True)
         card.pack(fill="both", expand=True)
-        SectionHeading(card.body, "第一页出现的饼干").pack(fill="x")
         ttk.Label(
             card.body,
             text="勾选后点「应用」，多个饼干会以空格分隔写入筛选框。",
             style="CardMuted.TLabel",
             justify="left",
-        ).pack(anchor="w", pady=(theme.gap(1), 0))
+        ).pack(anchor="w")
 
+        buttons = ttk.Frame(card.body, style="Card.TFrame")
+        buttons.pack(side="bottom", fill="x", pady=(theme.gap(2.5), 0))
         list_frame = ttk.Frame(card.body, style="Card.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
         canvas = tk.Canvas(
@@ -3137,7 +3155,8 @@ class CookiePicker(tk.Toplevel):
         )
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
         inner = tk.Frame(canvas, bg=_PAL.surface)
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width - 2))
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
@@ -3155,32 +3174,29 @@ class CookiePicker(tk.Toplevel):
                 text=label,
                 variable=var,
                 bg=_PAL.surface,
-                activebackground=_PAL.surface,
+                activebackground=_PAL.surface_hover,
                 fg=TEXT,
                 activeforeground=TEXT,
-                selectcolor=_PAL.surface,
-                highlightthickness=0,
+                selectcolor=_PAL.accent_soft,
+                highlightthickness=1,
+                highlightbackground=CARD,
+                highlightcolor=ACCENT,
                 bd=0,
                 anchor="w",
                 font=SMALL_FONT,
             ).pack(anchor="w", padx=theme.gap(2), pady=theme.gap(0.5), fill="x")
             self.vars[cookie] = var
 
-        buttons = ttk.Frame(card.body, style="Card.TFrame")
-        buttons.pack(fill="x", pady=(theme.gap(2.5), 0))
-        ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy).pack(
-            side="right", padx=(theme.gap(1), 0)
-        )
-        ttk.Button(buttons, text="应用", command=self._apply).pack(side="right")
-        ttk.Button(
+        cancel = ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.destroy)
+        apply = ttk.Button(buttons, text="应用", command=self._apply)
+        select_all = ttk.Button(
             buttons, text="全选", style="Secondary.TButton", command=lambda: self._set_all(True)
-        ).pack(side="left")
-        ttk.Button(
-            buttons,
-            text="全不选",
-            style="Secondary.TButton",
-            command=lambda: self._set_all(False),
-        ).pack(side="left", padx=(theme.gap(1), 0))
+        )
+        clear = ttk.Button(
+            buttons, text="全不选", style="Secondary.TButton", command=lambda: self._set_all(False)
+        )
+        fold_buttons_when_narrow(buttons, [select_all, clear], [cancel, apply])
+        self.bind("<Escape>", lambda _event: self.destroy())
 
     def _set_all(self, value: bool) -> None:
         for var in self.vars.values():
@@ -3197,101 +3213,102 @@ class WatchDialog(tk.Toplevel):
 
     def __init__(self, app: "App") -> None:
         super().__init__(app.root)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         self.app = app
         self.title("监控串更新")
         # 高度要装下「列表 + 一行添加/间隔/校验 + 一行导入导出 + 一行开始监控」。
         # 2026-10-01 加了导入/导出那一行之后必须同步加高，否则底下的按钮被裁掉
         # （截图才看得出来：控件都在，就是看不见）。
-        self.geometry("760x520")
-        self.minsize(660, 460)
+        self.geometry(f"{theme.gap(190)}x{theme.gap(130)}")
+        self.minsize(theme.gap(165), theme.gap(115))
         self.transient(app.root)
 
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(2)))
         outer.pack(fill="both", expand=True)
 
-        card = Card(outer)
+        ttk.Label(outer, text="监控列表", style="Section.TLabel").pack(
+            anchor="w", pady=(0, theme.gap(2))
+        )
+        footer = ttk.Frame(outer)
+        footer.pack(side="bottom", fill="x", pady=(theme.gap(2), 0))
+        card = Card(outer, padding=theme.gap(3), stretch=True)
         card.pack(fill="both", expand=True)
-        SectionHeading(card.body, "监控列表").pack(fill="x")
         ttk.Label(
             card.body,
             text="定时检查这些串：有新回复就自动导出；没有新回复只花一次请求。",
             style="CardMuted.TLabel",
             justify="left",
-        ).pack(anchor="w", pady=(theme.gap(1), 0))
+        ).pack(anchor="w")
 
         list_frame = ttk.Frame(card.body, style="Card.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
         columns = ("thread", "scope", "format", "state", "checked")
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=9)
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=6)
         for key, text, width in (
-            ("thread", "串号", 110),
-            ("scope", "范围", 120),
-            ("format", "格式", 70),
-            ("state", "状态", 260),
-            ("checked", "最近检查", 100),
+            ("thread", "串号", 95),
+            ("scope", "范围", 105),
+            ("format", "格式", 60),
+            ("state", "状态", 180),
+            ("checked", "最近检查", 95),
         ):
             self.tree.heading(key, text=text)
-            self.tree.column(key, width=width, anchor="w")
+            self.tree.column(
+                key, width=theme.gap(width / 4), minwidth=theme.gap(12),
+                anchor="w", stretch=key == "state",
+            )
         self.tree.pack(side="left", fill="both", expand=True)
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         scroll.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=scroll.set)
         # 双击一行也能改：列表里的条目常常是加完之后才发现格式/页数选错了。
         self.tree.bind("<Double-1>", lambda _event: self._edit_selected())
+        self.tree.bind("<Return>", lambda _event: self._edit_selected())
 
-        controls = ttk.Frame(card.body, style="Card.TFrame")
-        controls.pack(fill="x", pady=(theme.gap(2), 0))
-        ttk.Button(
-            controls,
-            text="添加输入框中的串",
-            style="Secondary.TButton",
-            command=self._add_from_input,
-        ).pack(side="left")
-        ttk.Button(
+        controls = ttk.Frame(footer)
+        controls.pack(fill="x")
+        add_button = ttk.Button(
+            controls, text="添加输入框中的串", style="Secondary.TButton", command=self._add_from_input
+        )
+        remove_button = ttk.Button(
             controls, text="移除选中", style="Secondary.TButton", command=self._remove_selected
-        ).pack(side="left", padx=(theme.gap(1.5), 0))
-        ttk.Button(
+        )
+        edit_button = ttk.Button(
             controls, text="编辑选中", style="Secondary.TButton", command=self._edit_selected
-        ).pack(side="left", padx=(theme.gap(1.5), 0))
-        ttk.Label(controls, text="检查间隔（秒）", style="CardMuted.TLabel").pack(
-            side="left", padx=(theme.gap(3.5), theme.gap(1))
+        )
+        list_io = ttk.Frame(footer)
+        list_io.pack(fill="x", pady=(theme.gap(1.5), 0))
+        export_button = ttk.Button(
+            list_io, text="导出列表", style="Secondary.TButton", command=self._export_list
+        )
+        import_button = ttk.Button(
+            list_io, text="导入列表", style="Secondary.TButton", command=self._import_list
+        )
+        for index, button in enumerate((add_button, remove_button, edit_button)):
+            button.pack(side="left", padx=(theme.gap(1.5) if index else 0, 0))
+        for button in (export_button, import_button):
+            button.pack(side="right", padx=(theme.gap(1.5), 0))
+            button.lift()
+        schedule = ttk.Frame(footer)
+        schedule.pack(fill="x", pady=(theme.gap(1.5), 0))
+        ttk.Label(schedule, text="检查间隔（秒）", style="Muted.TLabel").pack(
+            side="left", padx=(0, theme.gap(1))
         )
         self.interval_var = tk.StringVar(value=str(int(self.app.settings.watch_interval)))
-        ttk.Entry(controls, textvariable=self.interval_var, width=7).pack(side="left")
+        ttk.Entry(schedule, textvariable=self.interval_var, width=7).pack(side="left")
         self.verify_var = tk.BooleanVar(value=self.app.settings.verify_cached)
         ttk.Checkbutton(
-            controls,
-            text="校验老楼层改动（更准，每轮多一次请求）",
+            schedule,
+            text="校验老楼层改动（每轮多一次请求）",
             variable=self.verify_var,
-            style="Card.TCheckbutton",
         ).pack(side="left", padx=(theme.gap(2.5), 0))
 
-        # 列表的备份 / 还原单独占一行：760 宽的一行塞不下「添加 / 移除 / 间隔 /
-        # 校验 / 导入 / 导出」六个控件 —— 挤在右边会被整条裁掉，看起来像没有这两个按钮
-        # （2026-10-01 真机截图才发现，光看用例是绿的）。
-        list_io = ttk.Frame(card.body, style="Card.TFrame")
-        list_io.pack(fill="x", pady=(theme.gap(1.5), 0))
-        ttk.Label(
-            list_io,
-            text="列表可以备份成文件，换台机器或重装之后导回来。",
-            style="CardMuted.TLabel",
-        ).pack(side="left")
-        ttk.Button(
-            list_io, text="导出列表", style="Secondary.TButton", command=self._export_list
-        ).pack(side="right")
-        ttk.Button(
-            list_io, text="导入列表", style="Secondary.TButton", command=self._import_list
-        ).pack(side="right", padx=(0, theme.gap(1.5)))
-
-        actions = ttk.Frame(card.body, style="Card.TFrame")
-        actions.pack(fill="x", pady=(theme.gap(2), 0))
+        ttk.Separator(footer).pack(fill="x", pady=(theme.gap(2), theme.gap(1.5)))
+        actions = ttk.Frame(footer)
+        actions.pack(fill="x")
         self.toggle_button = ttk.Button(actions, text="开始监控", command=self._toggle)
         self.toggle_button.pack(side="left")
         self.status_var = tk.StringVar()
-        ttk.Label(actions, textvariable=self.status_var, style="CardMuted.TLabel").pack(
-            side="left", padx=(theme.gap(3), 0)
-        )
+        self.status_label = ttk.Label(actions, textvariable=self.status_var, style="Muted.TLabel")
         ttk.Button(
             actions, text="立即检查一次", style="Secondary.TButton", command=self._check_now
         ).pack(side="right")
@@ -3299,13 +3316,17 @@ class WatchDialog(tk.Toplevel):
             side="right", padx=(0, theme.gap(1.5))
         )
 
-        self._refresh()
+        self.status_label.pack(side="left", fill="x", expand=True, padx=theme.gap(2))
+        self.bind("<Escape>", lambda _event: self.destroy())
         self._sync_toggle()
         self._poll()
 
     # ---------- 列表维护 ----------
 
     def _refresh(self) -> None:
+        selection = self.tree.selection()
+        focused = self.tree.focus()
+        scroll_start, _ = self.tree.yview()
         self.tree.delete(*self.tree.get_children())
         for target in self.app.watch_targets:
             _, ext, _ = EXPORTERS.get(target.format_key, EXPORTERS["html"])
@@ -3329,6 +3350,10 @@ class WatchDialog(tk.Toplevel):
                 iid=str(id(target)),
                 values=(f"No.{target.label}", scope, ext.lstrip("."), target.state, checked),
             )
+        self.tree.selection_set(*(iid for iid in selection if self.tree.exists(iid)))
+        if focused and self.tree.exists(focused):
+            self.tree.focus(focused)
+        self.tree.yview_moveto(scroll_start)
 
     def _add_from_input(self) -> None:
         urls = self.app._collect_urls()
@@ -3473,7 +3498,12 @@ class WatchDialog(tk.Toplevel):
     def _sync_toggle(self) -> None:
         if not self.winfo_exists():
             return
-        self.toggle_button.config(text="停止监控" if self.app._watching else "开始监控")
+        watching = self.app._watching
+        self.toggle_button.config(
+            text="停止监控" if watching else "开始监控",
+            style="Secondary.TButton" if watching else "TButton",
+        )
+        self.status_label.configure(style="Accent.TLabel" if watching else "Muted.TLabel")
         state = "监控进行中" if self.app._watching else "监控未启动"
         self.status_var.set(state)
         self.title(f"监控串更新 · {state}")
@@ -3502,7 +3532,7 @@ class WatchEditDialog(tk.Toplevel):
 
     def __init__(self, dialog: "WatchDialog", target: WatchTarget) -> None:
         super().__init__(dialog)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         self.app = dialog.app
         self.list_dialog = dialog
         self.target = target
@@ -3513,14 +3543,14 @@ class WatchEditDialog(tk.Toplevel):
 
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(3)))
         outer.pack(fill="both", expand=True)
-        card = Card(outer)
+        card = Card(outer, padding=theme.gap(3), stretch=True)
         card.pack(fill="both", expand=True)
         body = card.body
 
         # 串号：只读。label 是"从网址里认出来的串号"，不是用户输入。
         header = ttk.Frame(body, style="Card.TFrame")
         header.pack(fill="x")
-        ttk.Label(header, text=f"No.{target.label}", style="Card.TLabel").pack(side="left")
+        ttk.Label(header, text=f"No.{target.label}", style="CardHeading.TLabel").pack(side="left")
         ttk.Label(
             header,
             text="串号不能在这里改（换串请移除后重加）",
@@ -3533,7 +3563,7 @@ class WatchEditDialog(tk.Toplevel):
 
         def label(row: int, text: str) -> None:
             ttk.Label(form, text=text, style="Card.TLabel").grid(
-                row=row, column=0, sticky="w", pady=(0, theme.gap(1.25))
+                row=row, column=0, sticky="w", padx=(0, theme.gap(2)), pady=(0, theme.gap(1.25))
             )
 
         label(0, "抓取范围")
@@ -3597,7 +3627,8 @@ class WatchEditDialog(tk.Toplevel):
             justify="left",
             wraplength=theme.gap(84),
         )
-        note.pack(anchor="w", pady=(theme.gap(2), 0))
+        note.pack(fill="x", pady=(theme.gap(2), 0))
+        wrap_to_width(note, minimum=theme.gap(60))
 
         buttons = ttk.Frame(body, style="Card.TFrame")
         buttons.pack(fill="x", pady=(theme.gap(2), 0))
@@ -3606,6 +3637,7 @@ class WatchEditDialog(tk.Toplevel):
             buttons, text="取消", style="Secondary.TButton", command=self.destroy
         ).pack(side="right", padx=(0, theme.gap(1.5)))
 
+        self.bind("<Escape>", lambda _event: self.destroy())
         self._sync_image_mode()
 
     # ---------- 内部 ----------
@@ -3669,7 +3701,7 @@ class SelftestDialog(tk.Toplevel):
 
     def __init__(self, app: "App") -> None:
         super().__init__(app.root)
-        self.configure(bg=BG)
+        _set_dialog_appearance(self)
         self.app = app
         # 浏览器那一项在后台线程里跑，结果经由这个队列回到主线程
         # （Tk 不能在别的线程里动）。
@@ -3678,17 +3710,17 @@ class SelftestDialog(tk.Toplevel):
         self.title("环境自检")
         # 卡片用 stretch=True 撑满窗口，文本区跟着长；这里给个初始大小即可，
         # 用户拉大拉小都能用。620 高时报告一趟看得完。
-        self.geometry("660x620")
+        self.geometry(f"{theme.gap(165)}x{theme.gap(155)}")
         # 最小高度要装得下窄窗口时折成两行的按钮排（真机量过：520 宽时
         # 报告区顶部到 349，两行按钮要 74，再加卡片下边距 —— 400 高会把
         # 「复制结果」「关闭」切掉，460 刚好留出余量）。
-        self.minsize(520, 460)
+        self.minsize(theme.gap(130), theme.gap(115))
         self.transient(app.root)
 
         outer = ttk.Frame(self, padding=(theme.gap(4), theme.gap(2)))
         outer.pack(fill="both", expand=True)
         # stretch=True：让卡片里的文本区长到窗口底部，而不是只占「请求高度」
-        card = Card(outer, stretch=True)
+        card = Card(outer, padding=theme.gap(3), stretch=True)
         card.pack(fill="both", expand=True)
 
         SectionHeading(card.body, "环境自检").pack(fill="x")
@@ -3702,51 +3734,13 @@ class SelftestDialog(tk.Toplevel):
             "不碰你自己的登录状态），用来回答「用浏览器登录为什么点不动」。",
             style="CardMuted.TLabel",
             justify="left",
-            wraplength=460,
+            wraplength=theme.gap(115),
         )
         self.intro.pack(anchor="w", fill="x", pady=(theme.gap(1), 0))
-        wrap_to_width(self.intro, minimum=260)
-
-        box = ttk.Frame(card.body, style="Card.TFrame")
-        box.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
-        scrollbar = ttk.Scrollbar(box, orient="vertical")
-        scrollbar.pack(side="right", fill="y")
-        self.text = tk.Text(
-            box,
-            wrap="word",
-            height=16,
-            state="disabled",
-            background=_PAL.surface_sunken,
-            fg=TEXT,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground=BORDER,
-            highlightcolor=ACCENT,
-            font=MONO_FONT,
-            padx=theme.gap(2),
-            pady=theme.gap(1.5),
-            yscrollcommand=scrollbar.set,
-        )
-        self.text.pack(side="left", fill="both", expand=True)
-        scrollbar.configure(command=self.text.yview)
-        self._add_context_menu(self.text)
-
-        self.status_var = tk.StringVar(value="")
-        # 状态那行也会写长句子（「已复制到剪贴板，可以直接贴给别人看。」、
-        # 试浏览器的进度），同样跟着窗口宽度换行。
-        self.status_label = ttk.Label(
-            card.body,
-            textvariable=self.status_var,
-            style="CardMuted.TLabel",
-            justify="left",
-            wraplength=460,
-        )
-        self.status_label.pack(anchor="w", fill="x", pady=(theme.gap(1.5), 0))
-        wrap_to_width(self.status_label, minimum=260)
+        wrap_to_width(self.intro, minimum=theme.gap(65))
 
         row = ttk.Frame(card.body, style="Card.TFrame")
-        row.pack(fill="x", pady=(theme.gap(2), 0))
+        row.pack(side="bottom", fill="x", pady=(theme.gap(2), 0))
         # 五个按钮一行要 559 px，而这个窗口最小宽度是 520：交给
         # fold_buttons_when_narrow 决定是排一行还是把后两个折到第二行。
         restart_button = ttk.Button(
@@ -3769,6 +3763,48 @@ class SelftestDialog(tk.Toplevel):
             [restart_button, self.net_button, self.browser_button],
             [copy_button, close_button],
         )
+
+        self.status_var = tk.StringVar(value="")
+        # 状态那行也会写长句子（「已复制到剪贴板，可以直接贴给别人看。」、
+        # 试浏览器的进度），同样跟着窗口宽度换行。
+        self.status_label = ttk.Label(
+            card.body,
+            textvariable=self.status_var,
+            style="CardMuted.TLabel",
+            justify="left",
+            wraplength=theme.gap(115),
+        )
+        self.status_label.pack(side="bottom", anchor="w", fill="x", pady=(theme.gap(1.5), 0))
+        wrap_to_width(self.status_label, minimum=theme.gap(65))
+
+        box = ttk.Frame(card.body, style="Card.TFrame")
+        box.pack(fill="both", expand=True, pady=(theme.gap(2), 0))
+        scrollbar = ttk.Scrollbar(box, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        self.text = tk.Text(
+            box,
+            wrap="word",
+            height=16,
+            state="disabled",
+            background=_PAL.surface_sunken,
+            fg=TEXT,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+            font=MONO_FONT,
+            spacing2=theme.gap(0.5),
+            spacing3=theme.gap(0.5),
+            selectbackground=_PAL.accent_soft,
+            selectforeground=TEXT,
+            padx=theme.gap(2),
+            pady=theme.gap(1.5),
+            yscrollcommand=scrollbar.set,
+        )
+        self.text.pack(side="left", fill="both", expand=True)
+        scrollbar.configure(command=self.text.yview)
+        self._add_context_menu(self.text)
 
         self._run_local()
 
@@ -3903,7 +3939,7 @@ class SelftestDialog(tk.Toplevel):
         self.status_var.set("已复制到剪贴板，可以直接贴给别人看。")
 
     def _add_context_menu(self, widget: tk.Text) -> None:
-        menu = tk.Menu(widget, tearoff=0)
+        menu = _dialog_menu(widget)
         menu.add_command(label="复制", command=lambda: widget.event_generate("<<Copy>>"))
         menu.add_separator()
         menu.add_command(label="全选", command=lambda: widget.event_generate("<<SelectAll>>"))
@@ -3918,6 +3954,25 @@ def _spawn(command: list[str]) -> None:
     """
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     subprocess.Popen(command, close_fds=True, creationflags=flags)
+
+
+
+def _log_tone(message: str) -> str:
+    """按日志首句分类，保留可复制的原始文字。"""
+    summary = message.strip().split("：", 1)[0]
+    if not summary.startswith(("重试", "没有失败")) and any(
+        word in summary for word in ("失败", "出错", "异常", "建不出来")
+    ):
+        return "danger"
+    if summary.startswith(("警告", "提示", "已取消", "超时")) or any(
+        word in summary for word in ("限流", "缺页", "没能抓全", "未登录")
+    ):
+        return "warn"
+    if summary.startswith(("已保存", "完成", "导出完成", "全部处理完毕")) or any(
+        word in summary for word in ("成功", "已保存", "已清空")
+    ):
+        return "ok"
+    return "info"
 
 
 class App:
@@ -3999,7 +4054,6 @@ class App:
         root.minsize(*self._scaled_window_size(940, 680))
 
         self._build_ui()
-        self.refresh_watch_status()
         self.refresh_cache_info()
         self.log("就绪。填入串网址后点「开始导出」。")
         # 启动后悄悄问一次「有没有新版本」：查到了只写一行日志，不弹窗打扰。
@@ -4061,7 +4115,7 @@ class App:
     def _remember_theme_widget(self, widget: tk.Misc) -> None:
         self._widget_roots.append(widget)
 
-    def _build_ui(self, log_text: str = "") -> None:
+    def _build_ui(self, log_text: str = "", log_tags: dict[str, tuple] | None = None) -> None:
         """按当前配色把整个界面画一遍（切换主题时也会再调一次）。
 
         颜色别名在模块级别，控件在创建时就把颜色烘进去了，所以换肤不能
@@ -4083,9 +4137,20 @@ class App:
             # 所以先开门、写完再关上 —— 切换主题时旧日志才不会丢。
             self.log_text.config(state="normal")
             self.log_text.insert("1.0", log_text)
+            for tag, ranges in (log_tags or {}).items():
+                if ranges:
+                    self.log_text.tag_add(tag, *ranges)
             self.log_text.config(state="disabled")
+            self.log_text.see("end")
         self.sync_theme_selector()
         self.sync_font_selector()
+        self.refresh_watch_status()
+
+    def _log_color_ranges(self) -> dict[str, tuple]:
+        return {
+            tag: tuple(str(index) for index in self.log_text.tag_ranges(tag))
+            for tag in ("time", "info", "ok", "warn", "danger")
+        }
 
     def switch_theme(self, name: str, *, persist: bool = True) -> bool:
         """换配色并立刻重画界面。返回是否真的换了（同一个主题返回 False）。
@@ -4105,9 +4170,11 @@ class App:
             self.persist_prefs()
 
         keep_log = ""
+        keep_tags = {}
         keep_urls = ""
         try:
             keep_log = self.log_text.get("1.0", "end-1c")
+            keep_tags = self._log_color_ranges()
         except (AttributeError, tk.TclError):  # pragma: no cover - 没建起来过
             pass
         try:
@@ -4133,7 +4200,7 @@ class App:
                 pass
         self._widget_roots.clear()
 
-        self._build_ui(keep_log)
+        self._build_ui(keep_log, keep_tags)
         if keep_urls:
             self.urls_text.insert("1.0", keep_urls)
         self.log(f"界面配色已切换为{'深色' if palette.name == 'dark' else '浅色'}。")
@@ -4202,9 +4269,11 @@ class App:
             self.persist_prefs()
 
         keep_log = ""
+        keep_tags = {}
         keep_urls = ""
         try:
             keep_log = self.log_text.get("1.0", "end-1c")
+            keep_tags = self._log_color_ranges()
         except (AttributeError, tk.TclError):  # pragma: no cover - 没建起来过
             pass
         try:
@@ -4225,7 +4294,7 @@ class App:
                 pass
         self._widget_roots.clear()
 
-        self._build_ui(keep_log)
+        self._build_ui(keep_log, keep_tags)
         if keep_urls:
             self.urls_text.insert("1.0", keep_urls)
         self.log(f"界面字号已切换为「{theme.font_scale_label()}」。")
@@ -4266,7 +4335,7 @@ class App:
         ttk.Label(title_box, text=WINDOW_TITLE, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             title_box,
-            text="HTML · PDF · TXT · Markdown · EPUB　|　断点续传 · 图片缓存 · 更新监控",
+            text="串文导出、断点续传与更新监控",
             style="Faint.TLabel",
         ).pack(anchor="w", pady=(theme.gap(0.5), 0))
 
@@ -4317,7 +4386,7 @@ class App:
         self._font_scale_box = font_box
 
         status_row = ttk.Frame(header)
-        status_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(theme.gap(2.5), 0))
+        status_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(theme.gap(2), 0))
         self.status_var = tk.StringVar(value="已登录" if self.settings.userhash else "未登录")
         self.status_pill = StatusPill(
             status_row,
@@ -4353,10 +4422,10 @@ class App:
         inner = self._scroll_area(column)
         inner.columnconfigure(0, weight=1)
 
-        # ① 输入串
-        input_card = Card(inner)
+        # 输入和抓取范围
+        input_card = Card(inner, padding=theme.gap(3), subtle=True)
         input_card.grid(row=0, column=0, sticky="ew")
-        SectionHeading(input_card.body, "① 输入串网址", "每行一个，可一次粘贴多个串").pack(
+        SectionHeading(input_card.body, "输入与导出选项", "每行输入一个串网址或串号").pack(
             fill="x"
         )
         # 文本框旁边带一个「从文件…」：一次要导几十个串时粘贴很别扭（清单常常是
@@ -4364,24 +4433,6 @@ class App:
         # （940x680）下没有多余的一行可用。
         urls_row = ttk.Frame(input_card.body, style="Card.TFrame")
         urls_row.pack(fill="x", pady=(theme.gap(1.25), 0))
-        self.urls_text = tk.Text(
-            urls_row,
-            height=3,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground=BORDER,
-            highlightcolor=ACCENT,
-            font=BODY_FONT,
-            padx=theme.gap(2),
-            pady=theme.gap(1.5),
-            bg=_PAL.surface_sunken,
-            fg=TEXT,
-            insertbackground=TEXT,
-            selectbackground=_PAL.accent_soft,
-        )
-        self.urls_text.pack(side="left", fill="both", expand=True)
-        self._add_context_menu(self.urls_text)
         self.load_list_button = ttk.Button(
             urls_row,
             text="从文件…",
@@ -4389,6 +4440,10 @@ class App:
             command=self.load_thread_list,
         )
         self.load_list_button.pack(side="right", anchor="n", padx=(theme.gap(1.25), 0))
+        urls_field = FlatText(urls_row, height=4, font=BODY_FONT)
+        urls_field.pack(side="left", fill="both", expand=True)
+        self.urls_text = urls_field.text
+        self._add_context_menu(self.urls_text)
 
         # 抓取范围
         scope_row = ttk.Frame(input_card.body, style="Card.TFrame")
@@ -4458,13 +4513,13 @@ class App:
 
         # 导出格式 + 两个开关（并成一行，少占一层高度）
         format_row = ttk.Frame(input_card.body, style="Card.TFrame")
-        format_row.pack(fill="x")
+        format_row.pack(fill="x", pady=(theme.gap(0.5), 0))
         ttk.Label(format_row, text="导出格式", style="Card.TLabel").pack(side="left")
         self._format_keys = list(EXPORTERS.keys())
         self.format_box = ttk.Combobox(
             format_row,
             state="readonly",
-            width=18,
+            width=14,
             values=[name for name, _, _ in EXPORTERS.values()],
         )
         self.format_box.pack(side="left", padx=(theme.gap(2), theme.gap(1)))
@@ -4516,10 +4571,10 @@ class App:
         # 按当前格式把下拉框的选项与选中值对齐（存的是 PDF/EPUB + 同名目录时不该显示它）。
         self._sync_image_mode()
 
-        # ② 导出目录
-        folder_card = Card(inner)
+        # 输出目录和缓存操作
+        folder_card = Card(inner, padding=theme.gap(3), subtle=True)
         folder_card.grid(row=1, column=0, sticky="ew", pady=(theme.gap(2), 0))
-        SectionHeading(folder_card.body, "② 导出目录", "成品与日志都写在这里").pack(fill="x")
+        SectionHeading(folder_card.body, "导出目录", "选择成品的保存位置").pack(fill="x")
         self.output_var = tk.StringVar(
             value=self.settings.output_dir or str(Path.home() / "Documents" / "X岛备份")
         )
@@ -4561,7 +4616,7 @@ class App:
         self.cache_label.pack(side="left", fill="x", expand=True)
         wrap_to_width(self.cache_label, minimum=160)
 
-        # 主操作按钮 + 进度（滚动区之外，永远看得见）
+        # 固定操作栏独立于滚动区。
         footer = ttk.Frame(column)
         footer.grid(row=1, column=0, sticky="ew", pady=(theme.gap(2), 0))
         button_row = ttk.Frame(footer)
@@ -4573,16 +4628,9 @@ class App:
             text="重试失败项",
             style="Secondary.TButton",
             command=self.retry_failed,
-            state="disabled",
+            state="normal" if self._last_failed else "disabled",
         )
         self.retry_button.pack(side="left", padx=(theme.gap(1), 0))
-
-        self.progress_var = tk.StringVar(value="等待开始")
-        ttk.Label(footer, textvariable=self.progress_var, style="Faint.TLabel").pack(
-            anchor="w", pady=(theme.gap(2), theme.gap(1))
-        )
-        self.progress_bar = ModernProgress(footer)
-        self.progress_bar.pack(fill="x")
 
     def _scroll_area(self, parent: ttk.Frame) -> ttk.Frame:
         """造一个"装不下就滚动"的纵向容器，返回可往里塞内容的内层 Frame。
@@ -4643,80 +4691,111 @@ class App:
         return inner
 
     def _build_activity_card(self, parent: ttk.Frame) -> None:
-        """右栏：运行日志卡片，高度随窗口自适应。"""
-        card = Card(parent)
-        card.grid(row=1, column=1, sticky="nsew")
+        """右栏的任务摘要与日志各有独立高度，日志占满剩余空间。"""
+        column = ttk.Frame(parent)
+        column.grid(row=1, column=1, sticky="nsew")
+        column.grid_propagate(False)
+        column.columnconfigure(0, weight=1)
+        column.rowconfigure(1, weight=1)
+        activity = Card(column, padding=theme.gap(2.5))
+        activity.grid(row=0, column=0, sticky="ew", pady=(0, theme.gap(2)))
+        head = ttk.Frame(activity.body, style="Card.TFrame")
+        head.pack(fill="x")
+        ttk.Label(head, text="导出进度", style="CardHeading.TLabel").pack(side="left")
+        self._activity_pill = StatusPill(head, "", bg=CARD)
+        self._activity_pill.pack(side="right")
+        metrics = ttk.Frame(activity.body, style="Card.TFrame")
+        metrics.pack(fill="x", pady=(theme.gap(1), theme.gap(1)))
+        self._activity_metric = ttk.Label(metrics, style="CardMetric.TLabel")
+        self._activity_metric.pack(side="left")
+        self._activity_eta = ttk.Label(metrics, style="CardFaint.TLabel")
+        self._activity_eta.pack(side="right")
+        self.progress_bar = ModernProgress(activity.body)
+        self.progress_bar.configure(bg=CARD)
+        self.progress_bar.pack(fill="x")
+        self.progress_var = tk.StringVar(value="等待开始")
+        self._activity_detail = ttk.Label(
+            activity.body, style="CardFaint.TLabel", justify="left", wraplength=theme.gap(45)
+        )
+        self._activity_detail.pack(fill="x", pady=(theme.gap(1.5), 0))
+        wrap_to_width(self._activity_detail, minimum=160)
+        phase, detail, tone, done, total, eta = getattr(
+            self, "_activity_state", ("待命", "填入串网址或串号后，开始导出。", "muted", 0, 0, 0)
+        )
+        self._present_activity(phase, detail, tone, done, total, eta)
+        self.progress_bar.set_value(done, total)
+        card = Card(column, stretch=True, padding=theme.gap(2.5))
+        card.grid(row=1, column=0, sticky="nsew")
         card.pack_propagate(False)
-
         ttk.Label(card.body, text="运行日志", style="CardHeading.TLabel").pack(anchor="w")
-        # 说明文字自己占一行、铺满卡片宽度：跟按钮挤在一行时，940 宽的
-        # 窗口里留给它的只有 85 px（量到过），再怎么写都会缺字。
-        log_hint = ttk.Label(
-            card.body,
-            text="抓取与导出的每一步都会记在这里",
-            style="CardFaint.TLabel",
-            justify="left",
-            wraplength=theme.gap(45),
-        )
-        log_hint.pack(anchor="w", fill="x", pady=(theme.gap(0.5), 0))
-        wrap_to_width(log_hint, minimum=160)
-        # 按钮单独一行、靠右：位置先占住，谁也不会被挤成半个。
         log_head = ttk.Frame(card.body, style="Card.TFrame")
-        log_head.pack(fill="x", pady=(theme.gap(0.5), theme.gap(1.5)))
-        log_buttons = ttk.Frame(log_head, style="Card.TFrame")
-        log_buttons.pack(side="right")
-        ttk.Button(
-            log_buttons, text="保存…", style="Ghost.TButton", command=self.save_log
-        ).pack(side="right")
-        ttk.Button(
-            log_buttons, text="清空", style="Ghost.TButton", command=self.clear_log
-        ).pack(side="right", padx=(0, theme.gap(0.5)))
-        ttk.Button(
-            log_buttons, text="自检", style="Ghost.TButton", command=self.open_selftest
-        ).pack(side="right", padx=(0, theme.gap(0.5)))
-        self._update_button = ttk.Button(
-            log_buttons, text="检查更新", style="Ghost.TButton", command=self.check_update
-        )
-        self._update_button.pack(side="right", padx=(0, theme.gap(0.5)))
-
+        log_head.pack(fill="x", pady=(0, theme.gap(1.5)))
+        for text, command in (
+            ("保存…", self.save_log), ("清空", self.clear_log),
+            ("自检", self.open_selftest), ("检查更新", self.check_update),
+        ):
+            button = ttk.Button(log_head, text=text, style="Ghost.TButton", command=command)
+            button.pack(side="right", padx=(theme.gap(0.5), 0))
+            if text == "检查更新":
+                self._update_button = button
+        log_body = ttk.Frame(card.body, style="Card.TFrame")
+        log_body.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(log_body, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
         self.log_text = tk.Text(
-            card.body,
-            height=18,
-            state="disabled",
-            background=_PAL.surface_sunken,
-            fg=TEXT,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground=BORDER,
-            highlightcolor=ACCENT,
-            font=MONO_FONT,
-            padx=theme.gap(2),
-            pady=theme.gap(1.5),
-            selectbackground=_PAL.accent_soft,
+            log_body, height=1, width=1, state="disabled",
+            background=_PAL.surface_sunken, fg=TEXT,
+            relief="flat", borderwidth=0, highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=ACCENT, font=MONO_FONT,
+            padx=theme.gap(2), pady=theme.gap(1.5),
+            spacing1=theme.gap(0.5), spacing3=theme.gap(0.5),
+            selectbackground=_PAL.accent_soft, selectforeground=TEXT,
+            takefocus=True, wrap="char", yscrollcommand=scrollbar.set,
         )
+        scrollbar.configure(command=self.log_text.yview)
+        for tag, color in (
+            ("time", MUTED), ("info", TEXT), ("ok", _PAL.ok),
+            ("warn", _PAL.warn), ("danger", _PAL.danger),
+        ):
+            self.log_text.tag_configure(tag, foreground=color)
         self.log_text.pack(fill="both", expand=True)
         self._add_context_menu(self.log_text)
-        card.bind("<Configure>", lambda _e: self._fit_log_height())
+        log_body.bind("<Configure>", lambda _e: self._fit_log_height())
+
+    def _present_activity(
+        self, phase: str, detail: str, tone: str, done: int = 0, total: int = 0, eta: float = 0
+    ) -> None:
+        self._activity_state = (phase, detail, tone, done, total, eta)
+        if getattr(self, "_activity_pill", None) is None:
+            return
+        self._activity_pill.set(phase, tone=tone)
+        self._activity_detail.configure(text=detail)
+        self._activity_metric.configure(text=f"{done / total:.0%}" if total > 0 else "—")
+        remaining = f"  ·  约剩 {human_duration(eta)}" if done > 0 and eta > 1 else ""
+        self._activity_eta.configure(text=f"{done} / {total}{remaining}" if total > 0 else "")
+        self.progress_bar.set_tone(tone)
 
     def _fit_log_height(self) -> None:
-        """日志框按卡片实际高度决定显示多少行（不跟着内容无限长高）。"""
+        """把日志文本的请求行数对齐实际视口。"""
         try:
-            available = self.log_text.master.winfo_height() - 64
+            available = self.log_text.master.winfo_height() - theme.gap(3)
             linespace = int(self.log_text.tk.call("font", "metrics", MONO_FONT, "-linespace"))
         except (tk.TclError, TypeError, ValueError):
             return
-        if available < 80 or linespace <= 0:
-            return
-        lines = max(10, min(40, available // linespace))
-        if int(self.log_text.cget("height")) != lines:
-            self.log_text.configure(height=lines)
+        if available > 0 and linespace > 0:
+            lines = max(1, available // (linespace + 2 * theme.gap(0.5)))
+            if int(self.log_text.cget("height")) != lines:
+                self.log_text.configure(height=lines)
 
     def _add_context_menu(self, widget: tk.Text) -> None:
-        menu = tk.Menu(widget, tearoff=0)
-        menu.add_command(label="剪切", command=lambda: widget.event_generate("<<Cut>>"))
+        menu = tk.Menu(
+            widget, tearoff=0, bg=CARD, fg=TEXT,
+            activebackground=_PAL.accent_soft, activeforeground=TEXT,
+        )
+        if str(widget.cget("state")) != "disabled":
+            menu.add_command(label="剪切", command=lambda: widget.event_generate("<<Cut>>"))
+            menu.add_command(label="粘贴", command=lambda: widget.event_generate("<<Paste>>"))
         menu.add_command(label="复制", command=lambda: widget.event_generate("<<Copy>>"))
-        menu.add_command(label="粘贴", command=lambda: widget.event_generate("<<Paste>>"))
         menu.add_separator()
         menu.add_command(label="全选", command=lambda: widget.event_generate("<<SelectAll>>"))
 
@@ -5262,9 +5341,12 @@ class App:
             messagebox.showerror("保存失败", str(exc))
 
     def log(self, message: str) -> None:
+        follow = self.log_text.yview()[1] >= 0.999
         self.log_text.config(state="normal")
-        self.log_text.insert("end", f"[{time.strftime('%H:%M:%S')}] {message}\n")
-        self.log_text.see("end")
+        self.log_text.insert("end", f"[{time.strftime('%H:%M:%S')}] ", "time")
+        self.log_text.insert("end", message + "\n", _log_tone(message))
+        if follow:
+            self.log_text.see("end")
         self.log_text.config(state="disabled")
         self.root.update_idletasks()
 
@@ -5572,6 +5654,7 @@ class App:
         self._set_export_controls(running=True)
         self.progress_bar.start(12)
         self.progress_var.set("开始导出…")
+        App._present_activity(self, "准备中", "正在准备抓取与导出", "accent")
         self.log(
             f"开始导出：{len(urls)} 个串，格式 {self.current_format()}，"
             f"缓存 {'启用' if self.use_cache_var.get() else '关闭'}。"
@@ -5580,7 +5663,7 @@ class App:
         self.log(_describe_export_range(max_pages, until_thread_id, skipped))
         if self.current_format() in ("html", "pdf", "epub"):
             # TXT / Markdown 是纯文本，没有字号可言 —— 那种格式下不提这一行。
-            self.log(f"正文字号：{self.settings.export_font_size} 磅。")
+            self.log(f"正文字号：{self.settings.export_font_size} CSS 像素。")
         if self.settings.skip_existing:
             # 开着的时候说一句：不然用户看到「成功 8 / 8」会以为全都重新导了一遍。
             self.log("已存在就跳过：同名成品非空时不重做。")
@@ -5811,6 +5894,9 @@ class App:
         stop.set()
         self.start_button.config(state="disabled", text="正在取消…")
         self.progress_var.set("正在取消…")
+        App._present_activity(
+            self, "正在取消", "等待当前步骤收尾，已导出的文件会保留。", "warn"
+        )
         self.log("正在取消：当前这一页或这张图收手就停，已经导出的文件会保留。")
 
     def on_close(self) -> None:
@@ -5884,6 +5970,8 @@ class App:
                     text += f"，约剩 {human_duration(eta)}"
                 self.progress_bar.set_value(done, total)
                 self.progress_var.set(text)
+                if not getattr(self, "_export_stop", None) or not self._export_stop.is_set():
+                    App._present_activity(self, "导出中", label, "accent", done, total, eta)
             elif kind == "log":
                 try:
                     self.log(payload)
@@ -5924,6 +6012,9 @@ class App:
         self.progress_var.set(f"完成：成功 {succeeded} / {total} 个串，用时 {elapsed:.0f} 秒")
         if cancelled:
             self.progress_var.set(f"已取消：完成 {succeeded} / {total} 个串，用时 {elapsed:.0f} 秒")
+            App._present_activity(
+                self, "已取消", "已导出的文件仍在导出目录。", "warn", succeeded, total
+            )
             self.log(f"已取消：完成 {succeeded} / {total} 个串，用时 {elapsed:.1f} 秒。")
             self.log("已导出的文件都还在，剩下的串没有处理。")
             self.refresh_cache_info()
@@ -5946,12 +6037,20 @@ class App:
             for line in notes:
                 self.log(f"    {line}")
         if failed:
+            App._present_activity(
+                self, "有失败项" if succeeded else "导出失败",
+                f"{len(failed)} 个串失败。查看日志后可点「重试失败项」。",
+                "warn" if succeeded else "danger", succeeded, total,
+            )
             messagebox.showwarning(
                 "部分失败",
                 f"成功 {succeeded} / {total} 个串。\n\n失败 {len(failed)} 个，原因见日志区，"
                 f"可点「重试失败项」重跑。\n\n成功的文件在：\n{output_dir}",
             )
         elif notes:
+            App._present_activity(
+                self, "有缺页", "查看日志中的缺页清单，再导一次可补抓。", "warn", succeeded, total
+            )
             messagebox.showwarning(
                 "有串没抓全",
                 f"成功导出 {succeeded} / {total} 个串，但其中 {len(notes)} 个只抓到了"
@@ -5963,6 +6062,7 @@ class App:
                 f"{output_dir}",
             )
         else:
+            App._present_activity(self, "已完成", "可打开导出目录查看成品。", "ok", succeeded, total)
             messagebox.showinfo(
                 "完成", f"成功导出 {succeeded} / {total} 个串。\n\n文件在：\n{output_dir}"
             )

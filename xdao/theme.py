@@ -8,15 +8,16 @@ ttk 样式只由 :func:`apply_theme` 配置，自定义控件从 ``theme.gap`` /
 
 约定（改动前先读）：
 - 不引入任何第三方依赖，只用 tkinter/ttk 自带能力；
-- 字体在导入时探测一次（``FONT_UI`` 取系统里装了的第一个候选），
-  探不到就退回 Tk 默认字体，绝不能因为字体不存在而报错；
-- ``apply_theme`` 必须幂等：同一进程里多次调用得到同样的样式，
-  且调用时不需要已有窗口（测试用 ``tk.Tcl()`` 就能跑）。
+- 字体在 Tk 启动后探测一次，优先使用操作系统已安装的字体；
+- ``apply_theme`` 必须幂等，且窗口无需显示。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import struct
+import sys
+import zlib
+from dataclasses import dataclass, fields
 
 try:  # 没有 tkinter 的 Python（少数自编译版本）也要能 import 这个模块
     import tkinter as tk
@@ -44,7 +45,7 @@ class Palette:
     surface_sunken: str  # 输入框/日志等凹陷区域
     surface_hover: str  # 鼠标悬停在卡片按钮上
     border: str  # 常规描边
-    border_strong: str  # 获得焦点/强调时的描边
+    border_strong: str  # 悬停或需要强调边界时的描边
     text: str  # 主文字
     muted: str  # 次要文字
     faint: str  # 更弱的文字（脚注）
@@ -54,56 +55,71 @@ class Palette:
     accent_soft: str  # 主色的浅底（选中态背景）
     on_accent: str  # 主色底上的文字
     ok: str
+    ok_soft: str
     warn: str
+    warn_soft: str
     danger: str
+    danger_soft: str
+    disabled_surface: str
+    disabled_text: str
     track: str  # 进度条/滑槽底色
     shadow: str  # 卡片投影
 
 
 LIGHT = Palette(
     name="light",
-    bg="#f2f4f9",
+    bg="#eff1f4",
     surface="#ffffff",
-    surface_sunken="#f7f9fc",
-    surface_hover="#f3f6fb",
-    border="#e4e8f0",
-    border_strong="#c8d2e2",
-    text="#151a23",
-    muted="#5b6472",
-    faint="#8b95a5",
-    accent="#3b6ef6",
-    accent_hover="#2f5fe0",
-    accent_active="#2450c4",
-    accent_soft="#e8eefe",
+    surface_sunken="#f5f7fa",
+    surface_hover="#e9edf3",
+    border="#dce2ea",
+    border_strong="#a2afc1",
+    text="#192333",
+    muted="#475569",
+    faint="#58687d",
+    accent="#245bc4",
+    accent_hover="#1d4dac",
+    accent_active="#153e95",
+    accent_soft="#e6efff",
     on_accent="#ffffff",
-    ok="#12996b",
-    warn="#c47f16",
-    danger="#dc2b3f",
-    track="#e7ebf3",
-    shadow="#dfe4ee",
+    ok="#12653f",
+    ok_soft="#e3f3eb",
+    warn="#895300",
+    warn_soft="#fff0d5",
+    danger="#ac2940",
+    danger_soft="#fae8ec",
+    disabled_surface="#e6e9ee",
+    disabled_text="#737e8e",
+    track="#e2e7ee",
+    shadow="#d7dce4",
 )
 
 DARK = Palette(
     name="dark",
-    bg="#161a21",
-    surface="#1e232c",
-    surface_sunken="#171b23",
-    surface_hover="#252b36",
-    border="#2c333f",
-    border_strong="#3b4453",
-    text="#eef1f6",
-    muted="#a4adbb",
-    faint="#7d8797",
-    accent="#5c8bff",
-    accent_hover="#7099ff",
-    accent_active="#4a7af0",
-    accent_soft="#25314b",
-    on_accent="#0f1319",
-    ok="#3ecf8e",
-    warn="#e0a63c",
-    danger="#ff6b7d",
-    track="#2a313c",
-    shadow="#11151b",
+    bg="#1c1e23",
+    surface="#252830",
+    surface_sunken="#1e2229",
+    surface_hover="#313641",
+    border="#373c47",
+    border_strong="#616d81",
+    text="#f2f4f8",
+    muted="#bac3cf",
+    faint="#9aa6b8",
+    accent="#9bbcff",
+    accent_hover="#b5cdff",
+    accent_active="#80a9fc",
+    accent_soft="#293d62",
+    on_accent="#121a2a",
+    ok="#73d6a6",
+    ok_soft="#203c32",
+    warn="#f3c06c",
+    warn_soft="#483920",
+    danger="#ff9bac",
+    danger_soft="#482c36",
+    disabled_surface="#30343d",
+    disabled_text="#8691a1",
+    track="#393f4a",
+    shadow="#181a1e",
 )
 
 PALETTES = {LIGHT.name: LIGHT, DARK.name: DARK}
@@ -133,47 +149,43 @@ def set_palette(pal: Palette) -> Palette:
 
 # ---------------------------------------------------------------- 字体
 
-#: 界面字体候选：优先 Windows 自带且中文好看的，其次 macOS/Linux 常见字体。
+#: Windows 优先保证中文行高与字形，其次使用 Segoe UI 的现代 / 常规字族。
 UI_FONT_CANDIDATES = (
     "Microsoft YaHei UI",
     "微软雅黑",
     "Microsoft YaHei",
+    "Segoe UI Variable Text",
+    "Segoe UI Variable",
+    "Segoe UI",
     "PingFang SC",
     "Noto Sans CJK SC",
     "Source Han Sans SC",
-    "Segoe UI",
     "Helvetica Neue",
     "DejaVu Sans",
 )
 MONO_FONT_CANDIDATES = ("Cascadia Mono", "Consolas", "JetBrains Mono", "Menlo", "DejaVu Sans Mono")
 
-#: 字体只探测一次；``_FONT_CACHE`` 按候选元组缓存结果
-_FONTS_RESOLVED = False
+#: 两套字体分别缓存，避免先解析的界面字体挡住等宽字体探测。
 _FONT_CACHE: dict[tuple[str, ...], str] = {}
 
 
-def _available_families() -> set[str]:
+def _available_families(root: tk.Misc | None) -> set[str]:
     """系统里可用的字体族（小写）。拿不到就返回空集合，绝不抛异常。"""
-    candidates = []
-    root = tk._default_root  # noqa: SLF001 —— 没有根窗口时枚举不了字体
-    if root is not None:
-        candidates.append(root)
-    candidates.append(None)
-    for source in candidates:
-        if source is not None:
-            try:
-                if not source.winfo_exists():
-                    continue
-            except Exception:  # noqa: BLE001 —— 根已销毁
-                continue
+    if tk is None:
+        return set()
+    default = tk._default_root  # noqa: SLF001 —— 没有根窗口时枚举不了字体
+    for source in (root, default):
+        if source is None:
+            continue
         try:
-            return {name.lower() for name in tkfont.families(source)}
-        except Exception:  # noqa: BLE001 —— 换下一个来源再试
+            if source.winfo_exists():
+                return {name.casefold() for name in tkfont.families(source)}
+        except tk.TclError:  # 根已销毁，或纯 Tcl 解释器没有加载 Tk
             continue
     return set()
 
 
-def _first_available(candidates: tuple[str, ...], fallback: str) -> str:
+def _first_available(candidates: tuple[str, ...], fallback: str, available: set[str]) -> str:
     """挑系统里第一个装了的字体，结果在进程内缓存。
 
     两条硬约束：
@@ -183,23 +195,14 @@ def _first_available(candidates: tuple[str, ...], fallback: str) -> str:
     2. **根窗口可能已被销毁**：销毁后 ``tkfont.families()`` 会抛 TclError，
        所以每个来源都要能安全跳过，绝不能因为字体不存在而影响启动。
     """
-    global _FONTS_RESOLVED
-    if _FONTS_RESOLVED:
-        return _FONT_CACHE.get(candidates, candidates[0])
-
-    available = _available_families()
+    if candidates in _FONT_CACHE:
+        return _FONT_CACHE[candidates]
     if not available:
         # 还没有窗口（导入期 / 纯 Tcl 测试）：先给候选首个，不落缓存，等有窗口再定
         return candidates[0]
 
-    for name in candidates:
-        if name.lower() in available:
-            chosen = name
-            break
-    else:
-        chosen = fallback
+    chosen = next((name for name in candidates if name.casefold() in available), fallback)
     _FONT_CACHE[candidates] = chosen
-    _FONTS_RESOLVED = True
     return chosen
 
 
@@ -208,8 +211,8 @@ FALLBACK_MONO_FONT = "TkFixedFont"
 
 
 #: 界面字体名（导入时给个默认值；``resolve_fonts`` 在有了根窗口后探测真实值）
-FONT_UI = "Microsoft YaHei UI"
-FONT_MONO = "Consolas"
+FONT_UI = UI_FONT_CANDIDATES[0]
+FONT_MONO = MONO_FONT_CANDIDATES[0]
 
 
 def resolve_fonts(root: tk.Misc | None = None) -> tuple[str, str]:
@@ -223,13 +226,15 @@ def resolve_fonts(root: tk.Misc | None = None) -> tuple[str, str]:
     等有窗口后再定，否则导入期绑定的族名会一路粘住。
     """
     global FONT_UI, FONT_MONO
-    FONT_UI = _first_available(UI_FONT_CANDIDATES, FALLBACK_UI_FONT)
-    FONT_MONO = _first_available(MONO_FONT_CANDIDATES, FALLBACK_MONO_FONT)
+    available = set() if len(_FONT_CACHE) == 2 else _available_families(root)
+    FONT_UI = _first_available(UI_FONT_CANDIDATES, FALLBACK_UI_FONT, available)
+    FONT_MONO = _first_available(MONO_FONT_CANDIDATES, FALLBACK_MONO_FONT, available)
     return FONT_UI, FONT_MONO
 
 
 # 字号（点）。正文 10 是 Windows 上最舒服的默认值。
-SIZE_TITLE = 19
+SIZE_TITLE = 21
+SIZE_METRIC = 17
 SIZE_HEADING = 12
 SIZE_SUBHEAD = 11
 SIZE_BODY = 10
@@ -402,6 +407,15 @@ STYLE_NAMES = (
     "Faint.TLabel",
     "Title.TLabel",
     "Subtitle.TLabel",
+    "CardMetric.TLabel",
+    "Accent.TLabel",
+    "Ok.TLabel",
+    "Warn.TLabel",
+    "Danger.TLabel",
+    "CardAccent.TLabel",
+    "CardOk.TLabel",
+    "CardWarn.TLabel",
+    "CardDanger.TLabel",
     "Badge.TLabel",
     "TButton",
     "Secondary.TButton",
@@ -409,12 +423,16 @@ STYLE_NAMES = (
     "Danger.TButton",
     "TEntry",
     "TCombobox",
+    "ComboboxPopdownFrame",
     "TCheckbutton",
     "Card.TCheckbutton",
     "TRadiobutton",
     "Card.TRadiobutton",
     "Treeview",
     "Treeview.Heading",
+    "TNotebook",
+    "TNotebook.Tab",
+    "TSeparator",
     "TLabelframe",
     "TLabelframe.Label",
     "Horizontal.TProgressbar",
@@ -423,30 +441,10 @@ STYLE_NAMES = (
 )
 
 
-#: ``Palette`` 的全部字段名，顺序固定。切换主题时用它把"旧配色 → 新配色"
+#: ``Palette`` 的全部颜色字段，按声明顺序。切换主题时用它把"旧配色 → 新配色"
 #: 做成一张映射表（见 ``gui.py`` 的 ``_migrate_colors``），再改写已经画好的
 #: 原生控件的颜色；少了任何一个字段，那一类控件换肤后就会留着旧底色。
-PALETTE_FIELDS = (
-    "bg",
-    "surface",
-    "surface_sunken",
-    "surface_hover",
-    "border",
-    "border_strong",
-    "text",
-    "muted",
-    "faint",
-    "accent",
-    "accent_hover",
-    "accent_active",
-    "accent_soft",
-    "on_accent",
-    "ok",
-    "warn",
-    "danger",
-    "track",
-    "shadow",
-)
+PALETTE_FIELDS = tuple(field.name for field in fields(Palette) if field.name != "name")
 
 
 def color_map(old: Palette, new: Palette) -> dict[str, str]:
@@ -461,6 +459,61 @@ def color_map(old: Palette, new: Palette) -> dict[str, str]:
     for field_name in PALETTE_FIELDS:
         mapping.setdefault(getattr(old, field_name), getattr(new, field_name))
     return mapping
+
+
+def apply_titlebar(window: tk.Misc, pal: Palette | None = None) -> None:
+    """在支持的 Windows 上给 Tk 的原生窗口框架同步主题。"""
+    if sys.platform != "win32" or tk is None:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # Tk 提供的是客户区 HWND。GA_ROOT 找到系统窗口框架，且不跟随 owner。
+        get_ancestor = ctypes.windll.user32.GetAncestor
+        get_ancestor.argtypes = (wintypes.HWND, wintypes.UINT)
+        get_ancestor.restype = wintypes.HWND
+        hwnd = get_ancestor(window.winfo_id(), 2)
+        if hwnd:
+            set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+            set_attribute.argtypes = (
+                wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD
+            )
+            set_attribute.restype = ctypes.c_long
+            # DWMWA_USE_IMMERSIVE_DARK_MODE。旧系统不支持时保留原生外观。
+            dark = wintypes.BOOL((pal or PALETTE).name == "dark")
+            set_attribute(hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
+    except Exception:  # noqa: BLE001 —— 装饰性能力失败不能挡住开窗或测试替身
+        pass
+
+
+def _style_combobox_lists(root: tk.Misc, pal: Palette) -> None:
+    """新候选列表读选项库，已经打开过的列表换肤时也同步。"""
+    options = {
+        "background": ("background", pal.surface),
+        "foreground": ("foreground", pal.text),
+        "selectBackground": ("selectbackground", pal.accent),
+        "selectForeground": ("selectforeground", pal.on_accent),
+        "borderWidth": ("borderwidth", 0),
+        "highlightThickness": ("highlightthickness", 0),
+        "selectBorderWidth": ("selectborderwidth", 0),
+    }
+    try:
+        for pattern, (_, value) in options.items():
+            root.option_add(f"*TCombobox*Listbox.{pattern}", value)
+        # Tk 8.6 的候选列表不在 Tkinter 的子控件表里，直接查 Tcl。
+        configure = [item for name, value in options.values() for item in (f"-{name}", value)]
+        stack = root.winfo_children()
+        while stack:
+            widget = stack.pop()
+            if isinstance(widget, ttk.Combobox):
+                listbox = f"{widget}.popdown.f.l"
+                if root.tk.getboolean(root.tk.call("winfo", "exists", listbox)):
+                    root.tk.call(listbox, "configure", *configure)
+            else:
+                stack.extend(widget.winfo_children())
+    except tk.TclError:  # pragma: no cover - 精简版 Tk 或其他平台私有布局
+        pass
 
 
 def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
@@ -483,18 +536,23 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
     except tk.TclError:  # pragma: no cover - 极少数精简版 Tk
         pass
 
-    # ttk.Combobox 弹出的候选列表是原生 tk Listbox，不受样式表管，
-    # 只能通过 Tk 选项库上色；不上色的话暗色主题里会突然跳出一个白框。
-    try:
-        root.option_add("*TCombobox*Listbox.background", pal.surface)
-        root.option_add("*TCombobox*Listbox.foreground", pal.text)
-        root.option_add("*TCombobox*Listbox.selectBackground", pal.accent)
-        root.option_add("*TCombobox*Listbox.selectForeground", pal.on_accent)
-    except tk.TclError:  # pragma: no cover - 精简版 Tk 没有 option 库
-        pass
+    _style_combobox_lists(root, pal)
+    apply_titlebar(root, pal)
+    if sys.platform == "win32" and not root.winfo_ismapped():
+        # 主窗口初次绘制时，外层系统框架可能还没有创建。
+        root.after_idle(apply_titlebar, root)
 
     # 基础
-    style.configure(".", background=pal.bg, foreground=pal.text, font=font(SIZE_BODY))
+    style.configure(
+        ".", background=pal.bg, foreground=pal.text, font=font(SIZE_BODY),
+        bordercolor=pal.border, lightcolor=pal.border, darkcolor=pal.border,
+        focuscolor=pal.accent, selectbackground=pal.accent, selectforeground=pal.on_accent,
+    )
+    style.map(
+        ".", background=[], foreground=[("disabled", pal.disabled_text)],
+        selectbackground=[("!focus", pal.accent_soft)],
+        selectforeground=[("!focus", pal.text)],
+    )
     style.configure("TFrame", background=pal.bg)
     style.configure("TLabel", background=pal.bg, foreground=pal.text)
 
@@ -516,11 +574,10 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
     style.configure(
         "CardMuted.TLabel",
         background=pal.surface,
-        foreground=pal.faint,
+        foreground=pal.muted,
         font=font(SIZE_SMALL),
     )
-    # 卡片上的"更淡的小字"：和 CardMuted 同一档颜色，但行距更松，
-    # 用于多行说明（主窗口的饼干提示就靠它别挤成三行）。
+    # 多行脚注使用卡片上较次要的文字档位。
     style.configure(
         "CardFaint.TLabel",
         background=pal.surface,
@@ -537,6 +594,15 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
     style.configure("Muted.TLabel", background=pal.bg, foreground=pal.muted, font=font(SIZE_SMALL))
     style.configure("Faint.TLabel", background=pal.bg, foreground=pal.faint, font=font(SIZE_SMALL))
     style.configure(
+        "CardMetric.TLabel", background=pal.surface, foreground=pal.text,
+        font=font(SIZE_METRIC, bold=True),
+    )
+    for name, foreground in (
+        ("Accent", pal.accent), ("Ok", pal.ok), ("Warn", pal.warn), ("Danger", pal.danger)
+    ):
+        style.configure(f"{name}.TLabel", background=pal.bg, foreground=foreground)
+        style.configure(f"Card{name}.TLabel", background=pal.surface, foreground=foreground)
+    style.configure(
         "Badge.TLabel",
         background=pal.accent_soft,
         foreground=pal.accent,
@@ -544,66 +610,11 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
         padding=(gap(1.5), gap(0.5)),
     )
 
-    # 按钮：主按钮实心、次按钮浅底、幽灵按钮只有字、危险按钮红
-    button_common = dict(borderwidth=0, focusthickness=0, relief="flat", anchor="center")
-    style.configure(
-        "TButton",
-        background=pal.accent,
-        foreground=pal.on_accent,
-        padding=(gap(4), gap(2.25)),
-        font=font(SIZE_BODY, bold=True),
-        **button_common,
-    )
-    style.map(
-        "TButton",
-        background=[
-            ("disabled", pal.track),
-            ("pressed", pal.accent_active),
-            ("active", pal.accent_hover),
-        ],
-        foreground=[("disabled", pal.faint)],
-    )
-    style.configure(
-        "Secondary.TButton",
-        background=pal.surface_hover,
-        foreground=pal.text,
-        padding=(gap(3), gap(1.75)),
-        font=font(SIZE_SMALL, bold=True),
-        **button_common,
-    )
-    style.map(
-        "Secondary.TButton",
-        background=[("disabled", pal.bg), ("pressed", pal.border), ("active", pal.border)],
-        foreground=[("disabled", pal.faint)],
-    )
-    style.configure(
-        "Ghost.TButton",
-        background=pal.bg,
-        foreground=pal.muted,
-        padding=(gap(2), gap(1.5)),
-        font=font(SIZE_SMALL),
-        **button_common,
-    )
-    style.map(
-        "Ghost.TButton",
-        background=[("active", pal.surface_hover), ("pressed", pal.border)],
-        foreground=[("active", pal.text), ("disabled", pal.faint)],
-    )
-    style.configure(
-        "Danger.TButton",
-        background=pal.danger,
-        foreground=pal.on_accent,
-        padding=(gap(3), gap(1.75)),
-        font=font(SIZE_SMALL, bold=True),
-        **button_common,
-    )
-    style.map(
-        "Danger.TButton",
-        background=[("disabled", pal.track), ("pressed", pal.danger), ("active", pal.danger)],
-        foreground=[("disabled", pal.faint)],
-    )
+    _style_buttons(style, pal)
 
-    # 输入控件：浅凹陷底 + 细描边，聚焦时主色描边
+    # 输入控件：悬停加强边界，焦点使用强调色，禁用态优先于其他状态。
+    field_border = [("disabled", pal.border), ("focus", pal.accent), ("active", pal.border_strong)]
+    field_colors = [("disabled", pal.disabled_surface), ("active", pal.surface_hover)]
     style.configure(
         "TEntry",
         fieldbackground=pal.surface_sunken,
@@ -616,10 +627,11 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
     )
     style.map(
         "TEntry",
-        bordercolor=[("focus", pal.accent)],
-        lightcolor=[("focus", pal.accent)],
-        darkcolor=[("focus", pal.accent)],
-        fieldbackground=[("disabled", pal.bg)],
+        bordercolor=field_border,
+        lightcolor=field_border,
+        darkcolor=field_border,
+        fieldbackground=field_colors,
+        foreground=[("disabled", pal.disabled_text)],
     )
     style.configure(
         "TCombobox",
@@ -634,12 +646,17 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
     )
     style.map(
         "TCombobox",
-        bordercolor=[("focus", pal.accent)],
-        lightcolor=[("focus", pal.accent)],
-        darkcolor=[("focus", pal.accent)],
-        fieldbackground=[("readonly", pal.surface_sunken), ("disabled", pal.bg)],
-        foreground=[("disabled", pal.faint)],
-        arrowcolor=[("disabled", pal.faint)],
+        bordercolor=field_border,
+        lightcolor=field_border,
+        darkcolor=field_border,
+        fieldbackground=field_colors,
+        background=[("disabled", pal.disabled_surface), ("pressed", pal.accent_soft)],
+        foreground=[("disabled", pal.disabled_text)],
+        arrowcolor=[("disabled", pal.disabled_text), ("active", pal.accent)],
+    )
+    style.configure(
+        "ComboboxPopdownFrame", background=pal.surface, bordercolor=pal.border_strong,
+        lightcolor=pal.border_strong, darkcolor=pal.border_strong, borderwidth=1, relief="solid",
     )
 
     # 勾选/单选
@@ -653,20 +670,39 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
             style_name,
             background=background,
             foreground=pal.text,
-            focuscolor=background,
+            focuscolor=pal.accent,
+            focusthickness=1,
             font=font(SIZE_BODY),
             padding=(gap(0.5), gap(0.75)),
+            indicatorsize=gap(3),
+            indicatormargin=(gap(0.5), gap(0.25), gap(1.5), gap(0.25)),
+            indicatorbackground=pal.surface_sunken,
+            indicatorforeground=pal.on_accent,
+            upperbordercolor=pal.border_strong,
+            lowerbordercolor=pal.border_strong,
         )
+        indicator_border = [
+            ("disabled", pal.border),
+            ("focus", pal.accent),
+            ("selected", pal.accent),
+            ("active", pal.accent),
+        ]
         style.map(
             style_name,
-            background=[("active", background)],
-            foreground=[("disabled", pal.faint)],
-            indicatorcolor=[
+            background=[("disabled", background), ("active", pal.surface_hover)],
+            foreground=[("disabled", pal.disabled_text)],
+            indicatorbackground=[
+                ("disabled", pal.disabled_surface),
+                ("selected", "pressed", pal.accent_active),
+                ("selected", "active", pal.accent_hover),
                 ("selected", pal.accent),
-                ("pressed", pal.accent_hover),
-                ("!selected", pal.surface_sunken),
+                ("pressed", pal.accent_soft),
             ],
+            indicatorforeground=[("disabled", pal.disabled_text)],
+            upperbordercolor=indicator_border,
+            lowerbordercolor=indicator_border,
         )
+    _style_indicators(root, style, pal)
 
     # 表格（监控列表）
     style.configure(
@@ -677,14 +713,15 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
         bordercolor=pal.border,
         lightcolor=pal.surface,
         darkcolor=pal.surface,
-        rowheight=gap(7),
+        rowheight=max(gap(7), round(gap(7) * font_scale())),
         font=font(SIZE_BODY),
         borderwidth=0,
     )
     style.map(
         "Treeview",
-        background=[("selected", pal.accent_soft)],
-        foreground=[("selected", pal.text)],
+        background=[("disabled", pal.disabled_surface), ("selected", pal.accent_soft)],
+        foreground=[("disabled", pal.disabled_text), ("selected", pal.text)],
+        bordercolor=[("focus", pal.accent)],
     )
     style.configure(
         "Treeview.Heading",
@@ -696,6 +733,30 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
         borderwidth=0,
     )
     style.map("Treeview.Heading", background=[("active", pal.surface_hover)])
+
+    # 设置分页和相邻区域之间用轻分隔。标签页保持相同高度以免切换时跳动。
+    style.configure(
+        "TNotebook", background=pal.bg, bordercolor=pal.border,
+        lightcolor=pal.border, darkcolor=pal.border, borderwidth=1,
+    )
+    style.configure(
+        "TNotebook.Tab", background=pal.bg, foreground=pal.muted,
+        bordercolor=pal.border, lightcolor=pal.border, darkcolor=pal.border,
+        focuscolor=pal.accent, padding=(gap(3), gap(1.5)),
+        font=font(SIZE_SMALL, bold=True),
+    )
+    style.map(
+        "TNotebook.Tab",
+        padding=[],
+        background=[
+            ("disabled", pal.disabled_surface),
+            ("selected", pal.surface),
+            ("active", pal.surface_hover),
+        ],
+        foreground=[("disabled", pal.disabled_text), ("selected", pal.accent)],
+        lightcolor=[("focus", pal.accent)],
+    )
+    style.configure("TSeparator", background=pal.border)
 
     # 分组框（设置对话框里用）
     style.configure(
@@ -726,7 +787,7 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
         thickness=gap(1.5),
     )
 
-    # 滚动条：细长、无箭头
+    # 细滚动条的滑块在悬停时加强对比。
     for orient in ("Vertical", "Horizontal"):
         style.configure(
             f"{orient}.TScrollbar",
@@ -742,9 +803,161 @@ def apply_theme(root: tk.Misc, pal: Palette | None = None) -> ttk.Style:
         )
         style.map(
             f"{orient}.TScrollbar",
-            background=[("active", pal.muted), ("pressed", pal.accent)],
+            background=[("pressed", pal.accent), ("active", pal.muted)],
         )
     return style
+
+
+def _style_buttons(style: ttk.Style, pal: Palette) -> None:
+    # clam 的内层 focus 元素会绘制焦点框；主按钮用与文字相同的高对比色。
+    button_common = dict(borderwidth=1, focusthickness=1, relief="flat", anchor="center", width=0)
+    for name, base, fg, hover, pressed, border, focus, padding, face in (
+        (
+            "TButton", pal.accent, pal.on_accent, pal.accent_hover, pal.accent_active,
+            pal.accent, pal.on_accent, (gap(4), gap(1.75)), font(SIZE_BODY, bold=True),
+        ),
+        (
+            "Secondary.TButton", pal.surface_hover, pal.text, pal.surface_sunken, pal.border,
+            pal.border, pal.accent, (gap(3), gap(1.25)), font(SIZE_SMALL, bold=True),
+        ),
+        (
+            "Ghost.TButton", pal.bg, pal.muted, pal.surface_hover, pal.border,
+            pal.bg, pal.accent, (gap(2), gap(1)), font(SIZE_SMALL),
+        ),
+        (
+            "Danger.TButton", pal.danger_soft, pal.danger, pal.surface_hover, pal.border,
+            pal.danger, pal.danger, (gap(3), gap(1.25)), font(SIZE_SMALL, bold=True),
+        ),
+    ):
+        style.configure(
+            name, background=base, foreground=fg, bordercolor=border, focuscolor=focus,
+            lightcolor=base, darkcolor=base, padding=padding, font=face, **button_common,
+        )
+        disabled = pal.track if name == "TButton" else pal.disabled_surface
+        fill = [("disabled", disabled), ("pressed", pressed), ("active", hover)]
+        style.map(
+            name, background=fill, lightcolor=fill, darkcolor=fill,
+            foreground=[
+                ("disabled", pal.disabled_text),
+                ("active", pal.text if name == "Ghost.TButton" else fg),
+            ],
+            bordercolor=[("disabled", disabled), ("focus", focus), ("active", hover)],
+        )
+
+
+def _indicator_png(size: int, *, radio: bool, selected: bool, active: bool, disabled: bool,
+                   pal: Palette) -> bytes:
+    """画小型透明指示器；3 倍采样让圆角和勾号在各种系统 DPI 下保持清晰。"""
+    fill = pal.accent if selected else pal.surface_sunken
+    border = pal.accent if selected or active else pal.border_strong
+    mark = pal.on_accent
+    if disabled:
+        fill, border, mark = pal.disabled_surface, pal.border, pal.disabled_text
+    elif active:
+        fill = pal.accent_hover if selected else pal.accent_soft
+    colors = {name: tuple(bytes.fromhex(value[1:]))
+              for name, value in (("fill", fill), ("border", border), ("mark", mark))}
+    center = size / 2
+    radius = min(2.5 * size / 12, center)
+    image_width = size + gap(2)
+
+    def inside(x: float, y: float, inset: float) -> bool:
+        if radio:
+            return (x - center) ** 2 + (y - center) ** 2 <= (center - inset) ** 2
+        if not (inset <= x <= size - inset and inset <= y <= size - inset):
+            return False
+        corner = max(0.0, radius - inset)
+        dx = max(inset + corner - x, 0.0, x - (size - inset - corner))
+        dy = max(inset + corner - y, 0.0, y - (size - inset - corner))
+        return dx * dx + dy * dy <= corner * corner
+
+    def segment(x: float, y: float, start: tuple, end: tuple) -> bool:
+        ax, ay = (coordinate * size for coordinate in start)
+        bx, by = (coordinate * size for coordinate in end)
+        dx, dy = bx - ax, by - ay
+        position = min(1.0, max(0.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
+        return (x - ax - position * dx) ** 2 + (y - ay - position * dy) ** 2 <= (size * 0.065) ** 2
+
+    raw = bytearray()
+    for y in range(size):
+        raw.append(0)  # PNG 每行使用无过滤器
+        for x in range(image_width):
+            samples = []
+            for sy in range(3):
+                for sx in range(3):
+                    px, py = x + (sx + 0.5) / 3, y + (sy + 0.5) / 3
+                    if not inside(px, py, 0.5):
+                        continue
+                    color = "fill" if inside(px, py, max(1.5, size / 9)) else "border"
+                    if selected:
+                        marked = ((px - center) ** 2 + (py - center) ** 2 <= (size * 0.19) ** 2
+                                  if radio else segment(px, py, (0.25, 0.51), (0.44, 0.70))
+                                  or segment(px, py, (0.44, 0.70), (0.77, 0.31)))
+                        if marked:
+                            color = "mark"
+                    samples.append(colors[color])
+            count = len(samples)
+            channels = [round(sum(sample[channel] for sample in samples) / count)
+                        for channel in range(3)] if count else [0, 0, 0]
+            raw.extend((*channels, round(255 * count / 9)))
+
+    def chunk(kind: bytes, value: bytes) -> bytes:
+        return (struct.pack(">I", len(value)) + kind + value
+                + struct.pack(">I", zlib.crc32(kind + value) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", image_width, size, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+def _style_indicators(root: tk.Misc, style: ttk.Style, pal: Palette) -> None:
+    """仅替换 ttk 的绘图元素，键盘、变量与禁用行为仍交给原生控件。"""
+    owner = root._root()  # noqa: SLF001 —— 图像必须活到所属 Tcl 解释器销毁
+    images = getattr(owner, "_xdao_indicator_images", None)
+    if images is None:
+        images = owner._xdao_indicator_images = {}  # noqa: SLF001
+    states = {
+        "normal": (False, False, False), "selected": (True, False, False),
+        "active": (False, True, False), "selected_active": (True, True, False),
+        "disabled": (False, False, True), "selected_disabled": (True, False, True),
+    }
+    for kind in ("Check", "Radio"):
+        for state, (selected, active, disabled) in states.items():
+            key = (kind, state)
+            data = _indicator_png(
+                max(10, gap(3)), radio=kind == "Radio", selected=selected,
+                active=active, disabled=disabled, pal=pal,
+            )
+            if key in images:
+                images[key].configure(data=data, format="png")
+            else:
+                images[key] = tk.PhotoImage(master=root, data=data, format="png")
+        element = f"Xdao.{kind}.indicator"
+        if element not in style.element_names():
+            style.element_create(
+                element, "image", images[kind, "normal"],
+                ("disabled", "selected", images[kind, "selected_disabled"]),
+                ("disabled", images[kind, "disabled"]),
+                ("selected", "active", images[kind, "selected_active"]),
+                ("active", images[kind, "active"]),
+                ("selected", images[kind, "selected"]),
+                sticky="",
+            )
+        style_name = "TCheckbutton" if kind == "Check" else "TRadiobutton"
+
+        def replace(layout, replacement=element):
+            result = []
+            for name, options in layout:
+                options = dict(options)
+                if name.endswith(".indicator"):
+                    name = replacement
+                if "children" in options:
+                    options["children"] = replace(options["children"], replacement)
+                result.append((name, options))
+            return result
+
+        style.layout(style_name, replace(style.layout(style_name)))
 
 
 def style_colors(style: ttk.Style, name: str) -> dict:
@@ -763,6 +976,7 @@ __all__ = [
     "PALETTES",
     "Palette",
     "apply_theme",
+    "apply_titlebar",
     "dpi_scale",
     "font",
     "font_scale",
