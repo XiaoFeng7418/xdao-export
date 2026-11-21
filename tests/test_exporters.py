@@ -79,6 +79,42 @@ def test_sanitize_filename_truncates_long_names():
     assert len(sanitize_filename("标" * 200)) == 80
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("CON", "CON_"),
+        ("nul.backup", "nul_.backup"),
+        ("NUL.tar.gz", "NUL_.tar.gz"),
+        ("prn.txt", "prn_.txt"),
+        ("AUX.log", "AUX_.log"),
+        ("COM1.log", "COM1_.log"),
+        ("LPT9.txt", "LPT9_.txt"),
+        ("COM1 .log", "COM1_.log"),
+        ("COM¹.txt", "COM¹_.txt"),
+        ("LPT².backup", "LPT²_.backup"),
+        ("COM³", "COM³_"),
+        ("NUL." + "a" * 100, "NUL_." + "a" * 75),
+        ("Console", "Console"),
+        ("COM10.txt", "COM10.txt"),
+        ("file.NUL.txt", "file.NUL.txt"),
+    ],
+)
+def test_sanitize_filename_handles_device_stems_with_extensions(raw, expected):
+    assert sanitize_filename(raw) == expected
+
+
+def test_export_with_a_device_title_creates_a_real_file(out_dir):
+    """NUL 的多重扩展名不能吞掉导出内容：返回路径必须是可回读的成品。"""
+    exporter = TxtBuilder(FakeClient())
+    thread = sample_thread("NUL.backup")
+    path = exporter.save(thread, "all", out_dir)
+
+    assert path.name == "NUL_.backup.txt"
+    assert path.is_file()
+    assert path in out_dir.iterdir()
+    assert path.read_text(encoding="utf-8") == exporter.build(thread, "all")
+
+
 def test_derive_filename_prefers_title():
     assert derive_filename(sample_thread("我的标题")) == "我的标题"
 

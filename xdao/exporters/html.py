@@ -57,7 +57,7 @@ def _image_mode(value, fallback: str = "embed") -> str:
 
 
 def _style_block(body_px: int) -> str:
-    """整份 CSS（不含 ``<style>`` 标签）：字号都从正文磅数等比换算。
+    """整份 CSS（不含 ``<style>`` 标签）：字号都从正文的 CSS 像素值等比换算。
 
     抽出来给 :meth:`HtmlBuilder.build` 与 :meth:`HtmlBuilder.build_many` 共用 ——
     单串导出的 HTML 必须与旧版逐字节一致，所以这里只搬字符串、不改内容。

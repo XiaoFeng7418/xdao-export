@@ -313,6 +313,8 @@ def test_the_workflows_stop_a_stuck_run_and_build_tests_first() -> None:
     assert "pyinstaller==" in build_yml
     # 打包 workflow 必须先跑用例：坏代码不该还能打出一个包
     assert "python -m pytest -q -rs" in build_yml
+    # 只有 Linux 允许整组界面跳过；Windows 的 Tk 故障必须让 CI 报红。
+    assert "XDAO_HEADLESS: ${{ matrix.os == 'ubuntu-latest' && '1' || '0' }}" in tests_yml
 
 # ---------------------------------------------------------------- selftest guard
 
