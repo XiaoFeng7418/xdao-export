@@ -1,6 +1,6 @@
 """把远端分支的提交图在本地逐字节重建，使本地与远端完全对齐。
 
-用途：当本机 git 的 HTTPS 传输不可用、只能通过 API 推送时，本地与远端会产生
+用途：当项目 Git 的 HTTPS 传输不可用、只能通过 API 推送时，本地与远端会产生
 两套不同的 commit sha（排除大文件会改变树，重建历史又会换掉父提交）。
 这个脚本用 API 读回远端对象，在本地重建出**完全相同**的 blob / tree / commit，
 再把本地分支指过去，之后无论用 git 还是 API 推送都能正常续接。
@@ -72,7 +72,7 @@ git = _git
 def worktree_changes() -> list[str]:
     """列出工作区里与 HEAD 不一样的**已跟踪**文件（未跟踪的不管）。
 
-    盘点之后要核对「本地是不是真的跟远端一样」：引用指过去了、工作区却没对齐，
+    盘点之后要核对「本地是否真的跟远端一样」：引用指过去了、工作区却没对齐，
     是两回事 —— 只报「完成」就等于把这件事蒙混过去。
     """
     out = git("status", "--porcelain", "--untracked-files=no").decode("utf-8", "replace")
@@ -80,7 +80,7 @@ def worktree_changes() -> list[str]:
 
 
 def tracked_files() -> list[str]:
-    """已跟踪文件的清单（用来把「核对过了」说清楚到底核对了多少）。"""
+    """已跟踪文件的清单（用来把「核对过了」说清楚实际核对了多少）。"""
     out = git("ls-files").decode("utf-8", "replace")
     return [line for line in out.splitlines() if line.strip()]
 

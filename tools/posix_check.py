@@ -1,6 +1,6 @@
 """在 Windows 上验证 test_pdf.make_fake_browser 的 POSIX 分支。
 
-本机没有 Linux，也没有 WSL 发行版，但 Git 自带的 sh.exe 足够验证关键点：
+目标环境不提供 Linux，也没有 WSL 发行版，但 Git 自带的 sh.exe 足够验证关键点：
 包装脚本以 shebang 开头、shell 认为它可执行、参数原样透传、目标文件确实写出来。
 真实 Linux 行为（真正的执行位、内核直接认 shebang）仍由 CI 的 ubuntu job 覆盖；
 这里只是本地预警，免得每次都靠推 CI 才知道 —— 早先包装脚本只写 .cmd，
@@ -75,7 +75,7 @@ def find_git_sh(candidates=GIT_SH_CANDIDATES, which=shutil.which) -> Path:
 def check_shebang(browser: Path) -> bool:
     """包装脚本必须以 ``#!`` 开头 —— Linux 内核就是靠它认解释器的。
 
-    顺带挡住 BOM：``\\xef\\xbb\\xbf#!`` 在 Linux 上不算 shebang，
+    同时挡住 BOM：``\\xef\\xbb\\xbf#!`` 在 Linux 上不算 shebang，
     执行起来是 ``Exec format error``，而 Windows 上完全看不出来。
     """
     try:

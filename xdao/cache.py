@@ -32,7 +32,7 @@ DEFAULT_CACHE_DIRNAME = ".cache"
 
 #: 页数安全阀：调用方没给页数上限时最多抓这么多页。
 #: 与「用户填的页数上限」是两件事 —— 用户上限更小时以用户上限为准，
-#: 用户没填（0＝不限）时仍然保留这道阀，免得一个畸形的超长串被一把拉到底。
+#: 用户没填（0＝不限）时仍然保留这道阀，免得一个畸形的超长串被一把拉实际。
 SAFETY_MAX_PAGES = 5000
 
 #: 并行抓页的下限：``1`` 就是一页一页抓（串行）。
@@ -329,7 +329,7 @@ def cache_dir_candidates(preferred: Path | str | None = None) -> list[Path]:
             add(Path(value) / "xdao-export" / DEFAULT_CACHE_DIRNAME)
     # 系统临时目录只是最后的备选；问不到就少一个候选，不耽误导出。
     # 打包版实测过它会在冻结环境里抛 FileNotFoundError（"No usable temporary
-    # directory found in [...]"，v0.10.0 真机核验时撞上），而缓存目录的探测本来
+    # directory found in [...]"，v0.10.0 实际运行环境核验时撞上），而缓存目录的探测本来
     # 就允许「这一处写不进去就换下一处」——所以这里必须自己兜住，否则整次导出
     # 会跟着一起失败。
     try:
@@ -343,7 +343,7 @@ def resolve_cache_dir(preferred: Path | str | None = None) -> tuple[Path, str]:
     """挑一个真能写的缓存目录，返回 (目录, 备注)。
 
     首选能写就原样用它、备注为空；否则按候选顺序找第一个能写的，备注里说明
-    换了地方、原来的为什么不能用。全都写不进去时返回首选位置和空备注，
+    换了地方、原位置不可用的原因。全都写不进去时返回首选位置和空备注，
     由调用方按原逻辑报错。
     """
     options = cache_dir_candidates(preferred)
@@ -443,7 +443,7 @@ class CachedThreadFetcher:
         self.stop = stop
         # 并行抓页的并发数：1＝串行（默认，行为与旧版一致）。
         self.page_workers = normalize_page_workers(page_workers)
-        # 本轮已经预先下载好的页（页号 → 接口原始 payload），由 _process_page 取用。
+        # 当前批次已经预先下载好的页（页号 → 接口原始 payload），由 _process_page 取用。
         self._prefetched: dict[int, object] = {}
         # 补抓次数/间隔可在构造时覆盖（测试里调成 0 或 0 秒，免得白等）。
         self.retry_attempts = (
@@ -556,7 +556,7 @@ class CachedThreadFetcher:
 
         reply_count = parse_reply_count(first)
         page_count = self._adapter.page_count(first)
-        # 本轮之前的已知楼层：用于区分"新增楼层"与"被编辑的老楼层"。
+        # 当前批次之前的已知楼层：用于区分"新增楼层"与"被编辑的老楼层"。
         previous_ids = cache.known_post_ids()
 
         # ---- 判定是否需要抓取 ----
@@ -569,7 +569,7 @@ class CachedThreadFetcher:
         #   * 首页接口没报总页数（page_count == 1）→ 跟以前一样只刷新第 1 页；
         #   * 只盖住前几页、串后面还有页（含"中间某页当时没抓下来、
         #     后面几页却已落盘"那种）→ 必须去补，不能在这儿提前返回，
-        #     否则下一次导出会一直复用中间缺页的缓存（实测踩过这个坑）。
+        #     否则下一次导出会一直复用中间缺页的缓存（实测曾出现该问题）。
         # 接口自称的总页数先被页数上限压一次：撞上上限时"够不够用"该按上限算，
         # 不然缓存里已经盖满全串时会绕过上限、把整串都交出去。
         requested_pages = page_count
@@ -672,7 +672,7 @@ class CachedThreadFetcher:
         reused = 0
         fetched = 0
         pages_to_fetch: list[int] = []
-        # 第 1 页由本次处理的首页请求提供，且必须写进缓存，
+        # 第 1 页由当前批次的首页请求提供，且必须写进缓存，
         # 否则缓存永远缺第 1 页，后续每次都判定为"缓存不完整"而全量重抓。
         # 循环只走到 `requested_pages`（已被页数上限压过），这样第 2 页之后
         # 越界的页根本不会进队列；队列里也不会有"已经有的页"被重复请求。
@@ -690,7 +690,7 @@ class CachedThreadFetcher:
             cache.store_page(1, first)
 
         # 抓取上界（页号，含）：requested_pages 已经含了页数上限这一层；
-        # 上限没填时保留原先那道安全阀，防止把畸形的超长串一次性拉到底。
+        # 上限没填时保留原先那道安全阀，防止把畸形的超长串一次性拉实际。
         # 页数上限与安全阀必须分开看：用户上限更小时以用户上限为准，
         # 没填时才轮到安全阀 —— 两者混成一个数就分不出"是因为哪个停下的"。
         # 队列本身只到 requested_pages，所以这里的 min 只在"没填上限"时起作用。
@@ -699,7 +699,7 @@ class CachedThreadFetcher:
             upper_bound = min(upper_bound, SAFETY_MAX_PAGES)
 
         # 可选：先把后面几页并发下载好（只在 page_workers > 1 时做）。
-        # 顺序不变 —— 解析、写缓存、判断"到底了"仍然在下面的循环里按页号
+        # 顺序不变 —— 解析、写缓存、判断"实际了"仍然在下面的循环里按页号
         # 从小到大做，所以产物与串行时逐字节一致（见 _prefetch_pages）。
         self._prefetched = {}
         if self.page_workers > 1:
@@ -779,12 +779,12 @@ class CachedThreadFetcher:
     def _prefetch_pages(self, thread_id: int, pages: list[int]) -> None:
         """可选：并发把后面几页先下载下来，结果放进 ``self._prefetched``。
 
-        只做"下载"这一步。解析、写缓存、判断"到底了"仍然由
+        只做"下载"这一步。解析、写缓存、判断"实际了"仍然由
         :meth:`_process_page` 按页号从小到大做 —— 顺序一乱，``end`` 的判断和
         缓存写入都会跟着错，所以这里宁可不图那点并行。
 
-        默认两路（见 :data:`DEFAULT_PAGE_WORKERS`）。为什么不多开：并发会同时
-        占几条连接，站点的限流阈值谁也说不准；真撞上限流就当场退回串行，别继续
+        默认两路（见 :data:`DEFAULT_PAGE_WORKERS`）。限制并发的依据是：并发会同时
+        占几条连接，站点的限流阈值谁也说不准；出现限流就当场退回串行，别继续
         加压 —— 退回这件事还会被界面记下来，下次导出按串行走。
         """
         todo = [page for page in pages if page not in self._prefetched]
@@ -830,7 +830,7 @@ class CachedThreadFetcher:
         if cancelled:
             raise ExportCancelled("导出已取消")
         if throttled:
-            # 被限流了就别再并发：剩下的页改成一页一页抓，并说清楚为什么变慢了。
+            # 被限流了就别再并发：剩下的页改成一页一页抓，并说明降低并发的原因。
             self.page_workers = PAGE_WORKERS_MIN
             self._notify("刚才被服务器限流了，剩下的页改成一页一页抓。")
 
@@ -885,7 +885,7 @@ class CachedThreadFetcher:
             self._last_page_error = str(exc)
             return "fail"
         if page > 1 and not parsed["posts"]:
-            # 空页：接口说这页什么都没有，当作到底。
+            # 空页：接口说这页什么都没有，当作实际。
             return "end"
         payloads[page] = raw
         if self.use_cache:
@@ -953,7 +953,7 @@ class CachedThreadFetcher:
     ) -> CachedThread:
         """把若干页原始数据合并成完整的串内容，并回写缓存状态。
 
-        ``previous_post_ids`` 是本轮抓取之前缓存里已有的楼层 id：
+        ``previous_post_ids`` 是当前批次抓取之前缓存里已有的楼层 id：
         只有"上次就有、这次指纹变了"才算被编辑，否则一律算新增楼层。
         ``failed_pages`` 是补抓之后仍然缺的页号，会原样带进结果里。
         ``page_count`` 是接口自称的总页数，``requested_pages`` 是**这一趟要抓到的
@@ -1020,7 +1020,7 @@ class CachedThreadFetcher:
             cache.reply_count = reply_count
             # 只把"从第 1 页起连续存在"的页数记成已抓范围：某一页失败时它后面
             # 的页可能已经落盘了，若直接记 max(page)，下一页抓取会误判成
-            # "缓存完整"而复用中间缺页的缓存（实测踩过：第 4 页失败后，
+            # "缓存完整"而复用中间缺页的缓存（测试中曾出现：第 4 页失败后，
             # 下一次导出直接复用了缺页的缓存，用户拿到的产物还是缺的）。
             cache.pages = max(cache.pages, cache.contiguous_pages())
             cache.last_page_hash = ThreadCache.hash_payload(payloads[last_page])

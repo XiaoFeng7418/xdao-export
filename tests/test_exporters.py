@@ -402,7 +402,7 @@ def test_html_image_mode_drop_removes_images():
     html = HtmlBuilder(client, image_mode="drop").build(sample_thread(), "all")
     assert client.downloaded == []
     assert "data:image/jpeg;base64," not in html
-    # 正文里不许再出现图床地址（图被整张去掉，而不是留个裂图）
+    # 正文里应避免再次出现图床地址（图被整张去掉，而不是留个裂图）
     assert "image.nmb.best" not in html
 
 
@@ -432,9 +432,9 @@ def test_html_missing_images_summarized_in_one_line():
 
 
 # ---------------------------------------------------------------- 正文字号
-# 2026-10-16 岛上回帖「可以设置调节字号大小吗，这个字我是真看不清」的一半：
+# 导出器应将自定义字号应用到成品样式：
 # 这一半是导出成品（HTML / PDF / EPUB）的字号。默认值必须与旧版逐字节一致 ——
-# 老配置里没有 font_size，不能因为"顺手把默认值挪了"就让成品外观变样。
+# 老配置里没有 font_size，不能因为"同时把默认值挪了"就让成品外观变样。
 
 
 def test_html_font_size_defaults_to_the_old_hardcoded_css():
@@ -665,7 +665,7 @@ def test_can_write_dir_leaves_no_litter(out_dir):
 def test_can_write_dir_retries_with_a_second_probe_name(out_dir, monkeypatch):
     """第一个探针名字写不动时，换个名字能写就算能写。
 
-    2026-10-02 真机：用户的导出目录和 %LOCALAPPDATA% 兜底**一起**被判
+    2026-10-02 运行环境：用户的导出目录和 %LOCALAPPDATA% 兜底**一起**被判
     「写不进去」，可磁盘、权限、盘符都正常，导出最后也照常写完了 ——
     错的是探针（名字被安全软件挡），不是目录。
     """
@@ -686,7 +686,7 @@ def test_can_write_dir_retries_with_a_second_probe_name(out_dir, monkeypatch):
 
 
 def test_probe_writable_reports_the_real_reason(out_dir, monkeypatch):
-    """探不通必须说得出原因 —— 真机上只有「写不进去」四个字是没法排查的。"""
+    """探不通必须说得出原因 —— 实际运行中只有「写不进去」四个字是没法排查的。"""
     from xdao.exporters._shared import PROBE_ALT_NAME, PROBE_NAME, probe_writable
 
     real_write_text = Path.write_text
@@ -783,7 +783,7 @@ def test_choose_writable_dir_never_overwrites_an_earlier_fallback(tmp_path, monk
 
 
 def test_choose_writable_dir_pinned_keeps_the_directory_but_explains(tmp_path):
-    """显式指定的目录不换地方（allow_fallback=False），但要说清为什么不能用。"""
+    """显式指定的目录不换地方（allow_fallback=False），并说明不可用的原因。"""
     from xdao.exporters._shared import choose_writable_dir
 
     blocked = tmp_path / "被拦的目录"
@@ -812,7 +812,7 @@ def test_choose_writable_dir_reports_when_everything_fails(tmp_path, monkeypatch
 
 
 def test_choose_writable_dir_puts_the_real_reason_in_the_note(tmp_path, monkeypatch):
-    """用真探针时，说明里要带上系统给的原话 —— 否则真机上没法查。
+    """用真探针时，说明里要带上系统给的原话 —— 否则实际运行中没法查。
 
     这一条复现的正是 2026-10-02 的现场：两个位置全被判不可写，而原因
     （``Permission denied``）以前被吞掉了，日志里只剩一句「请检查磁盘」。

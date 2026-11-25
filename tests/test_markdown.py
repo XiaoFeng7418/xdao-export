@@ -329,7 +329,7 @@ def test_markdown_include_hashes_save_passes_through(artifacts_dir: Path):
 
 
 def test_markdown_images_to_xhtml_helper_is_reusable():
-    """共享的 Markdown→XHTML 转换（EPUB 复用）顺带回归。"""
+    """共享的 Markdown→XHTML 转换（EPUB 复用）同时回归。"""
     fragment = markdown_images_to_xhtml(
         "第一段\n\n5 < 6 & 7\n\n![图片](data:image/jpeg;base64,QUJD)",
         lambda url: url,

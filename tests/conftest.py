@@ -1,9 +1,7 @@
-"""测试公共夹具。
+"""公共测试夹具。
 
-本机运行在受限文件沙箱下：只有「命令启动时已存在」的目录才被授予写入权，
-pytest 自己新建的 ``tmp_path`` 会在写入时报「拒绝访问」。
-因此测试统一用 :func:`artifacts_dir`，把产物写进工作区内已提交的
-``.test-artifacts``，并在用例结束后清理自己那部分。
+测试工件统一写入工作区的 ``.test-artifacts``，避免依赖不同执行环境的临时目录权限。
+每条用例只清理自己创建的工件。
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ ARTIFACTS_ROOT = Path(__file__).resolve().parent.parent / ".test-artifacts"
 # 其实是 `tk.Tk()` 偶发抛 TclError，模块级夹具一挂就带走一整组界面用例
 # （`test_theme.py` / `test_window.py` / `test_gui_browser_login.py`）。
 # 最坏情况量到过 45 条无声消失，而报告里一个 failed 都没有。
-# 所以这里盯的是「跳过的是不是只有那两条显式开关的真机用例」。
+# 所以这里盯的是「跳过的是否只有那两条显式开关的实际运行环境用例」。
 #
 # 两条使用约定：
 # 1) **跳过必须写 reason=**。白名单是按理由**文本**匹配的，`skipif(sys.platform != "win32")`
@@ -33,7 +31,7 @@ ARTIFACTS_ROOT = Path(__file__).resolve().parent.parent / ".test-artifacts"
 # 2) 白名单内的整组跳过（无头机器）不算失败，但**一定会打印一行提醒** ——
 #    实测过 Tk 在套件中途亚秒级初始化失败（`Can't find a usable tk.tcl …`），
 #    每次刚好带走 `test_theme.py` 那 10 条：只跳 3~5 条时最容易被当成「全跑过了」，
-#    所以除了「恰好就是那两条真机用例」以外，一律要说一声。
+#    所以除了「恰好就是那两条实际运行环境用例」以外，一律要说一声。
 _SKIP_REASONS_ALLOWED = (
     "XDAO_BROWSER_TEST",
     "XDAO_LIVE_NOTIFY",
@@ -43,14 +41,14 @@ _SKIP_REASONS_ALLOWED = (
     "只有 macOS",
     "需要 Windows",
 )
-# 这个上限只管「真机用例的数量」：`_EXPECTED_SKIPS` 里那几个文件全是显式开关控制的，
-# 以后往里加真机用例（比如 PDF 渲染）会让跳过数自然变多，不该因此判成「不干净的运行」。
-# 2026-10-01 就因为上限还是 5、而 PDF 真机用例从 0 加到 4 条，全量跑出 6 条跳过被判红。
+# 这个上限只管「实际运行环境用例的数量」：`_EXPECTED_SKIPS` 里那几个文件全是显式开关控制的，
+# 以后往里加实际运行环境用例（比如 PDF 渲染）会让跳过数自然变多，不该因此判成「不干净的运行」。
+# 2026-10-01 就因为上限还是 5、而 PDF 实际运行环境用例从 0 加到 4 条，全量跑出 6 条跳过被判红。
 # 真要防的「整组静默跳过界面用例」由上面那条 all() 兜住 —— 界面用例的 nodeid 不在
 # `_EXPECTED_SKIPS` 里，跳过时会走打印 + 退出码 1 那条路。
 _SKIP_SAFETY_LIMIT = 20
 
-# 「恰好就是这几条显式开关的真机用例」＝什么都不用说。其余任何跳过都要留下一行记录：
+# 「恰好就是这几条显式开关的实际运行环境用例」＝什么都不用说。其余任何跳过都要留下一行记录：
 # 少跑 1~5 条时最容易被当成全跑过了（实测 Tk 中途抖动一次带走 test_theme 那 10 条，
 # 也见过只带走个别函数级夹具的情况）。
 _EXPECTED_SKIPS = ("browser_login", "live_notify", "pdf_render")
@@ -74,7 +72,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 —— pytest 的
 
     两条规矩：
     - **白名单外的跳过**：直接报错（pytest 的 UsageError 会退出码 4），不能只打印；
-    - 白名单内但**不是那几条显式开关的真机用例**（无头机器整组跳过界面用例）：打印一句，
+    - 白名单内但**不是那几条显式开关的运行环境用例**（无头机器整组跳过界面用例）：打印一句，
       并把退出码改成 1 —— 2026-10-01 实测过一次：界面用例因显示环境抖了一下整组跳过
       （上一秒还全绿），报告仍是「0 failed」；只打印的话 CI 依旧一片绿，没人会看见。
     """
@@ -93,7 +91,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 —— pytest 的
     if len(_skips) <= _SKIP_SAFETY_LIMIT and all(
         any(token in node for token in _EXPECTED_SKIPS) for node, _ in _skips
     ):
-        return  # 就是那两条真机用例，本来就不该跑
+        return  # 就是那两条实际运行环境用例，本来就不该跑
     # 其余情况（界面用例整组跳过、或者只跳了少数几条）一律说一声，并且让这次运行算失败。
     # 例外：CI 的 Linux 矩阵本来就跑不了界面用例（没有 $DISPLAY），由工作流显式声明
     # ``XDAO_HEADLESS=1``；那种「按预期跳过」不算不干净，但话还是要说。
@@ -120,7 +118,7 @@ def _real_user_config_path() -> Path | None:
     原因就是这个函数原先「没有 ``APPDATA`` 就返回 None」—— 在 Linux 上 APPDATA
     本来就不存在，于是守卫整个没装，``test_config_isolation.py`` 那三条等着报错的
     用例自然 `DID NOT RAISE`（**本地 Windows 永远复现不出来**）。
-    走库自己的函数而不是手写一遍，也顺手保证两边不会各自漂移。
+    走库自己的函数而不是手写一遍，也同时保证两边不会各自漂移。
 
     故意在**每次调用时**重新算，而不是复用 ``xdao.settings`` 里那个模块级路径：
     这样就算用例临时改了 ``APPDATA``，这里说的仍然是本机真实路径。
@@ -137,7 +135,7 @@ def _real_user_config_path() -> Path | None:
 def _forbid_writing_the_real_user_config():
     """任何用例都不许读写用户自己的 ``%APPDATA%\\xdao-export\\config.json``。
 
-    为什么要有这条守卫：2026-10-01 真出过一次事故 —— 新增的用例没隔离配置路径
+    设置该守卫的依据是：2026-10-01 真出过一次事故 —— 新增的用例没隔离配置路径
     （``monkeypatch`` 改 ``_default_config_path`` 没用，``_path`` 的 default_factory
     在类创建时就绑定了），测试于是直接读写用户的真实配置：把里头的登录饼干
     （``userhash``）连同偏好一起改成了测试值，用户那份再也拿不回来。
@@ -161,7 +159,7 @@ def _forbid_writing_the_real_user_config():
 def _install_config_guard() -> None:
     """把守卫装到 ``AppSettings.load`` / ``AppSettings.save`` 上。
 
-    为什么用模块级安装而不是在夹具里装、夹具里拆（2026-10-01 踩过，别改回去）：
+    隔离补丁在模块级安装，避免夹具卸载后清理阶段访问真实配置：
 
     * 只装不拆，就不再受夹具作用域顺序影响 —— ``tests/test_window.py`` 有个 module
       作用域的 autouse 夹具，它在函数作用域夹具之前建立、之后才拆，早先版本会在
@@ -186,7 +184,7 @@ def _install_config_guard() -> None:
         return  # 已经在位
     if current_load.__name__ != "load":
         # 别人（某个文件的隔离夹具）已经把 load 换成读临时目录的实现了，别去顶掉它：
-        # 它自己就是隔离措施，而且它的替身会写临时配置，不需要我们拦。
+        # 它自己就是隔离措施，而且它的替身会写临时配置，不需要项目拦。
         # 这里不能自作聪明地「再包一层」—— 包的时机在人家换之后，拆的时机却在人家之前，
         # 一包一拆就把人家的替身永久留在了类上（2026-10-01 实测：24 条界面用例全红）。
         return
@@ -248,20 +246,20 @@ def _tk_module():
     return tkinter
 
 
-# 「这台机器能不能建 Tk 根窗口」的结论只探一次，存这里（None = 能建）。
+# 「当前环境能不能建 Tk 根窗口」的结论只探一次，存这里（None = 能建）。
 _DISPLAY_PROBE: dict[str, str | None] = {}
 
 
 def display_problem(timeout: float = 5.0) -> str | None:
     """探一次有没有可用的显示环境；能建窗口返回 None，否则返回失败原因。
 
-    为什么要缓存：没有 $DISPLAY 的机器上 ``tk.Tk()`` 抛 ``TclError``，而各模块
+    缓存探测结果的原因是：没有 $DISPLAY 的机器上 ``tk.Tk()`` 抛 ``TclError``，而各模块
     的建窗助手都会「重试几秒再放弃」——2026-11-16 用 ``--durations=0`` 量到
     ``tests/test_gui_entry.py`` 有 110 条 setup 各 5.04 秒（CI 的 ubuntu 矩阵
     12 分钟里 9 分钟是这个空转）。探一次、全班秒跳，行为与跳过理由都不变。
 
     注意：确认「能建」时不缓存结论，各模块该重试还是重试 —— 真桌面上
-    ``Tk()`` 偶发抖动是本机实测过的，那种情况重试就能过。
+    ``Tk()`` 偶发抖动是已验证过的，那种情况重试就能过。
     """
     if "reason" in _DISPLAY_PROBE:
         return _DISPLAY_PROBE["reason"]
@@ -303,7 +301,7 @@ def _tk_objects() -> list:
 def _destroy_leftover_tk(limit: int = 5) -> int:
     """退出前把界面用例留下的 Tk 部件就地销毁，返回销毁了几个。
 
-    为什么非要在这里动手：部件是**在主线程还活着的时候就销毁**，``destroy()``
+    清理必须在此处执行：部件是**在主线程还活着的时候就销毁**，``destroy()``
     里的 Tcl 调用是正常的；等解释器收尾时才轮到它们的 ``__del__``，那时主线程
     已经不在、Tcl 解释器也拆了，``__del__`` 必然抛异常。
     """
@@ -350,7 +348,7 @@ def _silence_tk_variables() -> None:
 def _collect_garbage_on_the_main_thread():
     """每个用例跑完，在主线程上收一次垃圾。
 
-    2026-10-01 本机实测（能稳定复现，值得写下来）：`tests/test_window.py` 会真开
+    2026-10-01 已验证（能稳定复现，值得写下来）：`tests/test_window.py` 会真开
     一个根窗口造一大堆部件，模块跑完虽然 `root.destroy()` 了，那些部件的引用环还
     躺在堆里。接着跑到 `tests/test_gui_entry.py::test_upgrade_worker_runs_the_whole_five_steps`
     时，主线程阻塞在 `decision.get()` 上等回复，**是后台升级线程的那次分配触发了
@@ -377,7 +375,7 @@ def _make_tk_variables_safe_to_collect():
     这是给收尾兜底的：界面用例真开过 Tk 之后，总会有几个 ``StringVar``/
     ``BooleanVar`` 到解释器收尾时才被 GC 到，那时 Tcl 解释器已经拆了，``__del__``
     必抛 ``RuntimeError``，异常文本再往 stderr 写就撞上后台线程占着输出锁 ——
-    正是 CI run 36817861762 那条 `Fatal Python error: _enter_buffered_busy`。
+    正是 CI运行记录 那条 `Fatal Python error: _enter_buffered_busy`。
     换掉 ``__del__`` 之后这条路根本不存在了（变量不再向 Tcl 打招呼；根窗口本来
     就随用例销毁），对任何用例的行为都没有影响。
 
@@ -392,7 +390,7 @@ def _make_tk_variables_safe_to_collect():
 def _settle_threads_before_interpreter_shutdown():
     """整套跑完先收拾干净再让解释器退出。
 
-    2026-10-01 实测两次（CI run 36817861762 与一次本机全量）：全套跑完、汇总行
+    2026-10-01 实测两次（CI运行记录 与一次Windows 全量运行）：全套跑完、汇总行
     都打出来了，退出码却是 1，报
 
         Exception ignored in: <function Variable.__del__ …>

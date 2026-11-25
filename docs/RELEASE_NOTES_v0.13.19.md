@@ -9,7 +9,7 @@
 - 登录窗开头只写「干净的一次性窗口」，没说是哪种浏览器；
 - `packaging/使用说明.txt` 的支持浏览器一节只列了「Edge、Chrome、Chromium、Brave」；
 - 平时用 Firefox 的人点开这条路，只能对着一个一直不动的窗口等；机器上只有 Firefox 时，
-  界面只说「没找到 Edge 或 Chrome。请先装一个」—— 没解释为什么 Firefox 不算数。
+  界面只说「没找到 Edge 或 Chrome。请先装一个」—— 没解释Firefox 不受支持的原因。
 
 ## 改法
 
@@ -19,9 +19,9 @@
 - 找不到浏览器时那句提示补全：「没找到 Edge 或 Chrome。Windows 自带的 Edge 一般就有；
   Firefox 走不了这条路（内核不同）。也可以改用「直接粘贴饼干登录」。」
 - `README.md` 的「用浏览器登录」那条标注成「Edge / Chrome 这类 Chromium 内核…**Firefox 不行**」。
-- `packaging/使用说明.txt` 支持浏览器那一节加一条：Firefox 用不了这条路、为什么，
+- `packaging/使用说明.txt` 支持浏览器那一节加一条：Firefox 用不了这条路、原因，
   以及「系统默认浏览器是 Firefox」时程序照旧往下找 Edge / Chrome。
-- `MAINTENANCE.md` 的浏览器登录一节记下这个边界（为什么只有 Chromium 内核能用；
+- `MAINTENANCE.md` 的浏览器登录一节记下这个边界（只有 Chromium 内核可用的原因；
   `browser_login.choose_browser()` 认不出 Firefox 时按原顺序往下找，所以不用改功能）。
 - 新增 `tests/test_browser_scope.py`（3 条）：界面与两份公开文档都得写着这件事，
   同时钉住 `browser_login._CANDIDATES` 里**真的**没有 Firefox —— 将来真加了支持，

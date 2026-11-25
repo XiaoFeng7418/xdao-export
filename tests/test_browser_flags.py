@@ -51,7 +51,7 @@ def test_launch_flags_default_to_the_current_process(monkeypatch: pytest.MonkeyP
     assert bf.launch_flags() == ["--no-sandbox"]
     monkeypatch.delattr(sys, "frozen", raising=False)
     assert bf.launch_flags() == []
-    # 测试进程本身当然不是冻结的，顺带把默认判据钉住。
+    # 测试进程本身当然不是冻结的，同时把默认判据钉住。
     assert bf.launch_flags() == []
     assert bf.is_frozen() is False
 

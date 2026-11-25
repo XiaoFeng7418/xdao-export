@@ -1,6 +1,6 @@
 """只推「本地 HEAD 这一个提交」：远端父提交已在，只需上传变化的 blob + 建树。
 
-push_via_api.py 会把本地全部历史（213 个提交 / 1328 个 blob）重建一遍，本机网络下要
+push_via_api.py 会把本地全部历史（213 个提交 / 1328 个 blob）重建一遍，当前网络下要
 一小时。这里利用「远端 master 正好是本地 HEAD 的父提交」这个前提，只补差异：
 
     本地 HEAD 的父 == 远端 master  →  上传变化 blob → 逐层建 tree → 建 commit → 改 ref

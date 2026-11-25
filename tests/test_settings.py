@@ -223,7 +223,7 @@ def test_legacy_config_gains_only_the_new_keys(legacy_config: Path) -> None:
         assert data[name] == MERGE_DEFAULTS[name]
     for name in PAGE_FIELDS:
         assert data[name] == PAGE_DEFAULTS[name]
-    # schema 是老配置里唯一多出来的「标记位」：它只用来判断「1 是不是特意选的」。
+    # schema 是老配置里唯一多出来的「标记位」：它只用来判断「1 是否特意选的」。
     assert data["schema"] == settings_module.SCHEMA_VERSION
     assert (
         set(data) - set(LEGACY_V070) - {"schema"}
@@ -524,7 +524,7 @@ def test_save_reports_whether_the_file_could_be_written(tmp_path: Path) -> None:
     """``save()`` 要把「写没写成」交出去（v0.13.53）。
 
     以前它把异常吞掉、什么都不返回，界面便无论成败都报「登录成功，饼干已保存。」——
-    2026-10-11 真机上就出现了「日志说保存成功、``config.json`` 的修改时间停在两周前、
+    2026-10-11 实际运行中就出现了「日志说保存成功、``config.json`` 的修改时间停在两周前、
     重启程序还要重新登录」这种自相矛盾。写不进去是环境问题，但不许不出声。
 
     这里用「父路径是一个文件」造一个必然写不进去的落点：跨平台、不依赖权限设置。
@@ -623,7 +623,7 @@ def test_legacy_page_workers_of_one_is_upgraded(config_path: Path) -> None:
 
 
 def test_page_workers_of_one_is_kept_after_the_upgrade(config_path: Path) -> None:
-    """存过 schema 之后再填 1 就是「我就要一页一页抓」，不许再给我改回去。"""
+    """已保存 schema 后将并发数设为 1 表示显式选择串行抓取，加载时应保留该值。"""
     settings = fresh_config(config_path)
     settings.page_workers = 1
     assert settings.save()

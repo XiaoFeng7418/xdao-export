@@ -155,7 +155,7 @@ def _shell() -> Path:
     """找一把能用的 sh：先看 PATH，再借 tools/posix_check 的 Git 安装目录。
 
     不写成 skip 是有原因的：本仓的测试里「跳过」是要报备的（`tests/conftest.py`），
-    而这两台机器（本机 Windows、CI 的 ubuntu）都有 sh —— Windows 上 PATH 里没有 `sh`，
+    而这两台机器（运行环境 Windows、CI 的 ubuntu）都有 sh —— Windows 上 PATH 里没有 `sh`，
     但 Git 装着呢，`find_git_sh()` 找得到（GitHub 的 windows runner 同样）。
     """
     found = shutil.which("sh")

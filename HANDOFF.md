@@ -1,6 +1,6 @@
-# 工作交接说明（X岛串导出工具）
+# 项目技术说明
 
-> 更新时间：2026-11-22（v0.24.1）。本文档用于更换模型后快速接手，继续开发和维护。
+> 更新时间：2026-11-22（v0.24.1）。本文档汇总项目架构、模块职责、测试与构建信息。
 
 ## 一、项目概述
 
@@ -20,7 +20,7 @@ v0.24.0 起也支持 B 岛（bog.ac）公开串：网址自动识别且无需登
 - **串监控**：定时检查新回复并自动导出，可选校验老楼层是否被编辑。
 - **B 岛公开串（v0.24.0）**：无需登录，支持分页、断点缓存、五种格式导出与监控；B 岛同号串使用独立缓存和监控状态。
 - 失败重试（超时/429/5xx 指数退避）、失败清单与一键重跑、可配置请求间隔与代理。
-- PO 高亮、红名/SAGE 标记、饼干完整显示、时间与 No. 保留；标题与作者非默认值时才显示。
+- PO 高亮、红名/SAGE 标记、饼干完整显示、时间与 No. 保留；标题与发帖者字段仅在值非默认时显示。
 
 ## 二、当前状态
 
@@ -28,7 +28,7 @@ v0.24.1 收官打磨：复核 v0.22.1 已落实的 EPUB 单份图片存储，并
 
 功能全部实现并已实测：五种格式在真实长串（33 页 / 626 楼）上导出成功，
 EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、626 个楼层 XHTML 全部可解析）；
-监控桌面通知已在本机实测弹出。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
+监控桌面通知已通过 Windows 桌面环境验证。**界面已按 v0.5.0 重做**（两栏布局 + 统一主题 + 自绘控件），
 改界面前先读 `MAINTENANCE.md` 的「界面架构」一节。
 
 单元测试 3025 项（2026-11-22 Windows 全量运行：3017 通过、8 项跳过，耗时 503.77 秒）、
@@ -38,10 +38,10 @@ EPUB 结构校验通过（`mimetype` 首条且未压缩、manifest 无缺失、6
 在没有显示环境的机器上会自动 skip。下面那张测试表的数字由 `tests/test_docs_facts.py`
 对着真实收集数把关：加删测试文件、用例数量变了，它就会红，照报红的位置改表即可。
 
-打包版随 v0.13.0 重新构建。v0.13.0 加了**一键升级**（`xdao/updater.py`：下载到 `%TEMP%\xdao-export-update` → 只解顶层 `xdao-export-v*` 目录 → 拿**候选版本**跑`--selftest --offline` → 主线程二次确认 → 用**升级包里的那个 exe** 当帮手（`main.py --apply-update <目录> <payload> <pid> <启动程序>`，不依赖系统 Python/PowerShell）等老进程退出后换目录、启动新版、清暂存；旧目录改名成 `<名>.old-<时间戳>` 留 24 小时，每次启动顺手清理；三条设计取舍＝先自检再替换、旧版本不删只改名、帮手用升级包里的 exe）。v0.12.0 加了**新版本检查**（`xdao/update_check.py`：命令行
+打包版随 v0.13.0 重新构建。v0.13.0 加了**一键升级**（`xdao/updater.py`：下载到 `%TEMP%\xdao-export-update` → 只解顶层 `xdao-export-v*` 目录 → 拿**候选版本**跑`--selftest --offline` → 主线程二次确认 → 用**升级包里的那个 exe** 当帮手（`main.py --apply-update <目录> <payload> <pid> <启动程序>`，不依赖系统 Python/PowerShell）等老进程退出后换目录、启动新版、清暂存；旧目录改名成 `<名>.old-<时间戳>` 留 24 小时，每次启动同时清理；三条设计取舍＝先自检再替换、旧版本不删只改名、帮手用升级包里的 exe）。v0.12.0 加了**新版本检查**（`xdao/update_check.py`：命令行
 `--check-update` / `--check-update-json`，界面「运行日志」右上角「检查更新」按钮，启动后 1.2 秒
-静默问一次；结果缓存在配置目录，一天内不重复问；只取发布页的 tag 与链接，不发本机信息）。
-v0.11.0 加了**环境自检**（`xdao/preflight.py`：`--selftest` 先查本机再查联网，界面「运行日志」右上角有「自检」按钮，新增 `--selftest-json` / `--offline`），同版把 `Card` 的 `stretch=True` 补上（画布不会把内嵌窗口拉到画布高）；v0.10.1、v0.10.2 都是补丁版：前者把冻结登录的核验结论
+静默问一次；结果缓存在配置目录，一天内不重复问；只读取发布页的 tag 与链接，不发送设备信息）。
+v0.11.0 加了**环境自检**（`xdao/preflight.py`：`--selftest` 先查本地配置与运行条件，再检查联网状态，界面「运行日志」右上角有「自检」按钮，新增 `--selftest-json` / `--offline`），同版把 `Card` 的 `stretch=True` 补上（画布不会把内嵌窗口拉到画布高）；v0.10.1、v0.10.2 都是补丁版：前者把冻结登录的核验结论
 写进文档，后者只改了两处「复述来源」的措辞，都没有功能改动），Release **只提供免安装包（zip）**。v0.10.0 修掉了
 「打包版导不出 PDF」（`xdao/browser_flags.py`：冻结环境启动浏览器时加 `--no-sandbox`，
 根因是 Chromium 沙箱层在冻结父进程下初始化失败；源码运行仍带沙箱），
@@ -82,7 +82,7 @@ xdao-export/
 ├─ tools/push_one_commit.py 只推本地 HEAD 一个提交（代理坏掉时用）
 ├─ tools/push_tag_via_api.py 把附注标签推到 GitHub（走 API），再用 fix_tag_object 对齐字节
 ├─ tools/patch_release_body.py 按 release id 改已发布说明的正文
-├─ .test-artifacts/        测试产物目录（已提交占位文件，见"踩坑"一节）
+├─ .test-artifacts/        测试产物目录（已提交占位文件，见"问题记录"一节）
 ├─ tests/
 │  ├─ __init__.py          共享夹具：FakeClient、make_post、sample_thread
 │  ├─ conftest.py          测试夹具 + 两侧硬守卫：用户配置只读、白名单外跳过即失败
@@ -90,7 +90,7 @@ xdao-export/
 │  ├─ test_cache.py        缓存/断点续传/增量更新/失败页补抓、并行抓页（默认两路）、单页出错不中止整趟（74）
 │  ├─ test_cdp.py          CDP 协议层：帧编解码、握手校验、调试接口重试、挑页面标签、命令配对与断线（111）
 │  ├─ test_client.py       客户端层：Cookie 管理、登录跳转页、userhash 解析、验证码体解包、deflate 解压、API 前缀缓存、并发节流与图片落盘（65）
-│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口（只认本次启动后新写的那份，旧的不删也不认）、WebSocket 帧层、粘贴解析、每轮重挑标签（稳挂活着的非登录页）、复用活着的程序窗口（多扇时先问罐、罐里有 userhash 的优先）、进程侧普查（认自家目录、端口失联的僵尸窗先收）、盯窗横幅（带窗口号、旧横幅会被改号）、开窗前普查、第四读+读罐对账（带罐名/整罐 userhash/页清单/接=端口）、配置目录里的备用目录收尾与开机清扫（v0.13.39）、启动失败时带上浏览器自己写在 stderr 上的最后几行话（v0.13.40）、反复起不来的持久资料目录会自己改名让位（账记在目录里，偶尔一次不算，v0.13.41）、收尾前先问端口（还开着的窗连目录一起留着，v0.13.41）、整罐读并上 Storage.getCookies（F12 那一族读法，分区饼干也读得到；对账行多一段「存储读=」）（v0.13.42）、挨个问每一扇活窗口的罐（自己这只罐里没有就去看别的活窗口，对账行多一段「逐窗=」，从此分得清是同一只罐读漏了还是根本两只罐；读饼干出错也不再一声不响）（v0.13.45）、盯窗横条挪到窗口底部并可收起（登录成的那一刻自己摘掉，不再压着「我的饼干」那一排『应用』；横条与对话框都写明「程序不替你点『应用』」）、对账行补上「哑窗=」（端口哑掉的自家窗口点名）与「同罐进程=N」（正拿着这只资料目录的浏览器进程有几个）（v0.13.46）、挨个问同一只浏览器里**别的罐**（cookie 按浏览器上下文分开存，无痕窗与 Edge 的「工作区」各一份；对账行多一段「别路=」——只有浏览器端点答得出上下文名单，所以这一问特意挂上去）、等超时那一刻把原始读数落盘成「读罐详单」（含域、路径、分区键、哪一份罐，拿来比对用）（v0.13.47）、对账行再补两段「窗口=」（同一只浏览器里每个页面标签各在哪份罐里—— 真机上「程序读的那扇」与「用户眼前那扇」到底是不是同一扇，从此对得出来）与「罐路径=」（这次真正在用的资料目录**完整路径**，同名的常驻罐与一次性罐不再混淆）、「同罐进程=」数出 0 也照写（过去这一段缺席和「查了、就一只」长得一样）、上下文名单改成从 `Target.getBrowserContexts` 与 `Target.getTargets` **两处并起来**（用户自己开的无痕窗不在前者名单里，v0.13.47 的「别路=」就是在这里空的）、读罐详单里多抄「罐路径」与每个目标的上下文（v0.13.48）；v0.13.49 是仓库级重构（目录与写权限下沉 `xdao/paths.py`、导出器立底座、产品名与 GitHub 问答抽成 `xdao/appinfo.py` / `xdao/github_api.py`、删掉确认没人用的旧代码），**这条链路本身没动**；v0.13.51 添了三样：「现场行」（每十几秒把每一份罐此刻有哪些名字、每扇页面挂在哪份罐里、上次处理花了多少秒写进运行日志 —— 登录落在哪一秒、罐是不是跟着长、1.5 秒的读循环有没有被领饼干那几步顶住，事后一眼看得出）、`profile_of_process`（问命令行里那只**真正**在用的资料目录，`罐=`/`罐路径=` 不再误报配置目录那只常驻罐）、每一次候选尝试失败都在运行日志里留一行「第几扇、哪份资料目录、为什么放弃」（v0.17.5）；页面自己的 localStorage/sessionStorage 里也找一次 userhash（420；v0.22.5 起补上读罐失败、换目录失败、端口文件内容损坏这些兜底分支与进程表普查的内部细节）
+│  ├─ test_browser_login.py 浏览器登录：路径发现、启动参数、DevTools 端口（只认本次启动后新写的那份，旧的不删也不认）、WebSocket 帧层、粘贴解析、每轮重挑标签（稳挂活着的非登录页）、复用活着的程序窗口（多扇时先问罐、罐里有 userhash 的优先）、进程侧普查（认自家目录、端口失联的僵尸窗先收）、盯窗横幅（带窗口号、旧横幅会被改号）、开窗前普查、第四读+读罐对账（带罐名/整罐 userhash/页清单/接=端口）、配置目录里的备用目录收尾与开机清扫（v0.13.39）、启动失败时带上浏览器自己写在 stderr 上的最后几行话（v0.13.40）、反复起不来的持久资料目录会自己改名让位（账记在目录里，偶尔一次不算，v0.13.41）、收尾前先问端口（还开着的窗连目录一起留着，v0.13.41）、整罐读并上 Storage.getCookies（F12 那一族读法，分区饼干也读得到；对账行多一段「存储读=」）（v0.13.42）、挨个问每一扇活窗口的罐（自己这只罐里没有就去看别的活窗口，对账行多一段「逐窗=」，从此分得清是同一只罐读漏了还是根本两只罐；读饼干出错也不再一声不响）（v0.13.45）、盯窗横条挪到窗口底部并可收起（登录成的那一刻自己摘掉，不再压着「我的饼干」那一排『应用』；横条与对话框都写明「程序不替你点『应用』」）、对账行补上「哑窗=」（端口哑掉的自家窗口点名）与「同罐进程=N」（正拿着这只资料目录的浏览器进程有几个）（v0.13.46）、挨个问同一只浏览器里**别的罐**（cookie 按浏览器上下文分开存，无痕窗与 Edge 的「工作区」各一份；对账行多一段「别路=」——只有浏览器端点答得出上下文名单，所以这一问特意挂上去）、等超时那一刻把原始读数落盘成「读罐详单」（含域、路径、分区键、哪一份罐，拿来比对用）（v0.13.47）、对账行再补两段「窗口=」（同一只浏览器里每个页面标签各在哪份罐里—— 真机上「程序读的那扇」与「用户眼前那扇」实际是不是同一扇，从此对得出来）与「罐路径=」（这次真正在用的资料目录**完整路径**，同名的常驻罐与一次性罐不再混淆）、「同罐进程=」数出 0 也照写（过去这一段缺席和「查了、就一只」长得一样）、上下文名单改成从 `Target.getBrowserContexts` 与 `Target.getTargets` **两处并起来**（用户自己开的无痕窗不在前者名单里，v0.13.47 的「别路=」就是在这里空的）、读罐详单里多抄「罐路径」与每个目标的上下文（v0.13.48）；v0.13.49 是仓库级重构（目录与写权限下沉 `xdao/paths.py`、导出器立底座、产品名与 GitHub 问答抽成 `xdao/appinfo.py` / `xdao/github_api.py`、删掉确认没人用的旧代码），**这条链路本身没动**；v0.13.51 添了三样：「现场行」（每十几秒把每一份罐此刻有哪些名字、每扇页面挂在哪份罐里、前一批次花了多少秒写进运行日志 —— 登录落在哪一秒、罐是不是跟着长、1.5 秒的读循环有没有被领饼干那几步顶住，事后一眼看得出）、`profile_of_process`（问命令行里那只**真正**在用的资料目录，`罐=`/`罐路径=` 不再误报配置目录那只常驻罐）、每一次候选尝试失败都在运行日志里留一行「第几扇、哪份资料目录、放弃原因」（v0.17.5）；页面自己的 localStorage/sessionStorage 里也找一次 userhash（420；v0.22.5 起补上读罐失败、换目录失败、端口文件内容损坏这些兜底分支与进程表普查的内部细节）
 │  ├─ test_browser_scope.py 浏览器登录只支持 Chromium 内核：界面与两份公开文档都写着（3）
 │  ├─ test_cli.py          命令行参数与入口、--selftest/--check-update/--page-workers、批量估时与缺页清单、认不出串号时的退出码（94）
 │  ├─ test_config_isolation.py 用户配置守卫本身有效、配置文件字节不变、显示环境只探一次（10）
@@ -100,7 +100,7 @@ xdao-export/
 │  ├─ test_version_consistency.py 版本号四处一致（5）
 │  ├─ test_cli_docs.py     文档里的命令行开关与解析器互相覆盖（3）
 │  ├─ test_docs_facts.py   HANDOFF/README 里写死的用例数与真实收集数一致（3）
-│  ├─ test_browser_check.py 「浏览器到底行不行」的探测（8）
+│  ├─ test_browser_check.py 「浏览器实际行不行」的探测（8）
 │  ├─ test_selftest_browser_flag.py 自检里那条 --check-browser 真跑一遍（4）
 │  ├─ test_manual_blocks.py 使用说明的版本段：新的在上、衔接对得上、别夹整份复制（6）
 │  ├─ test_text_hygiene.py 所有被跟踪的文本文件：BOM 只一个、行尾不混用、不整份翻行尾（7）
@@ -156,7 +156,7 @@ xdao-export/
    ├─ watch_list.py        监控列表的导入 / 导出（文件格式与容错）
    ├─ update_check.py      新版本检查（版本比较、接口、缓存、代理、升级包信息）
    ├─ updater.py           一键升级（下载/解压/自检/换目录/帮手，仅标准库）
-   ├─ settings.py          AppSettings：本机配置读写
+   ├─ settings.py          AppSettings：本地配置读写
    ├─ pdf_opts.py          PDF 选项（纸张/方向/边距/缩放/背景/页码）唯一来源
    ├─ notifications.py     桌面通知（Windows Toast 用哨兵 AUMID / macOS / Linux）
    ├─ theme.py             配色 / 字体 / 间距 / ttk 样式（界面视觉唯一来源）
@@ -215,7 +215,7 @@ xdao-export/
   `switchTo/id/{id}.html`（**v0.13.24 起先剥掉链接末尾的 `.html`／`.htm` 再拼**：列表链接本身就带后缀，不剥会拼成 `{id}.html.html` 直接 404）→ 从 `export/id/{id}.html` 的响应体里抠 userhash → 读 cookie jar
   兜底；这套 HTTP 协议从 v0.6.1 起就在线上跑）。`fetch_leaf_cookie(navigate=True)` 那条老路
   还留着，但没有界面在调它。
-  **为什么不导航**：站点那张「饼干切换成功!」倒计时页的落点写在页面里的 `<a id="href">` 上，
+  **不导航的设计依据**：站点那张「饼干切换成功!」倒计时页的落点写在页面里的 `<a id="href">` 上，
   成功时它是**空的**，页面脚本 `location.href = href` 于是把当前地址再载一次 —— 程序一路导航，
   就会把用户的标签页留在那张永远重载的页上（用户看到的「一直无限跳转」），而 userhash 始终
   没种上（v0.13.17~v0.13.22 的真机现场都是它）。所以三条导航护栏（`BROWSER_LEAF_NAV_LIMIT` /
@@ -245,7 +245,7 @@ xdao-export/
   （`verify_cached=True` 时额外重抓最终页做指纹比对）；否则只下载缺失页。
 - **第 1 页必须写进缓存**，否则缓存永远"不完整"导致每次全量重抓（这个 bug 已修）。
 - 「新增楼层」与「被编辑楼层」的区分靠 `previous_post_ids`：
-  只有本轮之前就见过、且指纹变化的才算被编辑。
+  只有当前批次之前就见过、且指纹变化的才算被编辑。
 
 ### 5. 监控（watcher.py）
 
@@ -273,84 +273,28 @@ xdao-export/
 
 ### 8. 打包（PyInstaller）
 
-- 使用自装 Python：`<本机 Python>\python.exe`（Python 3.12.9）
-  + PyInstaller 6.22.2。
-- 打包前必须设置环境变量：
-  - `TCL_LIBRARY=<本机 Python>\tcl\tcl8.6`
-  - `TK_LIBRARY=<本机 Python>\tcl\tk8.6`
-- 命令：`python -m PyInstaller --onefile --windowed --clean --name "X岛串导出工具" main.py`
-- 注意：`<本机 Python>\Lib\site-packages\PyInstaller\utils\hooks\tcl_tk.py` 已被手动打过补丁
-  （利用 TCL_LIBRARY/TK_LIBRARY 绕过本机 Tcl 检测问题）。
-- **打包版尚未更新到包含新功能的版本。**
+- 使用仓库内的 `tools/build_zip.py` 构建 Windows 免安装包；脚本负责准备打包依赖、生成可执行文件和 SHA-256 附件。
+- 运行时要求 Python 3.10 或更高版本；构建环境应使用项目当前支持的 Python 与 PyInstaller 版本。
+- 构建后核对版本、随包许可文件与 `.sha256`，并运行 `--version` 和 `--selftest` 验证产物。
 
-## 五、开发环境踩坑（本机特有，务必先读）
+## 五、开发与构建环境说明
 
-1. **文件沙箱只允许往「命令启动时已存在」的目录里写文件。**
-   运行时新建的目录（包括 pytest 的 `tmp_path`、pip 的临时目录）往里写会报
-   `PermissionError: [WinError 5]`。因此：
-   - 测试用 `tests/conftest.py` 的 `artifacts_dir` 夹具，不要用 `tmp_path`；
-   - 测试产物目录 `.test-artifacts/` 已提交进版本库。
-2. **pytest 不在项目自带解释器里。** 已装进 受限运行环境 运行时：
-   `<本机 Python>\python.exe`
-   跑测试：
-   ```powershell
-   Set-Location '<仓库目录>'
-   $env:PYTHONIOENCODING='utf-8'
-   & '<本机 Python>\python.exe' -X utf8 -m pytest -q
-   ```
-   不要给这个解释器设 `TCL_LIBRARY`/`TK_LIBRARY`（那是本机那个 Python 3.12 的路径，版本冲突会导致
-   tkinter 起不来）。
-3. **控制台中文会显示成乱码**（GBK 代码页），加 `$env:PYTHONIOENCODING='utf-8'` 和
-   `-X utf8` 即可；纯属显示问题。
-4. 早期测试误写进系统临时目录，留下过带「拒绝删除」权限项的残留目录
-   （`.pytest_tmp`、`.pytest-scratch`）。已经用 `tools/clean_scratch.py` 清理干净；
-   若再遇到同类目录，用这个脚本处理。
+- 从仓库根目录运行测试：
+  ```powershell
+  python -X utf8 -m pytest -q
+  ```
+- 测试写入使用 `tests/conftest.py` 提供的 `artifacts_dir` 夹具和已登记的 `.test-artifacts/` 目录。该约定可避免测试依赖系统临时目录或受限目录的写入行为。
+- Python 3.10 及更高版本受支持。运行测试时不应设置仅供 Tcl/Tk 打包使用的 `TCL_LIBRARY` / `TK_LIBRARY`，以免指向不兼容的 Tcl/Tk 版本。
+- Windows PowerShell 5.1 的控制台编码可能影响中文输出；运行命令前可设置 `$env:PYTHONIOENCODING='utf-8'`，并使用 `-X utf8`。
+- 若测试遗留临时文件，可先用 `python tools/clean_scratch.py --dry-run` 检查清理目标，再按工具说明处理。
 
 ## 六、Git 与 GitHub
 
-- 仓库：https://github.com/XiaoFeng7418/xdao-export （公开，默认分支 `master`）
-- 已配置：描述、话题、MIT 许可、合并后自动删除分支；Wiki 已关闭。
-- Releases：
-  - `v0.2.0` → 附件 `xdao-export-v0.2.0.exe`（当前版本，含四种格式与缓存/监控）
-  - `v0.1.0` → 附件 `xdao-export-v0.1.0.exe`（旧版）
-- 提交作者已设为私密邮箱 `XiaoFeng7418@users.noreply.github.com`。
-- gh 便携版：`<本机>\<工具目录>\bin\gh.exe`
-  （全局 gitconfig 里已把它配成 github.com 的凭据助手，正常终端里 `git push` 不需要再输密码）。
-- **打包好的 exe 不进源码树**，只作为 Release 附件发布（`.gitignore` 已排除）。
-
-### 推送通道（2026-09-30 更新）
-
-**本机代理已配好，`git push` 可以直接用，优先用它。** 全局配置里
-`http.proxy` 与 `https.proxy` 都是 `http://127.0.0.1:7890`（7890 是 HTTP 混合端口，
-写成 `https://` 会直接 TLS 失败）。分支映射已配好：本地 `main` ↔ 远端 `master`。
-
-```powershell
-Set-Location '<仓库目录>'
-$py = '<本机 Python>\python.exe'
-
-# 日常推送（两边 sha 完全一致）
-git push origin main:refs/heads/master
-
-# 代理不可用时的备用通道：走 GitHub Git Data API 重建对象
-& $py -X utf8 tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
-
-# 把远端提交在本地逐字节重建，使两边 sha 对齐
-& $py -X utf8 tools/sync_from_api.py --repo XiaoFeng7418/xdao-export --branch master --dry-run
-
-# 发布 Release 并上传 exe 附件
-& $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag v0.2.1 `
-    --name "..." --notes-file docs/RELEASE_NOTES_v0.2.0.md --asset "dist/xdao-export-v0.2.1.exe"
-```
-
-### 两个必须知道的坑
-
-1. **Release 附件名不要用中文。** 走 `?name=` 上传时 GitHub 会把中文名截断成单个字符
-   （`X岛串导出工具.exe` 会变成 `X.exe`），所以附件统一用 `xdao-export-vX.Y.Z.exe`。
-2. **走 API 推送时两边 sha 会不同，这不是历史被篡改。** GitHub 的提交对象其实
-   **会保留**我们送上去的偏移量（送 `+08:00` 就存 `+0800`），是**接口读回来的日期**
-   被改写成 UTC，原偏移量拿不回来。所以远端对象的 sha 无法从接口返回值复算。
-   2026-09-30 已用 `git push` 把两边对齐（旧远端历史存为标签
-   `backup-before-align-20260930`），细节见 `MAINTENANCE.md` 的「推送通道」一节。
+- 仓库：<https://github.com/XiaoFeng7418/xdao-export>，默认分支为 `master`。
+- 打包的 Windows 免安装包通过 GitHub Releases 发布；可执行文件和 `dist/` 不进入源码树。
+- 发布流程：更新版本号、发布说明和随包使用说明；运行测试与 `tools/repo_check.py`；使用 `tools/build_zip.py` 构建包；核对 `.sha256` 后再创建 Release。
+- GitHub CLI 或 API 工具均可用于已授权的仓库操作。凭据通过 GitHub CLI 登录态或 `GITHUB_TOKEN` 提供；不要将令牌、账户邮箱或机器专属配置写入仓库文件。
+- 推送和发布前检查 `git status --short` 与目标分支；需保持提交对象 SHA 时使用 Git 原生推送。GitHub API 重建提交对象时，时间戳规范化可能导致提交 SHA 与本地不同，内容树仍可一致。
 
 ## 七、隐私注意
 

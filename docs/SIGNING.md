@@ -1,100 +1,28 @@
-# 代码签名：现在是什么状况，免费那条路怎么走
+# 代码签名政策与发布完整性
 
-本文件记的是**流程**，不是宣传材料。面向用户的说法在 `README.md` 的「代码签名政策」一节。
+本文档说明当前发布包的签名状态、完整性校验方式和预留的自动化流程。
 
-## 一、现状（2026-10-02）
+## 当前状态
 
-- 发布包**没有**商业代码签名证书。所以 Windows 可能提示「未知发布者」、
-  个别杀软可能误报 —— 这不是包坏了，是没签名。
-- SignPath Foundation 的免费签名申请于 **2026-10-02 未获批准**（来信理由见第五节）；
-  用户决定：**等项目有人用、公开可见度信号攒起来之后再申请**。在此之前不对外宣称有任何签名。
-- 用户现在能自己核对的三件事：
-  1. 发布页上的 `xdao-export-vX-win64.zip.sha256`（v0.13.28 起）；
-  2. 解压出来的 `xdao-export.exe`，右键「属性 -> 详细信息」里的**公司名是「XiaoFeng7418」**
-     （PE 版本信息，`tools/build_zip.py` 里写死的，v0.13.28 起）；
-  3. 源码可读可自行构建：`python tools/build_zip.py`。
-- 说清楚一件事：`.sha256` 与 zip 在同一个 Release 里，**挡不住「账号被盗、两个附件一起被换」**。
-  它只能证明「你下载到的字节，就是那一页上挂的那份」。
+- 当前发布包未进行代码签名，Windows 可能显示“未知发布者”或 SmartScreen 警告。
+- 每个发布包应随附同名 `.sha256` 文件。下载后请使用 SHA-256 校验文件完整性。
+- 公开仓库保留 GitHub Actions 与 SignPath 的接入位置，但流程尚未启用。
+- 满足项目资格和流程条件后，再按“CI 构建 → 人工批准 → SignPath 签名 → 发布”的顺序启用。
 
-## 二、免费签名：只有一条路，而且署不了网名
+## 本地校验
 
-免费且真能消掉「未知发布者」的，只有面向开源项目的
-[SignPath Foundation](https://signpath.org/)（配套 [SignPath.io](https://signpath.io/)）。
+1. 从 GitHub Release 下载 zip 与同名 `.sha256` 文件。
+2. 使用 `Get-FileHash` 或其他 SHA-256 工具计算 zip 摘要。
+3. 将计算结果与 `.sha256` 文件中的摘要比较；不一致时不要运行或分发该包。
+4. 也可以从源码执行 `python tools/build_zip.py` 重新构建并进行比较。
 
-| 事项 | 结论 |
-| --- | --- |
-| 花不花钱 | 开源项目免费 |
-| 要不要个人实名 | 不要。他们核的是「这个二进制确实出自这个公开仓库」 |
-| Windows 上显示谁 | **SignPath Foundation** —— 证书是签发给它的，不是签给作者 |
-| 能不能署「XiaoFeng7418」 | 不能。签名证书只能签发给法律主体，网名不行 |
-| 想署名字去哪 | PE 版本信息里的 `CompanyName`（本项目已经这么做了） |
+摘要校验只能确认下载字节与发布页附带的校验文件一致，不能替代对发布账户和来源的审查。
 
-申请条件（他们保留拒绝权，新项目可能被拒）：
+## 预留流程
 
-- 许可证是 OSI 认可的、**没有商业双授权**、不含专有组件；
-- 项目**在维护中**、**已经发过版**、有说明用途的下载页；
-- 团队成员开 MFA，并区分 Author / Reviewer / Approver 角色；
-- 每次签名请求都要**人工批准**；
-- 项目首页要有「代码签名政策」小节（README 里的那一节就是为这个写的），
-  并写明 `Free code signing provided by SignPath.io, certificate by SignPath Foundation.`
-  以及隐私说明与角色成员；
-- 产物要有并强制 metadata（产品名 / 版本号）。
+- `.github/workflows/build.yml` 在 GitHub Actions runner 上构建包。
+- `tools/build_zip.py` 写入版本信息并生成 `.sha256` 附件。
+- SignPath 接入后，签名请求必须由人工批准，签名产物必须来自同一次 CI 构建。
+- 启用后需在 README 中同步实际状态、角色和验证方式。
 
-没做的备选，以及为什么不做：
-
-- **自签名证书**：免费，但 Windows 照样显示未知发布者，等于白做；
-- **Azure Trusted Signing**：约 $9.99/月，不是免费；
-- **OV/EV 商业证书**：约 ¥1000–2000/年起，EV 还要硬件令牌；
-- **Sigstore / cosign 这类签名**：免费，但那是给容器与软件供应链用的，
-  管不了 Windows 的「未知发布者」。
-
-## 三、仓库这边已经准备好的东西
-
-- `tools/build_zip.py`：打包 + 写 `.sha256`，并先核「版本号 / 发布说明 / 使用说明」是否对齐；
-- `.github/workflows/build.yml`：在 GitHub 托管的 Windows runner 上打出 zip 并上传成
-  artifact —— 这是签名要求的前置条件（**要签的产物必须由 CI 构建**）；
-- PE 版本信息里的 `CompanyName=XiaoFeng7418`；
-- `README.md` 的「代码签名政策」一节。
-
-## 四、获批之后要做的事（按顺序）
-
-1. 在 SignPath 后台建好三样，并记下它们的 slug：
-   - Project（绑 `XiaoFeng7418/xdao-export`，默认分支 `master`）；
-   - Artifact Configuration：根元素 `<zip-file>`（GitHub 的 artifact 本身就是个 zip），
-     里面放开 `**/xdao-export.exe` 与 `**/_internal/**` 里我们自己打进去的部分；
-   - Signing Policy：类型用 `release-signing`，勾上「需要人工批准」。
-2. 在本仓库设好变量与密钥（`gh` 已登录，可以直接敲）：
-   ```powershell
-   gh variable set SIGNPATH_ENABLED --body true --repo XiaoFeng7418/xdao-export
-   gh variable set SIGNPATH_ORGANIZATION_ID --body "<组织 id>" --repo XiaoFeng7418/xdao-export
-   gh variable set SIGNPATH_PROJECT_SLUG --body "<project slug>" --repo XiaoFeng7418/xdao-export
-   gh variable set SIGNPATH_SIGNING_POLICY_SLUG --body "<policy slug>" --repo XiaoFeng7418/xdao-export
-   gh secret set SIGNPATH_API_TOKEN --repo XiaoFeng7418/xdao-export
-   ```
-3. 手动跑一次 `build` workflow，确认签名成功（`signpath/github-action-submit-signing-request@v3`
-   那一步会等人工批准），然后核对签名后的 exe：右键属性应出现「数字签名」页。
-4. 把发版流程改成「CI 构建 -> 签名 -> 发 Release」：**签名后的包必须来自 CI 那一次构建**，
-   不能再挂本机打的包（两者字节不会相同：zip 条目顺序、时间戳、runner 上的运行时都可能不同）。
-   在改完之前，Release 附件仍然用本机 `tools/build_zip.py` 的产物。
-5. README 的「代码签名政策」一节把「正在申请」改成已生效，并写上真实角色。
-
-## 五、万一被拒（2026-10-02 真的发生了）
-
-拒信来自 SignPath Foundation 的支持邮箱（署名 服务提供方，2026-10-02）：申请**未获批准**。理由不是
-质量 —— 「不是对你工作质量或潜力的评价」—— 而是可见度：他们看的是社区采用（GitHub
-stars / forks / contributors）、外部文章、独立引用或讨论（Reddit、Stack Overflow、YouTube
-等）、机构背书、以及持续活动的证据；项目目前这些信号还不够。来信欢迎以后重新申请，也提到
-可以改走付费订阅（本项目不走，只用免费这条路）。
-
-用户决定（2026-10-02）：**等项目有人用、信号攒起来之后再申请**，现在不急着再递。
-
-退路按原计划执行：保留 `.sha256` + PE 版本信息里的作者名 + README 里的现状说明，不再对外
-宣称有任何签名 —— 宁可少说，不能虚说：
-
-- README「代码签名政策」改成「申请未获批准，等项目有人用后再申请」，署名句改成获批后才加；
-- `docs/RELEASE_NOTES_v0.13.29.md` 的签名段改成同样事实，已发布的 Release v0.13.29 正文用
-  `gh release edit --notes-file` 同步改掉；
-- 本文件第四节的流程原样保留；将来重新申请获批后按那个顺序执行。
-
-再申请之前先攒/先核对的信号（照拒信列的）：社区采用（stars / forks / contributors）、外部文章、
-独立引用或讨论（Reddit / Stack Overflow / YouTube 等）、机构背书、持续活动的证据。
+启用前不应声称发布包已经签名，也不应把本地构建产物作为 CI 签名产物发布。

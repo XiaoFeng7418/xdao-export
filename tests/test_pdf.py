@@ -97,7 +97,7 @@ def make_fake_browser(
     Windows 上是 .cmd 批处理，其他平台上是带执行位的 sh 脚本 —— 早先只写
     .cmd，导致 Linux 上 subprocess 直接 PermissionError（CI 抓到的就是它）。
 
-    参数会记录到同目录的 flags.txt，供用例断言"到底传了什么给浏览器"。
+    参数会记录到同目录的 flags.txt，供用例断言"实际传了什么给浏览器"。
     ``is_windows`` / ``python_exe`` 允许在 Windows 上验证 POSIX 分支
     （见 tools/posix_check.py）。
     """
@@ -357,7 +357,7 @@ def test_render_reports_timeout(out_dir, artifacts_dir, monkeypatch):
 def test_render_can_be_cancelled_mid_way(out_dir, artifacts_dir, monkeypatch):
     """命令行渲染期间点「取消导出」要真的收手，而不是干等到超时（v0.17.0）。
 
-    以前这里用 ``subprocess.run(timeout=…)``：一口气阻塞到底，用户点了取消也得等
+    以前这里用 ``subprocess.run(timeout=…)``：一口气阻塞实际，用户点了取消也得等
     浏览器把长串渲完。现在改成轮询 ``Popen``，每 0.2 秒看一眼停止位。
     """
     browser = make_fake_browser(artifacts_dir)
@@ -618,7 +618,7 @@ def test_builder_without_options_still_renders(monkeypatch):
 def test_cdp_params_drop_css_page_size_when_paper_is_explicit():
     """显式纸张时绝不能带 preferCSSPageSize —— 带了纸张就白选了。
 
-    真机实测：两者同时出现时浏览器改以页面 CSS 的 ``@page size`` 为准
+    运行环境实测：两者同时出现时浏览器改以页面 CSS 的 ``@page size`` 为准
     （用户选 A3 出 A4），而且时对时错；见 ``_scratch/cmp_pdf_paths.py``。
     """
     from xdao.exporters.pdf import _cdp_params

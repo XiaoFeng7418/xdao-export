@@ -1,7 +1,7 @@
 # 仓库维护规范
 
 > 本文档说明 `XiaoFeng7418/xdao-export` 的日常维护怎么做。
-> 接手维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术交接部分。
+> 继续维护维护时先读它，再读 [HANDOFF.md](HANDOFF.md) 的技术维护说明部分。
 
 ## 最近一次改动（v0.24.0）
 
@@ -87,8 +87,7 @@
   （滚动条约 17px）；右栏改成断言「吃掉窗口宽减左栏宽以外的全部宽度」；「装得下就不滚动」
   那条先把窗口设回 `1060x760` 再断言。
 - **教训**：凡是断言像素尺寸的界面用例，都要按「屏幕比默认窗口小的时候会怎样」想一遍；
-  CI 的 runner 是 1024x768，比本机小得多。这类用例以前在本机全绿，是因为本机屏幕更大、
-  窗口没有被夹小。
+  CI 的 runner 使用 1024x768 显示区域。较大显示区域下的通过结果无法覆盖窗口受限的情况。
 - **产物**：功能与 v0.22.1 相同，只为让自动检查回绿而重新发一次。
 
 ## 最近一次改动（v0.22.2）
@@ -99,7 +98,7 @@
   之后 build / tests@master / tests@tag 三条 run 一开始就红。
 - **改法**：`.github/workflows/tests.yml` 与 `build.yml` 都去掉 `cache: pip`，并在原处写明原因
   「仓库没有依赖清单、依赖只有 pytest 与 ruff、装一次 4~12 秒不值得维护清单」。
-- **教训**：给 workflow 加缓存这类「顺手优化」，必须在本机先确认它依赖的文件真的存在；CI 的失败
+- **教训**：给 workflow 加缓存这类「同时优化」，必须在本机先确认它依赖的文件真的存在；CI 的失败
   点会在第一步（setup-python）就炸，而不是在测试步骤，容易误判成用例问题。
 - **产物**：功能与 v0.22.1 完全相同，只为让自动检查回绿而重新发一次。
 
@@ -150,7 +149,7 @@
 
    ```powershell
    Set-Location '<仓库目录>'
-   $py = '<本机 Python>\python.exe'
+   $py = '<项目 Python>\python.exe'
    & $py -X utf8 tools/repo_check.py --repo XiaoFeng7418/xdao-export
    ```
 
@@ -167,7 +166,7 @@
 
    | 告警 | 处理方式 |
    |---|---|
-   | 本地有提交未推送 | `git push origin main:refs/heads/master`（优先；代理不可用时才用 `tools/push_via_api.py`） |
+   | 本地有提交未推送 | 使用 `git push` 推送；Git 原生传输不可用时可使用 `tools/push_via_api.py` |
    | 工作区有没提交的改动 | 先提交（或先 stash）；「本地 HEAD = 远端」说的只是提交，不含工作区 |
    | ✗ 读不到 `xdao.__version__` / 本地树是空的 | 这不是「没问题」而是**没查成**：照报错里的原始信息查，别当成体检通过 |
    | 描述与代码里的导出格式不一致 | `& $py -X utf8 tools/repo_info.py --repo XiaoFeng7418/xdao-export --apply` |
@@ -189,7 +188,7 @@
 - 想改描述文案就改 `tools/repo_info.py` 顶部的 `DESCRIPTION_TEMPLATE`（上限 350 字符，
   脚本会自己拦截超长）；想改话题就改同一个文件里的 `BASE_TOPICS` / `FORMAT_TOPICS`。
 - `--apply` 是先验后写、写完再核对的：推导出来的值不合格（描述空的、超长的、话题空的、
-  超过 20 个的、名字不合规的）一律拦下并说清为什么，**一个请求都不发**；写完会再读回来
+  超过 20 个的、名字不合规的）一律拦下并说清原因，**一个请求都不发**；写完会再读回来
   核对，还是不一样就返回 1 并写明「别当成同步好了」—— 发过请求不等于改成了。
 
 ```powershell
@@ -201,7 +200,7 @@
 
 ```powershell
 Set-Location '<仓库目录>'
-$py = '<本机 Python>\python.exe'
+$py = '<项目 Python>\python.exe'
 
 # 1) 改版本号：四处一起改 —— xdao/__init__.py 的注释与 __version__、README.md 的
 #    「最新版」那句与附件名、packaging/使用说明.txt 第 1 行与「本版版本号」、
@@ -212,9 +211,9 @@ $py = '<本机 Python>\python.exe'
 # 2) 打包（只打 onedir 免安装包；单文件版自 v0.5.1 起不再提供 —— 它的启动器在
 #    中文/非 ASCII 路径下会在 Python 代码运行前就失败：Could not create temporary directory!）
 #    注意必须设 TCL_LIBRARY / TK_LIBRARY，否则打包出的程序缺 Tcl/Tk
-$env:TCL_LIBRARY='<本机 Python>\tcl\tcl8.6'
-$env:TK_LIBRARY='<本机 Python>\tcl\tk8.6'
-$pypi = '<本机 Python>\python.exe'
+$env:TCL_LIBRARY='<项目 Python>\tcl\tcl8.6'
+$env:TK_LIBRARY='<项目 Python>\tcl\tk8.6'
+$pypi = '<项目 Python>\python.exe'
 & $py -X utf8 tools/build_zip.py --python $pypi --out dist
 
 # 3) 组装免安装包（exe + _internal + 使用说明.txt），压缩成
@@ -228,15 +227,11 @@ $pypi = '<本机 Python>\python.exe'
 #    xdao-export.exe --version      # 应输出「X岛串导出工具 X.Y.Z」
 #    xdao-export.exe --selftest
 
-# 5) 提交并推送（2026-09-30 起本机代理可用，直接 git push 即可，两边 sha 完全一致）
-$env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890'
+# 5) 提交与推送。先复核变更，再提交并推送到目标分支。
 & git add -A; & git commit -m "..."
-& git push origin main:refs/heads/master        # 本地分支叫 main，远端默认分支叫 master
+& git push origin <branch>
 
-# 备用通道：代理不可用时才用 API 推送（sha 会与本地不同，内容仍一致）
-& $py -X utf8 tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
-#    `--exclude` 里的路径写错一个字母，现在会在发任何请求之前就停下（先验再动）；
-#    `--dry-run` 不创建提交、也不动分支引用，但为核对树仍会在远端留下未引用的对象。
+# API 推送工具可作为 Git 原生推送不可用时的替代方式；请先阅读工具的 --dry-run 说明。
 
 # 6) 发布
 & $py -X utf8 tools/make_release.py --repo XiaoFeng7418/xdao-export --tag vX.Y.Z `
@@ -274,8 +269,7 @@ Expand-Archive <临时目录>\xdao-export-vX.Y.Z-win64.zip -DestinationPath <临
 「GitHub 上那个文件」。2026-10-02 实测 v0.13.18：下载回来的 zip 与本机构建的完全一致
 （都是 12040398 字节，SHA256 都是 `3be6233f…`），解开后 956 个文件、`--version` 打出
 0.13.18、包内 `使用说明.txt` 与仓库那份逐字节相同（`e4315ead…`）、
-`tools\gui_probe.py --exe` 报「界面已正常启动」。（`$gh` / `$py` 指本机的 gh.exe 与
-Python，见本文开头的环境变量段。）
+`tools\gui_probe.py --exe` 报「界面已正常启动」。（`$gh` / `$py` 分别指 GitHub CLI 与 Python 可执行文件。）
 
 只动测试与维护文档（`tests/**`、`MAINTENANCE.md`、`HANDOFF.md`）时**不必发版**：免安装包里
 没有这些文件，包内容与上一版逐字节一样，硬发一版只是噪音。**一旦改到会进包的东西**
@@ -295,78 +289,11 @@ Python，见本文开头的环境变量段。）
 v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没有说明该下哪个附件」；补上后用
 `gh release edit vX.Y.Z --notes-file docs/RELEASE_NOTES_vX.Y.Z.md` 更新已发布的正文。
 
-## 推送通道（2026-09-30 起）
+## GitHub 提交与推送说明
 
-- **日常推送直接用 `git push`**。本机代理 `http://127.0.0.1:7890` 已配进全局
-  `http.proxy` / `https.proxy`（两处都必须是 `http://` —— 7890 是 HTTP 混合端口，
-  写成 `https://` 连它会直接 TLS 握手失败）。未设 `HTTP_PROXY` 环境变量时 git 也能走全局配置。
-- 分支映射：本地 `main` ↔ 远端 `master`。已设 `branch.main.remote=origin`、
-  `branch.main.merge=refs/heads/master`、`push.default=upstream`，`git push` 一条命令即可。
-- 凭据：仓库级 `credential.https://github.com.helper` 指向 gh 便携版，
-  **必须以 `!` 开头**（少了它 git 会去 PATH 里找一个叫 `credential-C:/...` 的程序，
-  于是每次网络操作都刷一句 `is not a git command` 的警告，但不影响推送）。
-- `tools/push_via_api.py` 保留为**代理不可用时的备用通道**，也可用于本地对象逐字节校验。
-  它的 `--exclude` 现在会在发请求之前核对路径写没写错（写错就是大文件被传上去），
-  `--dry-run` 也不算「完全不写远端」：为核对树，它仍会在远端留下未引用的 blob/tree 对象。
+常规代码推送使用 Git 原生提交对象。需要 API 推送时，`tools/push_via_api.py` 可重建提交、tree 和 blob；API 返回的日期可能经过时区规范化，因此重新构造的提交 SHA 可能不同，即使文件树相同。`--dry-run` 的副作用以脚本帮助与说明为准，部分校验操作仍可能在远端留下未引用对象。
 
-### 体检里的「提交同步」别只看远端链
-
-`tools/repo_check.py` 原来用 API 走远端历史来判断哪些提交推过了，而
-`push_via_api.remote_chain()` 一次只往回取最近 100 条 —— 本地提交数一超过 100，
-最早的本地提交就永远落在窗口外，`find_pushed_prefix()` 返回 0，于是整份历史被误报成
-「本地有 102 个提交未推送到远端」（2026-10-01 真的发生了，同一次输出里却又写着
-「远端 master = c1d8c1f5」，自己打自己）。现在的判法是：先比远端顶端与本地 HEAD，
-一致就是同步；不一致再用本地的 `git log <远端 sha>..HEAD` 数未推送的提交；只有本地
-没有远端那个对象时才回退到 API 链，并且**窗口取满时改报「这一项没查成」，不再诬告**。
-`push_via_api.py` 也加了同样的 HEAD 短路（否则备用通道会把整份历史重推一遍，又造出
-一套新 sha）。
-
-### 盘点本仓改动用 `git status --porcelain`
-
-`_scratch` 在 `<工作目录>\_scratch\...` 下（不在仓库里），所以拿改动清单去扫文本、
-查行尾、查 BOM 时，要把 `git status --porcelain` 给出的仓库内相对路径拼上仓库前缀；
-漏了这一步会得到「找不到路径」，或者干脆漏扫整个 `_scratch`。
-
-### 两边 sha 曾经不同 —— 根因与现状
-
-- 现象：本地与远端各 25 条提交，**顺序、说明、tree 全部对应、文件逐字节一致**，但 sha 全不同，
-  看起来像历史分叉，`repo_check.py` 也因此报「本地有 N 个提交未推送」。
-- 根因（2026-09-30 用字节级证据查清，共两处，都在 `tools/push_via_api.py`）：
-  1. 提交说明末尾换行被吃掉。原代码写的是
-     `git("log", "-1", "--pretty=%B", sha).decode("utf-8").rstrip("\n")`，
-     **少一个字节就让整条历史的 sha 全部不同**。
-  2. 拼提交对象时把 ISO 写法的时间（`2026-09-30T13:20:24+08:00`）直接塞了进去，
-     而 git 提交对象里必须是 `{epoch} {±HHMM}` 写法。
-- 顺带查清两件事：
-  - GitHub **会保留**我们送上去的时区偏移（送 `+08:00` 存下来就是 `+0800`）；
-    是**接口读回来的日期**一律被改写成 `...Z`，所以原偏移量从接口侧拿不回来。
-    因此「远端对象的 sha 无法用接口返回值复算」是正常现象，**不代表历史被篡改**。
-  - `git log --pretty=%B` 会给**没有结尾换行**的说明擅自补一个 `\n`，
-    而本地历史里两种形态都有（25 条里有 7 条无尾换行：`6749e5bc` `67847a7b` `a7e00042`
-    `bc94f2fa` `93fb0f53` `6d0b59aa` `5e7713e3`）。所以消息必须用
-    `git cat-file commit` 原样取。修好后本地 25 条提交可以**逐字节复算校验，25/25 通过**。
-- 处置：先用 `git push` 把远端旧历史备份成标签
-  `backup-before-align-20260930`（本地对应分支 `backup-remote-master-20260930`，
-  指向旧远端尖端 `d17e8bd4`），再 `git push --force-with-lease` 把本地对象原样推上去，
-  两边 sha 从此完全一致（对齐后远端 master = `f58bf55`）。
-- 若将来又出现「文件一致但提交计数不一致」，先按下面两步自查，别急着重推：
-  1. `python -X utf8 tools/ci_logs.py` 之类的接口脚本能否读出远端链，
-     再用 `tools/push_via_api.py` 里的 `local_commits()` 复算本地 sha（应 25/25 通过）；
-  2. 确认不是真的漏推后，用 `git fetch origin && git log --oneline origin/master` 直接对比。
-
-## 巡检发现的真实情况（2026-09-30）
-
-- 远端历史上因多次重跑推送脚本、以及一次修正提交（`git commit --amend`），
-  留下了若干**内容相同的重复提交**。这不影响代码 ——
-  **判断同步是否正常的依据是「文件」一项**：本地与远端逐字节一致即正常。
-- 由此带来一个已知的**误报**：体检里可能出现「本地有 N 个提交未推送」，
-  但同时「文件逐文件一致」。这是重复副本造成的计数偏差，不是真的没推。
-  `find_pushed_prefix` 已改为取**最长连续匹配**以减少误报，
-  但远端链里同名副本过多时仍可能差一两个。
-- 结论判据：`文件` ✓ + `版本` ✓ + `发布` ✓ 即可认为同步正常，
-  不必因为「提交」一项的计数偏差去重推（重推只会再造一个副本）。
-- **上述历史分叉已于 2026-09-30 消除**（见上一节）：远端 master 与本地完全对齐，
-  「提交」一项现在也是 ✓，计数偏差不再出现。
+创建 Release 前应确认版本、附件名称、SHA-256 文件和发布说明一致；使用 `tools/repo_check.py` 核对仓库与 Release 状态。
 
 ## 硬性约定
 
@@ -374,24 +301,21 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    走 `?name=` 上传时 GitHub 会把中文名截断成单个字符。
 2. **打包好的 exe 不进源码树**（`.gitignore` 已忽略根目录 `*.exe` 与 `dist/`），
    只作为 Release 附件。
-3. **优先用 `git push`**。走 API 推送时远端提交对象由 GitHub 生成，接口读回来的日期
-   被改写成 UTC，原偏移量拿不回来，所以两边 sha 会不同（**内容仍完全一致**，不是历史被篡改）。
-   想让 sha 一致只能用 `git push` 把本地对象原样送上去。
+3. **提交对象校验**。API 重建提交对象时，时间戳规范化可能导致 SHA 与本地对象不同；需保持 SHA 时使用 Git 原生推送。
 4. **每次发布都要能跑**：`--selftest` 退出码 0，最好再做一次真实串导出。
 5. **改动必须带测试**：`tests/` 是一千多项离线用例（要确切数字就跑
    `& $py -X utf8 -m pytest --collect-only -q` 数一下），新增功能请补用例，
    不要依赖联网测试。
-6. 本机 git 的 HTTPS 传输不可用（schannel / openssl 都被拦），
-   一切远端操作走 `tools/` 下的 API 脚本。
+6. 远端操作根据当前网络与仓库权限选择 Git 原生传输或 GitHub API 工具；不要依赖未登记的机器专属代理或凭据配置。
 7. **涉及浏览器的验证要在受限模式外跑**：PDF 导出会启动 Chrome / Edge，
-   而浏览器需要命名管道通信，沙箱内必然失败（`mojo ... platform_channel` 报拒绝访问）。
+   而浏览器需要命名管道通信，受限环境内必然失败（`mojo ... platform_channel` 报拒绝访问）。
    这是环境限制，不是代码问题。
 8. **公开材料里不许出现真实盘符/目录名/串标题**。
    写文档、发布说明、报错示例、提交信息时一律用占位写法：`<盘符>\X岛`、`<盘符>\串`、
    `%LOCALAPPDATA%\xdao-export\导出`、`Desktop\某目录\`。注意公开的地方不只是仓库文件，
    **还包括 GitHub 的 Release 说明正文**（它由 `docs/RELEASE_NOTES_*.md` 上传而来），
    以及打包进 zip 的 `诊断写入.ps1` / `使用说明.txt`。
-   工具脚本里的本机路径（`gh.exe`、自装 Python）也要避免写死：用环境变量后取，
+   工具脚本里的可执行文件路径也要避免写死：使用命令搜索路径或参数配置，
    如 `tools/make_release.py` 的 `gh_token()`（`XDAO_GH` / `GITHUB_TOKEN`）。
    **2026-09-30 又收紧了一层：连「听谁说的」也不写。**
    提交信息、文档、发布说明、代码注释、测试 docstring 里不要出现
@@ -413,8 +337,7 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    （`7001234`、`7012345`）；不要拿某个真实长串当例子。这次全量自检翻出来的地方：
    `README.md` 的命令行示例（10 处）、`HANDOFF.md`、`docs/RELEASE_NOTES_v0.3.0.md` /
    `v0.3.1.md` / `v0.4.0.md`、`tests/test_gui_entry.py` 与 `tests/test_window.py` 里的串网址；
-   顺手把本机个人目录（形如 `D:\<某人的工作目录>`）与本机解释器自己的目录名换成了
-   `<工作目录>` / `<本机 Python>`。**已发布的 Release 正文要单独同步**
+   同时将个人目录与解释器路径替换为通用占位符（`<工作目录>` / `<项目 Python>`）。**已发布的 Release 正文要单独同步**
    （`gh release edit <tag> --notes-file …`）—— 正文是上传那一刻的快照，改仓库文件不会
    带着它一起变；提交信息与标签信息也要单扫一遍
    （`git log --all --format='%H%n%B'`、`git tag -l -n99`）。
@@ -445,18 +368,18 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    **说明书的版本段也有机器把关**（2026-10-02 补上）：`tests/test_manual_blocks.py` 拿
    `packaging/使用说明.txt` 逐段核 —— 新的在上；每段最多一行「上一版（vX）的说明见下）」
    且必须指紧接着的那一段；老的一行写法只许连着排在下面；每段不超过 900 字
-   （防整段被复制粘贴）。**这条规矩以前只靠本机脚本 `_scratch/check_usage_txt.py`，
+   （防整段被复制粘贴）。**这条规矩以前只靠辅助脚本 `_scratch/check_usage_txt.py`，
    而它那两条正则只认 `上一版 vX 的说明见下`（中间是空格）的写法** —— 最近十段用的是
    `上一版（v0.13.17）的说明见下）`，于是「衔接对不对」和「有没有夹一整份复制」这两条
    在最新的十段上一直空转，而每次发版动的恰好就是这一片。搬进仓库时按格式无关重写，
-   那个本机脚本现在转调这份用例，不再自己算一遍。
+   那个辅助脚本现在转调这份用例，不再自己算一遍。
    **文本卫生也有机器把关**（2026-10-02 补上）：`tests/test_text_hygiene.py` 扫 `git ls-files`
    那一整批文本文件 —— ①开头不许有两个 BOM（真出过一次：`使用说明.txt` 变成
    `EF BB BF EF BB BF`，一路进了 zip）；②同一个文件里 CRLF 与裸 LF 不许混用；
    ③`packaging/使用说明.txt`、`诊断写入.ps1`、`诊断写入-双击运行.cmd` 必须**保留**开头那一个
    BOM（记事本认 BOM 中文才不乱码；PowerShell 5.1 读不带 BOM 的脚本会当 ANSI 解）。
    ④一个**确实和库里不一样**的文件，工作区行尾不许与索引里是两种 —— 那提交上去就是「每一行都
-   变了」的假改动（真出过一次：一个改文档的本机脚本把 README/HANDOFF/MAINTENANCE 整份写成了 LF，
+   变了」的假改动（真出过一次：一个改文档的辅助脚本把 README/HANDOFF/MAINTENANCE 整份写成了 LF，
    没有任何用例拦得住，只靠肉眼看 `git diff --stat` 才发现）。判据是 `git ls-files --eol` 的
    `i/` 与 `w/`：只有「内容确实变了」时才要求两者同款，所以 git 自己归一化得掉的情形（索引 LF、
    工作区 CRLF 的 `.py`）不报；`attr` 里带 `eol=crlf` 的那两个 Windows 文件反过来要求工作区必须是
@@ -516,7 +439,7 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    **清理残留目录这个「会删东西」的工具也有护栏兜着**（2026-10-02 补上）：`tests/test_clean_scratch.py` 37 条，
    真删也真造链接（Windows 上用 `mklink /J` 造目录联接、POSIX 上用 `os.symlink`，两个平台都真跑、不跳过）。
    补上的东西：盘符根目录、用户主目录、带 `.git` 的仓库目录、当前工作目录本身或它的祖先一律先拦下，
-   并说清为什么（拦下就是没删，退出码 1）；新增 `--dry-run`；传进来是文件或链接就不走 `rmtree` ——
+   并说清原因（拦下就是没删，退出码 1）；新增 `--dry-run`；传进来是文件或链接就不走 `rmtree` ——
    `shutil.rmtree` 对符号链接和 junction 会直接报「Cannot call rmtree on a symbolic link」，旧写法把它
    当成「删除被拒」，接着去调权限、最后误报「被其它程序占用」，而真正管用的 `os.rmdir(junction)`
    从来没试过（本机 2026-10-02 验过：只摘链接，目标目录里的文件一个都没动；`icacls /t` 也不会穿过
@@ -535,7 +458,7 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    **仓库门面同步这个「往公开仓库写」的工具也有用例兜着**（2026-10-02 补上）：
    `tests/test_repo_info.py` 38 条，假 API 顶掉 `gh_token` / `request_json`，还能装成「收下了请求
    但没照办」。补上的两道护栏：① 写之前先验推导出来的值 —— 描述空的、超过 350 字符的、话题空的、
-   超过 20 个的、单个名字超过 50 个字符或带大写/空格/下划线/中文的，全在这里拦下并说清为什么，
+   超过 20 个的、单个名字超过 50 个字符或带大写/空格/下划线/中文的，全在这里拦下并说清原因，
    **一个请求都不发**（旧代码要等 GitHub 回一句含糊的 422，最坏的情况是把仓库门面清空）；
    ② 写完**再读回来核对** —— 只有读回来确实一致才说「已同步到远端（写完之后重新读回来核对过）」，
    还是不一样就返回 1 并写明「别当成同步好了」（旧代码只要请求没抛异常就印「已同步到远端。」
@@ -543,7 +466,7 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
    十一处都注入验过：退回旧写法，用例立刻红。
    **GUI 探针这一步也有用例兜着**（2026-10-02 补上）：`tests/test_gui_probe.py` 41 条，
    窗口标题、进程、时间全是假的（`window_titles` 默认被顶成「炸」，漏顶的用例当场失败）。
-   **为什么值得补**：它是发布清单的最后一步（拿下载回来的包跑一遍，看界面能不能起来），
+   **补充验证的依据**：它是发布清单的最后一步（拿下载回来的包跑一遍，看界面能不能起来），
    而旧写法只把标题里带「Unhandled exception」「fatal」的当失败，**别的标题一律报「界面已
    正常启动」** —— 出错时 PyInstaller / Windows 弹的对话框、甚至别的程序留下的窗口都能骗过
    这一步。现在认主窗口标题（`EXPECTED_TITLE = "X岛串导出"`，与 `xdao/gui.py` 里
@@ -585,12 +508,12 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
 
 **根因**：**Chromium 的沙箱层在「父进程是冻结程序」时初始化失败**。
 所以真正管用的开关只有一个：`--no-sandbox`。打包版会在启动浏览器时自动带上它
-（`xdao/browser_flags.py`），源码运行仍然带沙箱。
+（`xdao/browser_flags.py`），源码运行仍然带受限环境。
 
 **怎么找出来的**（以后遇到同类「冻结进程里子进程崩」照这个顺序）：
 
 1. 先用诊断开关 `main.py --pdfdiag` / `python tools/pdf_diag.py` 确认打包版里
-   浏览器到底能不能起来（会打印 `sys.frozen` 与「浏览器附加参数」，最后收一句结论：退出码 0 = 至少有一种方式真的生成了 PDF，1 = 一种都没成 —— 看到 1 就是「导出 PDF 在这台机器上会失败」）；
+   浏览器实际能不能起来（会打印 `sys.frozen` 与「浏览器附加参数」，最后收一句结论：退出码 0 = 至少有一种方式真的生成了 PDF，1 = 一种都没成 —— 看到 1 就是「导出 PDF 在这台机器上会失败」）；
 2. 冻结探针（PyInstaller `console=True` 打包一个小脚本）里直接调 `render_html_to_pdf`，
    **同一次运行里对照「不给开关 / 给开关」**，排除机器与网络因素；
 3. 用 `CreateProcessW` 之类的启动方式矩阵逐个换（见下表），直到变量收敛到一个开关。
@@ -611,19 +534,19 @@ v0.13.10 的说明漏了这一段，体检里那条就成了「发布说明没�
 | 换解释器/壳启动（PowerShell、`cmd /c start`、`Start-Process`） | 仍崩 |
 | 显卡相关 `--disable-gpu` | 仍崩 |
 | 渲染器代码完整性 `RendererCodeIntegrity` | 仍崩 |
-| 各种细粒度沙箱开关（`--disable-gpu-sandbox`、`--disable-setuid-sandbox`、`--no-zygote`、`--single-process`、NetworkServiceSandbox、JIT 沙箱、seccomp 过滤） | 全部仍崩 |
+| 各种细粒度受限环境开关（`--disable-gpu-sandbox`、`--disable-setuid-sandbox`、`--no-zygote`、`--single-process`、NetworkServiceSandbox、JIT 受限环境、seccomp 过滤） | 全部仍崩 |
 | 只换 headless 新旧实现（`--headless=old`） | 仍崩（headed 也一样崩，与无头无关） |
 | Chrome 自身有问题 | 从**命令行手工**用完全相同的参数启动，正常生成 PDF（32 KB） |
 | **`--no-sandbox`** | **成功**（0 退出码，出 PDF） |
 
-**当年为什么会误判成「系统级限制、无法绕过」**：只试了 Tcl/Tk、环境变量、工作目录、
+**早期误判为「系统级限制、无法绕过」**：只试了 Tcl/Tk、环境变量、工作目录、
 管道句柄、进程树这几类「自家代码的嫌疑」，没试 Chromium 自己的开关；
 而手工从命令行启动又恰好因为父进程不是冻结程序而正常，于是把根因归到了系统上。
 
 **应对**（v0.10.0 起）：
 
 - 打包版（`sys.frozen` 为真）启动浏览器时自动带 `--no-sandbox`，**PDF 照常导出**；
-- 源码运行不带这个开关，沙箱保持完好；
+- 源码运行不带这个开关，受限环境保持完好；
 - 渲染的还是本程序自己写出来的本地 HTML（内容来自抓取到的串），不接受远程页面；
 - `PdfBuilder.save()` 的 HTML 降级**保留**：路径写错、安全软件拦下、机器上其实没装浏览器时
   仍然用得上，降级时给的提示也按新的原因重写了（不再提「需要从源码运行」）。
@@ -811,7 +734,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   并把 `AppSettings.load()` 换成隔离配置，**不许碰用户真实的 `%APPDATA%` 配置**。
 - **CI 的 Windows runner 桌面只有 1024x768**：请求 1060 宽的窗口会被系统夹到 1028，
   右栏与日志框比本地窄。窗口尺寸相关的断言一律按最小尺寸（940x680）来写，
-  别假设"我要多少就有多少"。
+  布局断言应以控件实际可分配空间为准。
 
 ## 路线图（尚未实现）
 
@@ -823,9 +746,9 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 ## 已完成
 
-- **v0.21.21（2026-10-29）：并行抓页（可选项，默认关）**：实测长串慢在等服务端响应（79 页 1486 楼只抓页出 TXT 要 346.9 秒，平均 4.4 秒/页），本地节流只有 0.08 秒/次，所以并发下载网页是唯一不改变产物的提速办法。做法：`xdao/cache.py` 的 `CachedThreadFetcher` 加 `page_workers`（`DEFAULT_PAGE_WORKERS = 1`、`PAGE_WORKERS_MAX = 6`、`normalize_page_workers()`），`fetch()` 在算出页号上界后调 `_prefetch_pages()`：只并发 `fetch_thread_page`（去重、`ThreadPoolExecutor`、每线程先 `check_cancel(self.stop)`），解析/写缓存/判断到底仍由串行的 `_process_page` 按页号做（预取结果放 `self._prefetched`，取不到就现抓）——产物与顺序因此与串行逐字节一致。遇 429 / 「频繁」/「限流」字样则 `self.page_workers = DEFAULT_PAGE_WORKERS` 并提示「刚才被服务器限流了，剩下的页改成一页一页抓。」。配置 `settings.page_workers`（默认 1）；命令行 `--page-workers N`（`main._page_workers` 校验 1~6、`_effective_page_workers` 命令行优先于配置）；GUI 设置 → 网络「同时抓页数」Spinbox（越界夹到 1~6，填坏了沿用原值、不吃 `2.5` 这种写法）；三处调用点（`main.py` 单串、`main.py` 监控、`gui.py` 单串/监控）都透传。用例：`tests/test_cache.py` 62 → 71、`tests/test_cli.py` 78 → 87、`tests/test_settings.py` 100 → 114、`tests/test_gui_entry.py` 180 → 190。
+- **v0.21.21（2026-10-29）：并行抓页（可选项，默认关）**：实测长串慢在等服务端响应（79 页 1486 楼只抓页出 TXT 要 346.9 秒，平均 4.4 秒/页），本地节流只有 0.08 秒/次，所以并发下载网页是唯一不改变产物的提速办法。做法：`xdao/cache.py` 的 `CachedThreadFetcher` 加 `page_workers`（`DEFAULT_PAGE_WORKERS = 1`、`PAGE_WORKERS_MAX = 6`、`normalize_page_workers()`），`fetch()` 在算出页号上界后调 `_prefetch_pages()`：只并发 `fetch_thread_page`（去重、`ThreadPoolExecutor`、每线程先 `check_cancel(self.stop)`），解析/写缓存/判断实际仍由串行的 `_process_page` 按页号做（预取结果放 `self._prefetched`，取不到就现抓）——产物与顺序因此与串行逐字节一致。遇 429 / 「频繁」/「限流」字样则 `self.page_workers = DEFAULT_PAGE_WORKERS` 并提示「此前被服务器限流了，剩下的页改成一页一页抓。」。配置 `settings.page_workers`（默认 1）；命令行 `--page-workers N`（`main._page_workers` 校验 1~6、`_effective_page_workers` 命令行优先于配置）；GUI 设置 → 网络「同时抓页数」Spinbox（越界夹到 1~6，填坏了沿用原值、不吃 `2.5` 这种写法）；三处调用点（`main.py` 单串、`main.py` 监控、`gui.py` 单串/监控）都透传。用例：`tests/test_cache.py` 62 → 71、`tests/test_cli.py` 78 → 87、`tests/test_settings.py` 100 → 114、`tests/test_gui_entry.py` 180 → 190。
 - **v0.21.20（2026-10-29）：Markdown 目录模式的图片并发下载**：待办池里的「大串导出的图片下载进度/取消粒度」只有 Markdown 还没做——HTML 的 `_preload_images` 早就是六路线程 + 每 10% 报进度 + 下载线程里查取消，EPUB 的 `_collect_images` 也是；Markdown 选 `--image-mode folder` 时仍在 `_render_post` 里逐张 `ImageFolderWriter.write()` → `fetch_image`，没有进度也没有取消点。改法：`xdao/exporters/_shared.py` 的 `ImageFolderWriter` 加 `prefetch()`（去重 → `ThreadPoolExecutor(max_workers=6)` → `step = max(1, total // 10)` 报「正在下载图片：x/N」→ `check_cancel()` 在下载线程里抛）与 `fetch()`（预取过的直接取缓存、失败也记下不重试），并把 `write()` 改成按 url 记相对路径——同一张图多楼出现只落一个文件（以前写出 `同名-1.jpg` 副本）。`markdown.py` 的 `build()` 在渲染前调 `_preload_images(posts)`，渲染循环里每楼先 `check_cancel()`。另修一处 CLI 缺口：`main.py` 的 `create_exporter(...)` 从没传过 `progress`，所以命令行在「抓完最后一页 → 成品落盘」这段（下载图片、整理正文、渲染 PDF）没有任何输出，看着像卡死；现在传一个缩进打印的回调。用例：`tests/test_markdown.py` 48 → 53（并发进度、同一张图只下一次、没图时不出声、渲染前取消、楼间取消），`tests/test_cli.py` 77 → 78（导出器拿得到进度回调，且打在输出里带四空格缩进）。
-- **v0.21.19（2026-10-29）：静态体检清掉几处隐患**：用 pyflakes 扫 `xdao/`、`tools/`、`tests/`，揪出一处真缺陷——`tools/sync_from_api.py` 忘了 `import json`，`api()` 一调就 `NameError`；所有用例都把 `sync_from_api.api` 整个顶掉，所以从没执行到那一行（与 v0.21.15 的 `derive_filename` 同一类）。顺手清掉协议层搬去 `xdao/cdp.py` 后留在 `browser_login.py` 里的死代码（被兼容出口盖住的本地 `Frame`、`OPCODE_*`、`_SITE_WAIT`、`_WS_GUID` 与 7 个未用导入）、`tests/test_client.py` 与 `tests/test_window.py` 里各写了两份的 `_FakeResponse` / `_drain`，以及 `tools/`、`pdf.py`、`txt.py` 的未用导入。新增两条用例（`tests/test_dev_tools.py` 13 → 15）：一条直接调 `sync_from_api.api()` 钉住回包解析，一条用标准库 `ast` 扫全仓，禁止同一文件里同一个顶层名字绑定两次——v0.21.18 的坏用例、本次的重复 `_FakeResponse` 都属于这一类，编译器与用例都不会报。`xdao/` 与 `tools/` 现在只剩两处 pyflakes 会报的有意再导出（`browser_login` 的兼容出口、`updater.detect_proxy`），已在代码里注释说明别删。
+- **v0.21.19（2026-10-29）：静态体检清掉几处隐患**：用 pyflakes 扫 `xdao/`、`tools/`、`tests/`，揪出一处真缺陷——`tools/sync_from_api.py` 忘了 `import json`，`api()` 一调就 `NameError`；所有用例都把 `sync_from_api.api` 整个顶掉，所以从没执行到那一行（与 v0.21.15 的 `derive_filename` 同一类）。同时清掉协议层搬去 `xdao/cdp.py` 后留在 `browser_login.py` 里的死代码（被兼容出口盖住的本地 `Frame`、`OPCODE_*`、`_SITE_WAIT`、`_WS_GUID` 与 7 个未用导入）、`tests/test_client.py` 与 `tests/test_window.py` 里各写了两份的 `_FakeResponse` / `_drain`，以及 `tools/`、`pdf.py`、`txt.py` 的未用导入。新增两条用例（`tests/test_dev_tools.py` 13 → 15）：一条直接调 `sync_from_api.api()` 钉住回包解析，一条用标准库 `ast` 扫全仓，禁止同一文件里同一个顶层名字绑定两次——v0.21.18 的坏用例、本次的重复 `_FakeResponse` 都属于这一类，编译器与用例都不会报。`xdao/` 与 `tools/` 现在只剩两处 pyflakes 会报的有意再导出（`browser_login` 的兼容出口、`updater.detect_proxy`），已在代码里注释说明别删。
 - **v0.21.18（2026-10-29）：界面代码的测试补一轮**：只动 tests/，不改产品代码。给 `xdao/gui.py`（3086 语句）补了 46 条用例——`tests/test_window.py` 148 → 192、`tests/test_gui_entry.py` 178 → 180，覆盖登录窗坏分支与握手、读饼干失败兜底、自检窗的浏览器检查轮询、清理旧备份/暂存目录的 `except`、更新轮询的收尾事件、`run()` 遇 Ctrl+C 安静退出、监控一次性检查把图片缓存指到缓存目录。跑全部界面相关用例的覆盖率 96% / 121 未覆盖行 → **98% / 57 行**，剩余基本是防御性 `except`。另修掉一处用例卫生问题：`tests/test_window.py` 里 `test_poll_cookies_shows_why_reading_failed` 定义了两次，前一份被后一份遮住从未执行，已删掉较弱的那份。
 - **v0.21.17（2026-10-29）：PDF 书签目录**：命令行渲染加 `--generate-pdf-document-outline`，CDP 路径加 `generateDocumentOutline`；老浏览器拒绝该参数时自动去掉重打（`except CdpError` 里认 `generateDocumentOutline` 字样）。书签由浏览器按 h1/h2 生成：合并导出每串一条，单串是标题一条。用例 4 条（两条路径都带参数、退让重打、重打也失败时报 PdfError）。
 - **v0.21.16（2026-10-29）：HTML / PDF 改成边渲染边写盘，压住图片内嵌时的内存峰值**
@@ -849,13 +772,13 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
      `NameError: name 'derive_filename' is not defined`，目录里留了个 79 MB 的残包。
      回头查 `git log -S`：这行是 v0.13.49 重构时带进来的——`_epub_title()` 里调
      `derive_filename(thread)`，但 `epub.py` 的 `from ._shared import (...)` 里没它。
-  2. **为什么一直没暴露**：这条兜底只在 `plain_text(thread.title)` 为空或是「无标题」时
+  2. **问题此前未暴露的原因**：这条兜底只在 `plain_text(thread.title)` 为空或是「无标题」时
      才走；绝大多数串有标题，所以导出一直是好的。单元测试也没碰过空标题的 EPUB。
   3. **修法**：`xdao/exporters/epub.py` 的导入表补 `derive_filename`（一行）。行为与设计
      一致：书名优先用标题，没标题就退回文件名推导的结果。
   4. **用例**：`tests/test_epub.py` +2（空标题、「无标题」各一条，断言 `content.opf`
      里的 `dc:title` 是 `derive_filename()` 的结果）；该文件 38 → 40。
-  5. **顺带实测出来的数据**（79 页 / 1486 楼 / 259 张图）：
+  5. **同时实测出来的数据**（79 页 / 1486 楼 / 259 张图）：
 
      | 格式 | 产物 | 耗时 | Python 峰值 |
      |---|---|---|---|
@@ -919,7 +842,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.11**：给「工作线程内层函数」的成败两分支补用例（界面覆盖 91% → 93%）。
 
-  1. **为什么补**：界面里有一类函数是「点了按钮之后在后台线程里跑的那一小段」——
+  1. **改动背景**：界面里有一类函数是「点了按钮之后在后台线程里跑的那一小段」——
      `LoginDialog._refresh_captcha()` 里的 `work()`、`_do_login()` 里的 `work()`、
      `App.pick_cookies()` 里的 `work()`。它们只有五行十行，但**成功与失败两条路都要
      把结果放回队列**，放错了界面就永远转圈。此前的用例都只测了「队列里的东西怎么
@@ -932,14 +855,14 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
      `("form_error", 原文)`；取到了 → `("form", form)`；登录抛异常 → `("fail", 原文)`；
      登录成功 → 把「邮箱/密码/验证码/表单 hash」四个参数原样交给 `client.login` 并回
      `("ok", userhash)`；挑饼干三种（站点回文字、回 `success=false`、正常解析）。
-  4. **坑**：`tests/test_gui_entry.py` 里没有 `make_post`，别顺手用；断言队列里的对象
+  4. **坑**：`tests/test_gui_entry.py` 里没有 `make_post`，别同时用；断言队列里的对象
      时要拿**同一个实例**比对（`_Form()` 造两次是两个对象）。
   5. **读数**：只跑三个界面测试文件时 gui.py 行覆盖 91% → **93%**（231 行未覆盖）。
   6. 收集 2554、本机 2547 通过、7 跳过。
 
 - **v0.21.10**：给登录窗的失败分支与主窗口几个动作补用例（界面覆盖 90% → 91%）。
 
-  1. **为什么补**：`BrowserLoginDialog._worker` 是「点一下用浏览器登录」之后在后台
+  1. **改动背景**：`BrowserLoginDialog._worker` 是「点一下用浏览器登录」之后在后台
      跑的那段。它的主干早就覆盖了，但**每一条失败路径都没测**——而这些路径恰恰是
      真机报障的常客（v0.17.3 的「一次弹出好几扇窗」、v0.17.5 的「失败时看不见普查
      结果」都出在这里）。主窗口那几处同理：`retry_failed` 的「没有失败项」、
@@ -964,9 +887,9 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.9**：给「一键升级」的下载 / 自检 / 替换补用例（界面覆盖 89% → 90%）。
 
-  1. **为什么补**：升级链路是「会动用户文件」的那一小块代码 —— 下载新版、跑自检、
+  1. **改动背景**：升级链路是「会动用户文件」的那一小块代码 —— 下载新版、跑自检、
      问一句、把旧目录改名、交给帮手进程替换。它写错了不会报错，只会让用户以为
-     「升级完成」而目录其实没换（v0.16.x 踩过 `quit()` 不退出、帮手等满 60 秒放
+     「升级完成」而目录其实没换（v0.16.x 曾出现 `quit()` 不退出、帮手等满 60 秒放
      弃）。此前这条链路只有 `_upgrade_*` 的零星覆盖，`_upgrade_worker` 一行没测。
   2. **新增用例**（`tests/test_window.py` +14）：开始升级标记忙碌并排一次轮询、
      已在升级时忽略第二次点击、进度百分比 / 只有字节数两种显示、自检通过后问一句
@@ -976,7 +899,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
      finish 回来。
   3. **假队列的写法**：工作线程会在 `confirm` 那一步阻塞等用户作答，用例里用一个
      list 子类，`put(("confirm", (target, q)))` 时立刻替用户把答案塞进 q，线程就不会卡住。
-  4. **顺手修的一条抖动**：`tests/test_gui_browser_login.py` 的
+  4. **同时修的一条抖动**：`tests/test_gui_browser_login.py` 的
      `test_the_wait_extends_itself_while_the_browser_is_still_open` 用秒表钉上限，
      带覆盖率或跑全量时会被拉长而偶发红；改成「只要没多续一整轮就算过」（下界仍是
      真正的断言）。
@@ -986,7 +909,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.8**：给「挑选饼干」窗口与「从串里挑选」补用例（界面覆盖 87% → 89%）。
 
-  1. **为什么补**：`CookiePicker.__init__` 是整份 gui.py 里剩下最大的一块未覆盖代码
+  1. **改动背景**：`CookiePicker.__init__` 是整份 gui.py 里剩下最大的一块未覆盖代码
      （41 行）——它负责把第一页的饼干按发言数排序列出来、给 PO 标上「← PO」、
      把已经在筛选框里的预先勾上。它坏掉的表现是「挑完应用了但筛选框没变」或
      「主楼标错人」，而这两件事直接影响导出范围对不对。
@@ -997,14 +920,14 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
      队列还空着时继续等（`after(80, …)`）。
   4. **踩的坑**：`CookiePicker` 在 `__init__` 里调 `grab_set()`，未映射窗口上会抛
      `TclError`，用例要用 `pytest.MonkeyPatch.context()` 临时按掉；`_poll_cookies`
-     的「按钮变回正常」写在取到消息之后，直接手调时按钮还是原状态，断言别钉它。
+     的「按钮变回正常」写在取到消息之后，直继续维护调时按钮还是原状态，断言别钉它。
   5. **读数**：只跑三个界面测试文件时 gui.py 行覆盖 87% → 89%（2738/3086）；
      `tests/test_window.py` 82 → 92。
   6. 收集 2506、本机 2499 通过、7 跳过。契约七件全绿。
 
 - **v0.21.7**：给主窗口的监控开关、打开登录/设置、导出收尾补用例（界面覆盖 85% → 87%）。
 
-  1. **为什么补**：这三块都是「点了按钮之后那几行」——监控窗口的 _start/_toggle/
+  1. **改动背景**：这三块都是「点了按钮之后那几行」——监控窗口的 _start/_toggle/
      _remove_selected/_check_now、App.open_login/open_settings、以及导出收尾
      _finish。它们坏掉的表现全是「点了没反应 / 状态行不说真话」，而且都不在之前
      那批「被拦下」的用例里。
@@ -1023,7 +946,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.6**：给登录窗后台线程补失败分支用例。
 
-  1. **为什么补**：`BrowserLoginDialog._worker` 是「用浏览器登录」的后台入口，
+  1. **改动背景**：`BrowserLoginDialog._worker` 是「用浏览器登录」的后台入口，
      以前没有直接用例；它每次失败都要在日志里说清「普查看到了什么」与
      「每一扇候选窗各是什么死因」，而失败时还得把那扇已经起来的窗收掉
      （真机 2026-10-18「一次弹出好几扇窗」的成因之一）。
@@ -1037,7 +960,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.5**：给监控成功路径与「保存日志」补用例。
 
-  1. **为什么补**：`xdao/gui.py` 里 `start_watching()` 之前只有两条「被拦下」的用例，
+  1. **改动背景**：`xdao/gui.py` 里 `start_watching()` 之前只有两条「被拦下」的用例，
      真正跑起来那条路一行没跑过；`save_log()` 同样没用例。前者坏掉的表现是
      「点了监控没反应 / 状态永远显示监控中」，后者坏掉是静默丢日志。
   2. **监控用例**（`tests/test_window.py` 63 → 70，真 Tk）：把 `watch_forever`
@@ -1053,7 +976,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.4**：给主窗口的几条动作补用例（清缓存、联网检查、更新提示、开监控前置条件）。
 
-  1. **为什么补**：这些动作都是「失败时要说话」的地方——缓存删不掉、清理目录不存在、
+  1. **改动背景**：这些动作都是「失败时要说话」的地方——缓存删不掉、清理目录不存在、
      联网探针自己出错、发现新版本后能不能原地升级——平时都是绿的，出问题时才会
      被用户看到，之前一条用例都没有。
   2. **用例**（`tests/test_window.py` 53 → 63，真 Tk）：没有缓存时的提示、用户取消
@@ -1067,7 +990,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.3**：给登录对话框的两条轮询补用例（验证码加载、账号密码登录）。
 
-  1. **为什么补**：`LoginDialog._poll_form()` 与 `LoginDialog._poll_login()`
+  1. **改动背景**：`LoginDialog._poll_form()` 与 `LoginDialog._poll_login()`
      是「后台线程 → 对话框」的唯一通道；它们在整包覆盖率里整段没被执行过
      （18 + 15 + 14 行），而这正是「验证码一直加载中」「登录没反应」这类
      反馈会落到的地方。
@@ -1081,7 +1004,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 
 - **v0.21.2**：给界面队列轮询补用例（导出进度/日志、挑饼干两条出口）。
 
-  1. **为什么补**：`App._poll_export()` 与 `App._poll_cookies()` 是导出线程、
+  1. **改动背景**：`App._poll_export()` 与 `App._poll_cookies()` 是导出线程、
      挑饼干线程与界面之间的唯一通道，`gui.py` 行覆盖率 79% 里最值得补的就是它们——
      日志少写一行、失败分支漏提示，用户只会看到「没反应」。
   2. **用例**（`tests/test_window.py` 41 → 44，真 Tk）：进度与日志落到进度条/日志框、
@@ -1154,7 +1077,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   - 两个脚本都改成按文件位置找仓库根目录，不再写死本机路径；`tests/test_dev_tools.py`
     7 → 13（新增 `split_tag` 拆解、坏标签头、`read_notes` 与缺文件报错、用法提示）。
   - 用例：2369 → 2375（本机 2368 通过、7 跳过）。
-- **v0.19.7**：开发脚本收进仓库，顺带量了导出内存峰值（程序行为不变）。
+- **v0.19.7**：开发脚本收进仓库，同时量了导出内存峰值（程序行为不变）。
   - 内存峰值（`_scratch\measure_export_memory.py`，tracemalloc，无图片）：
     2000 帖 × 800 字（正文 4.6 MB）→ txt 12.3 MB / markdown 8.6 MB / html 14.5 MB；
     5000 帖（正文 11.4 MB）→ 30.8 / 21.2 / 35.8 MB。倍数稳定在 2.7× / 1.9× / 3.1×，
@@ -1182,7 +1105,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
   - 用例：2328 → 2362（本机 2355 通过、7 跳过）；行覆盖 client 80% → 87%、updater 87% → 91%。
   - 坑：Windows 的 `os.environ` 键不分大小写，`setenv("HTTPS_PROXY")` 后
     `delenv("https_proxy")` 会把刚设的那条一起删掉——用例里要先全清再设。
-- **v0.19.5**：发版工具拒绝不合格的 Release 标题（补一道格式闸）
+- **v0.19.5**：发版工具拒绝不合格的 Release 标题（增加一道格式闸）
 
   2026-10-25 连续两版（v0.19.3、v0.19.4）把 `--name` 写成了
   「xdao-export vX.Y.Z（免安装包 · Windows 64 位）」/「vX.Y.Z（免安装包 · Windows 64 位）」，
@@ -1231,7 +1154,7 @@ traceback 指向 `main.py` 的 `output_dir.mkdir(parents=True, exist_ok=True)`�
 emote_chain(limit=100) +
      ind_pushed_prefix，本地历史超过 100 条后恒判 0（
 epo_check.py 早在
-     2026-10-01 就踩过同一处，它改用本地 git log 绕开）。后果是每次推送都
+     2026-10-01 就出现过同一问题，它改用本地 git log 绕开）。后果是每次推送都
      重建全部提交、重传上千个 blob：2026-10-25 实测 1360 个 blob、一个多小时。
   2. 修法：新增 pushed_count_from_git(head, total)——git merge-base --is-ancestor
      确认是祖先，再 git rev-list --count head..HEAD 得待推条数，零请求。
@@ -1266,7 +1189,7 @@ epo_check.py 早在
 
 - **v0.19.1**：给 `xdao/cdp.py` 补协议层用例（只动测试，不改行为）
 
-  `cdp.py` 是手写的 DevTools WebSocket 客户端，登录流程与 PDF 渲染都走它，此前只有 `test_browser_login.py` 间接覆盖（上次处理体检时 73.9%，是整项目最低的一块）。新建 `tests/test_cdp.py`（111 条），用 socketpair 造一对连接、另一端写了个假 CDP 服务端（自动回握手、按命令回话、能发事件/分片/ping/close），因此不碰真浏览器：
+  `cdp.py` 是手写的 DevTools WebSocket 客户端，登录流程与 PDF 渲染都走它，此前只有 `test_browser_login.py` 间接覆盖（前一批次体检时 73.9%，是整项目最低的一块）。新建 `tests/test_cdp.py`（111 条），用 socketpair 造一对连接、另一端写了个假 CDP 服务端（自动回握手、按命令回话、能发事件/分片/ping/close），因此不碰真浏览器：
 
   - 帧层：掩码、`0/126/127` 三种长度、分片 opcode、余包优先、对端关闭；
   - 握手层：RFC 6455 的 Accept 向量、路径/查询串、非 101、Accept 不对、被关闭；
@@ -1274,7 +1197,7 @@ epo_check.py 早在
   - 选页：`pick_page` / `pick_site_page` / `_context_ids_of*` / `_describe_exception`；
   - 会话：命令按 id 配对（乱序也认）、事件与非整数 id 忽略、分片拼回、ping 回 pong、超时、`close()` 叫醒等待者、`retarget` 的四种去向、读饼干三条路（含一条失败时用另一条）、`evaluate` 的字符串/对象/异常/空值。
 
-  顺带记下两个 Windows 细节：①`socketpair` 关一端，另一端是 `WinError 10054` 而不是干净 EOF，所以「被对方关闭」用假 socket（`recv` 返回 `b""`）复现；②把 `read_frame` 打桩要打在**类**上，打在实例上时读线程已经阻塞在 `recv` 里，桩不会生效。
+  同时记下两个 Windows 细节：①`socketpair` 关一端，另一端是 `WinError 10054` 而不是干净 EOF，所以「被对方关闭」用假 socket（`recv` 返回 `b""`）复现；②把 `read_frame` 打桩要打在**类**上，打在实例上时读线程已经阻塞在 `recv` 里，桩不会生效。
 
   结果：`tests/test_cdp.py` 111 passed，单文件覆盖率 **99%**；全量 2249 收集 / 2242 通过 / 7 跳过。
 - **v0.19.0**：图片存到成品旁边的同名目录（只对 HTML）
@@ -1291,7 +1214,7 @@ epo_check.py 早在
     界面 `IMAGE_MODE_LABELS` / `_image_mode_keys` / `WatchEditDialog.IMAGE_KEYS`。
   - 用例：6（导出器：写盘、相对路径、失败保留链接、无成品回落内嵌、PDF 保留设置但内嵌、
     同图只下一次）+ 2（settings）+ 1（watch_list）+ 2（命令行）+ 5（界面）。
-  - 顺带修：`tests/test_pdf.py::_batch_bytes` 改成按「当前控制台代码页」选编码（65001 用
+  - 同时修：`tests/test_pdf.py::_batch_bytes` 改成按「当前控制台代码页」选编码（65001 用
     UTF-8，否则 mbcs）。2026-10-25 运行环境的控制台切到 UTF-8 之后，中文路径下的假浏览器
     批处理按 GBK 写就会乱码，12 条 PDF 用例一起红；现在两种环境都能跑。
 
@@ -1317,13 +1240,13 @@ epo_check.py 早在
   从 `Translate` 扩成 `Translate,msImplicitSignin`（模块常量 `_DISABLE_FEATURES`）。
   实测对比（一次性探针脚本：各起一扇新窗、等 9 秒、CDP
   `Network.getAllCookies`）：改前整罐 11 块、微软家族 10 块；改后整罐 1 块、微软家族 0 块。
-  **四、顺带的取证开关。** `xdao/gui.py` 登录线程的成功分支：`os.environ.get("XDAO_LOGIN_DUMP")`
+  **四、同时的取证开关。** `xdao/gui.py` 登录线程的成功分支：`os.environ.get("XDAO_LOGIN_DUMP")`
   为真时，在 `("ok", value)` 入队之前落一份「读罐详单」并写一行 `详单=…`。默认不开、不改行为。
   **五、用例。** `tests/test_browser_login.py` 两条 `build_args` 用例改成钉新开关
   （`--disable-sync`、`msImplicitSignin`、`Translate` 都还在；顺序与末尾地址不变）。
 
 - **v0.17.6**（失败时也把对账日志落进运行日志；测试两处稳定化）：
-  **一、为什么。** v0.17.5 把候选失败逐条记进 `LoginBrowser.attempt_notes`，但 `xdao/gui.py`
+  **一、原因。** v0.17.5 把候选失败逐条记进 `LoginBrowser.attempt_notes`，但 `xdao/gui.py`
   只在 `browser.start()` 成功之后才把这些行入队；候选全部失败时走 `except` 分支，只弹对话框
   —— 而对话框一关就没了，最该对账的那一次恰恰什么都没留下。
   **二、修法（只补日志落点，不改行为）。** `xdao/gui.py` 的登录线程
@@ -1342,7 +1265,7 @@ epo_check.py 早在
   `tests/test_gui_entry.py::test_login_worker_writes_the_attempt_notes_when_every_candidate_fails` 与
   `tests/test_pdf.py::test_fake_browser_batch_file_is_written_in_the_cmd_code_page`。
 - **v0.17.5**（多扇窗再出现时，运行日志能对账：每次候选失败留一行）：
-  **一、为什么加。** v0.17.4 修的是「窗口活过启动进程、程序没认下它」这条根因，但真机
+  **一、改动背景。** v0.17.4 修的是「窗口活过启动进程、程序没认下它」这条根因，但真机
   一时难以复现（用户 2026-10-18 回验时只开出一扇），没法当场证明已经修好。候选表里的
   中间失败以前全被内部消化掉：日志里只有最后成功那句「开窗前普查……」与「读罐对账」。
   **二、修法（只加记录，不改行为）。** `LoginBrowser` 新增 `self._attempt_notes` 与只读属性
@@ -1370,7 +1293,7 @@ epo_check.py 早在
   stale_text, stale_mtime)`：进程退出那一刻先看 `chosen/DevToolsActivePort` ——
   这次启动之后写的（`_port_file_fresh`）或启动前就有、现在还答话（交棒给已开着的窗），
   且 `_profile_in_use(chosen)` 为真，就把端口/ws/资料目录注记接过来、置 `self._attached = True`
-  （收尾按资料目录杀，和接手别人的窗同一条路），不再换候选。端口不答话则立刻返回 None
+  （收尾按资料目录杀，和继续维护别人的窗同一条路），不再换候选。端口不答话则立刻返回 None
   （启动前没有端口文件、启动后也没有时直接返回，不为真起不来的情况白等 `RELAUNCH_GRACE = 8.0` 秒）。
   **四、用例。** `tests/test_browser_login.py` 新增 3 条：`_HandOverPopen` 造「退出码 0 +
   端口答话」→ `_launch` 只开一扇且 `_attached is True`；旧端口文件没变、端口哑掉 → 立刻回 None；
@@ -1390,7 +1313,7 @@ epo_check.py 早在
   交给上面的宽限重探去接。`live_browser_dirs()` 也改成内层探针可替换（`probe=`）。
   **三、收尾必杀与孤儿清扫。** `LoginBrowser` 新增 `attach_live` / `headless` 两个构造参数
   （`attach_live=False` 时跳过接活窗口，PDF 用）；`stop()` 在自己 `Popen` 的进程之外，再按
-  `self._profile` 调 `_kill_processes_using_profile()` 兜底 —— 接手的窗口 `process` 是 `None`，
+  `self._profile` 调 `_kill_processes_using_profile()` 兜底 —— 继续维护的窗口 `process` 是 `None`，
   以前根本收不到（实测留下过 598 MB、23 个进程、端口还活着的孤儿窗）。新增
   `sweep_orphan_profiles()`：程序启动与退出时各扫一次 `%TEMP%` 下自家 `xdao-export-browser-profile-*`
   的残留窗。
@@ -1400,7 +1323,7 @@ epo_check.py 早在
   `root.protocol("WM_DELETE_WINDOW", app.on_close)` 接管 ×（`getattr` 取值，测试里的假 App
   没有这个方法也能跑）；`_worker()` 的异常分支改成 `_release_browser(browser)` 再报错。
   **五、PDF 无头。** `xdao/exporters/pdf.py` 起浏览器时 `attach_live=False, headless=True`
-  （`build_args()` 多拼一个 `--headless=new`），渲染 PDF 不再顺手弹一扇可见窗；`--selftest
+  （`build_args()` 多拼一个 `--headless=new`），渲染 PDF 不再同时弹一扇可见窗；`--selftest
   --check-browser` 这种显式检查仍然可见（`check_browser()` 不传 headless）。
   **六、用例与基线。** `tests/test_browser_login.py` 343→353、`tests/test_gui_entry.py` 98→103。
   收集 **2088 项**、本机 **2081 passed / 7 skipped**（跳过的是真机用例）。
@@ -1429,7 +1352,7 @@ epo_check.py 早在
   **二、导出字号。** 新配置键 `export_font_size`（默认 14，范围 10~28）。`xdao/exporters/html.py` 的 CSS 六处 px 改成按字号插值（`_font_px(font_size, base)`；14 磅时与原值逐字节相同），`epub.py` 的 `_style_css(font_size)` 只在给了字号时才往 `body` 上加一条（不给就原样返回 `STYLE_CSS`），`pdf.py` 把字号透传给内部那个 `HtmlBuilder`；`create_exporter(..., font_size=None)`、`main.py --font-size`（`_font_size` 校验范围、`_effective_font_size` 命令行优先于配置）、`xdao/watcher.py` 的 `check_once` / `watch_forever` 都把它带下去；界面「设置 → ③ 导出」新增「正文字号」数字框，导出开始时日志写一行「正文字号：N 磅。」。**默认值必须还是 14**：老配置里没有这个键，默认一变老用户的成品外观就跟着变。
   **三、用例与基线。** `tests/test_settings.py` 46→67、`tests/test_theme.py` 27→34、`tests/test_exporters.py` 81→88、`tests/test_epub.py` 31→35、`tests/test_cli.py` 57→63、`tests/test_gui_entry.py` 70→84。收集 **1990 项**、本机 **1983 passed / 7 skipped**。
 - **v0.14.1**（补齐开源协议、版权声明与免责声明；免安装包开始随包发出 LICENSE.txt）：
-  **一、协议与版权。** `LICENSE` 本来就有一份 MIT 全文，这一版把版权行补成 `Copyright (c) 2026 XiaoFeng7418 (XiaoFeng7418)`（原先只有 GitHub 账号）。`README.md` 在「用途与声明」之后新增 `## 开源协议与版权`（是 MIT、点明可自由使用/修改/再分发含商用、第三方组件是 Python PSF / Tcl-Tk BSD / PyInstaller 的 GPL 加启动器例外）与 `## 免责声明`（非官方、按「现状」提供、合法使用、爱惜站点、内容版权属 X岛与原作者、责任限制、权利主张），下载表与目录树同步提到 `LICENSE`。`packaging/使用说明.txt` 的「用途与声明」补上对应的两条。
+  **一、协议与版权。** `LICENSE` 本来就有一份 MIT 全文，这一版把版权行补成 `Copyright (c) 2026 XiaoFeng7418`（原先只有 GitHub 账号）。`README.md` 在「用途与声明」之后新增 `## 开源协议与版权`（是 MIT、点明可自由使用/修改/再分发含商用、第三方组件是 Python PSF / Tcl-Tk BSD / PyInstaller 的 GPL 加启动器例外）与 `## 免责声明`（非官方、按「现状」提供、合法使用、爱惜站点、内容版权属 X岛与原内容发布者、责任限制、权利主张），下载表与目录树同步提到 `LICENSE`。`packaging/使用说明.txt` 的「用途与声明」补上对应的两条。
   **二、随包发出。** `tools/build_zip.py` 的 `EXTRA_FILES` 加 `("LICENSE", "LICENSE.txt")` —— MIT 要求「版权声明与许可声明」随软件的每一份副本一起走，所以它必须跟着 exe 发出去；使用说明与 README 都点明了包里有这一份。`tests/test_build_zip.py` 的 docstring 同步。
   **三、用例与基线。** 新增 `tests/test_license_docs.py`（4 条）：LICENSE 是 MIT 且写得出权利人、README 的两节都在并指到 `LICENSE`、随包的使用说明写了协议与免责、`EXTRA_FILES` 真的会带上 `LICENSE.txt`。收集 **1931 项**、本机 **1924 passed / 7 skipped**。
 - **v0.14.0**（新功能：导出范围＝页数上限 + 串号截止；另修两处：日志里的中文资料目录乱码、「写不进去」的说明按实测改正）：
@@ -1440,28 +1363,28 @@ epo_check.py 早在
   **四、用例与基线。** `tests/test_cache.py` 48→59、`tests/test_cli.py` 48→57、`tests/test_gui_entry.py` 62→70、`tests/test_settings.py` 26→46。收集 **1927 项**、本机 **1920 passed / 7 skipped**。
 - **v0.13.53**（保存失败不再谎报成功；实测确认「程序放在受限目录里」会连配置一起写不进去）：
   **一、症状。** v0.13.52 真机：日志 `[13:23:03] 登录成功，饼干已保存。`，而 `%APPDATA%\xdao-export\config.json` 的修改时间停在 2026/10/1 9:18、里面 `userhash` 是空的 —— 重启程序又要重新登录；同目录 `.cache`(13:10)、`update-check.json`(13:04) 却写成功过，只有这次登录的写盘没落地。
-  **二、根因（两层）。** ①`xdao/settings.py` 的 `save()` 是 `except Exception: pass`，写不进去也一声不响，`gui.py` 的 `open_login()` 照着报「已保存」；②那次运行里 `%APPDATA%\xdao-export` 与导出目录确实写不进去。②的成因已定案：**程序是从一个被限制写入的目录里启动的**（本机那个受限目录给沙箱组只留了目录内的写权限，ACL 上的差别是工作区多了一条能力 SID `S-1-4-…:(OI)(CI)(W,D,DC)`），同一个 exe 放在工作区里自检报 2 处「不行」、整份拷到不受限的位置就全部正常；另用 PyInstaller 打了一个极小的对照程序：放到不受限的位置跑四个目录全「能写」，放在那个受限目录里跑连它自己的临时目录都建不出来（`[PYI-…:ERROR] Could not create temporary directory!`）。火绒（HipsTray/HipsDaemon）与 Windows 权限都已排除：信任区只跳过查杀、整只退出火绒仍失败，受控文件夹访问=0、ACL 里本账户是 FullControl、PowerShell 与普通 python 写同样的目录都成功。
+  **二、根因（两层）。** ①`xdao/settings.py` 的 `save()` 是 `except Exception: pass`，写不进去也一声不响，`gui.py` 的 `open_login()` 照着报「已保存」；②那次运行里 `%APPDATA%\xdao-export` 与导出目录确实写不进去。②的成因已定案：**程序是从一个被限制写入的目录里启动的**（本机那个受限目录给受限环境组只留了目录内的写权限，ACL 上的差别是工作区多了一条能力 SID `S-1-4-…:(OI)(CI)(W,D,DC)`），同一个 exe 放在工作区里自检报 2 处「不行」、整份拷到不受限的位置就全部正常；另用 PyInstaller 打了一个极小的对照程序：放到不受限的位置跑四个目录全「能写」，放在那个受限目录里跑连它自己的临时目录都建不出来（`[PYI-…:ERROR] Could not create temporary directory!`）。火绒（HipsTray/HipsDaemon）与 Windows 权限都已排除：信任区只跳过查杀、整只退出火绒仍失败，受控文件夹访问=0、ACL 里本账户是 FullControl、PowerShell 与普通 python 写同样的目录都成功。
   **三、这一版的改法。** `AppSettings.save() -> bool`（写成功 True、失败 False）；`gui.py` 新增 `App.save_settings(*, loud=False)` 作为统一出口（第一次失败说一句、`loud=True` 每次都说，日志写「设置没能写进 <配置路径> —— 这次的改动只在本次运行里有效，重启就没了」）；`open_login()` 只在写成时才报「登录成功，饼干已保存。」，写不进去则弹提示框写明路径、原因与做法（把程序文件夹挪到不受限的位置）；`SettingsDialog` 的 `self.saved` 改成记 `bool(settings.save())`，`open_settings()` 据此说话。
   **四、用例。** `tests/test_settings.py` 加 1 条（25 → 26）：`test_save_reports_whether_the_file_could_be_written`（能写返回 True 且文件真在；父路径是文件时返回 False）。收集 **1879 项**、本机 **1872 passed / 7 skipped**。
   **五、真机复验（2026-10-11 14:02）。** 把程序整个文件夹挪到不受限的位置后：C 盘与 D 盘两个导出目录都正常导出；`%APPDATA%\xdao-export\config.json` 于 14:02:03 写成功（726 字节、`userhash` 62 字符、`output_dir = D:/X岛`），退出程序再启动仍是登录态 —— 上一版那条「假报已保存」在这台机器上闭环。注意 `AppData`是隐藏目录（属性 Hidden），在资源管理器里直接粘 `%APPDATA%\xdao-export` 才看得到。
 - **v0.13.52**（把「验饼干」那一步的结论写进运行日志与常驻行 + 关窗/取消前先落一份「读罐详单」；另：重打包让包里那份 `使用说明.txt` 跟上 v0.13.51 的措辞修正）：
-  **一、症状（真机 复现记录 / 复现记录，v0.13.51）。** 两次都卡在同一个形状：`读罐对账：现场：…` 已经把 `userhash` 列进两份罐（12:05:10 与 12:29 各一次），对话框却一直停在「还没在浏览器里看到登录」，第二次等到 635 秒仍没有下文。按条件反推：`读罐对账` 与 `领饼干那条路` 两行都只在 `not value` 时写（`if not value and leaf_now >= next_leaf:` 那一块，以及 `if not value:` 里的 `jar_forensics` 块），而 `现场：` 行不受这个条件约束 —— 12:04 与 12:29 之后不再出现新的对账行，说明程序手里已经有值，卡点在 `verify_userhash_live()`：拿这块饼干去请 `Member/User/Cookie/index.html`，被弹回登录页（或该请求本身失败）。而这一步的结论过去只走 `("note")`（状态行每 15 秒被整句替换），运行日志里一个字都没有 ⇒ 断不出卡在读、还是卡在验。
+  **一、症状（真机 复现实验 / 复现实验，v0.13.51）。** 两次都卡在同一个形状：`读罐对账：现场：…` 已经把 `userhash` 列进两份罐（12:05:10 与 12:29 各一次），对话框却一直停在「还没在浏览器里看到登录」，第二次等到 635 秒仍没有下文。按条件反推：`读罐对账` 与 `领饼干那条路` 两行都只在 `not value` 时写（`if not value and leaf_now >= next_leaf:` 那一块，以及 `if not value:` 里的 `jar_forensics` 块），而 `现场：` 行不受这个条件约束 —— 12:04 与 12:29 之后不再出现新的对账行，说明程序手里已经有值，卡点在 `verify_userhash_live()`：拿这块饼干去请 `Member/User/Cookie/index.html`，被弹回登录页（或该请求本身失败）。而这一步的结论过去只走 `("note")`（状态行每 15 秒被整句替换），运行日志里一个字都没有 ⇒ 断不出卡在读、还是卡在验。
   **二、这一版做什么。** ①验饼干失败那句同时写两份： `("forensics", f"验饼干：{note}")` 进运行日志、 `("hint", f"读到一块 userhash，但没通过核验：{note}")` 占住常驻行（读到值以后常驻行原本空着，看着像程序没看见这次登录）。②`BrowserLoginDialog._dump_jar_before_close()`：`_on_cancel()` 在 `_shutdown()` 之前先落一份详单 —— 先 `_stop.set()` 再 `thread.join(timeout=BROWSER_CANCEL_DUMP_WAIT=2.0)`（不先举停止位会白等满 2 秒），落成报路径、落不成明说「多半是临时目录写不进去」；`_jar_dump_written` 保证不重复写（超时路径与提前落盘两处也相应置位）。③重打包：v0.13.51 只改了仓库里的 `packaging/使用说明.txt` 而没有重打包，那个 zip 里仍是改前措辞。
   **三、根因（这一版真正的功能修复，2026-10-11 定案）。** 用上一版落下的详单（`<放各版本目录的那个目录>\xdao-export-v0.13.51-win64\xdao-读罐详单-62CA.json`，四路读法都看得见 `PHPSESSID` / `memberUserspapapa` / 62 字节的 `userhash`）里的三块饼干各请求一次 `https://www.nmbxd1.com/Member/User/Cookie/index.html`（`_scratch/probe_verify_full_jar.py`）：**只带 userhash** → 落点 `…/Member/User/Index/login.html`（3592 字节，正文含「登录」「验证码」）；**userhash + PHPSESSID + memberUserspapapa** → 落点就是饼干列表页（24935 字节，正文含「退出」「饼干」）；UA 换成默认那条也一样成立（所以不是 UA 的事）。而 `client.import_cookies` 此前只有 `browser_login.py:3391`（领饼干那条兜底路）在用，浏览器登录的**核验路**只 import 了 userhash 一块（`verify_userhash_live`）—— 站点认的是整罐会话，于是每一次核验都被弹回登录页，被判成「这块饼干不认」，退回重等，一直等到十几分钟没有下文。修法：`gui.py` 核验之前调 `self._carry_browser_jar(backend, session)`（`read_site_cookies` 读整罐 → `client.import_cookies` 装进 jar，装成功一次就记 `_session_jar_carried`，并往运行日志写一行「整罐饼干已装进客户端（N 块）」）。装进来之后那两块会话饼干会一直留在客户端里，之后的导出请求也带着走。
   **四、用例。** `tests/test_gui_browser_login.py` 加 3 条：`test_the_stale_cookie_verdict_also_goes_into_the_run_log`（既进日志也占常驻行）、`test_closing_the_window_before_the_timeout_still_leaves_the_jar_dump`（取消前落盘并在日志里报路径）、`test_the_whole_browser_jar_is_carried_before_verifying`（核验前整罐装进客户端并记日志）。收集 **1878 项**、本机 **1871 passed / 7 skipped**。
 - **2026-10-11 打包摆放 + 公开材料第二条**（都不算版本：一个只动 `tools/build_zip.py`，一个只动文档与用例）：
   **一、`tools/build_zip.py --release-dir <外层目录>`。** 产物默认落在仓库的 `./dist`，下载者习惯去的外层目录里就什么都没有 —— 每版都得靠人记得加 `--out`，v0.13.51 漏了一次，事后才手工解压补出「版本目录 + zip + .sha256」三件套。现在给 `--release-dir` 就一步摆好（同名的旧版本目录先删掉再摆）；本机不带它而产物落在 `./dist` 时会打一行「提醒」，CI 用 `--out dist` 且有 `GITHUB_ACTIONS`，不提醒。用例 `tests/test_build_zip.py::test_release_dir_gets_the_three_pieces_and_replaces_the_old_tree`。
-  **二、公开材料第二类禁句（`docs/RELEASE_NOTES_*.md` 与 `packaging/使用说明.txt`）。** 第一道 `FORBIDDEN_ADDRESS` 只拦「来源写成某某要的」这类归属句式；9 份发布说明与使用说明里还有一批把「某位用户验过几次、贴回什么、下次再贴什么」写进公开材料的句子（「你复验了一次」「你贴回来的那三行」「把那个文件也发我」），已全部改成客观写法，线上 9 个 Release 正文用 `gh release edit --notes-file` 重推；`tests/test_public_material.py` 加 `FORBIDDEN_USER_STORY`（发布说明 + 使用说明）与 `FORBIDDEN_USER_STORY_EXTRA`（「你把」，只扫发布说明），仍挂在原用例上。扫线上正文用 `_scratch/dump_release_bodies.py`（直接从用例里 import 那几个正则）。
+  **二、公开材料叙事约束。** 发布说明与使用说明仅保留客观功能、限制和复现信息。公开材料守卫检查对话归属、个人经历和内部沟通措辞。
   **三、基线。** 收集 **1875 项**、本机 **1868 passed / 7 skipped**（`test_build_zip.py` 22 → 23）。
 - **v0.13.51**（「登录读不到 userhash」的现场取证：现场行 + 提前落详单 + 按命令行问准真正在用的资料目录 + 页面本地存储里再找一次；另修 `罐路径=` 误报常驻罐）：
-  **一、症状（真机 复现记录，v0.13.50）。** 用户在程序自己起的那扇窗（横条「窗口号 C925 · 端口50459」）里登录，F12 → 应用程序 → Cookie 里三条：`memberUsers…`、`PHPSESSID`、70 字节的 `userhash`；程序四条读法（按地址读 / 整罐读 / 存储读 / 页面 JS）一条都没看见（`原始userhash=无`）。到 00:03:31 为止的日志里 `挂=…login.html`、`页=1（…login.html#）`、`别路=上下文2C8811：PHPSESSID`、`罐路径=C:\Users\你\AppData\Roaming\xdao-export\browser-profile`，对话框状态是「已经等了 68 秒」。
-  **二、本机已排除的两条。** ①「分区饼干对读法隐身」：新探针 `_scratch/probe_chips_response.py`（真 Edge + 本机 http.server，用**响应头** `Set-Cookie: chips-real=2; Path=/; SameSite=None; Secure; Partitioned` 在跨站 iframe 里种真 CHIPS 饼干）跑下来，`Network.getCookies`（按地址）、`Network.getAllCookies`、`Storage.getCookies`、`read_all_cookies()` **四条全看得见**（`["chips-real+分区"]`）⇒ 假设不成立；顺带证实 `Target.getTargets` 里默认上下文也带一个随机 id（`别路=上下文…` 不能当成「多出来的一份罐」）。②`罐路径=` 报的那只常驻罐自 2026/10/1 起再没被碰过（`Default\Network\Cookies` 20480 字节、mtime 2026/10/1 14:30，`Cookies-journal` 0 字节、里面一行都没有）⇒ 那几轮用的都是一次性 %TEMP% 目录，诊断报错了罐。
+  **一、症状（真机 复现实验，v0.13.50）。** 用户在程序自己起的那扇窗（横条「窗口号 C925 · 端口50459」）里登录，F12 → 应用程序 → Cookie 里三条：`memberUsers…`、`PHPSESSID`、70 字节的 `userhash`；程序四条读法（按地址读 / 整罐读 / 存储读 / 页面 JS）一条都没看见（`原始userhash=无`）。到 00:03:31 为止的日志里 `挂=…login.html`、`页=1（…login.html#）`、`别路=上下文2C8811：PHPSESSID`、`罐路径=C:\Users\你\AppData\Roaming\xdao-export\browser-profile`，对话框状态是「已经等了 68 秒」。
+  **二、实验已排除的两项假设。** ①「分区饼干对读法隐身」：新探针 `_scratch/probe_chips_response.py`（真 Edge + 本机 http.server，用**响应头** `Set-Cookie: chips-real=2; Path=/; SameSite=None; Secure; Partitioned` 在跨站 iframe 里种真 CHIPS 饼干）跑下来，`Network.getCookies`（按地址）、`Network.getAllCookies`、`Storage.getCookies`、`read_all_cookies()` **四条全看得见**（`["chips-real+分区"]`）⇒ 假设不成立；同时证实 `Target.getTargets` 里默认上下文也带一个随机 id（`别路=上下文…` 不能当成「多出来的一份罐」）。②`罐路径=` 报的那只常驻罐自 2026/10/1 起再没被碰过（`Default\Network\Cookies` 20480 字节、mtime 2026/10/1 14:30，`Cookies-journal` 0 字节、里面一行都没有）⇒ 那几轮用的都是一次性 %TEMP% 目录，诊断报错了罐。
   **三、这一版做什么。** 不做猜测性的改法，只把现场钉住 + 修上面那处诊断：
-  ① `browser_login.browser_jar_witness(browser_ws_url, *, timeout=JAR_WITNESS_TIMEOUT=1.5)`：用 `browser_level_jars`（默认罐 + 逐个 `browser_context_ids()`）与 `browser_page_targets` / `describe_page_targets` 拼一行「每一份罐有哪些名字（`_cookie_names` 复用 `summarize_cookies`，带 `partitionKey` 的另标「（其中带分区的）」）｜每扇页面挂在哪份罐里」，永不抛；`gui.py` 每 `BROWSER_WITNESS_SECONDS=15.0` 写一行 `("forensics", f"现场：上次处理花了{int(last_round_seconds)}秒｜{line}")`，去重键 =（名字清单, 节拍落在哪个 5 秒档）—— 稳态不刷屏，一慢下来立刻多一行。
+  ① `browser_login.browser_jar_witness(browser_ws_url, *, timeout=JAR_WITNESS_TIMEOUT=1.5)`：用 `browser_level_jars`（默认罐 + 逐个 `browser_context_ids()`）与 `browser_page_targets` / `describe_page_targets` 拼一行「每一份罐有哪些名字（`_cookie_names` 复用 `summarize_cookies`，带 `partitionKey` 的另标「（其中带分区的）」）｜每扇页面挂在哪份罐里」，永不抛；`gui.py` 每 `BROWSER_WITNESS_SECONDS=15.0` 写一行 `("forensics", f"现场：前一批次花了{int(last_round_seconds)}秒｜{line}")`，去重键 =（名字清单, 节拍落在哪个 5 秒档）—— 稳态不刷屏，一慢下来立刻多一行。
   ② 节拍本身写进那一行：循环里记 `round_t0` / `last_round_seconds`（一轮从头走到 sleep 花了多少秒）。真机两次「接=端口」相隔 12~38 秒，而 `BROWSER_POLL_SECONDS=1.5`，怀疑正是领饼干那几步（`BROWSER_LEAF_SECONDS=5.0` 的页面内 fetch、`BROWSER_LEAF_HTTP_SECONDS=30.0` 的 HTTP 重放、逐窗/逐上下文探罐）把节拍顶住了 —— 慢步骤跑完**再读一次**（`late_value`），最坏情况下的发现延迟从「一整个轮次」缩回「一次 CDP 往返」。
   ③ 页面已经不是登录页（`session.current_url()` 里没有 `login`）⇒ 站点认为登录成了：`browser_login.userhash_from_page_storage(session)` 在 localStorage/sessionStorage 里按 key 含 `hash`/`user`/`token` 优先、再用 `looks_like_userhash` 粗筛，找到就当成功（提示写明「饼干罐里没有它」）；同一条件下持续 `BROWSER_EARLY_DUMP_SECONDS=5.0` 就**当场**落一份「读罐详单」（超时那段落盘体抽成 `BrowserLoginDialog._write_jar_dump`，两处共用），并把路径写进日志 —— 以前只在等满 300 秒×续等轮数之后才写，真机上用户 68 秒就截图/取消，那份唯一能逐字段比对的证据谁也没见过。
   ④ `browser_login.profile_of_process(pid)` + `_parse_user_data_dir(text)`：powershell 问 `Win32_Process` 里那个 pid 的 CommandLine、抠 `--user-data-dir=`；`gui.py` 每轮问一次，与 `used_profile` 不同（`os.path.normcase` 比）就改 `jar_path` 与 `jar_tag` —— `罐=` / `罐路径=` 从此报真正在用的那只。
-  **四、用例。** `tests/test_browser_login.py` 加 7 条（`_parse_user_data_dir`；`profile_of_process` 的非 Windows 门与真 `subprocess.run` 调用；现场行的名字清单、分区标注、永不抛；页面本地存储里找 userhash），`tests/test_gui_browser_login.py` 加 4 条（现场行进运行日志且带「上次处理花了」；页面不是登录页时 3 秒内不许问本地存储、换页后必须问且提示写「本地存储」；提前落详单；`罐路径` 按命令行纠正）；两处 autouse fixture 追加钉住 `browser_jar_witness` / `profile_of_process` / `userhash_from_page_storage`，`_FakeProcess` 补 `pid`。
+  **四、用例。** `tests/test_browser_login.py` 加 7 条（`_parse_user_data_dir`；`profile_of_process` 的非 Windows 门与真 `subprocess.run` 调用；现场行的名字清单、分区标注、永不抛；页面本地存储里找 userhash），`tests/test_gui_browser_login.py` 加 4 条（现场行进运行日志且带「前一批次花了」；页面不是登录页时 3 秒内不许问本地存储、换页后必须问且提示写「本地存储」；提前落详单；`罐路径` 按命令行纠正）；两处 autouse fixture 追加钉住 `browser_jar_witness` / `profile_of_process` / `userhash_from_page_storage`，`_FakeProcess` 补 `pid`。
   收集 **1874 项**、本机 **1867 passed / 7 skipped**。
 - **v0.13.50**（修 v0.13.49 重构在发版脚本里留下的一个 `return` 漏写：Release 建出来、附件一个没传；连带补三条盯着返回值的用例）：
   **一、症状。** v0.13.49 发布时 ``tools/make_release.py`` 报
@@ -1487,10 +1410,10 @@ epo_check.py 早在
   （版本号串除外）；但因为「仓库里被 tag 的提交带着一个坏掉的发版脚本」，仍然按规矩补一个补丁版本，
   让「最新 Release」与仓库状态一致（``tools/repo_check.py`` 会核这一条）。
   收集 **1863 项**、本机 **1856 passed / 7 skipped**（``tests/test_make_release.py`` 28 → 31）。
-- **v0.13.49**（按《架构评审-2026-10-07》§7.1 做的一次仓库级重构：目录与写权限下沉 `xdao/paths.py`、五个导出器立 `Exporter` 底座、产品名与 GitHub 问答抽成 `xdao/appinfo.py` / `xdao/github_api.py`；顺带删掉确认没人用的旧代码、合并两处重复，并修掉一条在忙机器上假红的界面用例）：
+- **v0.13.49**（按《架构评审-2026-10-07》§7.1 做的一次仓库级重构：目录与写权限下沉 `xdao/paths.py`、五个导出器立 `Exporter` 底座、产品名与 GitHub 问答抽成 `xdao/appinfo.py` / `xdao/github_api.py`；同时删掉确认没人用的旧代码、合并两处重复，并修掉一条在忙机器上假红的界面用例）：
   **一、来源与范围。** 用户 2026-10-07 要求「通读并梳理当前代码库，做一次基于第一性原理的架构评审」，评审写成
   ``<工作目录>\xdao-export-架构评审-2026-10-07.md``（六节 + 登录链路专项诊断 + 需要用户补充的背景）；
-  用户随后（复现记录）说「不过我们还是先把评审里的问题修一下吧」⇒ 本版只做 §7.1 的三件与 §6 里风险最低的那几项。
+  该版本优先处理 §7.1 的三项问题与 §6 中风险较低的改动。
   **推后**（不是漏做）：元信息渲染 4 份合一、EPUB 图片双存、``xdao/site.py``、``xdao/limits.py``、``gui.py`` 抽层（§7.3 阶段 C/D）。
   **二、件 1：`xdao/paths.py`。** 把「这个目录写不写得进去」这件事从 ``exporters/_shared.py`` 原样搬进新模块
   （``OutputDirNotWritable``、``PROBE_NAME``、``PROBE_ALT_NAME``、``ensure_writable``、``_probe_once``、``probe_writable``、
@@ -1530,7 +1453,7 @@ epo_check.py 早在
   ``client.import_userhash`` **有 4 个调用方**（``gui.py:881/:1187/:1324/:1706``）、``main._CONSOLE_HINT_FLAGS`` 在 ``main.py:91`` 在用、
   ``pdf.is_frozen`` 在 ``pdf.py:113`` 在用且被 ``tests/test_pdf.py:395`` 钉着 ⇒ **三条都保留**。
   ``browser_check.check_browsers`` 确是纯别名，但**有 4 处调用**（``gui.py``、``main.py`` 与 ``tests/test_gui_entry.py`` 的两处 monkeypatch），
-  所以是「删别名 + 改调用方」，顺手把 ``check_all`` 那段说反了的 docstring 改对（它是「第一个成功就 break」，
+  所以是「删别名 + 改调用方」，同时把 ``check_all`` 那段说反了的 docstring 改对（它是「第一个成功就 break」，
   ``tests/test_browser_check.py:207`` 钉的就是这个）。
   **真删掉的**：整个 ``xdao/fetcher.py``（122 行；``ThreadFetcher`` / ``to_thread_data`` 零引用，唯一有用的 ``parse_thread_id``
   改从 ``.cache`` 取）、``cache.fingerprint_pairs``（零引用，且读 ``_page`` 而真实字段是 ``page``，恒第 1 页）、
@@ -1545,17 +1468,17 @@ epo_check.py 早在
   **八、假失败加固。** ``tests/test_gui_browser_login.py:497 _wait_for`` 的默认 ``timeout`` 从 5.0 改成 20.0
   （与 ``tests/test_gui_entry.py:1099 _wait_until`` 一致）：2026-10-07 那次全量里
   ``test_browser_that_dies_at_once_reports_a_readable_error`` 单独跑 26 秒通过、全量里被挤到超时（机器当时很挤）。
-  **九、顺带查清的本机环境坑（只影响开发脚本）。** 运行期 Python 的 ``DLLs\tcl86t.dll`` 是 Tcl **8.6.12**，
-  而 ``_scratch/run_pytest.py`` 原先钉的 ``<本机 Python>\tcl`` 已是 **8.6.15** ⇒ 报
+  **九、同时查清的本机环境坑（只影响开发脚本）。** 运行期 Python 的 ``DLLs\tcl86t.dll`` 是 Tcl **8.6.12**，
+  而 ``_scratch/run_pytest.py`` 原先钉的 ``<项目 Python>\tcl`` 已是 **8.6.15** ⇒ 报
   ``version conflict for package "Tcl": have 8.6.12, need exactly 8.6.15``，**41 条 Tk 用例被静默跳过**（报告仍是「0 failed」）。
   已改成优先用 ``Path(sys.executable).parent / "tcl"``（运行期自带、与 DLL 配套），找不到再退回旧树。
   **十、测试与计数。** ``tests/test_exporters.py`` 加 4 条钉住新契约（五个导出器构造签名一致且多余参数进 ``options``、
   注册表的显示名与扩展名来自类属性、``save`` 用类上的扩展名、每个注册类都是 ``Exporter`` 子类）。
   收集 **1860 项**、本机 **1853 passed / 7 skipped**（``tests/test_exporters.py`` 77 → 81）。
   契约五件套（文档事实、版本一致、使用说明分段、文本卫生、打包清单）全绿。
-- **v0.13.48**（补齐「到底是哪一扇、哪一只罐」这两件事的证据：「窗口=」「罐路径=」两段新证据、「同罐进程=」数出 0 也照写、上下文名单改成两处并起来）：
-  **一、为什么还要再加一段。** v0.13.47 上线后用户第二次真机复验（2026-10-04 复现记录/复现记录）仍然读不到，
-  本次处理的日志精确内容是这样的：``读罐对账：挂=https://www.nmbxd1.com/Member/User/Index/login.html｜页=1
+- **v0.13.48**（补齐「实际是哪一扇、哪一只罐」这两件事的证据：「窗口=」「罐路径=」两段新证据、「同罐进程=」数出 0 也照写、上下文名单改成两处并起来）：
+  **一、补充诊断的依据。** v0.13.47 上线后用户第二次真机复验（2026-10-04 复现实验）仍然读不到，
+  当前批次的日志精确内容是这样的：``读罐对账：挂=https://www.nmbxd1.com/Member/User/Index/login.html｜页=1
   （https://www.nmbxd1.com/Member/User/Index/login.html）｜接=端口61823｜罐=browser-profile｜按地址读=PHPSESSID｜
   整罐读=PHPSESSID｜全罐=1｜原始userhash=无｜存储读=PHPSESSID｜页面JS=PHPSESSID｜合并=PHPSESSID｜
   逐窗=没有别的活窗口｜哑窗=browser-profile`` —— **既没有 ``别路=``，也没有 ``同罐进程=``**（后者只在 >1 时才写）。
@@ -1598,7 +1521,7 @@ epo_check.py 早在
   ``jar_forensics`` 的 ``窗口=``／``罐路径=``；``jar_dump`` 的 ``罐路径``／``目标``），``tests/test_gui_browser_login.py``
   加 2 条（对账行带上窗口与罐路径、数出 0 也写）。收集 **1856 项**、本机 **1849 passed / 7 skipped**。
 - **v0.13.47**（去问同一只浏览器里**别的罐**：连浏览器端点按浏览器上下文逐份读；对账行多一段「别路=」；超时那一刻落盘一份「读罐详单」）：
-  **一、为什么换方向。** v0.13.42～v0.13.46 五版都卡在同一张现场（2026-10-04 复现记录/复现记录）：同一扇挂着程序横条
+  **一、诊断方向调整的依据。** v0.13.42～v0.13.46 五版都卡在同一张现场（2026-10-04 复现实验）：同一扇挂着程序横条
   （【窗口号 486A · 端口59715】）、**同一个端口**的窗，F12 里 159 秒时出现了 70 字节的 ``userh…``
   （``D-9%91%04%02%12%F8%8E%9F%3B%25%A4%B0%D6pk%8Fa%E9%C5%C9%2B%16%D8``），而程序四条读法（按地址读／整罐读／存储读／页面JS）从头到尾没有它；
   日志在 ``15:12:25`` 之后再无新行（对账行只在文本变化时才写）⇒ 每一轮读到的名单都没变，稳定地「看不见」。
@@ -1629,7 +1552,7 @@ epo_check.py 早在
   ③「读罐详单」那句提示不能塞进 ``leaf_hints``：那条列表是超时那句「试过的几步」，多一段会把真步骤挤出去
   （``test_timeout_message_lists_the_steps_the_program_tried`` 当场变红）。
   ④``CDPSession.__init__`` 加形参后，GUI 替身 ``_FakeSession`` 与 ``_JarWindow`` 都要跟上（``browser_level`` 收下并记下来，
-  用例才好断言「这一问确实挂在浏览器端点上」）。另外顺手修掉一个潜伏 bug：``stale_tag`` / ``procs_tag`` / ``windows_tag``
+  用例才好断言「这一问确实挂在浏览器端点上」）。另外同时修掉一个潜伏 bug：``stale_tag`` / ``procs_tag`` / ``windows_tag``
   原先只在 ``jar_profile is not None`` 的分支里赋值，路径一变就会在 ``forensics(...)`` 处 ``NameError``，现在统一先给初值。
   **五、测试。** ``tests/test_browser_login.py`` 加 10 条（7 条上下文与详单：``browser_level_jars`` 读默认+额外罐、问不到上下文名单、
   ``userhash_across_contexts`` 只报额外的罐、``jar_forensics`` 的 ``别路=``、``jar_dump`` 记下每条读法与失败原因、``write_jar_dump`` 落盘可读；
@@ -1637,12 +1560,12 @@ epo_check.py 早在
   ``test_browser_level_jars_gives_up_when_the_endpoint_cannot_be_asked``），``tests/test_gui_browser_login.py`` 加 3 条
   （别的罐里找到 userhash 就用它并点名、对账行带上 ``别路=``、超时写出读罐详单）。收集 **1847 项**、本机 **1840 passed / 7 skipped**。
 - **v0.13.46**（盯窗横条挪到窗口底部并可收起、拿到饼干后自己摘掉；横条与对话框写明「程序不替你点『应用』」；对账行补上「哑窗=」与「同罐进程=N」）：
-  **一、为什么要改（使用者原话）。** 现场（2026-10-04 复现记录）：「0.13.45还是无法登录，还有一点是最上方的提示条会遮挡选择饼干的ui
+  **一、改动背景（历史描述）。** 现场（2026-10-04 复现实验）：「0.13.45还是无法登录，还有一点是最上方的提示条会遮挡选择饼干的ui
   看你怎么改一下 是自动帮用户随便选一个饼干应用还是告诉用户需要自己应用饼干 如果不需要应用饼干就能抓到userhash就不用这么提醒了」。
   截图（``sha256:928c6d28…``）显示：v0.13.45 的对账行 ``接=端口53051｜罐=browser-profile｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜全罐=1
   ｜原始userhash=无｜存储读=PHPSESSID｜页面JS=PHPSESSID｜合并=PHPSESSID``（**连「逐窗=」都没有**），而同一屏 F12 里那扇窗有三条饼干
   （``mem…`` / ``PHPS…`` 35 字节 / ``userh…`` 70 字节）。附着浏览器整罐只有 1 条 PHPSESSID ⇒ 仍是「程序读的那只罐不是看着的那扇窗」。
-  **二、横条为什么挡得住。** 旧横条是 ``position:fixed;top:0``，正压在「我的饼干」列表第一排『应用』按钮上 —— 它 ``pointer-events:none``
+  **二、横条遮挡按钮的原因。** 旧横条是 ``position:fixed;top:0``，正压在「我的饼干」列表第一排『应用』按钮上 —— 它 ``pointer-events:none``
   不挡点击，但**挡眼睛**，恰好在用户需要点『应用』的那一刻。
   **三、改法（四条）。** ①``build_watch_banner_script(stamp, port)`` 挪到 ``bottom:0``（``box-shadow`` 朝上、``font:12px/1.5``），
   横条 = ``span``（文案）+ ``button``（``×``、``pointer-events:auto``、``onclick`` 里 ``bar.remove()``）；新增
@@ -1662,7 +1585,7 @@ epo_check.py 早在
   ``jar_forensics`` 的 ``哑窗=``/``同罐进程=``、``remove_watch_banner`` 脚本；横幅两条老用例改断言：``bottom:0``、``×``、端口），
   ``tests/test_gui_browser_login.py`` 加 2 条（对账行拿到两段提示；拿到 userhash 后横条被摘掉）。收集 **1834 项**、本机 **1827 passed / 7 skipped**。
 - **v0.13.45**（不只看自己接的那一扇窗：自己这只罐里没有 userhash 时挨个问每一扇活窗口的罐；对账行新增「逐窗=」；读饼干出错不再静默）：
-  **一、为什么要改。** 现场（2026-10-04）用 v0.13.44 复现：日志写 ``开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。``，
+  **一、改动背景。** 现场（2026-10-04）用 v0.13.44 复现：日志写 ``开窗前普查：没探到活着的程序窗口，这次是全新开的一扇。``，
   对账行写 ``罐=browser-profile｜按地址读=PHPSESSID｜整罐读=PHPSESSID｜全罐=1｜原始userhash=无｜存储读=PHPSESSID｜合并=PHPSESSID``；
   而同一张图上带程序横幅（【窗口号 C597】）的那扇窗，F12「应用程序 → Cookie」里躺着三条饼干，其中一条正是 70 字节的 ``userhash``。
   **二、先把读法这条路排干净（三个探针）。** ①``_scratch/probe_chips_headful.py``（有头 Edge + 一次性资料目录，``Network.setCookie``
@@ -1681,7 +1604,7 @@ epo_check.py 早在
   ``live_window_jars`` 跳过自己正在读的那扇、三组 ``across_windows``、``jar_forensics`` 的 ``逐窗=``），``tests/test_gui_browser_login.py``
   加 1 条（另一扇窗找到的 userhash 被认下来并点名）。三套件 **434 passed / 2 skipped**；收集 **1828 项**、本机 **1821 passed / 7 skipped**。
 - **v0.13.44**（把「分区饼干」这件事的说法改准；只改注释与文档，功能一点没动）：
-  **一、为什么要改。** v0.13.42 把「``Network.getAllCookies`` 已知不回首分区饼干（CHIPS）」当理由写进了
+  **一、改动背景。** v0.13.42 把「``Network.getAllCookies`` 已知不回首分区饼干（CHIPS）」当理由写进了
   ``cdp.py``、``browser_login.py``、使用说明与那张发布说明 —— 那句话是传闻，当时**没有真机证据**。真机复验
   （2026-10-04，headless Edge + ``%TEMP%`` 里一次性资料目录，跑完删；``Network.setCookie`` 种一块带
   ``partitionKey`` 的饼干再读）推翻了它：**按地址读 ``Network.getCookies`` 看不见分区饼干，而
@@ -1703,14 +1626,14 @@ epo_check.py 早在
   `xdao/exporters/_shared.py` 2、用例文档字符串 6（`tests/test_browser_login.py` / `tests/test_client.py` /
   `tests/test_gui_browser_login.py` / `tests/test_gui_entry.py`）、发布说明 4（`v0.13.42` / `v0.13.27` /
   `v0.13.25`，并把这 3 页的 Release 正文按仓库文件重新同步了一遍）。改法一律是「直接写现象与规则」：
-  「有用户用 0.13.26 报」→「0.13.26 的现场报」、「按用户……的定案」→「……定案」、
-  「（用户截图 复现记录）」→「（现场截图 复现记录）」、「2026-10-02 那位用户」→「2026-10-02 那台机器」。
+  「部分场景用 0.13.26 报」→「0.13.26 的现场报」、「按用户……的定案」→「……定案」、
+  「（用户截图 复现实验）」→「（现场截图 复现实验）」、「2026-10-02 那位用户」→「2026-10-02 那台机器」。
   保留不动：讲规矩本身的段落（本文件「## 注释与文档的写法」、README 的规矩引用块、v0.10.2 /
   v0.13.14 / v0.13.16 的发布说明），以及「用户截图时看不见」这类泛指。
   **教训**：这类句子是新写的文字里又混进来的 —— 规矩只写在文档里、没有机器把关，每隔几版就得按
   句式重扫一遍（扫的是工作区，不是 HEAD）。本机全量仍 **1813 passed / 7 skipped**（收集 1820 项）。
 - **v0.13.42**（读饼干罐多问一条路：``Storage.getCookies`` 从兜底升成必读并集；对账行新增「存储读=」；路线图删掉「无人值守登录」）：
-  **一、并集。** 症状（现场截图 复现记录）：同一扇窗的 F12「应用程序 → Cookie」里躺着一条 ``userhash``（大小 70、值
+  **一、并集。** 症状（现场截图 复现实验）：同一扇窗的 F12「应用程序 → Cookie」里躺着一条 ``userhash``（大小 70、值
   ``D-9%1%04%0%2%02%12%…``），程序「读罐对账」却写 ``全罐=2``、``原始userhash=无``。根因：F12 那个面板读的是
   ``Storage.getCookies``；按地址那条 ``Network.getCookies`` 受域/路径过滤，真机上正是它看不见这类饼干，
   ``document.cookie`` 又看不见 HttpOnly 的它 —— 这就是「F12 有、四读合并却说没有」的形状。
@@ -1740,7 +1663,7 @@ epo_check.py 早在
   「并集」之后再断言 ``storage_cookie_reads`` 之类的计数（替身内部就并了，只有真会话会分两次调用）；
   ③探针拼盘库路径别漏循环变量（要写 ``root/sub/Network/Cookies``，漏了 sub 就只看自家罐）。
 - **v0.13.41**（反复起不来的持久资料目录自己改名让位；收尾前先问端口，不再动还开着的窗）：
-  目标项②（goal round 复现记录）＋真机验证项③。两件事：
+  目标项②（goal round 复现实验）＋真机验证项③。两件事：
   **一、死资料目录让位。** 用户那份持久的 ``browser-profile`` 里存着他的登录状态，所以一直是被保护对象 —— 但也因此，
   一旦它坏掉（被别的进程锁着、安全软件拦下写不进去、上一次强杀留下坏文件），``start()`` 每次都还会拿它去试一次，
   表现成「每回登录都先卡一下、日志里同一份目录一行行起不来」。新常量 ``DEAD_PROFILE_STRIKES = 2``（判据是**连着**失败，
@@ -1759,7 +1682,7 @@ epo_check.py 早在
   并留在 ``_temp_dirs`` 里下次收尾再问。这条是被真机探针**当场撞出来**的 —— 在一份**还开着窗**的临时资料目录上再
   ``_launch`` 一次（第二个实例把页面交给第一扇窗、自己以退出码 0 退出），失败路径 ``stop()`` → ``cleanup_temp_profile()``
   会把那份目录连**用户正开着的那扇窗**一起带走（探针第一次跑就报 ``FileNotFoundError``：端口文件没了）。产品路径今天够不到
-  （``start()`` 只会 ``_launch`` 自己刚挑的目录），但它是 复现记录「程序动了别人还在用的资料目录」那一类，留着当座位带；
+  （``start()`` 只会 ``_launch`` 自己刚挑的目录），但它是 复现实验「程序动了别人还在用的资料目录」那一类，留着当座位带；
   代价是极端情况下漏一份目录在 ``%TEMP%``（`sweep_stale_temp_profiles` 下次还会问它端口）。
   **真机验证（2026-10-04，无人值守，``_scratch/probe_v01341_real.py`` → ``probe_v01341_result.json``，9/9 通过）**：
   ①真起一扇窗（端口 56563、端口文件在、进程活着）②``DevToolsActivePort`` 两行与 ``browser_ws_url`` 拼装一致
@@ -1770,7 +1693,7 @@ epo_check.py 早在
   临时目录上再启动，目录/端口文件/那扇窗全都完好。测试：``test_browser_login.py`` 289 → **296**（新增 6 条让位用例 +
   1 条座位带用例），全量 **1807 → 1814 项**（本机 1807 通过、7 项真机用例跳过）。
   教训：**验证「收尾会不会误伤」时必须看清目录归属** —— 第一次写的探针把两扇窗都建在 ``%TEMP%`` 且名字带自家前缀，
-  于是它们都算「我们的目录」，收尾自然把它们删了；复现记录 现场是**配置目录那份持久目录**，名字不在清单里，才没被删。
+  于是它们都算「程序创建的目录」，收尾自然把它们删了；复现实验 现场是**配置目录那份持久目录**，名字不在清单里，才没被删。
   「目录命名决定现象」这条在 v0.13.38 记过一次，这里又踩一次。
 - **v0.13.40**（浏览器「起来就退」时带出它自己的 stderr 尾巴；启动失败不再只剩程序的猜测）：
   ``_launch`` 起浏览器时一直把 ``stderr`` 丢进 ``subprocess.DEVNULL``，于是「刚起来就退出了（退出码 21／0）」这类
@@ -1781,7 +1704,7 @@ epo_check.py 早在
   读 ``errors="replace"``、去掉空行、取最后 ``lines`` 行用 ``" / "`` 连接再 ``[:limit]``；``_launch`` 把 Popen 的
   ``stderr`` 指向这个文件（``open`` 失败就退回 ``DEVNULL``，绝不因为少一份日志让浏览器起不来），失败分支（进程自己
   退了、等待超时）与 ``stop()`` 都调 ``self._stderr_tail_note()`` 把尾巴接进错误文案（前缀「浏览器自己最后几行话：」）
-  并顺手删掉日志；起好了在 ``return self`` 前 ``self._discard_stderr_log()``；Popen 抛 ``OSError`` 那条路先关句柄
+  并同时删掉日志；起好了在 ``return self`` 前 ``self._discard_stderr_log()``；Popen 抛 ``OSError`` 那条路先关句柄
   再删（Windows 上自己开着的文件删不掉）、然后才 ``cleanup_temp_profile()``。
   **真机验证**（``_scratch/probe_v01340_stderr.py`` → ``probe_v01340_result.json``，2026-10-04）：用真 Edge 起一扇窗，
   临时把 ``_discard_stderr_log`` 换成「只记路径、不删文件」的替身，事后读那份日志 ⇒ 里面正有 Chromium 自己写的
@@ -1814,9 +1737,9 @@ epo_check.py 早在
   ``sweep_stale_fallback_profiles`` ⇒ ``deleted=3``，两个空壳与 ``_new`` 全没了；``browser-profile`` 本体仍在
   （1205→1084 文件、99,271,601→88,048,853 B，差值正好是那份 ``_new`` 的 121 文件 / 11,222,748 B）。
   测试 1795→1802（``test_browser_login.py`` 278→284：命名严格性、``_is_our_profile_dir``、三条扫法用例、配置目录
-  备用目录记账；``test_gui_entry.py`` 61→62：启动清扫两种目录）。**同类风险**：凡「我们建的目录」都要能被下一次启动
+  备用目录记账；``test_gui_entry.py`` 61→62：启动清扫两种目录）。**同类风险**：凡「程序创建的目录」都要能被下一次启动
   认出来并收掉，判据是「位置 + 严格名字」，别写成「别删 profile」这种会连自检一起挡掉的规则。
-- **v0.13.38**（不再动别人的端口文件 + 多扇活窗先问罐：复现记录 的第二处病根拔掉）：
+- **v0.13.38**（不再动别人的端口文件 + 多扇活窗先问罐：复现实验 的第二处病根拔掉）：
   v0.13.37 把「看不见的旧窗」变成「点名收掉」，但 ``_launch`` 每轮启动前仍会 ``unlink`` 目标目录里的
   ``DevToolsActivePort``（v0.13.9 起的老手，理由是「上次崩溃留下的过期端口会让等待循环立刻成功」）。
   候选落到程序自己那份持久目录、而它**正有一扇窗开着**时，这一删就删在了那扇窗头上：它从此读不到自己的
@@ -1827,7 +1750,7 @@ epo_check.py 早在
   也不碰不属于本次运行的文件。**真机实测**（``_scratch/probe_v01338_persistent_profile.py``，非临时前缀的目录
   ＋真 Edge，先开一扇）：对已开着一扇窗的同一目录再走一次 ``_launch`` ⇒ 抛「刚起来就退出了（退出码 0）」，
   收尾时目录／端口文件／文件内容／``_profile_in_use`` 全部原样、Edge 进程仍活 ⇒ 旧 ``unlink`` 是弄瞎活窗的
-  **唯一作者**，浏览器自己被接管时并不删那扇活窗的端口文件。
+  **唯一原因**；浏览器进程被接管时不会删除该活动窗口的端口文件。
   ②退出码 0 补一句解释：``_launch`` 的死进程分支里 ``if code == 0 and stale_text is not None`` 追加
   「（这份目录启动前就有一扇窗开着、留着端口文件；浏览器遇到这种情况通常把要开的页面交给那一扇、自己就退出
   了，这一条多半如此。）」——以前只解释 21，会把人往「资料目录坏了」引。
@@ -1840,16 +1763,16 @@ epo_check.py 早在
   （``_scratch/probe_v01338_two_windows.py``）：两个 ``fresh_profile_dir`` 各起一个真 Edge（端口
   49355/49356），``Network.setCookie`` 只往第二扇种假 userhash ⇒ ``window_userhash`` 分别回 ``''`` 与那个值，
   ``_try_attach_live()`` 接的正是第二扇（端口 49356），普查句「探到 2 扇还活着的程序窗口（…）。其中 1 扇的罐里
-  留着登录痕迹（…），先接这一扇。接手了「…-2」这一扇。」。
+  留着登录痕迹（…），先接这一扇。继续维护了「…-2」这一扇。」。
   测试 270→278：``_port_file_fresh`` 四种组合；启动不删也不认旧端口文件（``_SilentPopen`` 永不写 ⇒ 超时抛错
   且文件字节不动）；``_PortWritingPopen`` 覆写旧文件即被采纳；``_TakeoverPopen``（returncode=0）文案含「退出码
   0」与「就有一扇窗开着」；复用路四条（两扇择优、无痕迹保序、单扇不问罐、连不上回空）。
-  本轮事故两条：编辑器把 ``_SilentPopen`` 的类头当 old_string 换成了测试函数头、留下孤立的 ``__init__``（插代码
+  当前批次事故两条：编辑器把 ``_SilentPopen`` 的类头当 old_string 换成了测试函数头、留下孤立的 ``__init__``（插代码
   时锚点要用完整唯一的一行，别拿类头当锚点）；``packaging\使用说明.txt`` 插新段时 old_string 只写了上一段的段头
   ⇒ 吃掉了 v0.13.37 的段头（new_string 里必须把它原样抄回去）。另记一条验证教训：A 项首轮探针把两个目录建在
   %TEMP% 且带自家前缀 ⇒ ``_is_temp_profile_dir`` 为真、``cleanup_temp_profile`` 按规矩 rmtree 掉，
-  「文件还在=False」是探针自己造的现场；复现记录 碰的是配置目录那份持久目录（不带临时前缀），换目录命名复验才证实。
-- **v0.13.37**（僵尸窗收掉 + 对账报「接=」：两个进程各拿一个罐，当场拆穿；v0.13.36 复验 复现记录 定案）：
+  「文件还在=False」是探针自己造的现场；复现实验 碰的是配置目录那份持久目录（不带临时前缀），换目录命名复验才证实。
+- **v0.13.37**（僵尸窗收掉 + 对账报「接=」：两个进程各拿一个罐，当场拆穿；v0.13.36 复验 复现实验 定案）：
   饼干窗 Ctrl+F5 硬刷新都不弹回登录页（那扇窗的进程罐里明明有有效 userhash），程序同一时刻的对账却写着
   页=1（只有登录页）、整罐只有 PHPSESSID——两边都是真的，因为它们是**两个浏览器进程**。旧那扇的
   ``DevToolsActivePort`` 被后来哪一轮 ``_launch`` 预删了，备用目录的名字又带着当时进程的 PID+时间戳，新进程
@@ -1862,20 +1785,20 @@ epo_check.py 早在
   ``Get-CimInstance Win32_Process`` 列 msedge/chrome 的命令行），``_parse_program_profile_lines`` 按白名单
   三分支认自家目录——配置目录下名以 ``browser-profile`` 开头的、现场目录里的 ``_new``、%TEMP% 带
   ``TEMP_DIR_PREFIXES`` 前缀的（比对全 ``lower()``、去重保序）；**用户自己浏览器的 ``User Data`` 两族都不沾，
-  这是铁律**。端口还在答话的（``_profile_in_use``）补进接手名单照常「接手了「××」这一扇」；端口失联的僵尸
+  这是铁律**。端口还在答话的（``_profile_in_use``）补进继续维护名单照常「继续维护了「××」这一扇」；端口失联的僵尸
   直接 ``_kill_processes_using_profile`` 收掉并写进普查句「进程侧探到 N 扇端口失联的旧窗口（…），已先收掉」
   （``_adopt_process_side_findings``）。powershell 被拦/超时/非 Windows 一律回空表——补刀不拦正路。
   ③对账行加 ``接=`` 段：``jar_forensics(session, jar_tag, link_tag)`` 报「程序接的是哪一扇」——
   CDPSession 自己不知道端口号，由 gui 传 ``f"端口{browser.port}"``；两扇窗的罐目录同名也一眼分开。
   开关 ``_PROCESS_CENSUS = _IS_WINDOWS``（与 ``_KILL_PROFILE_PROCESSES`` 同一族，用例可关）。
-  测试 265→270：认门白名单/去重（用户自己的 User Data、别家父目录、无 flag 行全不进名单）、端口答话补接手、
+  测试 265→270：认门白名单/去重（用户自己的 User Data、别家父目录、无 flag 行全不进名单）、端口答话补继续维护、
   僵尸窗先收+普查句点名、对账 ``接=``（缺标签不造段）；持久目录提示 +1。gui 替身两处：``fake_forensics``
   签名加 ``link_tag`` 并断言每个调用都拿到「端口」开头的标签；autouse 钉 ``program_profile_dirs``→[]。
-  本轮事故一条：``program_profile_dirs`` 与 ``_kill_processes_using_profile`` 同款在**函数内** import 标准库
+  当前批次事故一条：``program_profile_dirs`` 与 ``_kill_processes_using_profile`` 同款在**函数内** import 标准库
   subprocess（躲用例的 Popen 替身）——模块属性替身拦不住它，gui 用例起初每个都真起 powershell、套件从 76s
   涨到 153s 还随机器状态变；autouse 必须钉住函数名本身，不是钉 subprocess。另：``_adopt_process_side_findings``
   曾因同锚点二次插入而类内重复定义——同一锚点插入前先 grep 计数。全量 1787 项 = 1780 通过 + 7 跳过。
-- **v0.13.36**（钉稳真正登录的那一页 + 对账行列出浏览器此刻有哪几页：v0.13.35 复验 复现记录 定案）：
+- **v0.13.36**（钉稳真正登录的那一页 + 对账行列出浏览器此刻有哪几页：v0.13.35 复验 复现实验 定案）：
   横幅【窗口号】与对话框对上、Alt+Tab 只一扇窗、未过滤整罐读确实只有 1 块 PHPSESSID —— 读错窗与
   CHIPS 分区过滤两个嫌疑同场枪毙；罐子每 1.5 秒（BROWSER_POLL_SECONDS）全程在读、晚登录也会被当场
   抓住 ⇒ 只剩一个真相：这次登录没把饼干提交进这扇窗的罐，屏幕上那页「饼干列表」是上次登录留下的
@@ -1889,23 +1812,23 @@ epo_check.py 早在
   这扇窗回登录页重新提交」—— 上一版「多半登错窗口」的判断被证伪，不能再引导。替身同步：
   `_ScriptedSession` 加 `page_targets` + `list_page_targets()`、`_FakeSession` 加 `list_page_targets()`
   （守护用例 test_fake_session_covers_every_method… 静态收集库在会话上调过的全部方法，替身缺一即红）。
-  测试 260→265（browser_login）；全量 1782 项 = 1775 通过 + 7 跳过。本轮事故一条：重写 nudge 注释块
+  测试 260→265（browser_login）；全量 1782 项 = 1775 通过 + 7 跳过。当前批次事故一条：重写 nudge 注释块
   时 old_string 盖到了 `BROWSER_PASTE_NUDGE_SECONDS` 常量行、new_string 没带全，常量整行消失 —— 
   改注释块时覆盖到代码行就要在替换里原样带回。
-- **v0.13.35**（给每扇窗发一个号：查「你登的是不是程序在看的那扇窗」）：v0.13.34 复验（复现记录）
+- **v0.13.35**（给每扇窗发一个号：查「你登的是不是程序在看的那扇窗」）：v0.13.34 复验（复现实验）
   F12 里 userhash 明明摆着、四路读+页内 fetch+HTTP 回放却全只见匿名饼干 —— 读法盲区基本排除，
   头号嫌疑是窗口错位（旧「只挂不改」的横幅在旧程序窗口上冻结冒充）。① `build_watch_banner_script(stamp)`
   末尾带【窗口号 XXXX】且**会刷新已存在横幅的文字**（冻住的旧横幅被改号，不再冒充；json.dumps 要
   ensure_ascii=False，否则中文变 \u 码点、测试断言不中）；worker 每次尝试生成随机 4-hex 号，
   ready/_waiting_status 报同一个号 —— 号对上的窗才是程序的窗。② `LoginBrowser.census_note`：
-  开窗前普查（探到几扇活着的程序窗口/接手了哪一扇/全新开的一扇），走新事件 `("census", …)` 只进
+  开窗前普查（探到几扇活着的程序窗口/继续维护了哪一扇/全新开的一扇），走新事件 `("census", …)` 只进
   运行日志；③ `jar_forensics(session, jar_tag)` 报「罐=目录名｜全罐=N｜原始userhash=…（域/路/HttpOnly/分区）」，
   用**未过滤**的整罐读，域不对或被 CHIPS 挡掉的 userhash 也点名（只名不值）——一行定性「读错窗」还是「过滤掉了」。
-  `used_profile` 属性供 GUI 取罐名。测试 255→258（browser_login）+62→64（gui）；本轮顺手修掉两个
+  `used_profile` 属性供 GUI 取罐名。测试 255→258（browser_login）+62→64（gui）；当前批次同时修掉两个
   被 v0.13.35 耗时戳破的测试自身竞态（failure_reason 要先冻 BROWSER_LEAF_SECONDS 再设 read_error；
   login_finished_late 要等「页面停在登录页」而非「hint 非空」——替身 pages 是测试事后摆的，第一轮会抢跑）。
 - **v0.13.34**（修「饼干明明在罐里、程序却读不到」+ 认错 v0.13.33 的话术前提）：
-  0.13.33 复验 复现记录/复现记录（四图）钉出铁证：棕色横条在场、程序窗口（--no-sandbox 黄条
+  0.13.33 复验 复现实验（四图）钉出铁证：棕色横条在场、程序窗口（--no-sandbox 黄条
   可辨）里登录成功、F12→应用程序→Cookie 显示 `userhash` 就在那个窗口的罐里（域 www.nmbxd1.com、
   路 /、长 70/68；点另一行『应用』后值改变），对话框却仍报「浏览器里还是没有 userhash」。
   **两件事被证伪**：①「必须点应用才有 userhash」是错的 —— 站点登录即自动应用账号当前饼干、
@@ -1924,8 +1847,8 @@ epo_check.py 早在
   钉词用例同步改（棕色横条/『应用』/饼干切换成功/自动带上，且 not in「光登录不算完」「才算数」）。
   测试：test_browser_login.py 248→255（+7：parse/第四读三分支/去重/对账两则），
   test_gui_browser_login.py 61→62（+对账进日志一则），全库 1762→1770（1763 通过、7 跳过）。
-- **v0.13.33**（修「程序到底在看哪个窗口」—— 用户在被盯窗口登录并点应用仍抓不到饼干的冤案，程序侧三管齐下）：
-  0.13.32 复验 复现记录/复现记录（截图+口头确认）：**手动点应用从未被程序抓到，贯穿历史** ——
+- **v0.13.33**（修「程序实际在看哪个窗口」—— 用户在被盯窗口登录并点应用仍抓不到饼干的误判，程序侧三管齐下）：
+  0.13.32 复验 复现实验（截图+口头确认）：**手动点应用从未被程序抓到，贯穿历史** ——
   排除「用户漏步骤」，主因在程序侧。诊断（remote 到极限后的推断）：jar 读的是被盯实例的整罐，
   若用户真在被盯窗口点了应用，1.5 秒轮询必抓到 ⇒ 程序盯的罐≠用户操作的窗口（M1：fresh-first
   每次新 profile 新窗口，历史旧程序窗口长相相同且已登录，用户自然在旧窗口操作），或站点顶号（M2）。
@@ -1933,7 +1856,7 @@ epo_check.py 早在
   %TEMP% 里 `xdao-export-browser-profile-*` 前缀目录，按 DevToolsActivePort 的 mtime 倒序、
   `_profile_in_use` 答话才算活）；`LoginBrowser._try_attach_live()` 读端口文件拼
   `browser_ws_url`、process 保持 None（worker 的 `process is None` 分支天然兼容，stop() 对复用
-  窗口只断连接不杀进程不删目录）；`start()` 在 `fallback_profiles=True` 时先探活再接手，**探测必须
+  窗口只断连接不杀进程不删目录）；`start()` 在 `fallback_profiles=True` 时先探活再继续维护，**探测必须
   赶在 _launch 删旧端口文件之前**（--check-browser 走 fallback_profiles=False，不蹭窗）——
   保证世界上程序窗口只有一个罐，根治 M1；② **盯窗横幅**：`build_watch_banner_script()` 往被盯
   site 标签注入 fixed 顶栏「串导出程序正在看这个窗口 —— 请在这里登录 X 岛；登录后到「我的饼干」
@@ -1942,22 +1865,22 @@ epo_check.py 早在
   ③ **话术全线补「点应用」**：`_waiting_status`、`_timeout_message`、ready 文案、对话框引言、
   `BROWSER_PASTE_NUDGE`、`BROWSER_STALE_COOKIE_MESSAGE`、使用说明的登录步骤 —— 登录只种
   `memberUserspapapa`/`PHPSESSID`，**userhash 只在点『应用』（switchTo）之后才出现**，这句以前
-  从没写给用户，是误会的一半；④ 顺手修 `apply_leaf_cookie_in_browser` 的空 host 直通：
+  从没写给用户，是误会的一半；④ 同时修 `apply_leaf_cookie_in_browser` 的空 host 直通：
   about:blank 等无 host 页面以前会直通 fetch 并被弹回登录页、谎报「这个窗口里的登录没成」，
   现在诚实报「程序挂的这个标签现在不在 X 岛页面」。用例：`test_browser_login.py` 242→248
   （复用窗口 2 + live_browser_dirs 1 + 横幅 3，并给全部 start() 用例加了 autouse 的
-  `live_browser_dirs→[]` 守卫，防开发机真实 %TEMP% 活窗捣乱；专测用例在函数体里再 patch 回原件）；
+  `live_browser_dirs→[]` 守卫，隔离测试环境 %TEMP% 中的实际活动窗口；专测用例在函数体里再 patch 回原件）；
   `test_gui_browser_login.py` 60→61（每轮重注横幅钉到真正在读的 session；`_waiting_status` 用例
   加钉「棕色横条/『应用』/饼干切换成功」三个词）。本机全量 **1755 passed / 7 skipped**（收集 1762 项）。
 - **v0.13.32**（修「在自己浏览器里登录了，程序干等」这个真机误会 —— 是话术，不是读漏）：
-  0.13.31 复验截图 复现记录：用户在**自己平时的 Edge** 里登录+应用（F12 里 userhash 摆着），
+  0.13.31 复验截图 复现实验：用户在**自己平时的 Edge** 里登录+应用（F12 里 userhash 摆着），
   程序盯着一次性窗口干等 1112 秒报「还没有 userhash」。确诊：两罐饼干互不可见是**设计使然**
   —— 一次性窗口才是程序能看的罐子。探针实测关掉「直接读用户浏览器」这条路（本机）：
   Edge 运行时 Cookies 库独占锁死（CreateFileW 全共享位都开不了，WinError 32）；Chrome 库能
   复制但饼干是 **v20 应用绑定加密**（DPAPI+AES-GCM 只认 v10/v11），且绕开=窃密软件行为，不做。
   改法全在 gui.py 等待对话框：① `_waiting_status` 从「登录成功后会自己关掉」改为直接写明
   「在自己平时用的浏览器里登录，程序看不到 —— 已经登好了就点「直接粘贴饼干登录」」
-  （推翻老断言「还没到超时先别急着让人换法子」，复现记录 证明干等的人不会自己翻按钮）；
+  （推翻老断言「还没到超时先别急着让人换法子」，复现实验 证明干等的人不会自己翻按钮）；
   ② worker 等满 `BROWSER_PASTE_NUDGE_SECONDS`(120) 发一次 `("paste_nudge", None)`
   （`nudged` 位保证只说一次），`_poll` 消费：`_set_hint(BROWSER_PASTE_NUDGE)` 说破 +
   `paste_button` 文案换成「抄 userhash 过来登（更快）」（按钮引用从匿名改为 `self.paste_button`）。
@@ -1965,13 +1888,13 @@ epo_check.py 早在
   钉「只说一次+按钮换话」，改 `_waiting_status` 口径用例）。本机全量
   **1748 passed / 7 skipped**（收集 1755 项）。
 - **v0.13.31**（修「用浏览器登录」真机复验暴露的四处基础毛病）：0.13.30 复验仍失败（现场截图
-  复现记录：在程序窗口里登录**并点了「应用」**，对话框却报页面内 fetch 被弹回登录页 + HTTP 重放
-  TLS 超时，还写着「这个窗口里的登录没成」；状态行里带「多半是旧饼干」的冤案）。拆出四件事：
+  复现实验：在程序窗口里登录**并点了「应用」**，对话框却报页面内 fetch 被弹回登录页 + HTTP 重放
+  TLS 超时，还写着「这个窗口里的登录没成」；状态行里带「多半是旧饼干」的误判）。拆出四件事：
   ① **挂死标签**：`connect()` 在浏览器启动那一刻挑定页面标签后**永不换** —— 用户关掉那个标签
   另开一个去登录，程序一路盯着旧标签报「页面停在登录页」（`edge://sync-confirmation-dialog/`
   注释里预告过的坑，真以另一种形式爆了）；② **一抛即死**：worker 循环里任何异常都当场
   「读取浏览器饼干失败」认输，而关标签那一下 CDP 就是要抽风一次；③ **5 分钟到点永久撒手**，
-  用户还在输密码；④ **验饼干换脸冤案**：`verify_userhash_live` 用主客户端写死的 Chrome/124 UA
+  用户还在输密码；④ **验饼干换脸误判**：`verify_userhash_live` 用主客户端写死的 Chrome/124 UA
   去验用户刚应用成功的新饼干，站点弹回登录页 → 被误报「旧饼干不认」。改法：
   `cdp.CDPSession` 把 connect 尾部抽成 `_attach(url)`（重连时勾销旧 `_failure`，不然 `call()`
   拿着上次死因拒绝服务），新增 `retarget()`：每轮重数标签，**严格按站点前缀**认站点页
@@ -1984,19 +1907,13 @@ epo_check.py 早在
   `read_user_agent(session)` 问来的浏览器 UA（缓在 `self._browser_ua`，只问一次）。
   用例：`tests/test_browser_login.py` 237 → 242（retarget×5：换挂/不拆正确连接/不追普通页/
   救死连接/无页抛错）、`tests/test_gui_browser_login.py` 55 → 59（每轮重挑/磕一下不死自己缓过来/
-  验饼干用的是浏览器那张嘴/到点自动续等）；顺手修一处**既有竞态**（`test_explicit_browser…`
+  验饼干用的是浏览器那张嘴/到点自动续等）；同时修一处**既有竞态**（`test_explicit_browser…`
   等「这次用」那句时浏览器可能还没 Popen —— 等待条件补 `shim.processes`）。本机全量
-  **1747 passed / 7 skipped**（收集 1754 项）。另按 复现记录 的点名把**版本号规矩**写进
+  **1747 passed / 7 skipped**（收集 1754 项）。另按 复现实验 的点名把**版本号规矩**写进
   发布说明：0.13.x 排到 31 是「用浏览器登录」这条线每次真机反馈修一版，新功能线才进 0.14。
-- **签名申请被拒、缓期再申请**（2026-10-02）：SignPath Foundation 当日回信拒绝免费签名申请，
-  理由不是质量而是可见度 —— 社区采用（stars/forks/contributors）、外部文章、独立引用或讨论
-  （Reddit/Stack Overflow/YouTube 等）、机构背书、持续活动这些公开信号项目还不够；来信欢迎
-  以后再申请。用户决定：**等项目有人用之后再申请**，现在不急着再递。退路按
-  `docs/SIGNING.md` 第五节执行：README「代码签名政策」改为「申请未获批准」、v0.13.29 发布
-  说明签名段改事实、已发布 Release v0.13.29 正文用 `gh release edit` 同步；不对外宣称有任何
-  签名，`.sha256` 与 PE 版本信息作者名照旧。
+- **代码签名状态**：当前发布包未进行代码签名，随包提供 `.sha256` 文件用于完整性校验。仓库保留 GitHub Actions + SignPath 接入位置，但流程尚未启用；未来满足项目条件后再按该流程接入。详细政策见 `docs/SIGNING.md`。
 - **v0.13.30**（修「浏览器窗口里明明登录着，程序自己领饼干却被弹回登录页」）：0.13.29 复验仍失败
-  （现场截图 复现记录：工具的 Edge 窗口里「回复成功」发得出去，对话框却说「自动取饼干这条路试过了：
+  （现场截图 复现实验：工具的 Edge 窗口里「回复成功」发得出去，对话框却说「自动取饼干这条路试过了：
   浏览器里还是没有 userhash」+「领饼干那条路：登录后没能进入用户系统（X 岛把请求弹回了登录页）」）。
   拆下来两件事：① 前半句其实是**实话** —— 一次性窗口里用户从没去过饼干页，罐里本来就没有 userhash
   （0.13.29 的整罐读没读错）；② 真正堵路的是 HTTP 重放的**客户端长相**：`XdaoClient` 写死
@@ -2037,17 +1954,11 @@ epo_check.py 早在
   `_FakeSession` 加 `read_all_cookies`（默认空罐，老用例行为不变；`test_gui_browser_login.py`
   里那份 ast 契约守卫会盯着库新增的 `session.*` 调用，替身漏接就红）。收集数 1722→1728
   （1721 过、7 跳），README/HANDOFF 的数字同步改。
-  ⑤ 打包版自检报「配置目录/导出目录写不进去」在本机复核：v0.13.28 与 v0.13.29 两个打包版行为
-  完全一致（**非本版回归**）——exe 进程 mkdir/write 用户目录一律 `[Errno 13]`，同机 pwsh/cmd/
-  python 写同一目录全通；受控文件夹访问关着、受限运行环境排除 ⇒ 指向火绒 HIPS「只信有签名的程序」
-  式静默拒绝。于是 `xdao/preflight.py` 两条劝告把这类原因点名（安全软件只信签名程序 → 加信任区
-  或等签名版），发布说明补一段；探针与判定逻辑不动（拒绝是真的，不是探针误报）。
+  ⑤ Windows 安全软件或受控文件夹访问可能阻止未签名程序写入受保护目录。`xdao/preflight.py`
+  对相关情况提供诊断建议；探针与写入判定逻辑保持不变。
 - **v0.13.28**（接 0.13.27：下载下来的包能自己核对 —— 每个 Release 多挂一份 `.sha256`）：
-  起因是使用者问「是不是还要有证书签名密码啥的防止其他人替换」。签名那一半的结论是：免费
-  能拿到的只有 SignPath Foundation 的 OSS 证书，而那张证书签发给的是 SignPath Foundation
-  （证书主体必须是法律实体，网名不行），所以 Windows 上显示的发布者不会是他 —— 该走的是
-  申请流程（见 `_scratch/signpath_apply.md`，需要他本人注册账号并提交）。能立刻做、而且不
-  需要任何第三方批准的，是本版这件事：**让下载下来的包可核对**。改法（三条）：
+  本版为每个 Release 增加 SHA-256 校验文件，使下载包可进行完整性校验。当前发布包未进行代码签名；
+  GitHub Actions + SignPath 流程已预留但尚未启用，状态以 `docs/SIGNING.md` 为准。改动包括三项：
   ① `tools/make_release.py`：新增 `SIDECAR_SUFFIX = ".sha256"`、`request_text()`
   （`Accept: application/octet-stream` —— 附件正文不能走 `request_json`）、`parse_sidecar()`
   （只认一行 `<64 位十六进制>  <文件名>`，支持 `*name`、文件名可省，空/短/非十六进制一律
@@ -2064,7 +1975,7 @@ epo_check.py 早在
   指向别的文件名 → BAD；读不到 → WARN 且不许印「.sha256 与」）。
   本机全量 **1693 passed / 7 skipped**（收集 1700 项）。
   打包脚本另外给 exe 写了 PE 版本信息（`CompanyName` 署名「XiaoFeng7418」，`ProductName` 是工具名，
-  版本号与本版一致）—— 免费方案里，这是唯一能让作者名真的出现在二进制里的位置。
+  版本号与本版一致）—— 免费方案里，这是唯一能让项目标识真的出现在二进制里的位置。
 - **v0.13.27**（接 v0.13.26：探针误报「写不进去」要说得出系统原话，「打开目录」要真的去开）：
   0.13.26 复验时报「导出目录仍旧是不可写」，运行日志原文是「导出目录 …（文档下的自建
   文件夹）写不进去，连备用位置（%LOCALAPPDATA%\xdao-export\导出）也不行，请检查磁盘是否已满、
@@ -2123,7 +2034,7 @@ epo_check.py 早在
   `test_the_http_path_keeps_trying_even_when_nothing_changes` 立刻变红。
   本机全量 **1668 passed / 7 skipped**（收集 1675 项）。
 - **v0.13.25**（接 v0.13.24：拿不到饼干时不再「什么都不说」，等登录期间不再空转着连站点）：
-  用户复验 0.13.24 时贴的截图里，一次性窗口**已经在站点里登进去了**（他自己打开
+  v0.13.24 的复现现象中，一次性窗口**已经在站点里登进去了**（他自己打开
   `…/Member/User/Cookie/index.html` 能看到 5 块饼干、每行都有「应用」），程序却只写
   「浏览器里的饼干：memberUserspapapa、PHPSESSID（还没有 userhash）」。查下来两件事：
   ① `xdao/browser_login.py` 的 `looks_like_userhash()` 要求**全是可打印 ASCII**
@@ -2150,7 +2061,7 @@ epo_check.py 早在
 - **v0.13.24**（接 v0.13.23：修掉 HTTP 领饼干路上一处会 404 的拼地址）：把「应用饼干」搬回 HTTP
   之后回头核这条路，发现 `XdaoClient.apply_cookie()`（`xdao/client.py:597`）取 id 的正则
   `Cookie/(?:switchTo|export)/id/([^/\s"'<]+)` 会把列表页链接里的 `.html` **一起捕获**，而
-  `:631`／`:635` 又固定补一次 `.html` ⇒ 链接带后缀时会请求 `…/switchTo/id/461037.html.html`，
+  `:631`／`:635` 又固定补一次 `.html` ⇒ 链接带后缀时会请求 `…/switchTo/id/123456.html.html`，
   直接 404，userhash 也就拿不到（站点「饼干」页的链接确实是带 `.html` 的完整地址）。
   它一直没被用例发现，是因为那两个接口的路由键写得太宽松（`"/Cookie/export/"` 子串匹配），
   拼错的地址照样命中。改法只有一行：拼地址前
@@ -2158,12 +2069,12 @@ epo_check.py 早在
   `tests/test_client.py` 20 → 23，新增「空 href 的成功页只请求一次」「跳转目标就是自己时只请求
   一次」「switchTo/export 两个地址逐字钉住」三条。反向验证：把归一化那行换成原样返回，第三条
   用例立刻报 `…/id/abc123.html.html` 变红，改回全绿。
-  同一版还修了两处**只有真机才看得见**的地方（用户 复现记录 报「日志说登录成功、左上角还写未登录」）：
+  同一版还修了两处**只有真机才看得见**的地方（用户 复现实验 报「日志说登录成功、左上角还写未登录」）：
   ① 角标是 `StatusPill`（`xdao/widgets.py:209` 的 `set(text, tone=…)` 才会改），而 `App.open_login()`
   以前只改 `self.status_var` —— 新增 `App.show_login_state()`（`xdao/gui.py`，紧邻 `open_login`）把两处
   一起写，`tests/test_window.py` 新增 `test_login_pill_follows_the_saved_cookie` 钉住（36 → 37）。
   ② 诊断三处补漏：`_jar_summary`（`xdao/gui.py:1389`）改用 `backend.userhash_from_cookies` 判断罐里
-  到底有没有 userhash（真机上那句写死的「还没有 userhash」把人带偏过）；`_try_leaf_cookie_http` 跳过时
+  实际有没有 userhash（真机上那句写死的「还没有 userhash」曾导致定位误差）；`_try_leaf_cookie_http` 跳过时
   返回新常量 `BROWSER_HTTP_SKIP_ANON_NOTE` 而不是空串（worker 里按值过滤，留痕但不顶掉「这个窗口里
   还没登录」）；新增 `BrowserLoginDialog._timeout_message(steps, diagnosis)` —— 等超时那条以前**不带**
   `_diagnosis()`，`_http_note` 只进「窗口已关」「payload」两条失败路径，所以用户日志里一条 HTTP 记录
@@ -2172,7 +2083,7 @@ epo_check.py 早在
   （收集 1658 项）。
 - **v0.13.23**（接 v0.13.22：把「导航用户的标签页」整个停掉，并把失败原因写进日志）：0.13.22
   发出去之后复验仍不通行，报「0.13.22还是无法登录，一直无限跳转」（截图里浏览器停在
-  `…/Member/User/Cookie/switchTo/id/461037.html`，页面是站点自己的「饼干切换成功!」+
+  `…/Member/User/Cookie/switchTo/id/123456.html`，页面是站点自己的「饼干切换成功!」+
   「页面自动 跳转 等待时间： 1」，界面常驻提示写着「这个窗口里还没登录（页面停在登录页）：
   先在里面登录 X 岛。」，已经等了 110 秒）。判明两件事：① 那张跳转页的落点是页面里那个
   `<a id="href" href="…">`，成功时它是**空的**，`location.href = href` 于是把当前地址再载一次
@@ -2182,7 +2093,7 @@ epo_check.py 早在
   那张页上，userhash 也始终种不上。② 失败时不出声：界面层 `_try_leaf_cookie_http()` 有两条
   **静默**出路（`read_site_cookies()` 读失败被吞成 `[]`、`may_skip_for_typing and not
   _jar_holds_a_session(cookies)`），两条都不产生任何提示，日志里只剩 CDP 那句「还没登录」，
-  看不出 HTTP 那条路到底跑没跑。改法：**界面层固定 `navigate=False`**（只读页面状态与饼干罐，
+  看不出 HTTP 那条路实际跑没跑。改法：**界面层固定 `navigate=False`**（只读页面状态与饼干罐，
   一个标签页都不碰），三条导航护栏（`BROWSER_LEAF_NAV_LIMIT` / `BROWSER_LEAF_RETRY_SECONDS` /
   `BROWSER_LEAF_CAP_HINT`）连同 `leaf_attempts` 那套计数一起删除；每轮先报一句饼干罐
   （`BrowserLoginDialog._jar_summary()` → `browser_login.summarize_cookies()`，只报名字、去重、
@@ -2193,8 +2104,8 @@ epo_check.py 早在
   导航期用例，补 `test_the_dialog_never_navigates_the_users_tab` 等不变量）；五处注入全部变红；
   本机全量 **1646 passed / 7 skipped**（收集 1653 项）。
 
-- **v0.13.22**（接 v0.13.21：把「领饼干」从浏览器跳转改成走 HTTP）：0.13.21 发出去之后用户复验，
-  报「仍然是在切换饼干成功的界面一直跳」（截图里浏览器停在 `…/Cookie/switchTo/id/461037.html`，
+- **v0.13.22**（接 v0.13.21：把「领饼干」从浏览器跳转改成走 HTTP）：v0.13.21 发布后的复现结果显示，
+  报「仍然是在切换饼干成功的界面一直跳」（截图里浏览器停在 `…/Cookie/switchTo/id/123456.html`，
   页面是自己那张「饼干切换成功!」+「页面自动 跳转 等待时间： 0」）。拿站点真容核对：那一页的
   跳转是**页面自己的 JS 倒计时**干的（`<a id="href" href="…">` + `setInterval` 到点
   `location.href = href`），成功页的 `a#href` 指回自己时就变成原地重载 —— 用户看到的
@@ -2205,7 +2116,7 @@ epo_check.py 早在
   过去 —— `read_site_cookies()` 读一次整罐饼干，`apply_leaf_cookie_over_http()` 把整罐交给
   `XdaoClient.import_cookies()` + `XdaoClient.apply_cookie()`（认「跳转提示」页、跟跳、从导出页
   正文抠值），**一个页面都不动**。界面（`xdao/gui.py`）保留原来那条 CDP 路先跑，它领不到时再走
-  HTTP 兜底（`_try_leaf_cookie_http`）；「用户可能还在打验证码」只在**本次处理没动过页面、也从来
+  HTTP 兜底（`_try_leaf_cookie_http`）；「用户可能还在打验证码」只在**当前批次没动过页面、也从来
   没真应用过**、且罐里只有一个匿名 `PHPSESSID` 时成立（`_jar_holds_a_session`）—— 否则「标签页
   被弹回登录页、罐里其实还登录着」那种场面会永远卡住；这条 HTTP 路不碰页面，所以不受
   `BROWSER_LEAF_NAV_LIMIT` 约束。`import_cookies` 按 `set_userhash` 的老规矩把**同名的旧饼干
@@ -2215,7 +2126,7 @@ epo_check.py 早在
   `no_real_http_leaf_cookie` 让既有 28 条只验 CDP 那条路、绝不真发 HTTP）；九处注入全部变红
   （罐子判据两头改错、整段停用 HTTP 兜底、值不校验、原话不挪到末尾、服务端那句话不原样带出、
   不扫同名旧饼干、会话饼干当过期、空条目照装）。本机全量 **1641 passed / 7 skipped**
-  同版顺手修掉一处旧毛病：`create_exporter()` 那条「按能力逐级回退」的链里，`PdfBuilder` 不收
+  同版同时修掉一处旧毛病：`create_exporter()` 那条「按能力逐级回退」的链里，`PdfBuilder` 不收
   `image_mode`，所以第一层必 `TypeError`、PDF 一定落到第二层 —— 而第二层原来只带
   `image_mode + pdf_options`，把 `browser_path` / `pdf_timeout` / `fallback_html` 三项悄悄丢掉了
   （真机表现：设置里指定了浏览器，PDF 导出还是用默认的那个）。第二层现在＝第一层去掉
@@ -2226,7 +2137,7 @@ epo_check.py 早在
 - **v0.13.21**（真机上报「自动切换饼干之后一直卡在那里」；同版把开发期的界面截图工具
   `tools/gui_shot.py` 补上用例）：现场是 —— 在 0.13.20 里能正常登录、也自己跳到了
   「饼干」页，程序自动切换饼干之后就再也没有下文。真机截图证据：浏览器停在
-  `…/Member/User/Cookie/switchTo/id/461037.html`，页面是站点自己的「跳转提示」页
+  `…/Member/User/Cookie/switchTo/id/123456.html`，页面是站点自己的「跳转提示」页
   （笑脸 +「饼干切换成功!」+「页面自动 跳转 等待时间： 1」），而界面常驻提示写着「这个窗口里
   还没登录（页面停在登录页）：先在里面登录 X 岛。」，最后日志留下「浏览器登录没成：浏览器
   窗口已经关掉了，还没取到饼干。」。根因是**站点那一跳得由站点自己走完**：`userhash` 是在
@@ -2287,7 +2198,7 @@ epo_check.py 早在
   （`MAINTENANCE.md` CRLF 1132 / 裸 LF 0、`README.md` CRLF 476 / 裸 LF 0、
   `使用说明.txt` BOM 1 / 裸 LF 505）；打包版 `--version` → `X岛串导出工具 0.13.18`，
   `--selftest` 的输出与 v0.13.17 那份逐行相同（只差版本号与 exe 路径两行，都是退出码 1：
-  「配置目录」「导出目录」写不进去是开发者机器上沙箱限制，缓存已按设计回落到导出目录）；
+  「配置目录」「导出目录」写入失败与测试环境的受限运行策略有关，缓存已按设计回落到导出目录）；
   免安装包里的 `使用说明.txt` 与仓库文件逐字节一致（40243 字节 / 505 行）；
   `tools/repo_check.py` 13 项全绿。程序本体、界面、导出结果与 0.13.17 一致。
 
@@ -2318,7 +2229,7 @@ epo_check.py 早在
   的「跳转提示」页（`kind='jump'`、落点 `Member/User/Index/login.html`）并**导航跟着它跳**过去，
   最后落在登录页、回「跟着站点的跳转回到了登录页…」、`navigated=True`；读饼干一次问 4 个地址；
   临时用户目录删干净。**运维事实**：站点同一地址有时直接 302 到登录页、有时回「跳转提示」页
-  （探针要先清饼干才稳定碰到后者），两条路代码都走通 —— 这也解释了为什么真机上偶尔「一下就好了」、
+  （探针要先清饼干才稳定碰到后者），两条路代码都走通 —— 这也解释了实际运行中偶尔出现以下情况的原因：「一下就好了」、
   偶尔一直等到超时。
 - **v0.13.16**（纯文字：公开内容里不再复述来源）：把仓库里剩下的「拿来源当正文」的句子改成直接
   写现象与规则 —— `docs/RELEASE_NOTES_v0.13.14.md`（现象段与改法第一条）、
@@ -2371,7 +2282,7 @@ epo_check.py 早在
   5.0 秒 < 阈值 600 秒；提交 `92e74f4`、标签 `v0.13.15`、Release 已发布（附件 11.47 MB）、
   体检 `tools/repo_check.py` 13/13、全量两轮各 1216 passed / 7 skipped。
 - **v0.13.14**（只改文字，不改功能）：全仓去掉「复述来源」的句式。README、`packaging/使用说明.txt`、
-  `docs/RELEASE_NOTES_*.md`、MAINTENANCE、源码注释与用例文档字符串里的「有用户问…」「有人反馈…」
+  `docs/RELEASE_NOTES_*.md`、MAINTENANCE、源码注释与用例文档字符串里的「部分场景问…」「有人反馈…」
   「有人报过…」「这位用户 / 那位用户…」一律改成直接写现象与规则；规则本身（「## 注释与文档的写法」）
   不动。改写脚本 `_scratch/apply_neutral_wording.py`（25 条替换，先全部替换成功再统一写盘）。
   没改动的：`诊断写入.ps1` 的「用户名」等无关命中，以及泛指假设场景的句子。
@@ -2386,7 +2297,7 @@ epo_check.py 早在
   「现场版本 0.13.14、换上去的 exe 与包里的那份字节一致 True、现场 993 项、记号目录清干净、
   普通暂存目录年龄 5.2 秒 < 阈值 600 秒」。`tools/repo_check.py` 13/13；CI run 36870960597（master）
   与 36870969935（标签 v0.13.14）都是 success。
-- **v0.13.13**：**只改文案**：把「用浏览器登录」为什么是个干净窗口讲清楚，并给「直接粘贴
+- **v0.13.13**：**只改文案**：说明浏览器登录使用独立资料目录，并给「直接粘贴
   饼干登录」写上复制步骤。现象是「用浏览器登录」打开的窗口与平时使用的浏览器不是同一份资料目录：
   没有已装插件，也没有保存的密码（看起来像另一个软件）。同一个 Edge，只是换了一份临时资料目录；
   Chrome/Edge 136 起不允许在默认资料目录
@@ -2451,7 +2362,7 @@ epo_check.py 早在
 - **v0.13.11**：加一条**启动时清扫** —— 程序被强杀时没人收尾，那些临时资料目录会一直
   留在 `%TEMP%` 里（v0.13.9/v0.13.10 只盖住「程序自己收尾」的路径；真机上量到过 147 个）。
   `xdao/browser_login.py` 新增 `TEMP_DIR_PREFIXES`（`xdao-export-browser-profile` 与
-  `xdao-browser-check-` 两种前缀，`_is_temp_profile_dir()` 改成按它判断 —— 顺带把
+  `xdao-browser-check-` 两种前缀，`_is_temp_profile_dir()` 改成按它判断 —— 同时把
   `--check-browser` 自建的那份也纳进来，那份以前只靠 `browser_check.check_one()` 末尾一次
   `shutil.rmtree(ignore_errors=True)`，浏览器正咽气时静默失败，真机 `%TEMP%` 里攒了 5 个）、
   `SWEEP_MIN_AGE = 3600.0`、`SWEEP_PROBE_TIMEOUT = 0.5`、`_profile_in_use(profile)`
@@ -2466,14 +2377,14 @@ epo_check.py 早在
   启动线程那条。
   **真机核验**：`<工作目录>\_scratch\probe_sweep_v1311.py`（造旧的/新的/别人的目录各一，
   再真起一个浏览器）→ 删 2 留 3、活浏览器那份 `_profile_in_use() == True`、门槛 0 的清扫也不动它、
-  `stop()` 后目录消失、收尾 0 残留；第一跑顺带清掉了真机上积的 5 个自检遗留目录。
+  `stop()` 后目录消失、收尾 0 残留；第一跑同时清掉了真机上积的 5 个自检遗留目录。
   `<工作目录>\_scratch\probe_check_dir_cleanup.py`（把 `browser_check` 自己那次 `rmtree`
   换成空操作）→ 自检目录照样消失，证明是 `LoginBrowser.stop()` 兜住的。
   源码跑 `--selftest --offline --check-browser` 之后 `%TEMP%` 里 0 个 `xdao-browser-check-*`。
   打包版（`<工作目录>\xdao-export-v0.13.11-win64.zip`，12024842 字节 /
   SHA256 `ea2372505f9bcc8b8748cede8ec877e6e56abdb6f54fbaa94c9f89973e1adc0c`）跑
   `--version` → 「X岛串导出工具 0.13.11」、`--selftest --offline --check-browser` 仍是基线
-  「自检发现 2 处走不通、1 处要注意」；跑完 `%TEMP%` 里我们自己的目录 0 个。
+  「自检发现 2 处走不通、1 处要注意」；跑完 `%TEMP%` 里程序创建的目录 0 个。
   真机升级 E2E（`<工作目录>\_scratch\probe_upgrade_e2e_v1311.py`）：现场 v0.13.10 → 新版自己
   下载、自检、替换、重启，见证进程量到「换上去的 exe 与包里的那份字节一致: True」、
   现场版本 0.13.11、`.old-` 备份与暂存目录的处理都照旧。
@@ -2509,7 +2420,7 @@ epo_check.py 早在
 
 - **v0.13.9**：「用浏览器登录」改用**新建的临时资料目录**（`fresh_profile_dir()`，系统临时目录 + 进程内序号），不再复用配置目录里那个留到现在的旧目录 —— 现场是「自检里浏览器起得来、登录却一起来就退（Edge 退出码 21）」，两条路只差资料目录。关窗时 `LoginBrowser.stop()` 会 `cleanup_temp_profile()`（先 `_kill_processes_using_profile()` 收掉命令行里带该目录的浏览器进程，再 0.25 秒一次 `rmtree`、给 `TEMP_PROFILE_WAIT = 3.0` 秒，删掉立刻返回），删不掉也不抛异常。`_launch` 早退分支里的退出码 21 会追一句「未必是崩溃原因」。`gui.py`：`LoginDialog` 收下 `app=`，`SettingsDialog._open_browser_login` 把 `BrowserLoginDialog.failure` 写进运行日志（「浏览器登录没成：…」），用户贴日志就能带上真正的原因。用例：`tests/test_browser_login.py` 里候选顺序改成「临时目录 → 配置目录 → 备用目录」，新增 4 个临时目录用例，另加 `tests/test_gui_entry.py` 三条日志用例。
 
-- **v0.13.8**：补丁版，把「浏览器到底起不起得来」并进默认自检。`--selftest --check-browser`
+- **v0.13.8**：补丁版，把「浏览器实际起不起得来」并进默认自检。`--selftest --check-browser`
   时 `main.selftest(browser=True)` 会先打一行提示，再 `xdao/preflight.py` 新增的
   `browser_start_checks(explicit="", *, timeout=None, settings=None)` 真的启一遍候选浏览器
   （`xdao/browser_check.py` 新增 `check_all()`：和 `check_browsers()` 的差别只在「什么时候停」——
@@ -2520,28 +2431,28 @@ epo_check.py 早在
   **真机验收**：打包版在干净配置里跑 `--selftest --check-browser` 退出码 0，多出
   `[可以] 浏览器启动·Edge：Edge：能起来，Edg/… 调试端口 答得上话（0.5 秒）` 与
   `[可以] 浏览器启动：Edge 起得来…` 两行；单独 `--check-browser` 照旧。
-  **踩坑**：①测试里钉 `preflight.find_browser` 对探测没用 —— `browser_check` 是
+  **问题记录**：①测试里钉 `preflight.find_browser` 对探测没用 —— `browser_check` 是
   `from .browser_login import find_browser`，得钉 `browser_check.find_browser`，否则会真的去启本机
   Edge；②`tests/test_preflight.py` 里直接调 `browser_start_checks()` 的用例在**整个套件**里过、
   单独跑会红（全套件里有 autouse fixture 把 `AppSettings.load` 换掉，单独跑没有）→ 该文件加了
   自己的 autouse fixture `_no_real_settings`。
-  顺带修掉 `packaging/使用说明.txt` 里被 apply 脚本复制出来的正文（v0.13.6 段多了一份），
+  同时修掉 `packaging/使用说明.txt` 里被 apply 脚本复制出来的正文（v0.13.6 段多了一份），
   以及 `_scratch/check_usage_txt.py` 的假绿灯（原来只数「本版版本号」，复制的那份不带标签）。
-- **v0.13.7**：补丁版，修「登录窗口里登进去了、程序却没登录上」。旧逻辑 `BrowserLoginDialog._worker` 里 `if value: put(("ok", value))`：只要在浏览器里读到 `userhash` 就宣布成功 —— 而浏览器资料目录（`%APPDATA%\xdao-export\browser-profile`）是留着的，上一次登录的旧饼干还在，会话早失效，于是「界面说成功、导出全未登录」。`client.import_userhash()` 本身不做任何服务端校验（`xdao/client.py:426`）。真机探针定的判据：拿这块饼干请一次`https://www.nmbxd1.com/Member/User/Cookie/index.html`，匿名/假饼干（`userhash=deadbeefdeadbeef`）时 `_request_following_jumps` 的 `final_url` 都会落在`Member/User/Index/login.html`（`"login" in final_url`，饼干行数 0、页面 3282 字节）；试过用取串接口验，**验不了** —— `fetch_thread_page` 对匿名与假饼干都返回 200 且带 `Hide/Replies/ReplyCount` 字段（跳转页被当正常页解析的老坑）。落地：`xdao/gui.py` 新增模块级 `verify_userhash_live(client, userhash) -> str | None`（`None` = 能用；否则返回给用户看的一句话）与两个常量 `BROWSER_STALE_COOKIE_MESSAGE`／`BROWSER_VERIFY_FAILED_MESSAGE`；`_worker` 里 `verified` 缓存（验过的饼干不再反复问）＋`said_dead` 只提示一次；**函数自己 `client.import_userhash(userhash)`**（原先由调用方装，漏了就等于拿别人的身份问、结论会反过来）。用例 3 条（`tests/test_gui_browser_login.py`）：旧饼干不当成功（界面出现「X 岛不认」、窗口不关、`dialog.userhash is None`）、`test_verify_userhash_live_asks_the_cookie_page_with_that_cookie`（假客户端真跑：问了哪个地址、弹回登录页 == 不认、抛异常 == 「没法确认」而不是「不认」）、`test_the_dialog_asks_the_server_before_calling_it_a_success`（AST 钉接线：产品代码里有且只有一处调用、参数就是 `self.client, value`）。**踩过的坑**：①autouse fixture `assume_live_cookies` 在用例正文**之前**就把 `gui.verify_userhash_live` 换成替身了，所以「在用例里读模块属性、想拿到真实现」拿到的其实是替身 —— 真函数要 `from xdao.gui import verify_userhash_live as real_verify_userhash_live` 在模块顶层拿；②别指望「换掉类属性再包一层」绕 monkeypatch（`gui.BrowserLoginDialog.__dict__[...]` 里的东西本身可能已经是替身）；③`tests/test_config_isolation.py` 用 `import xdao.gui`，会另造一份 `xdao.gui` 模块对象（`gui is sys.modules['xdao.gui']` 为 False），跨模块打补丁时容易打空。
+- **v0.13.7**：补丁版，修「登录窗口里登进去了、程序却没登录上」。旧逻辑 `BrowserLoginDialog._worker` 里 `if value: put(("ok", value))`：只要在浏览器里读到 `userhash` 就宣布成功 —— 而浏览器资料目录（`%APPDATA%\xdao-export\browser-profile`）是留着的，上一次登录的旧饼干还在，会话早失效，于是「界面说成功、导出全未登录」。`client.import_userhash()` 本身不做任何服务端校验（`xdao/client.py:426`）。真机探针定的判据：拿这块饼干请一次`https://www.nmbxd1.com/Member/User/Cookie/index.html`，匿名/假饼干（`userhash=deadbeefdeadbeef`）时 `_request_following_jumps` 的 `final_url` 都会落在`Member/User/Index/login.html`（`"login" in final_url`，饼干行数 0、页面 3282 字节）；试过用取串接口验，**验不了** —— `fetch_thread_page` 对匿名与假饼干都返回 200 且带 `Hide/Replies/ReplyCount` 字段（跳转页被当正常页解析的老坑）。落地：`xdao/gui.py` 新增模块级 `verify_userhash_live(client, userhash) -> str | None`（`None` = 能用；否则返回给用户看的一句话）与两个常量 `BROWSER_STALE_COOKIE_MESSAGE`／`BROWSER_VERIFY_FAILED_MESSAGE`；`_worker` 里 `verified` 缓存（验过的饼干不再反复问）＋`said_dead` 只提示一次；**函数自己 `client.import_userhash(userhash)`**（原先由调用方装，漏了就等于拿别人的身份问、结论会反过来）。用例 3 条（`tests/test_gui_browser_login.py`）：旧饼干不当成功（界面出现「X 岛不认」、窗口不关、`dialog.userhash is None`）、`test_verify_userhash_live_asks_the_cookie_page_with_that_cookie`（假客户端真跑：问了哪个地址、弹回登录页 == 不认、抛异常 == 「没法确认」而不是「不认」）、`test_the_dialog_asks_the_server_before_calling_it_a_success`（AST 钉接线：产品代码里有且只有一处调用、参数就是 `self.client, value`）。**实现注意事项**：①autouse fixture `assume_live_cookies` 在用例正文**之前**就把 `gui.verify_userhash_live` 换成替身了，所以「在用例里读模块属性、想拿到真实现」拿到的其实是替身 —— 真函数要 `from xdao.gui import verify_userhash_live as real_verify_userhash_live` 在模块顶层拿；②别指望「换掉类属性再包一层」绕 monkeypatch（`gui.BrowserLoginDialog.__dict__[...]` 里的东西本身可能已经是替身）；③`tests/test_config_isolation.py` 用 `import xdao.gui`，会另造一份 `xdao.gui` 模块对象（`gui is sys.modules['xdao.gui']` 为 False），跨模块打补丁时容易打空。
 
 - **v0.13.6**：补丁版，把 v0.13.5 的探测能力搬到界面。`SelftestDialog` 新增 `browser_button`（文字「试浏览器」）与 `_run_browser_check()` / `_poll_browser_check()` / `_schedule_browser_poll()`：后台线程调 `browser_check.check_browsers(explicit or "", progress=...)`（`explicit` 取 `getattr(self.app, "settings", None)` 的 `pdf_browser`，取不到就留空自动挑），结果经 `self._browser_queue` 回到主线程轮询（`BROWSER_UI_POLL_MS = 150`）；跑的时候按钮禁用 + 右下角显示「正在试谁」，结论 `report.render()` 追加进自检文本（可一键复制），失败与「探测自己出错」都写进运行日志。`_schedule_browser_poll()` 把 `after()` 包在 `except tk.TclError` 里：探测途中关掉窗口不该把异常抛到主循环。对话框说明文字也补了一句「会真的启动一次浏览器」。用例（`tests/test_gui_entry.py`）2 条：`test_selftest_dialog_has_a_way_to_find_out_if_the_browser_even_starts`（真跑整条链路：假浏览器 + 假调试服务；用 `threading.Event` 当闸门卡住到「真结果已在队列里」，这样「跑着时按钮禁用」不是抢时间断言；替身**必须先存下真实现**再 monkeypatch，否则替身调 `browser_check.check_browsers` 会自己调自己 —— 第一次就写成那样，界面上显示 `RecursionError`）、`test_selftest_browser_check_says_so_when_the_probe_itself_blows_up`（探测抛异常也要说人话、按钮要放开）。注意：用例里**不能在 `_close(dialog)` 之后读 `button.instate()`**（`invalid command name`）。
 
-- **CI 假浏览器用例不再靠跳过打发**（v0.13.5 之后，只动测试）：`tests/test_browser_check.py` 第一版用 `pytestmark + skipif` 在非 Windows 上整组跳过 5 条，撞上 `tests/conftest.py` 的跳过守卫（白名单外的跳过直接报错），CI 36836040741 / 36836049492 两个 ubuntu 作业因此红。改法：POSIX 分支写一个**带 shebang 的 Python 脚本**并 `chmod(0o755)`，剧本参数（模式、端口）放进文件名、脚本从 `sys.argv[0]` 里拆 —— 不再引一层 shell；Windows 仍用 `.cmd`（`write_bytes` 手写 `\r\n`）。`chmod` 写死 `0o755` 而不是 `st_mode | stat.S_IXUSR`：Windows 上 `stat.S_IXUSR` 是 0，那种写法在本机探测不出执行位到底给没给，到 ubuntu 上就是 `PermissionError`；也别在用例里断言执行位（Windows 的 stat 恒返回 0o666）。CI 36837069129 三作业全绿（ubuntu 两个矩阵 1084 passed / 88 skipped，windows 1166 passed / 6 skipped）。
+- **CI 假浏览器用例不再靠跳过打发**（v0.13.5 之后，只动测试）：`tests/test_browser_check.py` 第一版用 `pytestmark + skipif` 在非 Windows 上整组跳过 5 条，撞上 `tests/conftest.py` 的跳过守卫（白名单外的跳过直接报错），CI 36836040741 / 36836049492 两个 ubuntu 作业因此红。改法：POSIX 分支写一个**带 shebang 的 Python 脚本**并 `chmod(0o755)`，剧本参数（模式、端口）放进文件名、脚本从 `sys.argv[0]` 里拆 —— 不再引一层 shell；Windows 仍用 `.cmd`（`write_bytes` 手写 `\r\n`）。`chmod` 写死 `0o755` 而不是 `st_mode | stat.S_IXUSR`：Windows 上 `stat.S_IXUSR` 是 0，那种写法在本机探测不出执行位实际给没给，到 ubuntu 上就是 `PermissionError`；也别在用例里断言执行位（Windows 的 stat 恒返回 0o666）。CI 36837069129 三作业全绿（ubuntu 两个矩阵 1084 passed / 88 skipped，windows 1166 passed / 6 skipped）。
 
 - **子进程 Tk 抖动不再算成回归**（只动测试）：`tests/test_window.py` 新增 `_run_in_fresh_process(script)` —— 那段子进程脚本的失败会以「退出码非 0」报出来，与「Tk 起不来」长得一模一样，所以先探一次（`_TK_UNAVAILABLE_MARKERS = ("Can't find a usable", "no display name", "no $DISPLAY")`，最多重试 3 次），探不成按白名单理由「没有可用的显示环境（子进程里 Tk 起不来）」跳过。起因是 CI run 36834153393（windows-latest，sha a754d187，同 sha 的另一次运行全绿）：`test_widget_fonts_match_the_theme_after_startup` 因子进程报 `_tkinter.TclError: Can't find a usable init.tcl in the following directories: C:/hostedtoolcache/windows/Python/3.12.10/x64/tcl/tcl8.6/init.tcl` 而红。
 
-- **CI 的父进程里 `tk.Tcl()` 也起不来**（v0.13.17 之后，只动测试）：CI run 36885850517（windows-latest / py3.12，sha a4ac75a）报 1 failed —— `test_widget_fonts_match_the_theme_after_startup` 的子进程那段全过了，最后一句 `tk.Tcl().splitlist(log_font)[0]` 却在**父进程**（pytest 自己）里炸：`_tkinter.TclError: Can't find a usable init.tcl in the following directories: C:/hostedtoolcache/windows/Python/3.12.10/x64/tcl/tcl8.6/init.tcl`（同一个 runner 上 `tk.Tk()` 是好的：子进程探针过、脚本也过，只有**纯 Tcl** 解释器建不出来）。改法：字体串改在**子进程**里用 `root.tk.splitlist(log)[0]` 解析（子进程的 `root` 是真的 Tk），父进程只比字符串 —— 与 `tests/test_window.py:242 _widget_font()` 同一个读法。同 sha 的标签 run 36885859950 全绿；本机 `tests/test_window.py` 36 passed。**另一个坑**：本机带 `XDAO_HEADLESS=1` 跑全量时，`test_selftest_intro_wraps_at_the_minimum_size` 与 `test_selftest_minimum_size_fits_the_folded_buttons` 会假红（窗口压根没被映射：`dialog.winfo_height()` 返回 1、`winfo_rooty()` 返回 0，于是「被窗口下沿切掉」的断言必红）—— 结论要拿真机（不设 `XDAO_HEADLESS`）那一轮来说，无头那轮只用来快速回归。
+- **CI 的父进程里 `tk.Tcl()` 也起不来**（v0.13.17 之后，只动测试）：CI run 36885850517（windows-latest / py3.12，sha a4ac75a）报 1 failed —— `test_widget_fonts_match_the_theme_after_startup` 的子进程那段全过了，最后一句 `tk.Tcl().splitlist(log_font)[0]` 却在**父进程**（pytest 自己）里炸：`_tkinter.TclError: Can't find a usable init.tcl in the following directories: C:/hostedtoolcache/windows/Python/3.12.10/x64/tcl/tcl8.6/init.tcl`（同一个 runner 上 `tk.Tk()` 是好的：子进程探针过、脚本也过，只有**纯 Tcl** 解释器建不出来）。改法：字体串改在**子进程**里用 `root.tk.splitlist(log)[0]` 解析（子进程的 `root` 是真的 Tk），父进程只比字符串 —— 与 `tests/test_window.py:242 _widget_font()` 同一个读法。同 sha 的标签 run 36885859950 全绿；本机 `tests/test_window.py` 36 passed。**另一个坑**：本机带 `XDAO_HEADLESS=1` 跑全量时，`test_selftest_intro_wraps_at_the_minimum_size` 与 `test_selftest_minimum_size_fits_the_folded_buttons` 会假红（窗口压根没被映射：`dialog.winfo_height()` 返回 1、`winfo_rooty()` 返回 0，于是「被窗口下沿切掉」的断言必红）—— 结论要拿真机（不设 `XDAO_HEADLESS`）此前批次来说，无头那轮只用来快速回归。
 
-- **v0.13.5**：补丁版，补上「浏览器到底能不能起来」这个盲区。新增 `xdao/browser_check.py`：`BrowserCheck`/`BrowserReport` 两个 dataclass、`check_one(info, timeout, *, root=None) -> BrowserCheck`（真的启一次、等调试端口、再问一句 `/json/version`，然后立刻关掉并删临时资料目录）、`check_browsers(explicit="", *, timeout, limit=3, env=None, progress=None) -> BrowserReport`（挑选顺序 = `find_browser(explicit or None)` → `browser_candidates(head)`，有一个能用就停）；`main.py` 新增 `--check-browser` / `--check-browser-json`（登记进 `_CONSOLE_HINT_FLAGS`）。`xdao/browser_login.py` 的 `LoginBrowser` 新增 `fallback_profiles: bool = True`，`start()` 里`browsers = browser_candidates(self.info) if self.fallback_profiles else [self.info]`、`candidates` 同理 —— 登录那条路照旧兜底，探测这条路必须如实回答「这一个行不行」（实测：开着兜底时会退到用户真正的 `browser-profile`，那里的旧端口让另一个浏览器答了话，把一个起不来的假货判成「可以」）。用例 `tests/test_browser_check.py` 5 条：真答话=通过、写完端口就死=不通过、端口在没人答话=不通过、探测不换目录/不换浏览器、登录那条路兜底仍在。
+- **v0.13.5**：补丁版，补上「浏览器实际能不能起来」这个盲区。新增 `xdao/browser_check.py`：`BrowserCheck`/`BrowserReport` 两个 dataclass、`check_one(info, timeout, *, root=None) -> BrowserCheck`（真的启一次、等调试端口、再问一句 `/json/version`，然后立刻关掉并删临时资料目录）、`check_browsers(explicit="", *, timeout, limit=3, env=None, progress=None) -> BrowserReport`（挑选顺序 = `find_browser(explicit or None)` → `browser_candidates(head)`，有一个能用就停）；`main.py` 新增 `--check-browser` / `--check-browser-json`（登记进 `_CONSOLE_HINT_FLAGS`）。`xdao/browser_login.py` 的 `LoginBrowser` 新增 `fallback_profiles: bool = True`，`start()` 里`browsers = browser_candidates(self.info) if self.fallback_profiles else [self.info]`、`candidates` 同理 —— 登录那条路照旧兜底，探测这条路必须如实回答「这一个行不行」（实测：开着兜底时会退到用户真正的 `browser-profile`，那里的旧端口让另一个浏览器答了话，把一个起不来的假货判成「可以」）。用例 `tests/test_browser_check.py` 5 条：真答话=通过、写完端口就死=不通过、端口在没人答话=不通过、探测不换目录/不换浏览器、登录那条路兜底仍在。
 
 - **v0.13.4**：补丁版。`gui.py` 新增模块级 `_find_login_browser(settings=None)`：`explicit = (settings or AppSettings.load()).pdf_browser`，交给 `backend.find_browser(explicit or None)`；`BrowserLoginDialog._worker()` 改用它（原来是 `backend.find_browser()`）—— 设置里手动指定的浏览器以前只对 PDF 导出生效，浏览器登录还在自己挑。对话框新增一行 `browser_note_var`（`_set_browser_note()`写、`_poll` 新增 `"browser"` 消息分支），启动后显示「这次用 <名字> 打开（<路径>）。」；「PDF 浏览器」那栏的说明改成「导出 PDF 和「用浏览器登录」时调用的浏览器…留空表示跟随系统默认浏览器，认不出来再找 Chrome 或 Edge」。用例：`tests/test_gui_browser_login.py` 新增`test_browser_note_tells_the_user_which_browser_will_open` 与`test_explicit_browser_in_the_settings_is_the_one_that_gets_used`（`open_dialog` 夹具新增 `set_explicit_browser()`）。
 
-- **v0.13.3**：补丁版。`browser_login.py` 新增「认系统默认浏览器」：`_windows_default_exe()` 读 `HKCU\...\UrlAssociations\https\UserChoice` 的 ProgId、再按 `SOFTWARE\Classes\<ProgId>\shell\open\command`（先 HKCU 后 HKLM）取命令行，`ordered_browsers()` 把默认那个排最前、`find_browser()` 改走它（手动指定路径仍优先）；注册表读取走 `_registry()`，测试可替换，Linux CI 也能用假注册表跑这段。`LoginBrowser.start()` 重写成「遍历浏览器 × 遍历备用资料目录」：`_dead_on_startup()` 认下 `_DEAD_ON_STARTUP_MARKER = "刚起来就退出了"` 后换目录、必要时换浏览器（`browser_note` 供界面提示），全试完才抛错并附「直接粘贴饼干登录」；顺手删掉 `find_browser`/`_pick_page`/`_pick_site_page` 三处「同名函数定义两次」的历史残留。
+- **v0.13.3**：补丁版。`browser_login.py` 新增「认系统默认浏览器」：`_windows_default_exe()` 读 `HKCU\...\UrlAssociations\https\UserChoice` 的 ProgId、再按 `SOFTWARE\Classes\<ProgId>\shell\open\command`（先 HKCU 后 HKLM）取命令行，`ordered_browsers()` 把默认那个排最前、`find_browser()` 改走它（手动指定路径仍优先）；注册表读取走 `_registry()`，测试可替换，Linux CI 也能用假注册表跑这段。`LoginBrowser.start()` 重写成「遍历浏览器 × 遍历备用资料目录」：`_dead_on_startup()` 认下 `_DEAD_ON_STARTUP_MARKER = "刚起来就退出了"` 后换目录、必要时换浏览器（`browser_note` 供界面提示），全试完才抛错并附「直接粘贴饼干登录」；同时删掉 `find_browser`/`_pick_page`/`_pick_site_page` 三处「同名函数定义两次」的历史残留。
 
 - **v0.13.2**：补丁版。浏览器登录读调试接口改成**带预算的重试**（`cdp._http_json`，8 秒 / 0.1→0.5 秒退避）：真机实测端口文件出现后还要 328~563 ms 第一次连接才成功，这中间读一次就是 `[WinError 10061] 目标计算机积极拒绝`，以前只读一次就报「打开浏览器失败」。同时 `CDPSession` 新增 `failure_hint`，`gui.py` 把 `LoginBrowser.devtools_failure_hint` 传下去（进程已退出就当场报退出码，不再耗满预算）；`browser_login.start()` 把「调试口连不上」也归入「换备用资料目录重试」。
 
@@ -2555,8 +2466,8 @@ epo_check.py 早在
   `--apply-update <目录> <payload> <pid> <启动程序>` 等老进程退出 → `swap_in`
   （旧目录改名为 `<名>.old-<时间戳>`，新版搬进来，搬不动就改回去）→ 启动新版 → 清暂存。
   三条设计取舍：①**先自检再替换**，宁可这次不升也不换上一个打不开的；②**旧版本不删**，
-  只改名，留 24 小时（`cleanup_backups`，每次启动顺手清）；③**帮手用升级包里的 exe**，
-  系统里没 Python、没 PowerShell 也能升级。顺带把「答应用户中途取消」的路径也做了：
+  只改名，留 24 小时（`cleanup_backups`，每次启动同时清）；③**帮手用升级包里的 exe**，
+  系统里没 Python、没 PowerShell 也能升级。同时把「答应用户中途取消」的路径也做了：
   取消或失败一律 `discard_staging`，不在 `%TEMP%` 里留几十 MB。
 
 - **新版本检查**（v0.12.0）：新增 `xdao/update_check.py`（`parse_version` / `is_newer` /新增 `xdao/update_check.py`（`parse_version` / `is_newer` /
@@ -2569,7 +2480,7 @@ epo_check.py 早在
   ②查不到不算程序出错，`--check-update` 一律退出码 0，`--offline` 与它同时给出会明确报错；
   ③界面那条路必须**用队列把结果交回主线程** —— 工作线程直接 `root.after()` 会撞上
   `RuntimeError: main thread is not in main loop`（本机探针真踩到过，导出/监控原本就是队列）。
-  顺带修掉一个老毛病：`--offline` 以前只在「没配 `--selftest`」时报错，和 `--check-update`
+  同时修掉一个老毛病：`--offline` 以前只在「没配 `--selftest`」时报错，和 `--check-update`
   一起给会被忽略，现在是明确的不兼容组合。
 
 - **环境自检**（v0.11.0）：`--selftest` 从「只联网测接口」扩成「本机环境体检 + 联网检查」，
@@ -2577,7 +2488,7 @@ epo_check.py 早在
   命令行加 `--selftest-json`、`--offline`（单独给 `--offline` 会明确报错，不落到启动界面），
   界面加 `SelftestDialog` 与「运行日志」右上角的「自检」按钮。全程只读：配置目录用
   `can_write_dir` 探针、绝不调 `AppSettings.save()`；本机那部分断网也照样有意义。
-  顺带修掉 `Card` 的一个布局老问题：画布不会把内嵌窗口的高度拉到画布高，`body` 恒为
+  同时修掉 `Card` 的一个布局老问题：画布不会把内嵌窗口的高度拉到画布高，`body` 恒为
   请求尺寸，于是「填满」是假的 —— 新增 `Card(stretch=True)`（先垫一层铺满画布的
   `Frame` 再把 `body` pack 进去），自检对话框的文本区从 206px 变成 442px。
   教训：**withdraw 的根窗口量出来的 Tk 尺寸不可信**，布局用例必须先 `deiconify()+update()`。
@@ -2674,7 +2585,7 @@ epo_check.py 早在
   HTTP 头却写 `image/png`；旧代码只认 `Content-Encoding`，所以字节一直是压缩的。
   Tk 的 `PhotoImage` 恰好能直接吃压缩字节，这个问题才一直没暴露。
   `client._decode_response_body(data, content_type)` 按 gzip 魔数兜一层（解压失败原样返回），
-  `_request()` 顺手把最近一次响应头记进 `self._last_response_headers`（键统一小写），
+  `_request()` 同时把最近一次响应头记进 `self._last_response_headers`（键统一小写），
   `fetch_login_form()` 用它判断 —— **不改 `_request` 的返回类型**，替换 `_request` 的既有夹具不受影响。
 - **PDF 纸张 / 边距 / 缩放 / 页码可配置**（v0.8.0）：选项集中在 `xdao/pdf_opts.py`
   （`PdfOptions` + `from_settings()` + `require_valid_pdf_options()`），界面、命令行、导出器
@@ -2711,7 +2622,7 @@ epo_check.py 早在
   （实现者自己跑全量时同样触发）。现在 `tests/conftest.py` 有 autouse 守卫
   `_forbid_writing_the_real_user_config`：**模块级安装、只装不拆、幂等**，拦「读用户配置」与
   「写用户配置」，**不拦构造**（`AppSettings()` 默认落到用户配置本身是要被测的行为）。
-  两条踩过的坑：①改 dataclass 的 `__dataclass_fields__["_path"].default_factory` 或改模块里
+  两条实现注意事项：①改 dataclass 的 `__dataclass_fields__["_path"].default_factory` 或改模块里
   `_default_config_path` 名字都拦不住（factory 函数对象在类创建时就进了 `__init__` 的默认值），
   只有包 `AppSettings.__init__`/`load`/`save` 有效；②安装时要先看
   `AppSettings.load.__name__ != "load"` 就**直接退让**，否则会把别人（module 作用域夹具）已经
@@ -2720,7 +2631,7 @@ epo_check.py 早在
 - **打包版能导出 PDF 了**（v0.10.0）：原先打包版 `-f pdf` 会被
   `2147483651`（STATUS_BREAKPOINT）挡下、自动降级成 HTML，根因是 **Chromium 的沙箱层在
   「父进程是冻结程序」时初始化失败**，加 `--no-sandbox` 即通（`xdao/browser_flags.py`
-  只在 `sys.frozen` 为真时加；源码运行仍带沙箱）；同版把 `--pdfdiag` 诊断对齐到同一套参数、
+  只在 `sys.frozen` 为真时加；源码运行仍带受限环境）；同版把 `--pdfdiag` 诊断对齐到同一套参数、
   把「需要从源码运行」的旧提示改写掉。详见「打包版导不出 PDF：已修」一节。
 - **监控列表能备份 / 还原**（v0.9.0）：新模块 `xdao/watch_list.py` 管文件格式，
   界面（`WatchDialog` 的「导出列表 / 导入列表」）与命令行（`--watch-export` /
@@ -2730,7 +2641,7 @@ epo_check.py 早在
      跟着文件搬到另一台机器会让它以为"已经导出过了"，第一轮该出的不出。
   2. **`thread_id` 一律按文件重算**，不信文件里写的串号 —— 监控键
      `xdao.watcher.target_key` 是按串号拼的，串号被改过之后一份状态会挂到另一个串上，
-     表现成「明明有新回复却一直报无更新」。顺带把认不出串号的网址补成规范形式。
+     表现成「明明有新回复却一直报无更新」。同时把认不出串号的网址补成规范形式。
   3. **导入是合并、不是替换**（按 `target_key` 去重；想替换用 `--watch-import-replace`）。
      **「替换」的判据是「只留下文件里那些条目」，包括文件里和现在完全一样的那几条** ——
      最早的写法是 `merged = result.added`，而「同一个串、同样的设置」被算进了
@@ -2809,7 +2720,7 @@ epo_check.py 早在
    `https://www.nmbxd1.com/Member/User/Index/login.html`，但挂上去后 `location.href`
    一直是 `about:blank`、`document.title` 是空串，`Page.captureScreenshot` /
    `Runtime.evaluate` 一律超时 —— **文档还没提交**，页面里的 `fetch` 属于别的源。
-   本机走代理时这一步要 **10–12 秒**才提交（有时代理更快就更早）。
+   网络响应较慢时，这一步可能需要 **10–12 秒**才提交。
    推论（写测试 / 写健康检查时都适用）：
    - 断言要分两层：**目标层面**（站点标签在不在、会话挂的是不是它、`apply_leaf_cookie`
      返回 None）任何情况下都成立，可以当健康判据；**文档层面**（`location.href`、
@@ -2907,7 +2818,7 @@ HTTP 那条路的原话拼进失败原因（`_jar_summary()` / `_diagnosis()`）
 那一条里留着内部编号，一路推上去了。提交信息里同一个词被扫出来改了写法，
 文档里却没人看。
 
-规矩：跑扫描时把**本次处理要提交的所有文本文件**一起扫（`git diff --name-only` 那份清单里
+规矩：跑扫描时把**当前批次要提交的所有文本文件**一起扫（`git diff --name-only` 那份清单里
 的 `.md` / `.txt` 都算），别只扫 `_commit_msg_*.txt`。内部编号、聊天里的说法、本机路径
 都不该出现在公开仓库里；已经推上去的只能下个提交改回来（历史改不了，除非强推）。
 
@@ -2933,11 +2844,11 @@ HTTP 那条路的原话拼进失败原因（`_jar_summary()` / `_diagnosis()`）
 `--selftest` 会跑「本机环境」那几项（配置目录、导出目录、缓存目录能不能写），
 **结论随机器而变**。新加的 `tests/test_selftest_browser_flag.py` 一开始只钉了
 `preflight._loaded_settings`、`can_write_dir`、`_check_cache_dir` 这些小函数，
-结果开发机上全绿、两个 ubuntu 作业在 49df732 红了三条（`assert code == 0` →
+本地测试通过后，两个 Ubuntu 作业在 49df732 出现三项失败（`assert code == 0` →
 `assert 1 == 0`）。
 
 原因：`run_local_checks()` 在**自己的函数体里**再取一次 `_loaded_settings()` ——
-开发机上设置里的导出目录恰好能写，干净的 CI 机器上写不进去 → 多出一条 `fail` →
+测试环境的已配置导出目录可写，干净的 CI 机器上写不进去 → 多出一条 `fail` →
 退出码 1。**钉里面的小函数不够，要把 `run_local_checks` /
 `run_network_checks` 整个换成固定报告**（`tests/test_cli.py` 的
 `_stub_preflight` 早就是这么做的，新的自检类用例照抄它）。
@@ -2959,7 +2870,7 @@ HTTP 那条路的原话拼进失败原因（`_jar_summary()` / `_diagnosis()`）
   改这一步时别退化成无效检查。
 - 打 tag 时会校验 `xdao.__version__` 与 tag 相同，避免发错版本号。
 
-### 五个已经踩过的 CI 坑
+### 五项 CI 兼容性约束
 
 1. **测试夹具不能写死 Windows 形态**。`tests/test_pdf.py` 里造「假浏览器」时，
    原先只生成 `fake_browser.cmd`，结果 ubuntu 两个 job 全部挂在单元测试：
@@ -3041,7 +2952,7 @@ HTTP 那条路的原话拼进失败原因（`_jar_summary()` / `_diagnosis()`）
 `944 passed, 16 skipped`，退出码 1；设上之后是 `956 passed, 6 skipped`，退出码 0）：
 
 ```powershell
-$env:TCL_LIBRARY = '<本机 Python>\tcl\tcl8.6'
-$env:TK_LIBRARY  = '<本机 Python>\tcl\tk8.6'
-& '<本机 Python>\python.exe' -X utf8 -m pytest -q -p no:cacheprovider -rs
+$env:TCL_LIBRARY = '<项目 Python>\tcl\tcl8.6'
+$env:TK_LIBRARY  = '<项目 Python>\tcl\tk8.6'
+& '<项目 Python>\python.exe' -X utf8 -m pytest -q -p no:cacheprovider -rs
 ```

@@ -25,7 +25,7 @@ python main.py 50000001 -f pdf --pdf-browser "C:\Program Files\Google\Chrome\App
 - 终端汇总里会明确提示「以上失败原因已写入…日志」；
 - 导出成功的文件也会在日志里记下**体积**。
 
-### 顺带的改进
+### 同时的改进
 
 - 导出完成后会打印文件体积，不用再去文件夹里看；
 - CLI 新增 `--pdf-browser`、`--pdf-timeout` 选项；设置里也能指定浏览器路径；

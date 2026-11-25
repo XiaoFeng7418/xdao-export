@@ -129,13 +129,13 @@ _open_utf8_console()
 
 
 def selftest(json_output: bool = False, offline: bool = False, browser: bool = False) -> int:
-    """自检：先看本机环境，再看接口能不能通。
+    """自检：先看本地运行环境，再看接口能不能通。
 
-    分两段是有意的 —— 本机那段（配置目录、缓存目录、导出目录、浏览器、导出格式）
+    分两段是有意的 —— 本地环境检查（配置目录、缓存目录、导出目录、浏览器、导出格式）
     在断网时照样有意义，而它在原来自检里完全没有。
 
     ``browser=True``（``--selftest --check-browser``）时额外**真的启一次浏览器**：
-    本机那段里的「浏览器」只查找不找得到可执行文件，碰上「找得到、一起来就被拦下」
+    本地环境检查里的「浏览器」只查找不找得到可执行文件，碰上「找得到、一起来就被拦下」
     照样显示「可以」。这一段会真的启动浏览器进程，所以默认不跑。
     """
     from xdao import preflight
@@ -162,7 +162,7 @@ def selftest(json_output: bool = False, offline: bool = False, browser: bool = F
 def check_browser(json_output: bool = False) -> int:
     """试一试本机的浏览器能不能真的起来（会短暂启动浏览器进程）。
 
-    为什么单独一条命令：``--selftest`` 的浏览器那一项只查「找得到可执行文件」，
+    该功能单独提供为命令：``--selftest`` 的浏览器那一项只查「找得到可执行文件」，
     可用户碰到的是「找得到、但一起来就被拦下」——自检显示「可以」，点「用浏览器
     登录」却永远失败。这里真的启一次、等调试端口写出来、马上关掉，把结论和
     退出码直接摆出来。至少一个浏览器能起来就算通过（退出码 0）。
@@ -195,7 +195,7 @@ def check_update(json_output: bool = False) -> int:
     """查一下有没有新版本。
 
     查不到（没网、代理不通、接口改版）不算程序出错，所以退出码是 0 ——
-    这条命令的用途是「顺手看一眼」，不是「必须成功」。
+    这条命令用于快速查询版本状态，不是「必须成功」。
     """
     from xdao import update_check
 
@@ -537,7 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _page_limit(raw: str) -> int:
     """``--max-pages`` 的取值校验：非负整数；0 表示不限页数。
 
-    为什么挡在这里而不是悄悄回落到默认：写错的参数（``--max-pages abc``）若不报错，
+    参数必须在此处报错，不能回落到默认值：写错的参数（``--max-pages abc``）若不报错，
     用户会以为上限生效了，实际按"不限"抓完整个串 —— 那正是这个开关要防的事。
     argparse 的报错会给出开关名与写法，比导出跑到一半再失败清楚得多。
     """
@@ -601,7 +601,7 @@ def _effective_page_workers(args: argparse.Namespace, settings) -> int:
     """这次抓取实际开几路并发：命令行优先，其次配置，都没给就是 1（串行）。
 
     默认必须是 1：老配置里没有这个键，行为要与旧版本完全一致 —— 并行会把
-    同时在飞的请求数涨上去，站点限流阈值谁也说不准，不能让升级顺手改掉它。
+    同时在飞的请求数涨上去，站点限流阈值谁也说不准，不能让升级同时改掉它。
     """
     from xdao.cache import DEFAULT_PAGE_WORKERS, normalize_page_workers
 
@@ -995,7 +995,7 @@ def run_cli(args: argparse.Namespace) -> int:
         skip_existing=skip_existing,
     )
     if merge_export and not getattr(exporter, "supports_merge", False):
-        # 说清楚为什么没合并：用户勾了合并却发现还是一串一份会很困惑。
+        # 说明未执行合并的原因：用户勾了合并却发现还是一串一份会很困惑。
         print(
             f"    提示：{format_key} 不支持合并导出，仍按一个串一份文件保存。",
             file=sys.stderr,

@@ -11,9 +11,9 @@
 - 0.5.1 起：探针改用与成品同类的普通文件名，且探针失败**不再拦下导出**，
   只有「目录连创建都做不到」才提前失败；
 - 0.5.2 起：探测要**往下一层**探（``.cache`` 建得出、``.cache/pages`` 拒绝访问的
-  真机教训），并且第二个探针名（``xdao-write-test.txt``）能写就不算不可写；
+  已验证的写入限制），并且第二个探针名（``xdao-write-test.txt``）能写就不算不可写；
 - 0.5.3 起：``choose_writable_dir`` 在写不进去时自动换到 ``%LOCALAPPDATA%`` 或
-  ``%TEMP%``，并把「为什么换」写成说明交给调用方去告诉用户。
+  ``%TEMP%``，并把目录切换原因写成说明交给调用方去告诉用户。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class OutputDirNotWritable(Exception):
 PROBE_NAME = "xdao-write-test.tmp"
 
 # 探针的第二个名字：第一个名字被安全软件/策略单独挡掉时，换一个再探一次。
-# 2026-10-02 真机：用户的导出目录（文档下的自建文件夹）与 %LOCALAPPDATA% 兜底
+# 2026-10-02 实际运行环境：用户的导出目录（文档下的自建文件夹）与 %LOCALAPPDATA% 兜底
 # **同时**被判「写不进去」，可磁盘、权限、盘符都正常，导出也照常跑完 ——
 # 一个名字被拦不等于目录不能写，所以不能只凭一次失败就下结论。
 PROBE_ALT_NAME = "xdao-write-test.txt"
@@ -80,7 +80,7 @@ def ensure_writable(output_dir: Path | str, kind: str = "导出") -> Path:
 
 
 def _probe_once(target: Path, name: str) -> str:
-    """用 ``name`` 在 ``target`` 里探一次：能写返回空串，不能写返回「哪一步 + 为什么」。
+    """用 ``name`` 在 ``target`` 里探一次：能写返回空串，不能写返回「哪一步 + 原因」。
 
     两步都要过：先在目录里写一个文件，再建一个临时子目录并在里面写文件
     （真实导出/缓存都会往下一层建目录，只探表层会把不可写的目录判成「能写」）。
@@ -121,7 +121,7 @@ def probe_writable(directory: Path | str) -> tuple[bool, str]:
     """探一次目录能不能写，返回 ``(能不能写, 不能写的原因)``。
 
     和 :func:`can_write_dir` 探的是同一件事，区别只有一个：**把失败原因带回来**。
-    只回一句「写不进去」在真机上没法排查 —— 2026-10-02 那台机器的导出目录和
+    只回一句「写不进去」在实际运行中没法排查 —— 2026-10-02 相关运行环境的导出目录和
     %LOCALAPPDATA% 兜底一起报不可写，可同一台机器拿别的程序写同一个目录毫无问题，
     程序自己最后也把文件写进去了：错的是探针，不是目录。
 
@@ -152,14 +152,14 @@ def can_write_dir(directory: Path | str) -> bool:
     建得出来、``.cache\\pages`` 却拒绝访问——只探表层会把这种目录判成"能写"，
     然后换目录的兜底逻辑就永远不会触发（v0.5.1 的实测教训）。
 
-    想知道**为什么**写不进去（排查用），用 :func:`probe_writable`。
+    排查写入失败的具体原因，用 :func:`probe_writable`。
     """
     return probe_writable(directory)[0]
 
 
 @dataclass(frozen=True)
 class DirChoice:
-    """换目录的结果：最终目录、要告诉用户的说明、以及"是不是换了地方"。"""
+    """换目录的结果：最终目录、要告诉用户的说明、以及"是否换了地方"。"""
 
     path: Path
     notes: list[str]
@@ -197,7 +197,7 @@ def _unique_dir(path: Path) -> Path:
 
 
 def _with_reason(text: str, why: str) -> str:
-    """把「为什么」拼进说明里；没拿到原因（测试注入的探针）就只留正文。"""
+    """把「原因」拼进说明里；没拿到原因（测试注入的探针）就只留正文。"""
     return f"{text}（{why}）" if why else text
 
 
@@ -230,7 +230,7 @@ def choose_writable_dir(
     写不进去，就是这一类。
 
     所以：请求的目录探不通时，自动改用 :func:`fallback_dirs` 里能写的位置，
-    并把"原目录为什么不能用、这次写到哪"写成说明交给调用方去告诉用户。
+    并把"原目录不可用的原因、这次写到哪"写成说明交给调用方去告诉用户。
     ``allow_fallback=False``（用户显式指定了目录时）只探测、不换地方。
 
     ``probe`` 只为测试保留（默认 :func:`can_write_dir`），调用方不用传。
@@ -239,7 +239,7 @@ def choose_writable_dir(
     target = Path(requested)
     if check(target):
         return DirChoice(target, [], False)
-    # 用真身探测时把原因一并带回来（「为什么」是排查的唯一线索）；
+    # 用真身探测时把原因一并带回来（「原因」是排查的唯一线索）；
     # 测试注入的 probe 只回答是/否，这里就不编原因。
     why = "" if probe is not None else probe_writable(target)[1]
     # 探不通不等于导出会失败（v0.5.0 那次教训），所以措辞是「先说清楚，再照常往下走」。

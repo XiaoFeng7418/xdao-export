@@ -21,7 +21,7 @@
 | 存储读 `Storage.getCookies` | `plain-control`、`chips-b`（带分区） |
 | 并集 `read_all_cookies()` | `plain-control`、`chips-b`（带分区） |
 
-顺带量到一条：种分区饼干时 `Network.setCookie` 的 `partitionKey` 必须**同时**给出
+同时量到一条：种分区饼干时 `Network.setCookie` 的 `partitionKey` 必须**同时**给出
 `topLevelSite` 与 `hasCrossSiteAncestor`，只给前者会被浏览器拒绝（`Invalid parameters`）。
 
 ## 改法（只改文字）
@@ -53,10 +53,10 @@ Chromium 版本对分区饼干的处理也不一致），合起来再加上对�
 
 v0.13.42 起「读罐对账」那一行多一段 `存储读=`，三种形状对应三种毛病：
 
-1. `存储读=` 有 `userhash`、`整罐读=` 没有 → 两条读法名单不一致，把这一行贴回来；
+1. `存储读=` 有 `userhash`、`整罐读=` 没有 → 两条读法名单不一致，可通过该状态行定位；
 2. 两边都没有 `userhash` → 多半是**读错了罐**：看同一行的 `罐=`、`接=端口…` 与窗口横幅
    末尾的【窗口号】，确认程序接的是不是你在看的那扇窗；
-3. `原始userhash=` 有、`合并=` 没有 → 是域/路径过滤把它挡住了，也把这一行贴回来。
+3. `原始userhash=` 有、`合并=` 没有 → 是域/路径过滤把它挡住了，可通过该状态行定位。
 
 ## 附件
 

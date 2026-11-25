@@ -54,7 +54,7 @@ from .widgets import Card, FlatText, ModernProgress, SectionHeading, StatusPill
 
 # 当前配色（切换主题时由 refresh_colors 重新绑定）。**代码里一律用 _PAL，
 # 不要再从 theme 直接 import PALETTE** —— 那样拿到的是导入期的旧对象，
-# 换肤后新画出来的控件会继续用旧色（这是实测踩过的坑：切到深色后日志框
+# 换肤后新画出来的控件会继续用旧色（这是测试中曾出现的坑：切到深色后日志框
 # 还是浅色 #f7f9fc）。
 _PAL = theme.PALETTE
 _PAL_NAME = _PAL.name
@@ -107,7 +107,7 @@ def image_mode_options(format_key: str) -> tuple[list[str], list[str]]:
     return list(IMAGE_MODE_KEYS[:3]), list(IMAGE_MODE_LABELS[:3])
 
 #: 监控线程收尾时往 ``watch_queue`` 里塞的哨兵：主线程收到它就把 ``_watching`` 落回 False。
-#: 为什么要这条：以前只有「用户点停止」和「监控线程抛异常」两处会清这个标志，
+#: 增加该状态标志的原因是：以前只有「用户点停止」和「监控线程抛异常」两处会清这个标志，
 #: 线程自己正常结束（例如监控循环到点退出）时标志还留在 True —— 界面写着「监控中」、
 #: 再点一次还是「停止监控」，可后台其实早就没人在跑了。
 #: 用对象本身判断身份，不会跟日志字符串或检查结果撞车。
@@ -119,7 +119,7 @@ def _describe_export_range(
 ) -> str:
     """把这一趟实际生效的导出范围写成一行日志。
 
-    为什么每次导出都写一行：范围和成品直接相关 —— 只导了一段却看起来"抓完了"，
+    每次导出均记录实际范围：范围和成品直接相关 —— 只导了一段却看起来"抓完了"，
     是这类功能最容易让人误判的地方。没填的两项不占字，全默认时只说"全部"。
     """
     range_text = "全部页" if max_pages <= 0 else f"最多 {max_pages} 页"
@@ -136,7 +136,7 @@ def refresh_colors() -> None:
     """按 ``theme.PALETTE`` 重算上面那批颜色别名。
 
     模块级别名是导入期绑定的值，切换主题后不会自己变；重建界面之前
-    必须先调它，否则新画出来的控件还是旧配色（这是实测踩过的坑：
+    必须先调它，否则新画出来的控件还是旧配色（这是测试中曾出现的坑：
     只调 ``apply_theme`` 时 ttk 控件变了、自绘卡片和文本域仍是浅色）。
     """
     global _PAL, _PAL_NAME
@@ -163,7 +163,7 @@ def _sync_dialog_colors(widget: tk.Misc, old: object = None, new: object = None)
     选项（文字、命令、状态）一律不碰。
 
     ``old``/``new`` 必须由调用方在 ``refresh_colors()`` **之前**取好：
-    那一步会把 ``_PAL`` 换成新配色，之后再取旧色就晚了（实测踩过：
+    那一步会把 ``_PAL`` 换成新配色，之后再取旧色就晚了（测试中曾出现：
     迁移映射变成"新→新"，对话框一点没变）。
     """
     old = old if old is not None else theme.PALETTE
@@ -265,7 +265,7 @@ def refresh_fonts(root: tk.Misc | None = None) -> None:
 def describe_login_failure(message: str) -> tuple[str, str]:
     """把登录失败的提示翻成「对话框标题 + 该做的事」。
 
-    实测过：邮箱登录点了之后只看到一句「未找到可用的饼干」。真相是
+    实测过：邮箱登录点了之后只看到一句「未找到可用的饼干」。实际原因是
     X 岛的跳转提示页（HTTP 200）被当成了饼干列表，真正的失败原因
     （登录没过 / 没有权限 / 账号里确实没有饼干）被盖掉了。
     这里把几种情况分开说，并且都给一个能马上做的动作。
@@ -341,7 +341,7 @@ def wrap_to_width(label: ttk.Label, *, minimum: int = 200) -> None:
     """让一段说明文字跟着窗口宽度换行，而不是整句摊开等着被裁掉。
 
     说明文字不设 ``wraplength`` 时，控件会按整句的自然宽度去申请空间：
-    窗口一窄，右边就直接被裁掉（真机截图里「环境自检」的介绍只显示到
+    窗口一窄，右边就直接被裁掉（运行环境截图里「环境自检」的介绍只显示到
     「「试浏览器」」）。绑到控件自己的 ``<Configure>`` 上，每拿到新宽度
     就重设一次换行宽度；``minimum`` 是窗口被拖到极窄时的兜底，免得
     一行只剩一两个字。
@@ -369,7 +369,7 @@ def fold_buttons_when_narrow(
     """一行放不下时，把次要按钮折到第二行，别让窗口把两头切掉。
 
     「环境自检」最小宽度 520，那排五个按钮加起来要 559 px：不折行的话
-    pack 会把先放的按钮撑满、后面的被挤到窗口外面（真机截图里「重新自检」
+    pack 会把先放的按钮撑满、后面的被挤到窗口外面（运行环境截图里「重新自检」
     和「复制结果」都只露半截）。这里给容器加一行 ``bottom``，窗口够宽时
     两组按钮在同一行（``secondary`` 靠右），不够宽时后者整组落到第二行。
     """
@@ -413,7 +413,7 @@ def fold_buttons_when_narrow(
 
 # ---------- 直接粘贴饼干登录 ----------
 
-# 「为什么不用你自己浏览器的数据」与「去哪儿复制」两段话。放模块级是为了能用例
+# 独立浏览器资料目录与复制 cookie 的说明。放模块级是为了能用例
 # 直接断言它讲清了没有 —— 这两句是这一版真正要交付的东西。
 PASTE_WHY = (
     "程序不会去翻你自己浏览器的数据 —— 插件、保存的密码、登录状态都不碰。"
@@ -431,8 +431,8 @@ PASTE_STEPS = (
 class PasteCookieDialog(tk.Toplevel):
     """把浏览器里的 cookie（或 userhash 值）粘进来，交给登录流程。
 
-    为什么要自己写一个窗口：``simpledialog.askstring`` 的提示文字不换行，而这里
-    得说清三件事 —— 为什么不去读你自己浏览器的数据、去哪儿复制、粘什么算数。
+    使用自定义窗口的原因是：``simpledialog.askstring`` 的提示文字不换行，而这里
+    需要说明独立资料目录的用途、cookie 的复制位置与有效格式。
     一句挤在一行里，用户看一半就放弃了。
     """
 
@@ -818,8 +818,8 @@ BROWSER_POLL_SECONDS = 1.5
 # 没读到 userhash 时，隔这么久去饼干页领一次（用户登录成功那一刻正好用上）。
 BROWSER_LEAF_SECONDS = 5.0
 # 隔这么久问一次「有几个浏览器进程正拿着这个资料目录」（v0.13.46）。
-# 这一问要起一次 powershell（真机上半秒到一秒），而对账行只在没拿到 userhash 时才写，
-# 所以隔几十秒问一次足够把「是不是有第二个实例在共用这只罐」这种形状区分出来。
+# 这一问要起一次 powershell（实际运行中半秒到一秒），而对账行只在没拿到 userhash 时才写，
+# 所以隔几十秒问一次足够把「是否有第二个实例在共用这只罐」这种形状区分出来。
 BROWSER_PROCS_SECONDS = 30.0
 # 「领饼干」**一次都不导航**用户眼前那个标签页（v0.13.23）。
 #
@@ -827,21 +827,21 @@ BROWSER_PROCS_SECONDS = 30.0
 # 因为站点那一跳是页面内的跳转，只能靠导航。结果是程序把用户的标签页留在站点自己的
 # 「饼干切换成功!」倒计时页上——那一页的 `a#href` 是空的，页面里的
 # `location.href = href` 于是**原地重载**，用户看到的就是「一直无限跳转」；而程序这边
-# 每轮都要等它跳完，userhash 始终没种上（复现记录/复现记录/复现记录 三张截图都是它）。
+# 每轮都要等它跳完，userhash 始终没种上。
 #
 # 正路是 HTTP：`browser_login.apply_leaf_cookie_over_http` 拿整罐饼干去跑
 # `XdaoClient.apply_cookie`（v0.6.1 起就在线上的老协议：认「跳转提示」页、跟着跳、
 # 从导出页正文里抠 userhash）。浏览器只负责让用户把验证码认过去。
 # 隔这么久把状态换成「已经等了 N 秒」。
 #
-# 为什么要有这一句：用户可能在**自己平时的浏览器**里登录，程序看不到，界面又一直
+# 增加该提示的原因是：用户可能在**自己平时的浏览器**里登录，程序看不到，界面又一直
 # 停在「请在里面登录…」上一动不动 —— 看起来就像卡死了。换成带秒数的句子，至少
 # 让人知道程序在等、等的是哪个窗口里的登录。
 BROWSER_PROGRESS_SECONDS = 15.0
 # 等用户登录的上限；到点给一句能照做的话，而不是一直转圈。
 BROWSER_LOGIN_TIMEOUT = 300.0
 # 到点了、可浏览器窗口还开着（用户可能正慢慢登录）时，自动**再等一轮**的次数
-# （v0.13.31）。真机 复现记录：用户在程序开的窗口里登录、点「应用」，程序却在
+# （v0.13.31）。实际运行时复现：用户在程序开的窗口里登录、点「应用」，程序却在
 # 5 分钟头上撒手不管 —— 用户对着还开着的窗口完全不知道程序已经不看了。
 # 3 轮 × 5 分钟 = 一共最多 20 分钟，够一次认真的登录；再多就该建议换路子了。
 BROWSER_LOGIN_EXTRA_ROUNDS = 3
@@ -852,16 +852,16 @@ BROWSER_READ_RETRY_LIMIT = 4
 # 等了这么久还没登录，就主动把「罐里真没有饼干，多半是这次登录没成」说破一次（v0.13.32，
 # 判断改于 v0.13.36）。
 #
-# 真机 复现记录：用户在自己**平时用的** Edge 里登录、应用了饼干（F12 里 userhash 摆着），
+# 实际运行时复现：用户在自己**平时用的** Edge 里登录、应用了饼干（F12 里 userhash 摆着），
 # 程序盯着自己弹出的那个一次性窗口干等了 18 分钟。左下角其实一直有「直接粘贴饼干登录」
 # 这个按钮，可没人会在等的时候去翻它 —— 等得够久必须主动指路，而且只说一次。
-# 真机 复现记录 把后半句掰正了：窗口号对上了、也只有一扇窗，可未过滤整罐还是只有
-# PHPSESSID ——「多半登错窗口」在这台机器上是**误导**。程序每 1.5 秒就在查罐（从没停），
+# 进一步复现表明：窗口号对上了、也只有一扇窗，可未过滤整罐还是只有
+# PHPSESSID ——「多半登错窗口」在当前环境上是**误导**。程序每 1.5 秒就在查罐（从没停），
 # 罐里真没有 userhash，最像的解释是这次登录本身没提交成功：窗口里留着的「饼干列表」
 # 是上次登录的缓存画面，不说明此刻登录着。所以这一句改说「回这扇窗重新提交登录」。
 BROWSER_PASTE_NUDGE_SECONDS = 120.0
 # 隔这么久把「现场」写一行进运行日志（v0.13.51）：同一只浏览器里每一份罐各有哪些名字、
-# 每个页面标签挂在哪份罐里。真机 复现记录 的死结是「F12 里 70 字节的 userhash 明明在，
+# 每个页面标签挂在哪份罐里。实际复现时的死结是「F12 里 70 字节的 userhash 明明在，
 # 程序四条读法一条也没有」，而「读罐对账」只在某一轮里写一行 —— 登录落在哪一秒、
 # 落在哪一份罐里，事后从日志上断不出来。这一行（变了才写，不刷屏）把时间轴补上：
 # 要是登录那一刻罐里的名字自己长了、可 userhash 始终不出现，那问题在读；要是这份罐
@@ -871,7 +871,7 @@ BROWSER_WITNESS_SECONDS = 15.0
 # localStorage/sessionStorage（v0.13.51）—— 饼干罐之外唯一可能藏着 userhash 的地方。
 BROWSER_LOCAL_SECONDS = 3.0
 # 页面已经不在登录页、可四条读法都看不见 userhash，持续这么久就**当场**落一份
-# 「读罐详单」（v0.13.51）。真机上用户往往在 68 秒就截图或者取消，而原来只在等满
+# 「读罐详单」（v0.13.51）。实际运行中用户往往在 68 秒就截图或者取消，而原来只在等满
 # 300 秒×续等轮数之后才落盘 —— 那份唯一能逐字段比对的证据，谁也拿不到。
 BROWSER_EARLY_DUMP_SECONDS = 5.0
 # 取消 / 关窗之前，等后台线程让开 CDP 会话的上限（秒，v0.13.52）。它一看到停止位就
@@ -893,7 +893,7 @@ BROWSER_START_TIMEOUT = 30.0
 # 主线程消费消息队列的间隔（毫秒），跟本文件其它对话框保持一致。
 BROWSER_UI_POLL_MS = 150
 # 饼干读到了、可 X 岛说这个登录不认时往界面上写的话。
-# 为什么要单独写一句：那种饼干多半是**上一次登录留在浏览器资料目录里的**，
+# 单独记录该状态的原因是：那种饼干多半是**上一次登录留在浏览器资料目录里的**，
 # 用户看着登录窗口里自己明明登进去了，程序却报「登录成功」并关窗 ——
 # 到时候导出全是失败，比当场说清楚难查得多。
 BROWSER_STALE_COOKIE_MESSAGE = (
@@ -909,16 +909,16 @@ BROWSER_VERIFY_FAILED_MESSAGE = "没法确认这个登录还算不算数（{deta
 BROWSER_HTTP_NO_COOKIES_NOTE = "（没得试这条：浏览器里一块属于 X 岛的饼干都读不到。）"
 #: 只进书面记录、不顶替界面上那句提示的 HTTP 结论（调用方按整句比对）。
 #:
-#: 为什么要有这个集合：这类句子说的是「这条路没跑」，而用户眼前更需要知道的是
+#: 设置该集合的依据是：这类句子说的是「这条路没跑」，而用户眼前更需要知道的是
 #: 「这个窗口里还没登录」；可它们又必须出现在日志与超时提示的「试过的几步」里，
-#: 否则下次报告看不出程序到底试没试（复现记录 那份日志里一条 HTTP 记录都没有）。
+#: 否则下次报告看不出程序实际试没试（该复现的日志里一条 HTTP 记录都没有）。
 _QUIET_HTTP_NOTES = frozenset({BROWSER_HTTP_NO_COOKIES_NOTE})
 
 # 两次「走 HTTP 领饼干」之间至少隔这么久（秒，v0.13.26）。
 #
-# v0.13.25 用的是「饼干罐变了才试」，本意是别在用户打验证码时白连站点。真机上却换来
+# v0.13.25 用的是「饼干罐变了才试」，本意是别在用户打验证码时白连站点。实际运行中却换来
 # 了最难查的一种结果：整轮登录**一次都没试**，界面上只剩「还没有 userhash」，用户和
-# 我都看不出那条路到底跑没跑（复现记录：对话框里只有一行饼干名单，运行日志里一条登录
+# 日志无法判断那条路实际跑没跑（复现现象：对话框里只有一行饼干名单，运行日志里一条登录
 # 记录都没有）。所以改回按时间节流：不去猜罐子算不算「已经登录」，隔 30 秒就试一次
 # —— 一趟最多十分钟、三十来个请求，换「一定留下痕迹」是值得的。
 BROWSER_LEAF_HTTP_SECONDS = 30.0
@@ -952,22 +952,21 @@ def _waiting_status(waited: int, stamp: str = "") -> str:
     分开写成一个函数是为了让「等哪儿的登录」这句话只有一份：界面上的状态、
     超时提示、测试断言引的都是这里，改口径不会漏掉某处。
 
-    v0.13.32 起这句里就带上粘贴这条路：真机 复现记录 证明，光说「要在这个窗口登录」
+    v0.13.32 起这句里就带上粘贴这条路：实际运行中 证明，光说「要在这个窗口登录」
     不够 —— 用户分不清两个 Edge 窗口（本来就是同一个程序），会在自己常用的浏览器里
     登录完就干等。老决定是「还没到超时，先别急着让人换法子」，结果就是那 18 分钟。
 
-    v0.13.33 起这句里就带上粘贴这条路：真机 复现记录/复现记录 说明分不清窗口
-    是老根因，横幅当场把它分出来。但「光登录不算完」那句在真机 复现记录 被证伪：
+    v0.13.33 起这句里就带上粘贴这条路：实际运行中 说明分不清窗口
+    是老根因，横幅当场把它分出来。但「光登录不算完」那句在实际运行中 被证伪：
     用户登录成功后 F12 里 userhash 就在罐里（值等于账号当前饼干），站点在登录这步
     就自动应用了 —— 『应用』只是**换一块饼干**的动作。v0.13.34 起口径改回来。
 
-    v0.13.35 起横幅话术再补两点（真机 复现记录）：旧程序窗口上**冻着的横幅**也会
+    v0.13.35 起横幅话术再补两点（实际运行中）：旧程序窗口上**冻着的横幅**也会
     冒充「程序在看这里」，所以 ``stamp`` 非空时把窗口号报进这句 —— 用户拿横幅
     末尾的号和这里一比就知道真假；另外「自动带上」保留为主口径，但补一句
     「十几秒没拿到就点一行『应用』」作保底：万一站点哪天又不带了，用户有得做。
 
-    v0.13.46 两处改口径（真机 复现记录 的横条压在「我的饼干」列表上，用户问「到底是
-    自动帮我选一块、还是要我自己点应用」）：横条挪到**窗口底部**，这句跟着改说法；
+    v0.13.46 将遮挡「我的饼干」列表的横条移至**窗口底部**，并同步调整提示；
     并明说**程序不会替你点『应用』** —— 那一行点下去是「换一块饼干」的动作，挑哪一块
     是账号的事，程序不替用户做这个决定（用户自己的浏览器里点的『应用』，程序也看不见）。
     """
@@ -987,22 +986,22 @@ def _waiting_status(waited: int, stamp: str = "") -> str:
 
 
 def verify_userhash_live(client, userhash: str) -> str | None:
-    """问一句 X 岛：这块饼干现在还算数吗？
+    """问一句 X 岛：这块饼干现在还算数吗。
 
     返回 ``None`` 表示能用；返回一句话表示不能用（那句话直接写给用户看）。
 
-    为什么非得问：浏览器里的 userhash 可能来自上一次登录（浏览器资料目录是留着的），
+    必须问：浏览器里的 userhash 可能来自上一次登录（浏览器资料目录是留着的），
     也可能这个账号压根没在「饼干」页领过。这两种情况拿它去取串都取不到，
     可只看 cookie 是看不出来的 —— 必须让服务端表态。
 
     做法是拿这块饼干去请一次用户系统里的「饼干」页：没登录或饼干不认时，
-    X 岛会把请求弹回登录页（真机实测：``_request_following_jumps`` 返回的
+    X 岛会把请求弹回登录页（运行环境实测：``_request_following_jumps`` 返回的
     ``final_url`` 落在 ``Member/User/Index/login.html``），认的时候才会停在饼干
     列表页。只读一次页面，不发任何写操作。
 
     ``client.user_agent`` 由**调用方**在验之前换成浏览器自报的 UA（v0.13.31）：
-    站点会把「同一罐饼干、另一个 UA」的请求弹回登录页（复现记录），不换就会把
-    用户刚挣来的**新**饼干误判成「旧饼干不认」（复现记录 的冤案）。
+    站点会把「同一罐饼干、另一个 UA」的请求弹回登录页（复现现象），不换就会把
+    用户刚挣来的**新**饼干误判成「旧饼干不认」（复现过程中的误判）。
     """
     index_url = f"{client.SITE}/Member/User/Cookie/index.html"
     # 自己把饼干放进客户端再问：不留「调用方得先 import 一次」这种暗规矩 ——
@@ -1023,7 +1022,7 @@ def verify_userhash_live(client, userhash: str) -> str | None:
 class BrowserLoginDialog(tk.Toplevel):
     """「用浏览器登录」：开一个独立浏览器窗口，程序在旁边等着取饼干。
 
-    为什么要有它：X 岛的账号密码登录经常卡在验证码和跳转上，而让人开 F12
+    这样处理的原因是：X 岛的账号密码登录经常卡在验证码和跳转上，而让人开 F12
     复制 cookie 对普通用户太不友好。这里用**独立 profile** 起 Edge/Chrome
     （不动用户自己浏览器的任何配置），通过 CDP 读饼干，拿到 userhash 就自动
     关掉浏览器。
@@ -1044,7 +1043,7 @@ class BrowserLoginDialog(tk.Toplevel):
         self.client = client
         self.settings = settings if settings is not None else AppSettings.load()
         # v0.17.3：登记到主窗口上。主窗口被关掉（× / Alt+F4）时 Tk 会直接销毁子窗口，
-        # 这里的后台线程和浏览器进程就没人收尾了 —— 真机上那族孤儿窗有一部分就是这么
+        # 这里的后台线程和浏览器进程就没人收尾了 —— 实际运行中那族孤儿窗有一部分就是这么
         # 留下的。App.on_close 会挨个调 _on_cancel()。
         self._app = getattr(master, "app", None)
         registry = getattr(self._app, "_login_dialogs", None)
@@ -1052,8 +1051,8 @@ class BrowserLoginDialog(tk.Toplevel):
             registry.append(self)
         else:
             self._app = None
-        # 写运行日志的回调（v0.13.26）。以前只有「本次处理没成」时外面才补一笔，
-        # 于是等待中的那次尝试在日志里一点痕迹都没有（复现记录：日志只有两行与登录无关
+        # 写运行日志的回调（v0.13.26）。以前只有「当前批次没成」时外面才补一笔，
+        # 于是等待中的那次尝试在日志里一点痕迹都没有（复现现象：日志只有两行与登录无关
         # 的话）；现在每一条领饼干的结论都当场写进去。
         self._log = log
         # 成功后交给 LoginDialog；None 表示这次没成（用户取消或失败）。
@@ -1070,7 +1069,7 @@ class BrowserLoginDialog(tk.Toplevel):
         self._session = None
         # 「这次用哪个浏览器」的那行人话（定下来之后才显示），见 _set_browser_note。
         self._browser_note = ""
-        # 最近一条「程序刚才试到哪一步」的结论（也进 self.failure，见 _poll）。
+        # 最近一条「程序此前试到哪一步」的结论（也进 self.failure，见 _poll）。
         self._hint = ""
         # 诊断用（v0.13.23）：浏览器里有哪些饼干（只看名字）、HTTP 那条路最后一句原话。
         # 这两个由后台线程写、_poll 读 —— 只是字符串引用，够用。
@@ -1083,7 +1082,7 @@ class BrowserLoginDialog(tk.Toplevel):
         # 「关窗前留一份现场」要用它俩 —— 那时线程已经让开了，只能从登记处拿。
         self._stamp = ""
         self._jar_path = ""
-        # 这次到底落过盘没有（v0.13.52）：落过就别在关窗时再写一份同名的。
+        # 这次实际落过盘没有（v0.13.52）：落过就别在关窗时再写一份同名的。
         self._jar_dump_written = False
         # 浏览器那一罐饼干装进客户端了没有（v0.13.52）：装一次就够。
         self._session_jar_carried = False
@@ -1158,9 +1157,9 @@ class BrowserLoginDialog(tk.Toplevel):
         status.pack(fill="x", pady=(theme.gap(2), 0))
         wrap_to_width(status, minimum=theme.gap(65))
 
-        # 常驻的一行「程序刚才试到哪一步」（见 _set_hint）。
+        # 常驻的一行「程序此前试到哪一步」（见 _set_hint）。
         #
-        # 为什么要它：状态行每 15 秒被「已经等了 N 秒…」整句**替换**掉（刻意的，
+        # 保留该状态行的原因是：状态行每 15 秒被「已经等了 N 秒…」整句**替换**掉（刻意的，
         # 否则会越堆越长），于是「饼干没领到」这类结论一闪就没了 —— 用户截个图过来，
         # 上面只有秒数。这一行只在结论变化时被替换，不会被时间刷掉；没话说时它是空的，
         # 也不占地方（第一次有话说才 pack 上去）。
@@ -1179,8 +1178,8 @@ class BrowserLoginDialog(tk.Toplevel):
 
         # 「走 HTTP 领饼干」这条路自己的那一行（v0.13.26）。
         #
-        # 为什么单开一行：这条路原来只在**没成**的收尾句里露面，等待中的尝试在界面上
-        # 一个字都没有（复现记录：截图里只有饼干名单，日志里也没有一条 HTTP 记录）。
+        # 该状态单独记录：这条路原来只在**没成**的收尾句里露面，等待中的尝试在界面上
+        # 一个字都没有（复现现象：截图里只有饼干名单，日志里也没有一条 HTTP 记录）。
         # 它跟上面那行分工：上面那行说「浏览器里读到什么」，这行说「拿这罐饼干去问站点，
         # 站点回了什么」—— 两句话凑齐，才看得出卡在哪一步。
         self.http_var = tk.StringVar(value="")
@@ -1233,10 +1232,10 @@ class BrowserLoginDialog(tk.Toplevel):
             pass
 
     def _set_hint(self, text: str) -> None:
-        """把「程序刚才试到哪一步」写到常驻那一行（主线程调）。
+        """把「程序此前试到哪一步」写到常驻那一行（主线程调）。
 
         跟状态行分开是有原因的：状态行每 15 秒被「已经等了 N 秒…」整句替换掉，
-        失败原因一闪就没了。用户截图过来只看到秒数，谁也判断不出卡在哪一步
+        失败原因一闪就没了。界面截图过来只看到秒数，谁也判断不出卡在哪一步
         （v0.13.17 就是为这件事加的）。这一行只被**新的结论**替换，不会被时间刷掉。
         """
         self._hint = text
@@ -1254,8 +1253,8 @@ class BrowserLoginDialog(tk.Toplevel):
     def _set_http_note(self, text: str) -> None:
         """把领饼干那条路（v0.13.30 起含 fetch 与 HTTP 重放）的结论写在自己的行上，并当场写进运行日志（v0.13.26）。
 
-        为什么要写日志：遇到问题时贴的是运行日志，而等待期间这句话原来只活在界面上
-        （关掉窗口就没了）。复现记录 那次最要命 —— 日志里除了「就绪」和「已是最新版本」
+        记录该状态的原因是：遇到问题时贴的是运行日志，而等待期间这句话原来只活在界面上
+        （关掉窗口就没了）。该复现中最要命 —— 日志里除了「就绪」和「已是最新版本」
         什么都没有，等于整轮登录没留下任何可查的东西。
         """
         if not text:
@@ -1280,8 +1279,8 @@ class BrowserLoginDialog(tk.Toplevel):
 
         遇到问题时要贴运行日志，所以这里必须带上两样：浏览器里有哪些饼干（只看名字）、
         领饼干那条路（v0.13.30 起含页面内 fetch 与 HTTP 重放两条）的原话。少了它们，
-        日志里只剩一句「还没取到饼干」，跟「查不动」没区别（复现记录 那次就是如此：
-        截图里只有 CDP 那句「还没登录」，连 HTTP 那条路到底跑没跑都看不出来）。
+        日志里只剩一句「还没取到饼干」，跟「查不动」没区别（该复现中就是如此：
+        截图里只有 CDP 那句「还没登录」，连 HTTP 那条路实际跑没跑都看不出来）。
         """
         parts: list[str] = []
         if self._jar_note:
@@ -1298,7 +1297,7 @@ class BrowserLoginDialog(tk.Toplevel):
             return
         if self._thread is not None and self._thread.is_alive():
             return
-        self._shutdown()  # 上次处理的进程/会话可能还在（重开时）
+        self._shutdown()  # 先前批次的进程/会话可能还在（重开时）
         self._stop.clear()
         self._set_status("正在打开浏览器窗口，请稍等…")
         self.retry_button.config(state="disabled")
@@ -1308,7 +1307,7 @@ class BrowserLoginDialog(tk.Toplevel):
             self._ui_job = self.after(BROWSER_UI_POLL_MS, self._poll)
 
     def _restart(self) -> None:
-        """重开浏览器：先把上次处理收干净（含 join 线程），再起新的一轮。"""
+        """重开浏览器：先把此前批次收干净（含 join 线程），再起新的一轮。"""
         self._shutdown()
         self.start()
 
@@ -1344,7 +1343,7 @@ class BrowserLoginDialog(tk.Toplevel):
             if kind == "status":  # 换一句状态（「已经等了 N 秒…」）：是替换，不是追加
                 self._set_status(str(payload))
                 continue
-            if kind == "hint":  # 「程序刚才试到哪一步」：常驻那一行，见 _set_hint
+            if kind == "hint":  # 「程序此前试到哪一步」：常驻那一行，见 _set_hint
                 self._set_hint(str(payload))
                 continue
             if kind == "http":  # 「拿这罐饼干去问站点，站点回了什么」：单独一行（v0.13.26）
@@ -1360,7 +1359,7 @@ class BrowserLoginDialog(tk.Toplevel):
                         pass
                 continue
             if kind == "census":  # 「开窗前普查」：只写运行日志（v0.13.35）
-                # 这句是给排查用的：探到几扇活着的程序窗口、接没接手哪扇 ——
+                # 这句是给排查用的：探到几扇活着的程序窗口、是否复用哪扇 ——
                 # 「用户登录的窗 ≠ 程序读的窗」当场定案，不必再让用户数窗口。
                 if self._log is not None:
                     try:
@@ -1393,7 +1392,7 @@ class BrowserLoginDialog(tk.Toplevel):
         """取消 / 点关闭：线程、CDP、浏览器进程一样都不许留下再销毁窗口。"""
         self._closing = True
         # v0.13.52：收摊之前先把现场留下来 —— 用户最常做的动作就是「等不下去，关窗」，
-        # 而那正是唯一那份逐字段证据被一起带走的时候（真机 复现记录）。
+        # 而那正是唯一那份逐字段证据被一起带走的时候（实际运行时复现）。
         self._dump_jar_before_close()
         self._shutdown()
         self.destroy()
@@ -1475,7 +1474,7 @@ class BrowserLoginDialog(tk.Toplevel):
     def _release_browser(self, browser) -> None:
         """按**实例**结束浏览器进程，并把登记处清干净。可重复调用，不碰 Tk。
 
-        为什么不能只靠 ``_release()`` 里的 ``self._browser``：用户取消（关窗 / 粘贴饼干）
+        清理不能仅依赖 ``_release()`` 中的 ``self._browser``：用户取消（关窗 / 粘贴饼干）
         可能正好落在「已经登记、进程还没起来」的那一瞬 —— 主线程那次 ``_release()``
         既停不掉任何东西（``process`` 还是 None），又把 ``self._browser`` 清成了 None。
         后台线程随后才把进程真正拉起来，此时再回头看 ``self._browser`` 已经什么都没有了，
@@ -1549,7 +1548,7 @@ class BrowserLoginDialog(tk.Toplevel):
             return
         self._queue.put(("browser", f"这次用 {info.name} 打开（{info.path}）。"))
         # 这一趟的窗口号：钉进横幅末尾、等待话术与就绪文案里。旧程序窗口上冻着的
-        # 横幅也会冒充「程序在看这里」（真机 复现记录）—— 号对得上才算数。
+        # 横幅也会冒充「程序在看这里」（实际运行时复现）—— 号对得上才算数。
         stamp = f"{random.randrange(0x10000):04X}"
         self._stamp = stamp
         if self._stop.is_set():  # 找浏览器的功夫里用户已经取消了，别再多开一个进程
@@ -1564,14 +1563,14 @@ class BrowserLoginDialog(tk.Toplevel):
             self._browser = browser
             browser.start()
             # v0.13.35：开窗前普查只写进运行日志（不占对话框）——探到几扇活着的
-            # 程序窗口、接没接手哪扇。「用户登录的窗口≠程序读的窗口」这个谜，
-            # 配上「读罐对账」的罐名，靠这句一眼定案。
+            # 程序窗口、是否复用哪扇。「用户登录的窗口≠程序读的窗口」这个谜，
+            # 配上「读罐对账」的罐名，靠这句直接确认。
             census = str(getattr(browser, "census_note", "") or "")
             if census:
                 self._queue.put(("census", census))
             # 配置目录里的浏览器资料要是用不了，库会自己换一个临时目录再试；
             # 默认那个浏览器起不来，库还会换一个浏览器再试。这两件事都得让用户看见，
-            # 不然他会以为登录态还落在老地方、或者纳闷「我明明用的是 Chrome」。
+            # 不然可能使用户误判登录状态的存储位置或正在使用的浏览器。
             # v0.17.5：候选表里每一次失败各记一行。写在「这次用哪份目录」之前，
             # 读日志时的顺序就是真发生的顺序：先看到哪几扇没成，最后才是成的那扇。
             for note in getattr(browser, "attempt_notes", ()) or ():
@@ -1603,7 +1602,7 @@ class BrowserLoginDialog(tk.Toplevel):
             if self._stop.is_set():  # 取消正好落在握手过程中
                 self._release_browser(browser)
                 return
-            # 真机实测：刚起来的那个标签常常还停在 about:blank（起始地址还没落地），
+            # 实际运行环境实测：刚起来的那个标签常常还停在 about:blank（起始地址还没落地），
             # 这时页面里的 fetch 会落在别的源上，领饼干那一步会白跑。
             # ensure_login_page 只在「确实不在站内」时才导航，用户已经登进去的页面不会被拽走。
             # 导航失败（比如页面正在被销毁、Page.navigate 报错）不该把整条登录流程掐掉：
@@ -1615,11 +1614,11 @@ class BrowserLoginDialog(tk.Toplevel):
         except Exception as exc:
             # v0.17.3：**失败也要把窗口收掉**。以前这里只报错就 return —— 浏览器已经
             # 拉起来、只是后面某步（读端口、连会话、找页面）失败时，那扇窗会留在屏幕上；
-            # 用户再点一次「用浏览器登录」就又多一扇。真机 2026-10-18「一次弹出好几扇窗」
+            # 用户再点一次「用浏览器登录」就又多一扇。实际运行环境 2026-10-18「一次弹出好几扇窗」
             # 的现场里，这就是帮凶之一（另一处是端口普查看不见刚启动的窗）。
             if browser is not None:
                 # v0.17.6：失败时更要把这两段吐出来 —— 候选表全栽了，日志里唯一能
-                # 说明「刚才发生了什么」的就是普查看到了什么、每一扇各是什么死因。
+                # 说明「此前发生了什么」的就是普查看到了什么、每一扇各是什么死因。
                 # 以前它们只在成功路径上入队，越是失败越是看不见（v0.17.5 的漏项）。
                 census = str(getattr(browser, "census_note", "") or "")
                 if census:
@@ -1664,13 +1663,13 @@ class BrowserLoginDialog(tk.Toplevel):
         contexts_tag = ""  # 同一只浏览器里**别的罐**（浏览器上下文）的名字（v0.13.47）
         pages_tag = ""  # 同一只浏览器里每个页面标签各在哪份罐里（v0.13.48）
         # 对账行里标的「罐」= 这次真正在用的资料目录名（v0.13.35）：接了旧窗就写旧窗的
-        # 目录，新开就写临时目录 —— 「F12 有、程序没有」到底是两扇窗还是一扇窗，靠它对上。
+        # 目录，新开就写临时目录 —— 「F12 有、程序没有」实际是两扇窗还是一扇窗，靠它对上。
         jar_tag = Path(str(getattr(browser, "used_profile", "") or "")).name
         # v0.13.48：光有目录名分不出「配置目录下的常驻罐」和「%TEMP% 里的一次性罐」
         # （两个都可能叫 browser-profile），完整路径才是唯一对得上的证据。
         jar_path = str(getattr(browser, "used_profile", "") or "")
         self._jar_path = jar_path
-        # 对账行里的「接」= 程序此刻对话的是哪一扇（v0.13.37）：真机 复现记录 的僵局
+        # 对账行里的「接」= 程序此刻对话的是哪一扇（v0.13.37）：实际复现时的僵局
         # ——用户那扇窗硬刷新都不弹回（窗里有真饼干），程序却只看见登录页一签。
         # 端口号一亮出来，「两扇窗、两个罐」当场定案，不用再猜程序读没读瞎。
         link_tag = f"端口{browser.port}" if getattr(browser, "port", None) else ""
@@ -1684,14 +1683,14 @@ class BrowserLoginDialog(tk.Toplevel):
         next_local = started
         logged_in_since: float | None = None
         early_dumped = False
-        # v0.13.51：提前落盘那句提示要留到本轮**最后**再发 —— 「领饼干那条路」的
-        # jar_note 就排在它后面，同一轮里会把它盖掉（2026-10-11 全量测试逮到的
+        # v0.13.51：提前落盘那句提示要留到当前批次**最后**再发 —— 「领饼干那条路」的
+        # jar_note 就排在它后面，同一轮里会把它盖掉（2026-10-11 全量测试发现的
         # 假红正是这个形状：文件写成了、提示行却被后一句顶掉）。sent_dump_note
         # 记住已经发过哪一句，别每轮重复刷。
         dump_note = ""
         sent_dump_note = ""
         jar_path_checked = False  # 命令行里那只**真正**在用的资料目录问过了没有（v0.13.51）
-        # v0.13.51：上次处理「从头走到 sleep」花了多少秒。真机 复现记录 的可疑处正是**节拍**
+        # v0.13.51：先前批次「从头走到 sleep」花了多少秒。实际复现时的可疑处正是**节拍**
         # —— 领饼干那几步（页面内 fetch、HTTP 重放、逐窗/逐上下文探罐）各自都带等待，
         # 一轮要是被顶到几十秒，1.5 秒的读循环就名存实亡，用户的浏览器里饼干都到手了，
         # 程序下一次读还在半路。这个数写进「现场」那一行，事后一眼能看出节拍有没有垮。
@@ -1705,19 +1704,19 @@ class BrowserLoginDialog(tk.Toplevel):
             try:
                 # 每一轮先把「挂哪个标签」重新定一遍（v0.13.31）：connect() 挂上的是
                 # 那一刻的标签，可用户会关标签、会在这个实例里另开窗口去登录 ——
-                # 真机 复现记录 就是程序挂在旧的登录页标签上，用户在饼干页那个窗口里
+                # 实际运行时复现是程序挂在旧的登录页标签上，用户在饼干页那个窗口里
                 # 登录好了，程序却一路说「页面停在登录页」。
                 session.retarget()
                 # 每轮把「程序正在看这个窗口」的横条钉回被盯的那扇窗（v0.13.33）：
                 # 幂等、只在站内页面出现、失败全咽 —— 历史上「用户在另一扇一模一样的
-                # 窗口里点应用、程序干瞪空罐」（复现记录/复现记录），得让用户一眼认出哪扇对。
+                # 窗口里点应用、程序干瞪空罐」（复现现象），得让用户一眼认出哪扇对。
                 # v0.13.35 起横幅末尾带窗口号、旧横幅也会被刷成新文案：冻住的旧横幅
-                # 从此装不了死（复现记录 的「F12 有饼干、程序读空罐」只剩两窗一种解释）。
+                # 从此装不了死（复现过程中的「F12 有饼干、程序读空罐」只剩两窗一种解释）。
                 banner = getattr(backend, "ensure_watch_banner", None)
                 if callable(banner):
                     # v0.13.46：横条尾带端口（「窗口号 + 端口」两样一起报，日志里的
                     # 「接=端口…」与眼前的窗对得上号），横条挪到窗底、右上角能收起
-                    # （真机 复现记录：原来的顶部横条把「我的饼干」列表的复选框与
+                    # （实际运行时复现：原来的顶部横条把「我的饼干」列表的复选框与
                     # 『应用』按钮压住了一半）。旧 backend 不收 port 也不许带崩。
                     try:
                         banner(session, stamp, getattr(browser, "port", None))
@@ -1725,7 +1724,7 @@ class BrowserLoginDialog(tk.Toplevel):
                         banner(session, stamp)
                 value, fill_note = self._read_userhash(backend, session)
                 # v0.13.51：先把「真正在用的资料目录」问准一次 —— `used_profile` 是程序
-                # **打算**用的候选目录，真机 复现记录 的对账行报的是配置目录里那只罐，可磁盘
+                # **打算**用的候选目录，实际复现时的对账行报的是配置目录里那只罐，可磁盘
                 # 上它一个多月没被碰过（Cookies 一行都没有）：那只浏览器其实用的是 %TEMP%
                 # 里的一次性目录。命令行才是实据，`罐=`/`罐路径=` 都改用问出来的那个。
                 if not jar_path_checked:
@@ -1745,13 +1744,13 @@ class BrowserLoginDialog(tk.Toplevel):
                                 jar_tag = real_name
                 if fill_note and fill_note not in leaf_hints:
                     # 「按地址那读漏了、整罐读补上」要留痕（v0.13.29）：这句话是下次
-                    # 真机报告里唯一能说明「漏在哪一读」的书面线索。
+                    # 实际运行环境报告里唯一能说明「漏在哪一读」的书面线索。
                     leaf_hints.append(fill_note)
                     self._queue.put(("hint", fill_note))
                 leaf_now = time.monotonic()
                 # v0.13.51：页面已经不是登录页 ⇒ 站点认为登录成了。从这一刻起，「读不到」
                 # 才是真问题，而这块饼干除了那个罐，还可能被站点写在页面自己的
-                # localStorage/sessionStorage 里 —— 顺手扫一遍（没登录时不扫，白费往返）。
+                # localStorage/sessionStorage 里 —— 同时扫一遍（没登录时不扫，白费往返）。
                 if not value:
                     try:
                         page_url = str(session.current_url() or "")
@@ -1782,7 +1781,7 @@ class BrowserLoginDialog(tk.Toplevel):
                         logged_in_since = None
                 # v0.13.51：每隔十几秒把「现场」写一行（变了才写）：这一刻浏览器里每一份罐
                 # 各有哪些名字、每个页面标签挂在哪份罐里。有了它，事后能一眼看出「登录落在
-                # 哪一秒、饼干罐是不是跟着长」，而不是只有某一轮那一行孤零零的「读罐对账」。
+                # 哪一秒、饼干罐是否跟着长」，而不是只有某一轮那一行孤零零的「读罐对账」。
                 if leaf_now >= next_witness:
                     next_witness = leaf_now + BROWSER_WITNESS_SECONDS
                     witness = getattr(backend, "browser_jar_witness", None)
@@ -1794,7 +1793,7 @@ class BrowserLoginDialog(tk.Toplevel):
                         except Exception:  # noqa: BLE001 —— 这一手只是证据
                             line = ""
                         if line:
-                            # 「上次处理花了多少秒」也写进这一行：罐没变可节拍垮了，同样是
+                            # 「先前批次花了多少秒」也写进这一行：罐没变可节拍垮了，同样是
                             # 可疑信号，所以去重键里带上「秒数落在哪个 5 秒档」—— 稳态下
                             # 不重复刷，一慢下来立刻多出一行。
                             tempo = int(max(0.0, last_round_seconds) // 5.0)
@@ -1803,12 +1802,12 @@ class BrowserLoginDialog(tk.Toplevel):
                                 self._queue.put(
                                     (
                                         "forensics",
-                                        f"现场：上次处理花了{int(last_round_seconds)}秒｜{line}",
+                                        f"现场：前次轮询耗时 {int(last_round_seconds)} 秒｜{line}",
                                     )
                                 )
                 # v0.13.51：页面已经不在登录页、可四条读法都看不见 userhash，持续几秒就
                 # **当场**落一份「读罐详单」。原来只在等满 300 秒×续等轮数之后才落盘，
-                # 而真机上用户往往 68 秒就截图或取消 —— 那份唯一能逐字段比对的证据，
+                # 而实际运行中用户往往 68 秒就截图或取消 —— 那份唯一能逐字段比对的证据，
                 # 谁也没见过。落一次就够，别每轮写一个新的。
                 if (
                     not value
@@ -1823,11 +1822,11 @@ class BrowserLoginDialog(tk.Toplevel):
                         dump_note = (
                             f"读罐详单已写到：{dump_now}（含域、路径、分区键、哪一份罐，"
                             "里面有饼干值，只在本机、贴出去前请自己掂量）"
-                            "—— 这一版请把这个文件发我，它就是现场。"
+                            "；反馈诊断信息前请删除饼干值等敏感数据。"
                         )
                 if not value and leaf_now >= next_leaf:
-                    # 先报「浏览器里到底有哪些饼干」：真机上「读不出来」和「只有匿名会话号」
-                    # 在界面上长得一模一样（复现记录 那张截图就分不出来），而这一行还会进
+                    # 先报「浏览器里实际有哪些饼干」：实际运行中「读不出来」和「只有匿名会话号」
+                    # 在界面上长得一模一样（诊断截图就分不出来），而这一行还会进
                     # 运行日志，用户贴出来就能定位。
                     jar_note = self._jar_summary(backend, session)
                     if jar_note and jar_note != self._jar_note:
@@ -1835,7 +1834,7 @@ class BrowserLoginDialog(tk.Toplevel):
                         if jar_note not in leaf_hints:
                             leaf_hints.append(jar_note)
                         self._queue.put(("hint", jar_note))
-                    # v0.13.45：这一罐里没有 userhash 时，挨个问**别的**活窗口（真机 复现记录
+                    # v0.13.45：这一罐里没有 userhash 时，挨个问**别的**活窗口（实际运行时复现
                     # 的僵局：同一扇挂着本程序横幅、F12 里有三条饼干含 70 字节 userhash 的
                     # 窗，对账行一路只报 PHPSESSID）。本机三版探针（分区饼干、跨标签、
                     # 浏览器端点）已排除「某一条读法漏了」，剩下的解释只有「程序接的那一扇
@@ -1861,10 +1860,10 @@ class BrowserLoginDialog(tk.Toplevel):
                             if note not in leaf_hints:
                                 leaf_hints.append(note)
                             self._queue.put(("hint", note))
-                    # v0.13.47：同一只浏览器里还可能有**别的罐**。真机 复现记录/复现记录 的
+                    # v0.13.47：同一只浏览器里还可能有**别的罐**。实际复现时的
                     # 死结是「同一扇挂着本程序横幅、同一个端口的窗，F12 里 70 字节的
                     # userh… 明明白白，程序四条读法从头到尾没有它」；四路读法与 F12
-                    # 同源同全这一点，本机两轮探针已经钉死 ⇒ 只剩「读的不是同一份罐」。
+                    # 同源同全这一点，重复探针验证已确认 ⇒ 只剩「读的不是同一份罐」。
                     # Chromium 的 cookie 按 BrowserContext 分开存（无痕窗、Edge 的
                     # 「工作区」各一份，互相看不见），v0.13.45 的「逐窗=」只问**别的
                     # 浏览器进程**，问不到同一只浏览器里的别的上下文 —— 这里补上，
@@ -1892,7 +1891,7 @@ class BrowserLoginDialog(tk.Toplevel):
                                     leaf_hints.append(note)
                                 self._queue.put(("hint", note))
                     # v0.13.48：``页=`` 只数得出「几扇」（读的是 HTTP 的标签清单），
-                    # 数不出「每扇挂在哪个浏览器上下文里」。真机 复现记录 的形状正是
+                    # 数不出「每扇挂在哪个浏览器上下文里」。实际复现时的形状正是
                     # 「程序读的那扇（login.html、罐里只有 PHPSESSID）和用户眼前那扇
                     # （已登录的 index.html）对不上，而 页=1」—— 目标表（含各自的
                     # browserContextId）是唯一能把这件事摆出来的证据，写进「窗口=」段。
@@ -1911,14 +1910,14 @@ class BrowserLoginDialog(tk.Toplevel):
                                 pages_tag = "；".join(describe_pages(rows))
                             except Exception:  # noqa: BLE001 —— 只是补一行证据
                                 pages_tag = ""
-                    # v0.13.46：把「另一扇窗」剩下的两种形状也写进对账行 —— 真机 复现记录
-                    # 的僵局是「同一只罐一条也读不到」，而「逐窗=」一句都没有，看不出到底
+                    # v0.13.46：把「另一扇窗」剩下的两种形状也写进对账行 —— 实际运行时复现
+                    # 的僵局是「同一只罐一条也读不到」，而「逐窗=」一句都没有，看不出实际
                     # 是没别的窗、还是这一手没跑：
                     #   哑窗=     有 DevToolsActivePort 文件、端口却不答话的自家目录名
                     #             （那扇窗还在，只是程序问不进去）；
                     #   同罐进程=N 命令行里正拿着这个资料目录的浏览器进程数（多于 1 就说明
                     #             还有第二个实例在共用这只罐 —— 目录名一样、内存罐各自独立，
-                    #             CDP 读的那一只里当然没有用户登录挣来的饼干）。
+                    #             CDP 读的那一只里当然没用户反馈登录挣来的饼干）。
                     # 两问都要真去问系统（一个挨个探端口、一个起 powershell），所以和
                     # 「领饼干」那一步一样按时间节流：BROWSER_PROCS_SECONDS 刷新一次，
                     # 中间的轮次沿用上一次的结果 —— 别让它们拖着 1.5 秒一轮的等待循环。
@@ -1943,7 +1942,7 @@ class BrowserLoginDialog(tk.Toplevel):
                     # v0.13.23：这一步**不导航**用户的标签页 —— 只读页面状态和饼干罐。
                     # 站点那边「应用」是跳转式的，程序一导航，用户眼前那个标签页就会被
                     # 留在站点自己的「饼干切换成功!」倒计时页上原地重载，看起来就是
-                    # 「一直无限跳转」（复现记录/复现记录/复现记录 都是这个）。领饼干的正事
+                    # 「一直无限跳转」（复现现象 都是这个）。领饼干的正事
                     # 交给下面那条 HTTP 路（`XdaoClient.apply_cookie` 的老协议）。
                     value, detail, _navigated = self._try_leaf_cookie(
                         backend,
@@ -1962,11 +1961,11 @@ class BrowserLoginDialog(tk.Toplevel):
                         # v0.13.22：浏览器那条路领不到时，拿**同一罐饼干**走 HTTP 再试一次。
                         # 站点给 userhash 的落点是导出页的响应体（`XdaoClient.apply_cookie`
                         # 从 v0.6.1 起就是这么读的）；让浏览器自己去跳那张跳转页只会停在
-                        # 「饼干切换成功!」上原地重载 —— 用户 复现记录/复现记录 卡的就是这里。
+                        # 「饼干切换成功!」上原地重载 —— 复现现象 卡的就是这里。
                         #
-                        # v0.13.25 曾经**只**按「饼干罐变了才试」来省请求，真机上却换来最
+                        # v0.13.25 曾经**只**按「饼干罐变了才试」来省请求，实际运行中却换来最
                         # 哑的结局：罐头一直没变 ⇒ 整轮一次都没试 ⇒ 界面上只剩「还没有
-                        # userhash」（复现记录）。v0.13.26 改成两条腿：罐头一变立刻试（用户
+                        # userhash」（复现现象）。v0.13.26 改成两条腿：罐头一变立刻试（用户
                         # 刚登录完，这一步最要紧），没变也隔 `BROWSER_LEAF_HTTP_SECONDS`
                         # 试一次 —— 一趟最多十分钟、三十来个请求，换「一定留下痕迹」值得。
                         jar_now = self._jar_signature_now(backend, session)
@@ -1988,9 +1987,9 @@ class BrowserLoginDialog(tk.Toplevel):
                                     leaf_hints.append(http_detail)
                                 self._queue.put(("http", http_detail))
                     if not value:
-                        # v0.13.34「读罐对账」：本次处理四路都没在罐里认出 userhash 时，
+                        # v0.13.34「读罐对账」：当前批次四路都没在罐里认出 userhash 时，
                         # 把每一读各自看见的**名字清单**并排写进运行日志（值绝不写）。
-                        # 真机 复现记录 的教训：F12 看得见 userhash、程序只报合并结果，
+                        # 实际复现时的教训：F12 看得见 userhash、程序只报合并结果，
                         # 谁也分不出漏在哪一读 —— 有了这行，一张截图就能定位。
                         # 名单没变就不重复刷；backend 是旧模块（没这函数）就整段跳过。
                         forensics = getattr(backend, "jar_forensics", None)
@@ -2023,10 +2022,10 @@ class BrowserLoginDialog(tk.Toplevel):
                                 forensics_line = line
                                 self._queue.put(("forensics", line))
                     if not value:
-                        # v0.13.51：本次处理的慢步骤（逐窗、逐上下文、领饼干、HTTP 重放）可能
+                        # v0.13.51：当前批次的慢步骤（逐窗、逐上下文、领饼干、HTTP 重放）可能
                         # 正好跨在「站点刚把 userhash 写进罐里」那一秒上 —— 慢步骤跑完再读
                         # 一次，最坏情况下的发现延迟就从「一整个轮次」缩回「一次 CDP 往返」。
-                        # 真机 复现记录 的日志里两条读取相隔 12~38 秒，而 F12 里那块饼干恰恰
+                        # 实际复现时的日志里两条读取相隔 12~38 秒，而 F12 里那块饼干恰恰
                         # 是在这中间出现的：读循环的**节拍**正是当时最可疑的地方。
                         late_value, late_note = self._read_userhash(backend, session)
                         if late_value:
@@ -2039,11 +2038,11 @@ class BrowserLoginDialog(tk.Toplevel):
                     # 「界面说登录成功、导出却全是未登录」——就是这么来的。
                     # verify_userhash_live 自己会把这块饼干装进客户端再问服务端。
                     #
-                    # 问之前先让主客户端**换成浏览器的口音**（v0.13.31）：真机 复现记录
+                    # 问之前先让主客户端**换成浏览器的口音**（v0.13.31）：实际运行时复现
                     # 查明站点会把「同一罐饼干、另一个 UA」的请求弹回登录页，而主客户
                     # 端写死的 UA 恰好就是这一种 —— 不换的话，用户刚点「应用」挣来的
-                    # **新**饼干也会被验成「旧饼干不认」（复现记录 截图里那句就是这么来的
-                    # 冤案）。登录成功后导出的也是同一个会话，继续用这张嘴说话正合适。
+                    # **新**饼干也会被验成「旧饼干不认」（复现时的提示由此产生
+                    # 误判）。登录成功后导出的也是同一个会话，继续用这张嘴说话正合适。
                     if self._browser_ua is None:
                         self._browser_ua = self._read_browser_ua(backend, session)
                     if self._browser_ua:
@@ -2087,7 +2086,7 @@ class BrowserLoginDialog(tk.Toplevel):
                     if note:
                         # 「X 岛不认这块饼干」是整轮里最有信息量的一句，必须进「试过的
                         # 几步」：它以前只在对话框里闪一下、收尾那句超时提示就把它丢了，
-                        # 于是日志里只剩几行饼干名单（复现记录 真机就是这样，看不出卡在哪）。
+                        # 于是日志里只剩几行饼干名单（复现现象 实际运行环境就是这样，看不出卡在哪）。
                         if note not in leaf_hints:
                             leaf_hints.append(note)
                         if not said_dead:
@@ -2096,23 +2095,22 @@ class BrowserLoginDialog(tk.Toplevel):
                             # v0.13.52：这一句是整轮里最有信息量的一句，可它以前只走
                             # ("note") —— 那是「换一句状态」的意思，而状态行每 15 秒就
                             # 被「已经等了 N 秒…」整句替换掉，运行日志里更是一个字都没有。
-                            # 真机 复现记录/复现记录 那两次，用户等到十几分钟只看到「还没在
-                            # 浏览器里看到登录」，我手里也只剩几张截图，连「卡在读还是
-                            # 卡在验」都断不出来。现在两份都留：「forensics」进运行日志，
+                            # 仅保留等待状态无法区分 cookie 读取失败与核验失败。
+                            # 诊断同时保留两份：「forensics」进运行日志，
                             # 「hint」占住常驻那一行（读到值以后程序就不再报罐里有什么了，
                             # 常驻行空着正是用户以为程序没看见他登录的原因）。
                             self._queue.put(("forensics", f"验饼干：{note}"))
                             self._queue.put(
                                 ("hint", f"读到一块 userhash，但没通过核验：{note}")
                             )
-                read_failures = 0  # 本次处理读通了，前面的磕绊一笔勾销
+                read_failures = 0  # 当前批次读通了，前面的磕绊一笔勾销
             except Exception as exc:
                 # 一次读挂不算挂（v0.13.31）：用户正关标签、重开页面时 CDP 会抽风一下，
-                # 下一轮开头的 retarget 会把连接挪到正确的标签上重连。连着好几轮都
+                # 后续轮询开始时的 retarget 会把连接挪到正确的标签上重连。连着好几轮都
                 # 救不回来才认输 —— 认输那句话保持原样，老用例钉的就是它。
                 read_failures += 1
                 if read_failures == 1:
-                    # v0.13.45：第一轮读挂了就说一句。真机 复现记录 的日志在
+                    # v0.13.45：第一轮读挂了就说一句。实际复现时的日志在
                     # 13:16:41 之后就静了 —— 读异常这条路此前一声不响地
                     # `continue`，用户看到的是「程序还在等」，日志里却什么都没有。
                     self._queue.put(
@@ -2138,7 +2136,7 @@ class BrowserLoginDialog(tk.Toplevel):
                 self._queue.put(("paste_nudge", None))
             if now >= deadline:
                 # 到点了、可浏览器窗口还开着：多半是用户还在慢慢登录，别撒手（v0.13.31）。
-                # 真机 复现记录 的抱怨就是「我登录了它已经不看了」。续到上限为止，
+                # 等待应持续至设定的续等上限，避免遗漏稍后完成的登录。
                 # 界面上照旧每 15 秒报一次「已经等了 N 秒」，用户看得见程序还在盯。
                 process = browser.process
                 if extra_left > 0 and (process is None or process.poll() is None):
@@ -2147,7 +2145,7 @@ class BrowserLoginDialog(tk.Toplevel):
                 else:
                     break
             if dump_note and dump_note != sent_dump_note:
-                # 本次处理该发的提示都发完了，最后才轮到详单路径 —— 上面「领饼干那条路」
+                # 当前批次该发的提示都发完了，最后才轮到详单路径 —— 上面「领饼干那条路」
                 # 的 jar_note 会盖掉它（v0.13.51，见 dump_note 的初值注释）。再抄一份
                 # 进运行日志：提示行只留最后一句，日志留得住，用户截图/取消之后还能找回。
                 sent_dump_note = dump_note
@@ -2159,7 +2157,7 @@ class BrowserLoginDialog(tk.Toplevel):
         if not self._stop.is_set():
             # v0.13.47：到点了还没读出来，就把**这一刻的原始返回**落一份盘（详单的形状与
             # 理由见 :meth:`_write_jar_dump`）。v0.13.51 起同样的落盘还会在「页面已经
-            # 不在登录页、可四条读法都看不见 userhash」时提前做一次 —— 真机上用户
+            # 不在登录页、可四条读法都看不见 userhash」时提前做一次 —— 实际运行中用户
             # 往往等不到 300 秒就截图/取消，那样这份唯一的证据永远拿不到。
             dump_path = self._write_jar_dump(backend, session, browser, stamp, jar_path)
             if dump_path is not None:
@@ -2175,7 +2173,7 @@ class BrowserLoginDialog(tk.Toplevel):
                 # 日志 —— 路径是用户唯一能发过来的东西，不能只活到下一句提示为止。
                 self._queue.put(("forensics", dump_line))
             # 把领饼干试过的几步按顺序拼进这句话：它会进运行日志（窗口一关就找不到了），
-            # 是「到底卡在哪一步」唯一的书面记录。只留最后一条不够用 —— 「饼干罐里还是没有
+            # 是「实际卡在哪一步」唯一的书面记录。只留最后一条不够用 —— 「饼干罐里还是没有
             # userhash」这种最没信息量的收尾会盖掉前面「用户还没登录」那条（v0.13.20）。
             steps = leaf_hints[-3:]
             self._queue.put(
@@ -2190,8 +2188,8 @@ class BrowserLoginDialog(tk.Toplevel):
     def _carry_browser_jar(self, backend, session) -> None:
         """把浏览器那一罐饼干（不只 userhash）装进客户端（v0.13.52）。
 
-        为什么非装不可：`verify_userhash_live` 问的是用户系统的「饼干」页，而站点认的是
-        整罐会话。2026-10-11 的真机详单（`xdao-读罐详单-62CA.json`）里，四路读法都看得见
+        该步骤用于：`verify_userhash_live` 问的是用户系统的「饼干」页，而站点认的是
+        整罐会话。2026-10-11 的运行环境详单（`xdao-读罐详单-62CA.json`）里，四路读法都看得见
         三块饼干，可程序只 import 了 userhash 一块 —— 于是每一次核验都被弹回登录页，
         主循环把它读成「X 岛不认这块饼干」，退回重等，一直等到十几分钟没有下文。
 
@@ -2227,13 +2225,13 @@ class BrowserLoginDialog(tk.Toplevel):
     def _timeout_message(steps: list[str], diagnosis: str, waited: float | None = None) -> str:
         """等超时那句话（v0.13.24）：顺序（试过的几步）+ 书面诊断一起写出来。
 
-        ``waited``（v0.13.31）：本次处理实际等了多久（秒）。自动续等之后实际时长可能
+        ``waited``（v0.13.31）：当前批次实际等了多久（秒）。自动续等之后实际时长可能
         远大于 ``BROWSER_LOGIN_TIMEOUT``，那句话里的分钟数要照实说，不能还报 5 分钟。
 
-        为什么两样都要：``steps`` 说明**卡在哪一步**，``diagnosis`` 里是饼干名单和
+        两项信息均需保留：``steps`` 说明**卡在哪一步**，``diagnosis`` 里是饼干名单和
         「走 HTTP 领饼干」那条路的原话。遇到问题时贴的就是运行日志 —— 以前这里只有
-        ``steps``，于是「这条路到底跑没跑」在日志里查不出来（复现记录 那份日志里
-        一条 HTTP 记录都没有，我因此白猜了一轮）。
+        ``steps``，于是「这条路实际跑没跑」在日志里查不出来（该复现的日志里
+        缺少 HTTP 记录，无法区分各读取路径）。
         """
         if not steps:
             tail = ""
@@ -2260,7 +2258,7 @@ class BrowserLoginDialog(tk.Toplevel):
         """从 CDP 读到的饼干里挑出 userhash；没有就返回 ``(None, "")``。
 
         返回 ``(值, 一句诊断)``：诊断只在「按地址那读漏了、整罐读补上」时非空
-        （v0.13.29），写清那块饼干藏在哪个域哪条路径下 —— 真机上 ``getCookies``
+        （v0.13.29），写清那块饼干藏在哪个域哪条路径下 —— 实际运行中 ``getCookies``
         会系统性漏掉存储里存在的 userhash（2026-10-02 的四张截图），漏的维度
         定位不出来，那就两读都问、把差别说出来。
 
@@ -2317,8 +2315,8 @@ class BrowserLoginDialog(tk.Toplevel):
         返回 ``(值, 一句人话, 是否导航过)``。这一步失败是常态（人还没登录完、页面
         正在跳转），所以异常一律当「还没好」，不往界面上报错 —— 它本来就是兜底路径。
 
-        为什么要那句人话：这条路以前是**静默**的（异常吞掉、返回 None），真机上表现
-        为「明明登录好了，程序一路等到超时」，用户截图上没有任何线索（v0.13.17）。
+        提供可读提示的原因是：这条路以前是**静默**的（异常吞掉、返回 None），实际运行中表现
+        为「明明登录好了，程序一路等到超时」，界面截图上没有任何线索（v0.13.17）。
 
         ``waiting_for_login`` 直接转给 :func:`browser_login.fetch_leaf_cookie`：已经
         真去应用过之后再看到登录页，不是「用户正在打字」，而是「标签页被弹回去了」。
@@ -2344,15 +2342,15 @@ class BrowserLoginDialog(tk.Toplevel):
     def _write_jar_dump(backend, session, browser, stamp: str, jar_path: str) -> str | None:
         """把**这一刻的原始读数**落一份「读罐详单」，回写好的路径（v0.13.47/v0.13.51）。
 
-        为什么要有这份东西：真机 复现记录/复现记录/复现记录 的死结都是「F12 里有 70 字节的
+        该诊断用于分析以下情况：「F12 里有 70 字节的
         userhash、程序四条读法一条都没有」，而日志只报名字 —— 名字一样的两块饼干可以
         分属不同的罐（浏览器上下文），拿名字根本对不出来。详单是 JSON，含域、路径、
         ``partitionKey``、``browserContextId`` 与每条读法的成败原因，是唯一能逐字段
-        比对的东西。里面有饼干值（会话凭据），所以只写本机临时目录、并在日志里把路径
+        比对的东西。里面有饼干值（会话凭据），所以只写临时目录、并在日志里把路径
         报给用户 —— 用户愿意才贴出来。
 
         v0.13.51 起这一手不再只等超时才做：页面已经不在登录页、可四条读法都看不见
-        userhash 时也要**当场**落一份（真机上用户往往等不到 300 秒就截图/取消，
+        userhash 时也要**当场**落一份（实际运行中用户往往等不到 300 秒就截图/取消，
         那样这份唯一的证据永远拿不到）。旧 backend 不收 ``profile_path`` 就退回来。
         """
         dump_jar = getattr(backend, "jar_dump", None)
@@ -2377,8 +2375,8 @@ class BrowserLoginDialog(tk.Toplevel):
     def _jar_summary(backend, session) -> str:
         """浏览器里的饼干有哪些（只看名字）—— 一句话的诊断（v0.13.23）。
 
-        真机上「读不到饼干」和「只读到匿名会话号」在界面上长得一样，用户截图分不出来
-        （复现记录）。这句话既进常驻提示、又进运行日志，是下次报告里最有用的一行。
+        实际运行中「读不到饼干」和「只读到匿名会话号」在界面上长得一样，界面截图分不出来
+        （复现现象）。这句话既进常驻提示、又进运行日志，是下次报告里最有用的一行。
         """
         try:
             cookies = backend.read_site_cookies(session)
@@ -2389,7 +2387,7 @@ class BrowserLoginDialog(tk.Toplevel):
             return "浏览器里现在没有任何属于 X 岛的饼干（还没登录过）。"
         # 空值的饼干要点名（v0.13.26）：站点把 `memberUserspapapa` 写成空值时，罐子看上去
         # 「登录过了」，其实只是一堆没有内容的壳 —— 用户看名单分不出来，而「罐里算不算
-        # 登录着」正是程序判断要不要去领饼干的依据（复现记录 那张截图就分不出来）。
+        # 登录着」正是程序判断要不要去领饼干的依据（诊断截图就分不出来）。
         blank = [
             str(item.get("name") or "").strip()
             for item in cookies or []
@@ -2398,11 +2396,11 @@ class BrowserLoginDialog(tk.Toplevel):
             and not str(item.get("value") or "")
         ]
         empty_note = f"其中有 {len(blank)} 块是空值：{'、'.join(blank)}；" if blank else ""
-        # 罐里到底有没有 userhash 要**看一眼**再说（v0.13.24）。
+        # 罐里实际有没有 userhash 要**看一眼**再说（v0.13.24）。
         #
         # 以前这句话写死成「（还没有 userhash）」：罐里明明有 userhash 时也这么报，
         # 于是「这条路读到了饼干」和「这条路什么都没读到」在日志里一个样 ——
-        # 我自己就是被它带偏过（复现记录 那份日志看着像没读到 userhash，其实读到了、
+        # 该提示曾导致状态误判（该复现的日志看着像没读到 userhash，其实读到了、
         # 只是 X 岛不认那块旧饼干）。
         pick = getattr(backend, "userhash_from_cookies", None)
         if not callable(pick):  # pragma: no cover - 真后端一定有；替身才可能没有
@@ -2412,7 +2410,7 @@ class BrowserLoginDialog(tk.Toplevel):
         else:
             # 「有 userhash 但值长得不对」和「根本没有」要分开说（v0.13.29）：
             # 以前两者都写成「还没有 userhash」，名单里明明列着 userhash 却这么报，
-            # 用户截图里自相矛盾 yet 查不出程序到底看见了什么。只写形状、不写值。
+            # 界面状态相互矛盾且 查不出程序实际看见了什么。只写形状、不写值。
             entries = getattr(backend, "named_userhash_entries", None)
             named = entries(cookies) if callable(entries) else []
             if named:
@@ -2439,7 +2437,7 @@ class BrowserLoginDialog(tk.Toplevel):
     def _leaf_from_page_fetch(backend, session) -> tuple[str | None, str]:
         """第一条路（v0.13.30）：在浏览器页面里 fetch 领饼干，返回 ``(值或 None, 一句人话)``。
 
-        为什么先走它（真机 复现记录/复现记录）：HTTP 重放报「登录后没能进入用户系统（X 岛把
+        该读取路径优先执行：HTTP 重放报「登录后没能进入用户系统（X 岛把
         请求弹回了登录页）」，而同一时刻浏览器里回帖是成功的 —— 会话活着，差的是**客户端
         长相**：饼干罐是浏览器建立的，嘴却是 urllib 的缺省 UA，站点把重放当成了别人。
         页面内 fetch 由浏览器自己发，UA/头/饼干罐全是原主的，身份天然全等；它也不导航，
@@ -2493,8 +2491,8 @@ class BrowserLoginDialog(tk.Toplevel):
         **导出页的正文**里抠 userhash）。
 
         ``may_skip_for_typing``（已删，v0.13.26）：「用户可能还在输验证码」时就跳过这一条
-        的那套判断，真机上反而把答案藏了起来 —— 罐里只要有一块空值的饼干，程序就以为
-        「还没登录完」，整轮一次都不试，界面上只剩「还没有 userhash」（复现记录）。现在
+        的那套判断，实际运行中反而把答案藏了起来 —— 罐里只要有一块空值的饼干，程序就以为
+        「还没登录完」，整轮一次都不试，界面上只剩「还没有 userhash」（复现现象）。现在
         一律照试，由**时间**节流（``BROWSER_LEAF_HTTP_SECONDS``），试过什么一律留痕。
         """
         page_value, first_note = BrowserLoginDialog._leaf_from_page_fetch(backend, session)
@@ -2520,7 +2518,7 @@ class BrowserLoginDialog(tk.Toplevel):
             # 站点给了值、粗筛不认：把**形状**写下来（v0.13.25）。
             #
             # 以前这里是直接 `return None, detail`，而 detail 多半是空的 ⇒ 界面上只剩
-            # 「还没有 userhash」，看不出程序到底接住过什么（复现记录：用户自己在站点里看
+            # 「还没有 userhash」，看不出程序实际接住过什么（复现现象：用户自己在站点里看
             # 饼干列表一切正常，程序却一个字都不说）。只写形状、不写值本身 —— 那可能是
             # 真凭据，日志会被贴到公开的地方。
             shape = f"HTTP 那条路取到了值，但形状不像 userhash（{_describe_value_shape(value)}）"
@@ -2534,10 +2532,10 @@ class BrowserLoginDialog(tk.Toplevel):
 def _describe_value_shape(value: str) -> str:
     """只描述一个值的**形状**，绝不写出值本身（v0.13.25）。
 
-    为什么要有它：站点从导出页回给我们的东西，粗筛说「不像 userhash」时，程序以前
-    是静默丢掉的 —— 界面上只剩「还没有 userhash」，用户和我都看不出到底接住了什么
-    （复现记录 就是这样：用户自己的饼干列表一切正常，程序一个字都不说）。可那是凭据，
-    日志会被贴到公开的地方，所以这里只报「几个字符、几个非 ASCII、几个 %、开头是不是
+    这样处理的原因是：站点从导出页返回给程序的数据，粗筛说「不像 userhash」时，程序以前
+    是静默丢掉的 —— 界面上只剩「还没有 userhash」，用户和日志无法判断实际接住了什么
+    （复现现象是这样：用户自己的饼干列表一切正常，程序一个字都不说）。可那是凭据，
+    日志会被贴到公开的地方，所以这里只报「几个字符、几个非 ASCII、几个 %、开头是否
     字母数字」这些形状特征，够定位，又抄不走。
     """
     text = str(value or "")
@@ -2550,9 +2548,9 @@ def _describe_value_shape(value: str) -> str:
 def _joined_leaf_notes(page_note: str, http_note: str) -> str:
     """把两条领饼干路的结论拼成对话框那一行（v0.13.30）。
 
-    为什么要拼而不是挑一条：两条路都败时，看到的必须是**全貌** —— 「页面内 fetch 被弹回
+    合并两条结果而不是只选一条的原因是：两条路都败时，看到的必须是**全貌** —— 「页面内 fetch 被弹回
     登录页」和「HTTP 重放被弹回登录页」是完全不同的线索（前者说明会话真死了，后者多半是
-    客户端长相的问题，复现记录 靠这个才定位）。第一条路没话可说时原样返回第二条：老替身的
+    客户端长相的问题，复现结果可由此才定位）。第一条路没话可说时原样返回第二条：老替身的
     断言（逐字相等）不许被前缀影响。
     """
     if not page_note:
@@ -2569,8 +2567,8 @@ def _jar_signature(cookies) -> tuple[tuple[str, str], ...]:
     （一趟最多两百来个请求，全打在空气上）。指纹只活在内存里，从不进日志。
 
     v0.13.26 起它只管「罐头变了没有」这一半 —— 另一半（罐头一直没变也别干等着）由
-    :data:`BROWSER_LEAF_HTTP_SECONDS` 按时间管：真机上出现过「罐头一直没变 ⇒ 整轮
-    一次都没试 ⇒ 什么都没留下」的哑巴结局（复现记录）。
+    :data:`BROWSER_LEAF_HTTP_SECONDS` 按时间管：实际运行中出现过「罐头一直没变 ⇒ 整轮
+    一次都没试 ⇒ 什么都没留下」的哑巴结局（复现现象）。
     """
     items: list[tuple[str, str]] = []
     for item in cookies or []:
@@ -2586,9 +2584,9 @@ def _jar_holds_a_session(cookies) -> bool:
 
     判据刻意宽：只要有一个名字不是 ``PHPSESSID``、值也非空的饼干就算。
 
-    v0.13.26 起**没有调用点了**：这条判据被用来决定「要不要去领饼干」，而真机上
+    v0.13.26 起**没有调用点了**：这条判据被用来决定「要不要去领饼干」，而实际运行中
     站点把 ``memberUserspapapa`` 写成空值时，罐子看着「登录过了」、其实一个真会话都
-    没有 —— 判错的代价是整轮一次都不试（复现记录）。留作参考与测试，别再拿它做闸门。
+    没有 —— 判错的代价是整轮一次都不试（复现现象）。留作参考与测试，别再拿它做闸门。
     """
     for item in cookies or []:
         if not isinstance(item, dict):
@@ -3694,7 +3692,7 @@ class WatchEditDialog(tk.Toplevel):
 
 
 class SelftestDialog(tk.Toplevel):
-    """环境自检：把「这台机器上哪里不对劲」摊开给用户看。
+    """环境自检：把「当前环境上哪里不对劲」摊开给用户看。
 
     先跑本机那几项（不联网、不改任何东西），用户点了才去测接口 —— 断网时
     本机结论照样有用，不该被联网那一步拖住。
@@ -3712,7 +3710,7 @@ class SelftestDialog(tk.Toplevel):
         # 卡片用 stretch=True 撑满窗口，文本区跟着长；这里给个初始大小即可，
         # 用户拉大拉小都能用。620 高时报告一趟看得完。
         self.geometry(f"{theme.gap(165)}x{theme.gap(155)}")
-        # 最小高度要装得下窄窗口时折成两行的按钮排（真机量过：520 宽时
+        # 最小高度要装得下窄窗口时折成两行的按钮排（实际运行环境量过：520 宽时
         # 报告区顶部到 349，两行按钮要 74，再加卡片下边距 —— 400 高会把
         # 「复制结果」「关闭」切掉，460 刚好留出余量）。
         self.minsize(theme.gap(130), theme.gap(115))
@@ -3726,7 +3724,7 @@ class SelftestDialog(tk.Toplevel):
 
         SectionHeading(card.body, "环境自检").pack(fill="x")
         # 先给一个保守的 wraplength：说明文字要是按整句宽度申请空间，
-        # 卡片会跟着变宽，窗口反而被顶到屏幕外（真机上就是右侧被裁掉）。
+        # 卡片会跟着变宽，窗口反而被顶到屏幕外（实际运行中就是右侧被裁掉）。
         self.intro = ttk.Label(
             card.body,
             text="查本机：配置与缓存目录、导出目录、浏览器、导出格式。"
@@ -3831,8 +3829,8 @@ class SelftestDialog(tk.Toplevel):
         self._append("")
         report = preflight.run_local_checks()
         self._append(report.render())
-        # 重填之后回到开头：不清的话会停在上次处理的滚动位置，
-        # 真机截图里就出现过「第一行被顶上去看不见」（2026-10-01）。
+        # 重填之后回到开头：不清的话会停在先前批次的滚动位置，
+        # 实际运行环境截图里就出现过「第一行被顶上去看不见」（2026-10-01）。
         self.text.see("1.0")
         self.app.log(f"环境自检：{report.summary()}")
 
@@ -3856,7 +3854,7 @@ class SelftestDialog(tk.Toplevel):
         self.app.log("环境自检：联网那两项已经测过。")
 
     def _run_browser_check(self) -> None:
-        """真的把浏览器启一次，回答「到底起不起得来」。
+        """真的把浏览器启一次，回答「实际起不起得来」。
 
         「环境自检」里的浏览器那一项只看得到「装没装」；装了却一起来就被安全
         软件拦下时，用户点「用浏览器登录」只会看到失败。这一项把那句话补上：
@@ -3950,7 +3948,7 @@ class SelftestDialog(tk.Toplevel):
 def _spawn(command: list[str]) -> None:
     """拉起一个独立进程：不等它、不接管它的输出。
 
-    ``explorer`` 无论开没开成都会立刻返回、退出码也不可信，所以「到底打开了没有」
+    ``explorer`` 无论开没开成都会立刻返回、退出码也不可信，所以「实际打开了没有」
     只能看它有没有抛异常 —— 抛了才轮到下一次尝试。
     """
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -4012,12 +4010,12 @@ class App:
         #: 还开着的「用浏览器登录」子窗口（v0.17.3）：主窗口被关掉时要挨个取消，
         #: 否则它们的后台线程和浏览器进程会被直接带走、留下孤儿窗。
         self._login_dialogs: list[BrowserLoginDialog] = []
-        # 本轮导出的停止位：点「取消导出」时举起来，抓取层与导出器都会看它。
+        # 当前批次导出的停止位：点「取消导出」时举起来，抓取层与导出器都会看它。
         self._export_stop: threading.Event | None = None
         self._last_failed: list[str] = []
         # 本次导出真正用的目录（prepare_export_dir 的结果），收尾提示要用
         self._output_dir = ""
-        # 用户在「更改…」里亲手选过导出目录吗？选过就尊重他的选择（只报错、不换地方），
+        # 用户在「更改…」里亲手选过导出目录吗。选过就尊重他的选择（只报错、不换地方），
         # 没选过（用配置里的默认值）才允许导出时自动改到能写的位置。
         # 放在进入主循环之前赋值，start() 永远晚于它执行。
         self._dir_pinned = False
@@ -4049,7 +4047,7 @@ class App:
         self._widget_roots: list[tk.Misc] = []
 
         # 窗口标题的真源是 xdao/appinfo.WINDOW_TITLE：tools/gui_probe.py 就是拿它
-        # 核对「主窗口到底起没起来」的，两处不许各写一份字面量。
+        # 核对「主窗口实际起没起来」的，两处不许各写一份字面量。
         root.title(WINDOW_TITLE)
         root.geometry("%dx%d" % self._scaled_window_size(1060, 760))
         root.minsize(*self._scaled_window_size(940, 680))
@@ -4059,7 +4057,7 @@ class App:
         self.log("就绪。填入串网址后点「开始导出」。")
         # 启动后悄悄问一次「有没有新版本」：查到了只写一行日志，不弹窗打扰。
         self.root.after(1200, lambda: self.check_update(silent=True))
-        # 上次升级换下来的旧目录（<名字>.old-<时间戳>）留一天就够了，顺手清掉。
+        # 上次升级换下来的旧目录（<名字>.old-<时间戳>）留一天就够了，同时清掉。
         # 放在后台线程里：列目录、删目录都不该拖慢启动。
         threading.Thread(target=self._cleanup_old_backups, daemon=True).start()
         # 上一版（以及被强杀的那几次）可能把临时资料目录留在 %TEMP% 里：那次登录
@@ -4084,7 +4082,7 @@ class App:
 
         两处：``%TEMP%`` 下的临时资料目录，以及配置目录下那族备用目录
         （``browser-profile-<PID>-<时间戳>``，v0.13.39 起 —— 以前它只记 %TEMP% 那一族，
-        配置目录这一族就成了没人收的垃圾，真机上留下过两个 5.6MB / 6.3MB 的空壳）。
+        配置目录这一族就成了没人收的垃圾，实际运行中留下过两个 5.6MB / 6.3MB 的空壳）。
         程序被强杀时没人收尾，那些目录会一直留着；正常路径由
         ``LoginBrowser.cleanup_temp_profile()`` 当场删掉。放后台线程里做：
         要列目录，还要挨个问一次调试端口。
@@ -4095,8 +4093,8 @@ class App:
             browser_login.sweep_stale_temp_profiles()
             profile = browser_login.user_data_dir(Path(self.settings.config_path).parent)
             browser_login.sweep_stale_fallback_profiles(profile)
-            # v0.17.3：上次处理程序退出时留下的**孤儿窗口**（程序没了、浏览器还开着，
-            # 真机 2026-10-18 那扇 598 MB 的 Edge 就是它）也在这里收掉：清临时/备用
+            # v0.17.3：先前批次程序退出时留下的**孤儿窗口**（程序没了、浏览器还开着，
+            # 实际运行环境 2026-10-18 那扇 598 MB 的 Edge 就是它）也在这里收掉：清临时/备用
             # 目录，其中罐里有 userhash 的（用户真登过的窗）一律留着不碰。
             browser_login.sweep_orphan_profiles(profile)
         except Exception:  # noqa: BLE001 —— 清不干净也不该影响启动
@@ -4106,7 +4104,7 @@ class App:
         try:
             from . import updater
 
-            # 帮手这会儿可能还没走（它要等老进程、还要启动我们），所以隔几秒再试几次。
+            # 帮手这会儿可能还没走（它要等老进程、还要启动项目），所以隔几秒再试几次。
             updater.cleanup_staging_leftovers_at_startup()
         except Exception:  # noqa: BLE001 —— 同上，删不掉就算了
             pass
@@ -4251,7 +4249,7 @@ class App:
     def switch_font_scale(self, scale, *, persist: bool = True) -> bool:
         """换界面字号比例并立刻重画界面。返回是否真的换了。
 
-        为什么要重建整个界面：Tk 的全局 scaling 只对**之后**新建的控件生效，
+        需要重建整个界面：Tk 的全局 scaling 只对**之后**新建的控件生效，
         已经建好的控件不会重新排版（2026-10-16 实测：把 ``tk scaling`` 调到
         2.0，原控件的请求尺寸一个像素都没变）。所以换字号和换配色是同一件事 ——
         改全局比例 → 销毁旧控件 → 按新尺寸重画一遍。
@@ -4461,7 +4459,7 @@ class App:
         ).pack(side="left")
 
         # 只看指定饼干 + 导出范围：并成一行、共用下面一条说明。
-        # 为什么这么挤：左栏在最小窗口（940x680）下几乎没有余量，多一层就出滚动条
+        # 采用紧凑布局的依据是：左栏在最小窗口（940x680）下几乎没有余量，多一层就出滚动条
         # （见 MAX_PAGES_HINT 上面的注释）。
         cookie_row = ttk.Frame(input_card.body, style="Card.TFrame")
         cookie_row.pack(fill="x", pady=(theme.gap(1), 0))
@@ -4489,7 +4487,7 @@ class App:
         )
         ttk.Label(range_row, text=MAX_PAGES_UNIT, style="Card.TLabel").pack(side="left")
         # 截止这栏不写标题，只留「串号截止（含它）」当提示：这个功能最容易误解的
-        # 地方就是"到底导不导那一串"，所以那三个字必须紧贴在输入框旁边。
+        # 地方就是"实际导不导那一串"，所以那三个字必须紧贴在输入框旁边。
         ttk.Label(range_row, text="串号截止", style="Card.TLabel").pack(
             side="left", padx=(theme.gap(2), theme.gap(0.5))
         )
@@ -4593,7 +4591,7 @@ class App:
         self.cache_info_var = tk.StringVar(value="")
         # 按钮先 pack：右边那块位置先占住。这一行在窄窗口里放不下「整句缓存信息
         # + 两个按钮」，要是先放标签，它会吃掉整行，把两个按钮挤到卡片外面
-        # （真机 940 宽时就是这样，「打开目录」「清空缓存」都看不见、点不到）。
+        # （实际运行环境 940 宽时就是这样，「打开目录」「清空缓存」都看不见、点不到）。
         cache_buttons = ttk.Frame(cache_row, style="Card.TFrame")
         cache_buttons.pack(side="right")
         ttk.Button(
@@ -4860,9 +4858,9 @@ class App:
     def save_settings(self, *, loud: bool = False) -> bool:
         """存设置，并把「写不进去」这件事说出来（v0.13.53）。
 
-        为什么不能让 :meth:`AppSettings.save` 默默失败：它以前是
+        必须向调用方返回 :meth:`AppSettings.save` 的失败状态：它以前是
         ``except Exception: pass``，界面照样报「登录成功，饼干已保存。」—— 2026-10-11
-        真机上就出现了「日志说保存成功、``config.json`` 两周没变、重启还要重新登录」
+        实际运行中就出现了「日志说保存成功、``config.json`` 两周没变、重启还要重新登录」
         这种自相矛盾。这里做成统一出口：第一次失败说一句（``loud=True`` 每次都说），
         省得每改一次界面元素就刷一行。
         """
@@ -4911,8 +4909,8 @@ class App:
     def show_login_state(self) -> None:
         """把「登没登录」写到左上角那个标上（v0.13.24）。
 
-        为什么要有这么一个方法：角标是 :class:`StatusPill`，它建出来的时候就把文字
-        **抄**走了 —— 只改 ``status_var`` 它不会跟着变。用户 复现记录 真机上撞见的
+        这样实现的依据是：角标是 :class:`StatusPill`，它建出来的时候就把文字
+        **抄**走了 —— 只改 ``status_var`` 它不会跟着变。曾出现的
         「日志说登录成功、左上角还写未登录」就是这里：``status_var`` 变了、标没变。
         凡是动 ``settings.userhash`` 的地方，都从这一个出口过。
         """
@@ -4958,7 +4956,7 @@ class App:
             self.apply_settings_to_client()
             self.refresh_cache_info()
             # v0.13.53：`dialog.saved` 现在只在真的写进了文件时为真；写不进去要在日志里
-            # 说清楚（以前无论成败都写「设置已保存」，真机上骗过一次）。
+            # 说清楚（以前无论成败都写「设置已保存」，实际运行中骗过一次）。
             self.log(
                 f"设置已保存：超时 {self.settings.timeout:g} 秒、重试 {self.settings.retries} 次、"
                 f"间隔 {self.settings.throttle:g} 秒、代理 "
@@ -5243,7 +5241,7 @@ class App:
             return
         self._update_button_text("升级完成")
         if action == "exit":
-            # 帮手在等我们退出：它要拿到「现场目录已经没人占用」才动手换。
+            # 升级辅助进程等待主程序退出：它要拿到「现场目录已经没人占用」才动手换。
             #
             # 这里**不能弹消息框**：模态框会一直等着用户点确定，而帮手
             # 只在 WAIT_FOR_EXIT_SECONDS(60s) 内等老进程消失，点慢一拍这次
@@ -5254,8 +5252,8 @@ class App:
     def _end_self_for_upgrade(self) -> None:
         """升级交出去了，把自己彻底结束掉，好让帮手能换目录。
 
-        **不能只 `root.quit()`**：实测（`_scratch\\probe_quit_exits.py`）在
-        真机上 `quit()` 之后进程还在，哪怕当时只剩一个主线程 —— 帮手
+        **不能只 `root.quit()`**：实测（`_scratch\\诊断探针`）在
+        实际运行中 `quit()` 之后进程还在，哪怕当时只剩一个主线程 —— 帮手
         `wait_for_exit` 等满 60 秒就放弃，用户看到「升级完成」但目录其实没换。
         Tk 的退出本来就只打算结束事件循环，所以这里直接结束进程。
 
@@ -5278,9 +5276,9 @@ class App:
             self.refresh_cache_info()
 
     def open_folder(self) -> None:
-        """打开导出目录（三道尝试，失败要说清是为什么）。
+        """打开导出目录（三道尝试，失败时说明各步骤的原因）。
 
-        2026-10-02 真机：``os.startfile`` 在那台机器上被拒，界面上只弹了一个写着
+        2026-10-02 运行环境：``os.startfile`` 在相关运行环境上被拒，界面上只弹了一个写着
         路径的提示框，看起来像「打开目录」这个按钮根本没用 —— 真正的原因
         （系统不让程序拉起资源管理器）被吞掉了。现在：``os.startfile`` 不行就
         直接叫 ``explorer``，再不行用 ``/select,``；每一次失败都记进运行日志，
@@ -5593,7 +5591,7 @@ class App:
         return True
 
     def start(self, urls: list[str] | None = None) -> None:
-        # 导出或监控在跑时不许再开：两个线程会同时往缓存与导出目录里写。
+        # 导出或监控在跑时应避免再次开：两个线程会同时往缓存与导出目录里写。
         if self._refuse_when_busy("开始导出"):
             return
         urls = urls if urls is not None else self._collect_urls()
@@ -5606,7 +5604,7 @@ class App:
         if not self.settings.userhash and not public_bog_only:
             # 不登录也让导（v0.22.1 起）：公开串不登录能读到前 100 页，命令行一直是
             # 这么干的，文档也这么写，只有界面在硬拦。拦着等于「明说不登录能用、
-            # 实际上不能用」。要登录的人这时候可以顺手登。
+            # 实际上不能用」。要登录的人这时候可以同时登。
             wants_login = messagebox.askyesno(
                 "还没登录",
                 "还没登录，也没设置饼干。\n\n"
@@ -5655,7 +5653,7 @@ class App:
         self.apply_settings_to_client()
 
         self._exporting = True
-        # 本轮导出的停止位：传给抓取层与导出器，点「取消」时举起来。
+        # 当前批次导出的停止位：传给抓取层与导出器，点「取消」时举起来。
         stop_event = threading.Event()
         self._export_stop = stop_event
         self._set_export_controls(running=True)
@@ -5911,7 +5909,7 @@ class App:
         """关主窗口：先把还在跑的活收掉，再真的关（v0.17.3）。
 
         以前主窗口没接管关闭 —— 点 × 就直接进程退出：导出/监控线程手里那个浏览器
-        还开着，成了 ``%TEMP%`` 里的孤儿窗（真机 2026-10-18 那扇 598 MB 的 Edge
+        还开着，成了 ``%TEMP%`` 里的孤儿窗（运行环境 2026-10-18 那扇 598 MB 的 Edge
         就是这么留下的），下一次启动还会被端口普查当成「还活着的程序窗口」认领。
         这里按「先举手停 → 再给一点收手时间 → 再销毁」的顺序来。
         """

@@ -124,7 +124,7 @@ def use_subprocess(monkeypatch, *, popen=None, run=None):
 def use_windows(monkeypatch, windows: bool = True):
     """把平台钉死。
 
-    CI 在 ubuntu 上跑，`IS_WINDOWS` 会是 False（本机 Windows 绿不代表 CI 绿，
+    CI 在 ubuntu 上跑，`IS_WINDOWS` 会是 False（运行环境 Windows 绿不代表 CI 绿，
     2026-10-02 真的栽过一次），所以走 Windows 分支的用例必须自己钉住。
     """
     monkeypatch.setattr(gui_probe, "IS_WINDOWS", windows)
@@ -469,5 +469,5 @@ def test_exe_path_is_passed_as_a_string(monkeypatch, capsys, tmp_path):
 
 
 def test_default_output_dir_is_not_touched_by_tests():
-    """顺带记一笔：这个工具不写任何文件（截图那个才写）。"""
+    """同时记一笔：这个工具不写任何文件（截图那个才写）。"""
     assert gui_probe.EXPECTED_TITLE == MAIN_TITLE

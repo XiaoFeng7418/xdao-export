@@ -8,9 +8,9 @@
 * 自定义毫米数优先于预设名，否则「自定义 10mm」会被当成「跟随网页样式」丢掉；
 * 横向只互换宽高，不发 ``orientation`` 之类的 CDP 参数；
 * ``preferCSSPageSize`` **只在纸张走默认时**出现，而且它只管纸张：显式纸张 + 这个键会让
-  浏览器改用页面 ``@page size``，用户选的纸张白选（真机实测还会时对时错）；反过来纸张走
+  浏览器改用页面 ``@page size``，用户选的纸张白选（运行环境实测还会时对时错）；反过来纸张走
   默认却不带它，页面里写的 A4 不被采纳、产物退成 Letter（612×792pt，实测）。
-  边距与这个键可以并存 —— 真机实测四边 ``margin*`` 照样生效。
+  边距与这个键可以并存 —— 运行环境实测四边 ``margin*`` 照样生效。
 * 全默认时不发 ``paperWidth``/``paperHeight``，但要发 ``preferCSSPageSize: True``。
 
 契约里的尺寸与默认值在本文件里另抄一份（``CONTRACT_*``）：实现被改动时这里必须
@@ -480,7 +480,7 @@ def test_a3_landscape_swaps_width_and_height():
 
 
 def test_explicit_paper_never_asks_for_the_page_css_size():
-    # 契约守卫（真机复现过的 bug）：带 preferCSSPageSize 时浏览器改以页面 @page size 为准，
+    # 契约守卫（实际运行环境中复现的 bug）：带 preferCSSPageSize 时浏览器改以页面 @page size 为准，
     # 用户选的 A3 会被静默出成 A4，而且时对时错。显式纸张必须只靠 paperWidth/paperHeight。
     assert "preferCSSPageSize" not in PdfOptions(paper="a3").to_cdp_params()
     assert "preferCSSPageSize" not in PdfOptions(paper="a4", margin="normal").to_cdp_params()
@@ -491,7 +491,7 @@ def test_explicit_paper_never_asks_for_the_page_css_size():
 
 
 def test_margins_keep_the_page_css_flag_because_it_only_governs_paper():
-    # 真机实测（无 @page margin 的页面，正文块 275mm > 18mm 边距容量 261mm）：只在纸张
+    # 实际运行环境实测（无 @page margin 的页面，正文块 275mm > 18mm 边距容量 261mm）：只在纸张
     # 显式时才需要撤掉这个键；边距与它并存时四边 margin* 照样生效、照样翻页，页面
     # 自己的 @page size 也还认。撤掉它反而会让「跟随网页样式」的纸张退成 Letter
     # （612×792pt，实测），所以边距显式时**不要**动这个键。
@@ -576,7 +576,7 @@ def test_params_only_contain_known_keys_with_json_safe_values(opts):
 
 def test_prefer_css_page_size_appears_exactly_for_the_default_paper():
     # 一条规则扫全部组合：preferCSSPageSize ⟺ 纸张走 default。两者同时出现的写法
-    # （显式纸张 + 这个键）正是真机上「选了 A3 出 A4」的根因，必须堵死；反过来纸张走
+    # （显式纸张 + 这个键）正是实际运行中「选了 A3 出 A4」的根因，必须堵死；反过来纸张走
     # 默认时不带它，页面里的 @page size 就不被采纳，产物退成 Letter（实测 612×792pt）。
     for opts in CDP_COMBOS:
         params = opts.to_cdp_params()

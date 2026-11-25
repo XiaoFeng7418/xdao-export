@@ -4,7 +4,7 @@
 发现有新版之后，别再让用户自己去下载、解压、对着文件夹手工覆盖 ——
 点一下「立即升级」，剩下的交给程序。
 
-几条自我约束：
+实现约束：
 
 * **没把握就退回手工**：源码运行、目录里没有 exe、上级目录写不进去、
   下回来的包结构看不懂 —— 这些情况一律不硬上，改成打开下载页让用户自己来。
@@ -12,7 +12,7 @@
   过了才动现场；动手时是把「整个程序目录」改名让位再搬新的进来，一次改名
   要么成功要么什么都没变，不存在「换了一半」的现场。
 * **旧版本先留着**：换下来的目录改名成 ``<原名>.old-<时间戳>`` 留在原地，
-  万一新版起不来，用户可以自己改回来。下次启动时程序会顺手清掉旧备份。
+  万一新版起不来，用户可以自己改回来。下次启动时程序会同时清掉旧备份。
 
 Windows 上「正在运行的程序不能删、不能改名」是常识，但实测不是这样：
 执行映像能被改名（改名后进程照常跑），所以 :func:`spawn_helper` 才有戏。
@@ -61,7 +61,7 @@ LEFTOVER_MIN_AGE = 30.0
 STAGING_STALE_SECONDS = 600.0
 #: 换下来的旧目录后缀（``<目录名>.old-20261001-091500``）。
 BACKUP_SUFFIX = ".old-"
-#: 旧备份留多久（秒）之后由下次启动顺手清掉。
+#: 旧备份留多久（秒）之后由下次启动同时清掉。
 BACKUP_KEEP_SECONDS = 24 * 60 * 60
 #: 等老进程退出最多等多久（秒）。
 WAIT_FOR_EXIT_SECONDS = 60.0
@@ -73,7 +73,7 @@ SELFTEST_TIMEOUT = 180.0
 
 
 def is_frozen() -> bool:
-    """是不是打包版（免安装包）。"""
+    """是否打包版（免安装包）。"""
     return bool(getattr(sys, "frozen", False))
 
 
@@ -91,7 +91,7 @@ def launcher_path() -> Path:
 def can_write_dir(path: Path) -> bool:
     """探一下这个目录能不能写（只读介质、系统目录要提前发现）。
 
-    目录不存在就直接判「不能写」——本函数只回答问题，不该顺手把目录建出来；
+    目录不存在就直接判「不能写」——本函数只回答问题，不该同时把目录建出来；
     真正的探测交给 :func:`xdao.paths.can_write_dir`（两层探针、两个探针名，
     比原先这里自己写一个文件更严，也就不会把「表层能写、下一层写不进去」
     的目录误判成可写）。
@@ -284,7 +284,7 @@ def plan_upgrade(
 ) -> UpgradePlan:
     """判断「原地升级」这条路走不走得通。
 
-    走不通的原因要能直接说给用户听，所以 ``reason`` 是中文的。
+    走不通时应直接向用户说明原因，所以 ``reason`` 是中文的。
     """
     frozen_now = is_frozen() if frozen is None else frozen
     here = target or app_dir()
@@ -309,7 +309,7 @@ def _pid_running(pid: int) -> bool:
 
     **Windows 上 ``os.kill(pid, 0)`` 靠不住**：对已经退出的进程号它一样会
     正常返回（不抛 ``OSError``），于是「帮手还在不在」永远问不出「不在」。
-    实测踩过：拿着一个早就退出的进程号做判断，清理逻辑以为帮手还活着，
+    测试中曾出现：拿着一个早就退出的进程号做判断，清理逻辑以为帮手还活着，
     暂存目录就一直留着。所以这里在 Windows 上直接用 ``OpenProcess`` +
     ``WaitForSingleObject``：拿得到句柄、而且没进入「已结束」状态，才算活着。
     """
@@ -433,7 +433,7 @@ def spawn_helper(
     ]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     # 帮手的输出要留痕：它是从包里跑起来的窗口程序（没有控制台，print 等于扔了），
-    # 万一换不动，用户和我们都得能回头看它说了什么。写不成就算了，别耽误升级。
+    # 万一换不动，用户与维护者均需能够查看辅助进程的诊断信息。写不成就算了，别耽误升级。
     try:
         log = open(  # noqa: SIM115 —— 句柄要留给子进程用，不能关
             payload.parent.parent / "xdao-update.log", "a", encoding="utf-8"
@@ -538,7 +538,7 @@ def _cleanup_staging(payload: Path, wait: float = 1.2) -> None:
 def _retire_staging(root: Path) -> Path | None:
     """给暂存目录改个「记号」名，好让下一次启动认出它、清掉它。
 
-    换目录成功之后必须走这一步（见 :func:`apply_update`）：那一刻**我们自己
+    换目录成功之后必须走这一步（见 :func:`apply_update`）：那一刻**升级辅助进程自己
     正住在里面**（帮手跑的就是升级包里的 exe），Windows 删不掉正在运行的 exe，
     再耐心都是白等。所以干脆不试删，直接改名走人 —— 新版下一次启动时
     那个进程早就没了，一删就掉。
@@ -567,7 +567,7 @@ def cleanup_staging_leftovers(
       那个进程已经没了就能立刻清，只有拿不到进程号时才按
       :data:`LEFTOVER_MIN_AGE` 兜底。
 
-    ``wait`` / ``min_age`` 是给用例留的（默认值就是真机要用的值）。
+    ``wait`` / ``min_age`` 是给用例留的（默认值就是运行环境要用的值）。
     """
     parent = (root if root is not None else default_staging_root()).parent
     removed = 0
@@ -613,8 +613,8 @@ def cleanup_staging_leftovers_at_startup(
 ) -> int:
     """启动后台清理：盯一会儿，等帮手真的退出去了再收。
 
-    为什么不能只试一次：新版刚起来的那几秒，**帮手可能还在**（它要等老进程
-    走干净才换目录，换完才轮到我们启动），而它自己就住在那个记号目录里，
+    不能只尝试一次，原因是：新版刚起来的那几秒，**帮手可能还在**（它要等老进程
+    走干净才换目录，替换完成后才启动主程序），而它自己就住在那个记号目录里，
     Windows 谁也不许删它。实测第一次就试，十有八九删不掉，用户 `%TEMP%`
     里就会一直躺着几十 MB。所以隔一会儿再试几次，帮手一走立刻收掉。
 

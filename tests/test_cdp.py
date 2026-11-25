@@ -108,7 +108,7 @@ class _Server:
                     answer = self.on_call(message)
                     if answer is not None:
                         self.send_json(answer)
-        except Exception:  # noqa: BLE001 - 假服务端：任何异常都只当「这轮结束了」
+        except Exception:  # noqa: BLE001 - 假服务端：任何异常都只当「当前请求已结束」
             pass
         finally:
             self.closed.set()

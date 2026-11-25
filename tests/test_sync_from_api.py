@@ -78,11 +78,8 @@ def make_repo(tmp_path: Path, *, offset: str = "+0800") -> Path:
 
 
 def _utc(value: str) -> str:
-    """GitHub 的提交接口给的是 UTC + Z 写法。
-
-    注意：结尾这个 `Z` 只有 Python 3.11 起的 `fromisoformat` 认得，3.10 会直接抛
-    ValueError —— CI 里就有 py3.10 的 job（本地 3.12 跑绿不代表 CI 绿），所以这里
-    先自己把 `Z` 换成 `+00:00`。
+    """GitHub 提交日期使用 UTC `Z` 后缀。Python 3.10 的 `datetime.fromisoformat` 不接受
+    此格式，因此先将后缀转换为 `+00:00`，再解析并格式化为 UTC。
     """
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
@@ -90,7 +87,7 @@ def _utc(value: str) -> str:
 
 
 def api_commit(repo: Path, sha: str) -> dict:
-    """把本地真实提交整成 GitHub 提交接口的形状。"""
+    """将本地 Git 提交字段整理为 GitHub 提交 API 所需的数据结构。"""
     raw = git("cat-file", "commit", sha, cwd=repo)
     _, _, body = raw.partition(b"\n\n")
     fields = git(

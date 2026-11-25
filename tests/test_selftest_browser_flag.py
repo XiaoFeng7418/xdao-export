@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """``--selftest --check-browser`` 这条组合开关真跑一遍（用真浏览器进程）。
 
-为什么要单开一个文件：这条路的重点是「主程序把它们接起来了没有」—— 光测
+单独设置该测试文件的原因是：这条路的重点是「主程序把它们接起来了没有」—— 光测
 :func:`xdao.preflight.browser_start_checks` 只说明那一段会写字，说明不了
 ``main.py`` 真的把 ``--check-browser`` 当成了自检里的一条（而不是当成那条单独的
 命令又跑一遍）、也说明不了失败会体现在**退出码**上（用户和脚本都看退出码）。
@@ -23,7 +23,7 @@ from xdao import preflight
 
 
 def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """把「本机环境」那几项钉成假的，别去读真配置、更别真往用户目录写。"""
+    """把「本地运行环境」那几项钉成假的，别去读真配置、更别真往用户目录写。"""
     settings = SimpleNamespace(
         output_dir=str(tmp_path / "导出"),
         cache_dir=str(tmp_path / "缓存"),
@@ -47,7 +47,7 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     )
     # 这两个必须连**报告对象**一起换掉，只钉里面的小函数是不够的：
     # `run_local_checks()` 会在自己的函数体里再取一次 `_loaded_settings()`，
-    # 于是「导出目录」那一项仍会读到运行测试这台机器的真实设置 —— 开发机上恰好
+    # 于是「导出目录」那一项仍会读到运行测试当前环境的真实设置 —— 测试环境中恰好
     # 能写（全绿），干净的 CI 机器上写不进去（`fail`）→ 退出码 1，两个 ubuntu 作业
     # 因此在 49df732 红了，而本机怎么跑都看不出来。`tests/test_cli.py:794` 的
     # `_stub_preflight` 早就是这么钉的，这里是照抄它的做法。

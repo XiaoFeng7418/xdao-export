@@ -205,7 +205,7 @@ def test_display_problem_remembers_a_working_display_too(monkeypatch):
     """能建窗口时也把结论存住：否则每条界面用例都白开一个探针窗口。
 
     真桌面上 ``Tk()`` 偶发抖动由各模块自己的重试兜（它们照旧重试），不必让
-    探针也去重试 —— 探针的职责只是回答「这台机器到底有没有显示环境」。
+    探针也去重试 —— 探针的职责只是回答「当前环境实际有没有显示环境」。
     """
     fake = _WorkingTk()
     monkeypatch.setattr(conftest, "_DISPLAY_PROBE", {})

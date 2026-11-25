@@ -238,7 +238,7 @@ def test_sync_from_api_parses_the_response_as_json(monkeypatch: pytest.MonkeyPat
 # 仓库门面：静态检查配置、CI 里的那一步、issue / PR 模板
 # ---------------------------------------------------------------------------
 #
-# 这三样都是「加了就没人再管」的东西：ruff.toml 被谁删掉、CI 里那一步被谁顺手
+# 这三样都是「加了就没人再管」的东西：ruff.toml 被谁删掉、CI 里那一步被谁同时
 # 注释掉、模板文件被谁重命名，都不会有人报错。2026-11-14 加它们的同时把命中的
 # 37 条告警全清了 —— 那时才知道这份配置以前根本不存在。
 
@@ -290,7 +290,7 @@ def test_github_ships_issue_and_pull_request_templates() -> None:
     bug = (template_dir / "bug_report.yml").read_text(encoding="utf-8")
     # 表单里必须问到「版本」与「日志」—— 这两样缺一样，报的问题都只能靠来回问。
     assert "程序版本" in bug and "日志" in bug
-    # 公开仓库：贴日志时提醒删掉串号与饼干，这条别被谁顺手删了。
+    # 公开仓库：贴日志时提醒删掉串号与饼干，这条别被谁同时删了。
     assert "userhash" in bug or "饼干" in bug
 
     pull_request = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
@@ -323,7 +323,7 @@ def test_the_selftest_step_is_a_real_check_not_a_decoration() -> None:
     """自检那一步不能又变成「失败也不阻断」的摆设。
 
     以前 CI 里跑的是 ``python main.py --selftest`` 再挂 ``continue-on-error``：
-    ``--selftest`` 查的是**这台机器**（有没有浏览器、能不能出网），CI 机器上随时会红，
+    ``--selftest`` 查的是**当前环境**（有没有浏览器、能不能出网），CI 机器上随时会红，
     于是只能不阻断 —— 结果就是它红了几个月也没人知道。现在改成
     ``--selftest --offline --selftest-json``（只验这条命令跑得通、JSON 形状没变形），
     确定性的检查就不该再挂 ``continue-on-error``。

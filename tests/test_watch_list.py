@@ -350,7 +350,7 @@ def test_entries_that_match_the_existing_list_are_reported_as_duplicates(list_fi
 
     「用文件替换现有列表」时，这些条目是**要留下来的**：调用方只拿 ``added``
     去替换的话，它们会因为不属于 ``added`` 而被丢掉，列表直接被清空
-    （真机上踩到过：文件里那条现在就在监控，替换之后一条不剩）。
+    （实际运行中遇到过：文件里那条现在就在监控，替换之后一条不剩）。
     """
     existing = [target(url_or_id="7001234", format_key="html", scope="all")]
     write_payload(list_file, {"targets": [{"url_or_id": "7001234", "format_key": "html"}]})

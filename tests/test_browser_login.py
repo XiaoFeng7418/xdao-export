@@ -4,8 +4,7 @@
 反方向也做一遍（实现发出去的帧由测试手工拆开核对）。握手同样用假连接跑：
 假服务端回一个 101，就能把「余包不能丢」这条规则也钉住。
 
-不启动真浏览器、不联网。只有末尾那条集成用例例外：本机确实装了浏览器
-**并且**显式设了 ``XDAO_BROWSER_TEST=1`` 才跑，默认 skip。
+不启动真浏览器、不联网。只有末尾那条集成用例例外：Chrome 或 Edge 可用且设置 ``XDAO_BROWSER_TEST=1`` 时才运行，默认跳过。
 
 产物目录用 ``artifacts_dir``（工作区内已提交的 ``.test-artifacts``），
 和仓库其它测试保持一致。
@@ -56,7 +55,7 @@ def _touch(root: Path, relative: str) -> Path:
 
 
 def _no_browsers_env(root: Path) -> dict[str, str]:
-    """一个「这台机器什么都没装」的环境：显式给空串，测试就不受开发机影响。"""
+    """一个「当前环境什么都没装」的环境：显式给空串，测试就不受实际安装环境影响。"""
     return {
         "PROGRAMFILES": str(root / "nope"),
         "PROGRAMFILES(X86)": "",
@@ -305,7 +304,7 @@ def test_find_browser_returns_none_when_nothing_is_installed(
 class _FakeRegistry:
     """够用的假 ``winreg``：只要 ``OpenKey`` / ``QueryValueEx`` 与两个 hive 常量。
 
-    为什么要假的：Windows 上不能为了测试去改用户的默认浏览器；Linux 上压根没有
+    使用替身的原因是：Windows 上不能为了测试去改用户的默认浏览器；Linux 上压根没有
     ``winreg``，那段逻辑就会在 CI 上没人看着。两个地方都用它，测的是同一件事。
     """
 
@@ -352,7 +351,7 @@ def _fake_registry(monkeypatch: pytest.MonkeyPatch, keys: dict) -> None:
             '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --single-argument %1',
             "Edge",
         ),
-        # 真机（本机）上 Chrome 的 ProgId 命令行就长这样
+        # 实际运行环境上 Chrome 的 ProgId 命令行就长这样
         (
             '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --single-argument %1',
             "Chrome",
@@ -414,7 +413,7 @@ def test_windows_default_exe_gives_up_when_the_prog_id_is_unknown(
 def test_find_browser_prefers_the_windows_default_browser(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """用户把默认浏览器改成 Chrome，就不该先拿 Edge 去试（真机上量到的期望差）。"""
+    """用户把默认浏览器改成 Chrome，就不该先拿 Edge 去试（实际运行中量到的期望差）。"""
     pf = artifacts_dir / "pf"
     edge = _touch(pf, r"Microsoft\Edge\Application\msedge.exe")
     chrome = _touch(pf, r"Google\Chrome\Application\chrome.exe")
@@ -445,7 +444,7 @@ def test_find_browser_prefers_the_windows_default_browser(
 def test_browser_candidates_puts_the_current_one_first_and_dedupes(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """重试时要先试「刚才那个」，再换别的；重复的不许试两遍。"""
+    """重试时要先试「此前那个」，再换别的；重复的不许试两遍。"""
     pf = artifacts_dir / "pf"
     edge = _touch(pf, r"Microsoft\Edge\Application\msedge.exe")
     chrome = _touch(pf, r"Google\Chrome\Application\chrome.exe")
@@ -480,7 +479,7 @@ def test_build_args_has_the_required_flags() -> None:
     assert "--no-first-run" in args
     assert "--no-default-browser-check" in args
     assert f"--disable-features={bl._DISABLE_FEATURES}" in args
-    # v0.17.7：窗口必须是一次性的干净窗 —— 不许拿本机 Windows 账号登进 Edge，
+    # v0.17.7：窗口必须是一次性的干净窗 —— 不许拿Windows 登录账号登进 Edge，
     # 也不许同步云端数据（不然自动填充里会出现云端保存的密码）。
     assert "--disable-sync" in args
     assert "msImplicitSignin" in " ".join(args)
@@ -716,7 +715,7 @@ def test_cdp_session_reports_a_browser_without_page_targets(
 def test_page_ws_url_prefers_our_site_over_browser_dialogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """真机上量到过：Edge 自带的 ``edge://sync-confirmation-dialog/`` 排在登录页前面。
+    """实际运行中量到过：Edge 自带的 ``edge://sync-confirmation-dialog/`` 排在登录页前面。
 
     连到那种页面上，读饼干脚本里的 fetch 属于别的源，会一律读空。
     """
@@ -787,7 +786,7 @@ def test_page_ws_url_falls_back_to_a_blank_tab(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_resolve_page_url_waits_for_the_site_page(monkeypatch: pytest.MonkeyPatch) -> None:
-    """端口刚写出来就连时，页面列表里可能还没有登录页（真机上见过 sync 对话框）。
+    """端口刚写出来就连时，页面列表里可能还没有登录页（实际运行中见过 sync 对话框）。
 
     挂到别的页面上，读饼干脚本里的 ``fetch`` 属于别的源，会一律读空 ——
     所以 connect 要等站点页面开出来，而不是「第一个就算」。
@@ -834,7 +833,7 @@ def test_resolve_page_url_gives_up_and_uses_what_is_there(
     assert session._resolve_page_url().endswith("/devtools/page/BLANK")
 
 
-# ---------- retarget()：每轮重挑标签（v0.13.31，真机 复现记录） ----------
+# ---------- retarget()：每轮重挑标签（v0.13.31，实际运行时复现） ----------
 
 _STALE_TAB = {
     "type": "page",
@@ -877,7 +876,7 @@ def _retarget_session(
 def test_retarget_moves_onto_the_site_tab(monkeypatch: pytest.MonkeyPatch) -> None:
     """用户把挂着的那个标签关掉另开一个去登录：下一轮就得换过去。
 
-    复现记录 的冤案正是这里 —— connect 那一刻挂的标签此后永不更换，程序一路盯着
+    复现过程中的误判正是这里 —— connect 那一刻挂的标签此后永不更换，程序一路盯着
     旧标签报「页面停在登录页」，用户在新的饼干页里登录成功它也不看。
     """
     session, attached = _retarget_session(
@@ -944,7 +943,7 @@ def test_retarget_reports_no_tabs_at_all(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_retarget_settles_on_a_live_non_login_tab(monkeypatch: pytest.MonkeyPatch) -> None:
     """两页站点标签（没关掉的旧登录页 + 现在的饼干页）：已经挂在饼干页上就稳住。
 
-    v0.13.36（真机 复现记录）：以前「挑列表里第一个站点页」，而 ``/json/list`` 的顺序
+    v0.13.36（实际运行中）：以前「挑列表里第一个站点页」，而 ``/json/list`` 的顺序
     没有稳定定义 —— 两页会被轮着挑中，``挂=`` 在 login.html 和饼干页之间来回跳，
     横幅跟着换、读数跟着换上下文，一屏日志自相矛盾，永远定不了案。
     """
@@ -962,8 +961,8 @@ def test_retarget_steps_off_a_zombie_login_page_onto_the_live_page(
 ) -> None:
     """当前挂着的是登录页、浏览器里另有一页非登录站点页：挪到那一页去。
 
-    复现记录 的教训不能丢：用户早就登进去停在饼干页，程序死守僵尸登录页就会一路
-    报「页面停在登录页」。只挪这一次 —— 下一轮当前页已是非登录页，由上一条用例稳住。
+    复现过程中的教训不能丢：用户早就登进去停在饼干页，程序死守僵尸登录页就会一路
+    报「页面停在登录页」。只挪这一次 —— 后续轮询时当前页已是非登录页，由上一条用例稳住。
     """
     session, attached = _retarget_session(
         monkeypatch,
@@ -1074,9 +1073,9 @@ def test_browser_level_session_keeps_the_browser_endpoint(
 ) -> None:
     """``browser_level=True`` 时 connect 不许把浏览器端点换成页面标签（v0.13.47）。
 
-    换了的后果是实测过的（探针 ``probe_context_jars.py``）：页面级连接问
+    换了的后果是实测过的（探针 ``诊断探针``）：页面级连接问
     ``Target.getBrowserContexts`` 当场被拒，于是「同一只浏览器里的别的罐」永远读空 ——
-    功能不报错、只是静默失效，真机上看不出来。
+    功能不报错、只是静默失效，实际运行中看不出来。
     """
     attached: list[str] = []
 
@@ -1101,18 +1100,18 @@ def test_browser_level_session_keeps_the_browser_endpoint(
 
 # ------------------------------------------------- 调试接口：端口在、口还不通
 
-#: 真机上那条报错：端口文件已经出现，调试服务却还没开始收连接。
+#: 实际运行中那条报错：端口文件已经出现，调试服务却还没开始收连接。
 #:
 #: 两个平台的真实形状不一样，这里按平台各造一份，让用例在哪儿跑都测同一件事：
 #: * Windows：``OSError(10061, …)`` 自己就是 ``WinError``，``winerror=10061``；
 #: * POSIX：``OSError(10061, …)`` 只是个 ``errno=10061`` 的怪码（``errno`` 里
-#:   没有 10061），真机上这份错是 ``winerror=10061`` / ``errno=ECONNREFUSED``。
+#:   没有 10061），实际运行中这份错是 ``winerror=10061`` / ``errno=ECONNREFUSED``。
 #: 之前只有前一种写法，于是 CI 的两条 ubuntu 矩阵把「该重试的失败」判成
 #: 「再等也没用」（2026-10-01 的 run 36822858995：3 failed）。
 if os.name == "nt":  # pragma: no cover - 平台分支，两边各在一边机器上跑
     _REFUSED: OSError = OSError(10061, "由于目标计算机积极拒绝，无法连接。")
 else:  # pragma: no cover - 同上
-    # POSIX 上真机抛的是 ConnectionRefusedError：别让用例测一个真机上见不到的类型
+    # POSIX 上实际运行环境抛的是 ConnectionRefusedError：别让用例测一个实际运行中见不到的类型
     _REFUSED = ConnectionRefusedError(
         errno.ECONNREFUSED, "由于目标计算机积极拒绝，无法连接。"
     )
@@ -1123,7 +1122,7 @@ def _refuse_then_succeed(monkeypatch: pytest.MonkeyPatch, failures: int) -> list
     """让 ``_http_json_once`` 先连不上 ``failures`` 次，之后返回一份页面列表。
 
     抛的是 ``_REFUSED`` 那个**真实的连接被拒**异常，外面按真代码的写法包成
-    ``CdpError``（``_http_json_once`` 就是这么抛的），让用例测到的错误链跟真机一致。
+    ``CdpError``（``_http_json_once`` 就是这么抛的），让用例测到的错误链跟运行环境一致。
 
     返回调用时刻清单，供用例核对「确实重试了、而且很快就回来了」。
     """
@@ -1246,7 +1245,7 @@ def test_describe_exception_falls_back_to_the_thrown_value() -> None:
     """抛的是字符串时只有 ``value``，没有 description。"""
     assert cdp._describe_exception({"exception": {"value": "boom"}}) == "boom"
     # 0 是假值，会被当成「没给」而退到 str(details)。真实协议里很少见，但把它钉住，
-    # 免得哪天顺手改成 `is not None` 却没想过这一支。
+    # 免得哪天同时改成 `is not None` 却没想过这一支。
     assert cdp._describe_exception({"exception": {"value": 0}}) == str(
         {"exception": {"value": 0}}
     )
@@ -1359,10 +1358,10 @@ def test_login_browser_tolerates_being_stopped_before_start() -> None:
 def test_start_reuses_a_window_the_program_left_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """正是要修的那个现场（v0.13.33）：上次程序开的窗口还开着 —— 直接接上它。
 
-    真机 复现记录：「每次我自己都去手动点了应用，但是仍然抓不到饼干」。要是每回
+    手动应用 cookie 后仍可能读取失败：若每次
     启动都开一扇新窗、一个新罐，用户操作着的永远是登录过的那扇旧窗，程序盯着的
-    永远是本轮的空罐，两边永远对不上。复用之后同一时刻只有一个罐。
-    接上的窗不是我们生的：``process`` 为 None，收尾不碰它（见下一条）。
+    永远是当前批次的空罐，两边永远对不上。复用之后同一时刻只有一个罐。
+    复用窗口不是当前实例启动的：``process`` 为 None，收尾不碰它（见下一条）。
     """
     live = tmp_path / "xdao-export-browser-profile-4321-1727000000123-0"
     live.mkdir()
@@ -1386,7 +1385,7 @@ def test_start_reuses_a_window_the_program_left_open(tmp_path: Path, monkeypatch
 def test_census_note_says_a_plain_new_window_was_all_there_was(tmp_path: Path) -> None:
     """没探到任何活窗（autouse 把普查钉成空）：普查句要**明说**没探到（v0.13.35）。
 
-    这句和「探到了但没接上」必须分得开 —— 真机 复现记录 若日志写着「探到 2 扇」，
+    这句和「探到了但没接上」必须分得开 —— 实际运行中 若日志写着「探到 2 扇」，
     用户登录的窗多半就是另一扇；写着「没探到」才轮到别的原因。
     """
     browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
@@ -1407,7 +1406,7 @@ def test_census_note_records_windows_it_could_not_attach(tmp_path: Path, monkeyp
 
 
 def test_stop_leaves_a_reused_window_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """接上的窗不归我杀、目录也不归我删：stop() 得原样留下它。"""
+    """复用的既有窗口与目录不归当前实例管理，stop() 应原样保留。"""
     live = tmp_path / "xdao-export-browser-profile-1-2-0"
     live.mkdir()
     (live / "DevToolsActivePort").write_text("9444\n/devtools/browser/guid-b\n", encoding="utf-8")
@@ -1432,7 +1431,7 @@ def _live_dir(root: Path, name: str, port: int) -> Path:
 def test_reuse_prefers_the_window_whose_jar_has_a_userhash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """v0.13.38（真机 复现记录）：两扇窗时接**罐里有饼干**的那扇，不再按谁先开的挑。
+    """v0.13.38（实际运行中）：两扇窗时接**罐里有饼干**的那扇，不再按谁先开的挑。
 
     现场：用户在 A 窗里登录着（罐里有 userhash），程序却接上了 B 窗（空罐），
     于是「F12 里明明有饼干、程序说没有」，怎么点「应用」都对不上。谁最后开的窗
@@ -1524,7 +1523,7 @@ class _JarWindow:
 
     v0.13.47 起还兼职**浏览器级**那份活：``browser_context_ids`` /
     ``read_storage_cookies(browser_context_id)`` —— 同一只浏览器内部也会分出好几份罐
-    （无痕窗、Edge 的「工作区」各一份），真机 复现记录/复现记录 的死结就卡在这里。
+    （无痕窗、Edge 的「工作区」各一份），复现时的死结就卡在这里。
     """
 
     jars: dict[str, list[dict]] = {}
@@ -1599,7 +1598,7 @@ def test_window_jar_keeps_only_the_site_cookies(
     monkeypatch.setattr(bl, "CDPSession", _JarWindow)
     assert [item["name"] for item in bl.window_jar(ws)] == ["PHPSESSID"]
     # 读某一扇窗走的是**页面级**连接（要 Runtime.evaluate / Network.getCookies）：
-    # browser_level 只给「问同一只浏览器里的别的罐」用，别顺手带上。
+    # browser_level 只给「问同一只浏览器里的别的罐」用，别同时带上。
     assert [item.get("browser_level") for item in _JarWindow.opened] == [False]
 
 
@@ -1635,7 +1634,7 @@ def test_live_window_jars_skips_the_window_we_are_already_reading(
 def test_userhash_across_windows_finds_the_cookie_in_another_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """真机 复现记录 的形状（v0.13.45）：这一罐只有匿名会话号，userhash 在隔壁那扇窗的罐里。
+    """复现时的形状（v0.13.45）：这一罐只有匿名会话号，userhash 在隔壁那扇窗的罐里。
 
     这就是「同一扇挂着程序横幅的窗、F12 里有三条饼干，程序却一路只报 PHPSESSID」的
     唯一剩余解释，逐窗读是冲它去的：谁的罐里有就用谁的，并点名是哪一扇。
@@ -1708,7 +1707,7 @@ def test_browser_level_jars_reads_the_default_and_every_extra_jar(
 ) -> None:
     """浏览器级那一问（v0.13.47）：默认那份 + 每一个额外的罐，各读一遍。
 
-    真机 复现记录/复现记录 的死结是「同一扇窗、同一个端口，F12 有 userhash、程序四条读法
+    复现时的死结是「同一扇窗、同一个端口，F12 有 userhash、程序四条读法
     一条都没有」，而四路读法与 F12 同源同全已被两轮探针钉死 ⇒ 只剩「读的不是同一份罐」。
     这一手就是去问同一只浏览器里**别的罐**。
     """
@@ -1727,7 +1726,7 @@ def test_browser_level_jars_reads_the_default_and_every_extra_jar(
     ]
     # 命门：这一问必须**挂在浏览器端点上**（browser_level=True）。少了这个开关，
     # connect() 会把 /devtools/browser/… 换成页面标签，Target.getBrowserContexts
-    # 当场被拒、额外那份罐永远读空 —— 功能静默失效（真机探针 probe_context_jars.py
+    # 当场被拒、额外那份罐永远读空 —— 功能静默失效（实际运行环境探针 probe_context_jars.py
     # 就是这么抓出来的）。
     assert [item.get("browser_level") for item in _JarWindow.opened] == [True]
 
@@ -1737,10 +1736,10 @@ def test_browser_level_jars_finds_the_browser_endpoint_from_a_page_address(
 ) -> None:
     """界面层给过来的常常是**页面**地址，这一问要自己去问出浏览器端点（v0.13.47）。
 
-    真机上 ``LoginBrowser.browser_ws_url`` 是从 ``DevToolsActivePort`` 第二行拼的，
+    实际运行中 ``LoginBrowser.browser_ws_url`` 是从 ``DevToolsActivePort`` 第二行拼的，
     那是**页面**的调试路径；拿它直接当浏览器端点连，``Target.getBrowserContexts``
-    会被拒 —— 功能不报错，只是永远读不到别的罐。探针 ``probe_context_jars.py``
-    把这条坑实测钉死过。
+    会被拒 —— 功能不报错，只是永远读不到别的罐。探针 ``诊断探针``
+    把该问题实测钉死过。
     """
     asked: list[str] = []
 
@@ -1845,7 +1844,7 @@ def test_jar_dump_records_every_read_path_and_its_errors(
     """读罐详单（v0.13.47）：四条读法的**原始返回**都抄下来，含浏览器级每一份额外的罐。
 
     日志里只有名字，对不出「域、路径、分区键、哪一份罐」差在哪 —— 这份数据是唯一能
-    逐字段比对的东西（真机 复现记录/复现记录：F12 有 70 字节 userhash、程序四条读法全无）。
+    逐字段比对的东西（实际运行中：F12 有 70 字节 userhash、程序四条读法全无）。
     """
     ws = "ws://127.0.0.1:53051/devtools/browser/XY"
     _JarWindow.mute = set()
@@ -1929,7 +1928,7 @@ class _ContextSession:
 def test_browser_context_ids_reads_the_ids_off_the_targets_too() -> None:
     """上下文名单要从**两处**并起来（v0.13.48）：无痕窗那份罐只挂在目标身上。
 
-    本机探针 ``probe_incognito_contexts.py`` 实测：``msedge.exe --incognito`` 起浏览器时
+    探针 ``诊断探针`` 实测：``msedge.exe --incognito`` 起浏览器时
     ``Target.getBrowserContexts`` 回的是 ``[]``，而那个页面目标身上明明挂着
     ``browserContextId=2199AF8D…``。少了目标这一问，用户在无痕窗里登录挣来的
     userhash 一辈子读不到 —— v0.13.47 的「别路=」就是在这里空的。
@@ -1983,7 +1982,7 @@ def test_browser_page_targets_lists_the_pages_and_their_jars(
 ) -> None:
     """「窗口=」那一手的取数（v0.13.48）：只留页面标签，带上它所属的罐与调试地址。
 
-    真机 复现记录 的僵局是「程序读的是 login.html（罐里只有 PHPSESSID）、用户眼前那扇
+    复现时的僵局是「程序读的是 login.html（罐里只有 PHPSESSID）、用户眼前那扇
     是已登录的 index.html，而 ``页=1``」—— 哪扇挂在哪个上下文里，只有目标表答得出来。
     """
     opened: list[dict] = []
@@ -2157,11 +2156,11 @@ def test_program_profile_lines_only_name_our_own_dirs(tmp_path: Path) -> None:
 def test_process_side_census_adopts_a_live_window_the_port_census_missed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """端口文件被删但进程还活着且端口答话：进程侧把它补回接手名单（v0.13.37）。
+    """端口文件被删但进程还活着且端口答话：进程侧把它补回复用候选名单（v0.13.37）。
 
     备用目录的名字带着当时进程的 PID 和时间戳，新一轮进程猜不到——
-    ``live_browser_dirs`` 因此瞎掉（真机 复现记录 的一半）。补回来的窗照常接手，
-    绝不许再开第二扇。
+    ``live_browser_dirs`` 因此瞎掉（复现时的一半）。补回来的窗照常复用，
+    绝应避免再次开第二扇。
     """
     live = tmp_path / "browser-profile-4321-1727000000"
     live.mkdir()
@@ -2186,7 +2185,7 @@ def test_process_side_census_reaps_zombie_windows_before_opening_a_new_one(
 ) -> None:
     """端口失联的僵尸窗：先收掉、写进普查句，再照常新开（v0.13.37）。
 
-    真机 复现记录 的另一半：饼干窗硬刷新都不弹回登录页（进程罐里有效 userhash），
+    复现时的另一半：饼干窗硬刷新都不弹回登录页（进程罐里有效 userhash），
     程序对账却只见登录页与 PHPSESSID —— 两个进程各拿一个罐。收掉端口失联的旧进程，
     世界上重新只有一扇程序窗口、一个罐；普查句把收掉的目录名字点名写出来。
     """
@@ -2197,7 +2196,7 @@ def test_process_side_census_reaps_zombie_windows_before_opening_a_new_one(
     monkeypatch.setattr(bl, "_kill_processes_using_profile", lambda path: killed.append(path))
     browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
     assert browser._try_attach_live() is None
-    assert killed == [zombie], "端口都失联了还不收，留着它继续串门？"
+    assert killed == [zombie], "清理端口失联的浏览器进程，避免遗留窗口。"
     assert "进程侧探到 1 扇" in browser.census_note
     assert zombie.name in browser.census_note and "已先收掉" in browser.census_note
     assert "没探到活着的程序窗口" in browser.census_note
@@ -2233,9 +2232,9 @@ def test_stale_window_dirs_names_the_mute_ones_only(
 ) -> None:
     """哑窗那一段（v0.13.46）：有端口文件、端口却不答话的自家目录名，按端口文件时间倒序。
 
-    真机 复现记录 的僵局里「逐窗=一句都没有」看不出到底有没有另一扇窗：调试端口已经死了的
+    复现时的僵局里「逐窗=一句都没有」看不出实际有没有另一扇窗：调试端口已经死了的
     那扇窗，端口普查看不见它、进程还在 —— 名字出现在这里就是那张图。只报**目录名**
-    （这行会被用户截图贴到公开版面，盘上路径不写）。答话的、没端口文件的、别人家的目录
+    （这行会被界面截图贴到公开版面，盘上路径不写）。答话的、没端口文件的、别人家的目录
     都不许混进来。
     """
     root = tmp_path / "temp"
@@ -2267,7 +2266,7 @@ def test_profile_process_pids_counts_holders_of_the_jar(
 ) -> None:
     """同罐进程那一段（v0.13.46）：命令行里正拿着这只罐的浏览器进程有几个（只读）。
 
-    真机 复现记录：「同一只罐一条也读不到」只有两种形状 —— 还有第二个实例在共用这只罐
+    实际运行中：「同一只罐一条也读不到」只有两种形状 —— 还有第二个实例在共用这只罐
     （pid 多于一个），或者用户在自己平时的浏览器里登录（pid 只有一个）。这一手只查、
     不杀；普查被用例关掉（``_PROCESS_CENSUS``）时连 powershell 都不许起。
     """
@@ -2302,34 +2301,34 @@ def test_profile_process_pids_counts_holders_of_the_jar(
 def test_watch_banner_script_carries_the_identity_line() -> None:
     """横幅脚本要点齐三件事：id 幂等、只在站内出现、说清「自动带上/换一块才点应用」。
 
-    v0.13.34（复现记录）：口径改成「登录成功站点就自动带上当前饼干」，『应用』只留给
+    v0.13.34（复现现象）：口径改成「登录成功站点就自动带上当前饼干」，『应用』只留给
     换饼干 —— 但这两个词仍要在句里，让人知道去哪换。
-    v0.13.35（复现记录）：旧窗口上冻着的横幅会装死，所以文案补「十几秒没拿到就点
+    v0.13.35（复现现象）：旧窗口上冻着的横幅会装死，所以文案补「十几秒没拿到就点
     『应用』」这句保底，且**已存在的横幅也要刷新文案**（脚本里得有赋值那一手）。
-    v0.13.46（复现记录）：横条从页面**顶上**挪到**窗底**（顶上的那条把「我的饼干」
+    v0.13.46（复现现象）：横条从页面**顶上**挪到**窗底**（顶上的那条把「我的饼干」
     列表的复选框与『应用』按钮压住了一半），并自带一个「×」收得起。
     """
     script = bl.build_watch_banner_script()
     assert bl.WATCH_BANNER_ID in script
     assert "程序正在看这个窗口" in script and "『应用』" in script
-    assert "自己带上" in script, "别再吓人说光登录不算完（复现记录 证伪）"
+    assert "自己带上" in script, "登录成功后应自动使用当前 cookie。"
     assert "光登录不算完" not in script and "才算数" not in script
     assert "十几秒还没拿到" in script, "点应用这条保底路要留在句里"
     assert "窗口号" not in script, "没传号不许凭空造一个"
     assert "nmbxd1" in script, "站外的页面不该出现横幅"
-    assert "getElementById" in script, "同一轮里反复注入要能认出『已经有了』"
-    assert "label.textContent = text" in script, "旧横幅不刷新文案就是假信号（复现记录）"
+    assert "getElementById" in script, "重复注入时应识别已有横幅"
+    assert "label.textContent = text" in script, "已有横幅应更新为最新状态文案。"
     # v0.13.46：横条在窗底（bottom:0，不再 top:0），可收起，且只有那个「×」收得到点击
     assert "bottom:0" in script and "top:0;" not in script, "别再把页面顶上的操作区压住"
-    assert "close" in script and "bar.remove()" in script, "横条要能自己收起（复现记录）"
+    assert "close" in script and "bar.remove()" in script, "横幅应提供关闭操作。"
     assert "pointer-events:auto" in script, "横条本体不吃点击，只有那个「×」吃"
 
 
 def test_watch_banner_script_carries_the_window_stamp() -> None:
-    """横幅末尾的【窗口号】（v0.13.35）：界面话术报同一个号，肉眼一比识破冻横幅。
+    """横幅末尾的【窗口号】（v0.13.35）：界面话术报同一个号，直接比较识破冻横幅。
 
     v0.13.46 起传了端口就一起报「窗口号 · 端口」：日志里的「接=端口…」与眼前的窗
-    从此对得上号（真机 复现记录 的两只罐现场就是靠这个分出来的）。
+    从此对得上号（复现时的两只罐现场就是靠这个分出来的）。
     """
     script = bl.build_watch_banner_script("3F7A")
     assert "【窗口号 3F7A】" in script
@@ -2399,10 +2398,10 @@ def test_ensure_watch_banner_reports_what_the_page_said() -> None:
 def _no_reuse_of_live_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     """默认让「接上之前开着的程序窗口」这一探（v0.13.33）永远扑空。
 
-    真去探测会读开发机真实的 %TEMP%：恰好留着一扇没关的程序登录窗时，
+    真去探测会读运行测试时实际的 %TEMP%：恰好留着一扇没关的程序登录窗时，
     下面所有「启动」用例都会变成「接上它」，结果不再确定。
     v0.13.37 起进程侧普查（问操作系统谁在用自家目录）也要钉住——它在
-    Windows 开发机上默认是真起 powershell 的，不钉就等于每个用例跑一遍 CIM。
+    Windows 测试环境中默认是真起 powershell 的，不钉就等于每个用例跑一遍 CIM。
     专测复用路的用例在自己的函数体里重新 monkeypatch —— fixture 先跑、
     函数体后跑，后写的赢。
     """
@@ -2465,7 +2464,7 @@ class _PortWritingPopen:
 class _SilentPopen:
     """假 Popen：进程活着，但永远不写 DevToolsActivePort。
 
-    真机上「目录里那份端口文件是上一扇窗留下的」就是这个样子：新进程起得来、
+    实际运行中「目录里那份端口文件是上一扇窗留下的」就是这个样子：新进程起得来、
     可它（或者安全软件）没写出自己的端口，于是文件只剩旧的那一份。
     """
 
@@ -2505,7 +2504,7 @@ def test_port_file_fresh_recognises_only_a_new_file() -> None:
 def test_launch_leaves_a_foreign_port_file_alone_and_never_trusts_it(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """v0.13.38（真机 复现记录 的直接病因）：**不删**别人那份端口文件，也不认它的端口。
+    """v0.13.38（复现时的直接病因）：**不删**别人那份端口文件，也不认它的端口。
 
     以前的写法是启动前先 unlink 掉 ``DevToolsActivePort``。当候选落到配置目录那份
     持久资料目录上、而那扇窗**还开着**时，这一删就删在了它头上：它从此读不到自己
@@ -2530,7 +2529,7 @@ def test_launch_leaves_a_foreign_port_file_alone_and_never_trusts_it(
 class _TakeoverPopen:
     """假 Popen：第二个实例把参数交给已经在跑的那一扇，自己干净退出（退出码 0）。
 
-    2026-10-04 真机量到（_scratch/probe_v01338_persistent_profile.py）：在一个
+    2026-10-04 运行环境量到（诊断探针）：在一个
     **还开着**的持久资料目录上再走一次 ``_launch``，Edge 就是这么反应的 ——
     退出码 0，不是 21，也不是崩溃。
     """
@@ -2600,7 +2599,7 @@ class _LoudDeadPopen:
     """假 Popen：起来就退（退出码 21），退之前往 stderr 上留下自己的原话。
 
     v0.13.40 之前 ``_launch`` 把浏览器 stderr 一律丢进 DEVNULL，「刚起来就退出了」
-    只剩程序自己猜的那几句；真机上真正的原因（目录被锁、被安全软件拦下、参数被拒绝）
+    只剩程序自己猜的那几句；实际运行中真正的原因（目录被锁、被安全软件拦下、参数被拒绝）
     就在这几行里。
     """
 
@@ -2720,8 +2719,8 @@ def test_start_reads_the_port_file_and_hides_the_console_window(
 ) -> None:
     """GUI 里启动浏览器不能弹黑框，端口要等文件真写出来才认。
 
-    v0.13.9 起第一个候选是**新建的临时资料目录**（真机上「自检里浏览器起得来、
-    登录却一起来就退」的差别就在资料目录），所以这里也顺带钉住这件事：
+    v0.13.9 起第一个候选是**新建的临时资料目录**（实际运行中「自检里浏览器起得来、
+    登录却一起来就退」的差别就在资料目录），所以这里也同时钉住这件事：
     先试临时目录、界面上要说清「这次用的是临时目录」、关窗后目录要清掉。
     """
     created: list[_PortWritingPopen] = []
@@ -2805,7 +2804,7 @@ def test_profile_failure_ignores_other_errors() -> None:
 
 
 def test_devtools_read_failure_recognises_a_refused_local_port() -> None:
-    """用户截图那条：端口文件在、调试口却拒绝连接，换目录重试常能好。"""
+    """界面截图那条：端口文件在、调试口却拒绝连接，换目录重试常能好。"""
     assert bl._devtools_read_failure(_win_error(10061, "由于目标计算机积极拒绝，无法连接。"))
     assert bl._devtools_read_failure(OSError(errno.ECONNREFUSED, "连接被拒"))
     assert bl._devtools_read_failure(OSError(errno.ECONNRESET, "连接被重置"))
@@ -2857,7 +2856,7 @@ def test_devtools_failure_hint_reports_a_browser_that_already_died() -> None:
     browser.process = _FakeProcess(3)
     hint = browser.devtools_failure_hint()
     assert "Fake" in hint and "3" in hint
-    assert "直接粘贴饼干登录" in hint, "要顺手指一条走得通的路"
+    assert "直接粘贴饼干登录" in hint, "应提供可用的替代登录方式。"
     assert not bl._profile_failure(OSError(errno.ENOENT, "找不到文件"))
     assert not bl._profile_failure(RuntimeError("跟目录无关"))
 
@@ -2865,7 +2864,7 @@ def test_devtools_failure_hint_reports_a_browser_that_already_died() -> None:
 def test_start_switches_profile_when_the_config_one_is_not_writable(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """配置目录里那个 profile 起不来（真机上是 WinError 5）时要接着往下试。
+    """配置目录里那个 profile 起不来（实际运行中是 WinError 5）时要接着往下试。
 
     v0.13.9 起第一个候选是新临时目录，配置目录那个排第二：所以这里让**两个都**
     起不来，看它会不会换到第三个候选、并且把「这次用的是哪个目录」写在界面上。
@@ -2882,7 +2881,7 @@ def test_start_switches_profile_when_the_config_one_is_not_writable(
         if chosen == profile:
             raise _win_error(5, "拒绝访问。", str(refused))
         if len(created) == 1:
-            # 临时目录那一次：真机上「一起来就退」正是这个样子。
+            # 临时目录那一次：实际运行中「一起来就退」正是这个样子。
             return _DeadBrowserPopen(args)
         return _PortWritingPopen(args, **kwargs)
 
@@ -2903,7 +2902,7 @@ def test_start_tells_the_user_when_it_lands_on_the_persistent_profile(
 ) -> None:
     """v0.13.37：退到配置目录那份**持久**资料时不能再一声不吭。
 
-    真机（2026-10-03 深夜）：这台机器上新临时目录一起来就退，每次都悄悄落到
+    运行环境（2026-10-03 深夜）：当前环境上新临时目录一起来就退，每次都悄悄落到
     ``browser-profile``；Edge 用同一份目录会把上次登录窗口那一页原样恢复，用户
     看到「已经登录的饼干列表」却读不到饼干，又因为文档说「每次都是全新临时目录」
     而认定窗里有「自己平时保存的饼干」。这句提示要把「窗里的旧页面从哪来、跟你
@@ -2916,7 +2915,7 @@ def test_start_tells_the_user_when_it_lands_on_the_persistent_profile(
             next(a.split("=", 1)[1] for a in args if a.startswith("--user-data-dir="))
         )
         if chosen != profile:
-            # 临时目录那一次：真机上「一起来就退」正是这个样子。
+            # 临时目录那一次：实际运行中「一起来就退」正是这个样子。
             return _DeadBrowserPopen(args)
         return _PortWritingPopen(args, **kwargs)
 
@@ -2927,7 +2926,7 @@ def test_start_tells_the_user_when_it_lands_on_the_persistent_profile(
         note = browser.profile_note
         assert note, "落到持久目录不能一声不吭"
         assert str(profile) in note, "得把用的是哪份目录点名"
-        assert "程序自己存的" in note, "先卸下「碰了我自己浏览器」的担心"
+        assert "程序自己存的" in note, "应说明不会读取日常浏览器资料目录"
         assert "饼干列表" in note, "窗里旧画面的来历要说破"
         assert "删掉这个文件夹" in note, "得给一条回到全新状态的路"
 
@@ -2938,7 +2937,7 @@ def test_a_launch_error_that_never_retries_still_deletes_the_temp_profile(
     """启动本身就抛错（连进程都没起来）时也没人删临时目录。
 
     这种错不走 start() 的「换目录重试」分支：换目录救不了它，于是临时目录
-    一直留在 %TEMP% 里。真机上量到过一百多个这样的空壳，一半是这么来的。
+    一直留在 %TEMP% 里。实际运行中量到过一百多个这样的空壳，一半是这么来的。
     """
     temp_profile = artifacts_dir / "temp-profile"
     monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
@@ -2961,7 +2960,7 @@ def test_failed_attempts_also_delete_the_temp_profile(
 ) -> None:
     """起不来的那次也要把临时目录删掉：失败尝试同样会在目录里落文件。
 
-    真机上量到过：%TEMP% 里积了一百多个 ``xdao-export-browser-profile-*``，
+    实际运行中量到过：%TEMP% 里积了一百多个 ``xdao-export-browser-profile-*``，
     其中一批是**空壳** —— 浏览器一起来就退，只在「成功」那一步才记 ``temp_profile``
     的话，这些目录永远没人删；一连失败几次就攒一堆。
     """
@@ -2969,7 +2968,7 @@ def test_failed_attempts_also_delete_the_temp_profile(
     other = artifacts_dir / "temp-profile-2"
 
     def fake_fresh() -> Path:
-        # 真机上 ``fresh_profile_dir`` 只给名字、目录由 ``_launch`` 里的 mkdir 建出来；
+        # 实际运行中 ``fresh_profile_dir`` 只给名字、目录由 ``_launch`` 里的 mkdir 建出来；
         # 这里干脆先建出来 —— 不然「目录不该还在」就成了一句空话（没建过的路径当然不在）。
         temp_profile.mkdir(parents=True, exist_ok=True)
         (temp_profile / "Cookies").write_bytes(b"x" * 16)
@@ -2990,7 +2989,7 @@ def test_failed_attempts_also_delete_the_temp_profile(
 
     assert not temp_profile.exists(), "失败的那次也要把临时目录清掉"
     assert browser.temp_profile is None, "清过一次就不再记着它"
-    assert other.exists(), "备用目录该照常被试到（只是不归我们删）"
+    assert other.exists(), "备用目录该照常被试到（只是不由程序删除）"
 
 
 def test_each_browser_gets_a_fresh_temp_profile_and_none_is_left_behind(
@@ -2998,7 +2997,7 @@ def test_each_browser_gets_a_fresh_temp_profile_and_none_is_left_behind(
 ) -> None:
     """换浏览器时要换一个**新的**临时目录，别把刚删掉的那个又建出来。
 
-    真机上就是这么在 %TEMP% 里留下空壳的：第一个浏览器把临时目录试败、目录当场删掉，
+    实际运行中就是这么在 %TEMP% 里留下空壳的：第一个浏览器把临时目录试败、目录当场删掉，
     换下一个浏览器时第一个候选还是那个路径，``_launch`` 的 mkdir 又把它建出来 ——
     可这时 ``temp_profile`` 已经清空了，那一份就永远没人删（量到的空目录就是这么来的）。
     """
@@ -3034,9 +3033,9 @@ def test_a_fallback_profile_under_the_temp_dir_is_cleaned_up_too(
 ) -> None:
     """备用候选里有一个也建在系统临时目录下（见 ``fallback_profile_dirs``）。
 
-    那也是我们建出来的：「起来就退」的每次尝试都会把那个候选新建一遍，失败之后
-    就在 %TEMP% 里留一个空壳（真机上量到过一批短名字的 ``…-<pid>`` 就是这么来的）。
-    配置目录下的备用目录不归我们删 —— 那是用户的地盘，留着下次还能用。
+    那也是项目建出来的：「起来就退」的每次尝试都会把那个候选新建一遍，失败之后
+    就在 %TEMP% 里留一个空壳（实际运行中量到过一批短名字的 ``…-<pid>`` 就是这么来的）。
+    配置目录下的备用目录不归项目删 —— 那是用户的地盘，留着下次还能用。
     """
     fake_temp = artifacts_dir / "temp-root"
     fake_temp.mkdir(parents=True, exist_ok=True)
@@ -3076,7 +3075,7 @@ def _backdate(path: Path, seconds: float) -> None:
 
 
 def _temp_profile(root: Path, name: str, *, age: float | None = None) -> Path:
-    """在假的临时根下造一个「我们建的」目录；给了 ``age`` 就把它拨旧。"""
+    """在假的临时根下造一个「项目建的」目录；给了 ``age`` 就把它拨旧。"""
     path = root / name
     path.mkdir(parents=True, exist_ok=True)
     (path / "Cookies").write_text("x", encoding="utf-8")
@@ -3088,7 +3087,7 @@ def _temp_profile(root: Path, name: str, *, age: float | None = None) -> Path:
 def test_sweep_removes_old_temp_profiles_and_leaves_the_rest(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """启动时清扫：旧的删掉，别的（刚建的、不是我们的、不是目录的）一概不碰。
+    """启动时清扫：旧的删掉，别的（刚建的、不是项目的、不是目录的）一概不碰。
 
     「程序被强杀」这条路没人收尾 —— v0.13.10 只盖住了程序自己收尾的那几种失败。
     """
@@ -3110,11 +3109,11 @@ def test_sweep_removes_old_temp_profiles_and_leaves_the_rest(
 
     assert bl.sweep_stale_temp_profiles() == 2
     assert not old_login.exists(), "登录窗口那份旧的该删"
-    assert not old_check.exists(), "自检那份旧的也该删 —— 它同样是我们建的"
+    assert not old_check.exists(), "自检那份旧的也该删 —— 它同样是程序创建的"
     assert new_login.exists(), "刚建出来的多半是别的实例正在用，别碰"
     assert new_check.exists(), "自检那份同上"
-    assert stranger.exists(), "不是我们建的目录，一个都不许动"
-    assert plain_file.exists(), "名字像但我们没把它当目录，别动"
+    assert stranger.exists(), "不是程序创建的目录，一个都不许动"
+    assert plain_file.exists(), "名字像但程序未将它当目录，别动"
 
 
 def test_sweep_skips_a_profile_a_browser_is_still_using(
@@ -3195,7 +3194,7 @@ def test_sweep_does_not_count_a_directory_it_could_not_delete(
 def test_sweep_leaves_a_symlink_with_our_name_alone(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """名字像但其实是符号链接的，不跟着删 —— 指向哪儿不归我们管。"""
+    """名字像但其实是符号链接的，不跟着删 —— 指向哪儿不归项目管。"""
     root = artifacts_dir / "temp-root"
     root.mkdir(parents=True, exist_ok=True)
     target = artifacts_dir / "somebody-elses-dir"
@@ -3246,7 +3245,7 @@ def test_profile_in_use_asks_the_devtools_port(
 def test_is_temp_profile_dir_recognises_both_kinds_and_nothing_else(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """认位置 + 名字前缀：登录那份、自检那份都算我们的；别人的、配置目录里的都不算。"""
+    """认位置 + 名字前缀：登录那份、自检那份都算项目的；别人的、配置目录里的都不算。"""
     root = artifacts_dir / "temp-root"
     root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
@@ -3263,7 +3262,7 @@ def test_is_temp_profile_dir_recognises_both_kinds_and_nothing_else(
 def test_is_fallback_profile_dir_only_accepts_the_strict_name(artifacts_dir: Path) -> None:
     """配置目录下那族备用目录：名字认到「两段都是纯数字」为止（v0.13.39）。
 
-    认松一点就会误收用户的持久目录、或者他自己起的名字 —— 那不是我们的地盘。
+    认松一点就会误收用户的持久目录、或者他自己起的名字 —— 那不是项目的地盘。
     """
     config_dir = artifacts_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -3276,7 +3275,7 @@ def test_is_fallback_profile_dir_only_accepts_the_strict_name(artifacts_dir: Pat
     assert not bl._is_fallback_profile_dir(config_dir / f"{bl.USER_DATA_DIR_NAME}-backup", profile)
     assert not bl._is_fallback_profile_dir(
         config_dir / f"{bl.USER_DATA_DIR_NAME}-12268-1790850954-1", profile
-    ), "多一段就不像我们建的名字了"
+    ), "多一段就不像程序创建的名字了"
     assert not bl._is_fallback_profile_dir(config_dir / f"{bl.USER_DATA_DIR_NAME}-abc-def", profile)
     assert not bl._is_fallback_profile_dir(config_dir / "some-other-tool-1-2", profile)
     assert not bl._is_fallback_profile_dir(
@@ -3287,7 +3286,7 @@ def test_is_fallback_profile_dir_only_accepts_the_strict_name(artifacts_dir: Pat
 def test_is_our_profile_dir_keeps_the_persistent_one_out(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """哪些目录算「我们建的、该由我们收尾删掉」：临时族、配置目录备用族、_new。"""
+    """哪些目录算「项目建的、该由项目收尾删掉」：临时族、配置目录备用族、_new。"""
     root = artifacts_dir / "temp-root"
     root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(bl.tempfile, "gettempdir", lambda: str(root))
@@ -3307,7 +3306,7 @@ def test_sweep_removes_old_fallback_profiles_but_never_the_persistent_one(
 ) -> None:
     """配置目录里遗留的备用资料目录要收掉；用户那份持久的 ``browser-profile`` 绝不碰。
 
-    真机 2026-10-01 量到过两个没人收的空壳：
+    运行环境 2026-10-01 量到过两个没人收的空壳：
     ``browser-profile-12268-1790850954``（96 个文件 / 5.6MB）与
     ``browser-profile-12268-1790850956``（66 个文件 / 6.3MB）—— 名字带着当时进程的
     PID，下一个进程猜不出来，v0.13.39 之前也没人收。
@@ -3370,7 +3369,7 @@ def test_a_config_dir_spare_profile_is_cleaned_up_and_the_persistent_one_is_not(
     """``_launch`` 也要给配置目录那族备用目录记账 —— 失败时当场收掉，别留空壳。
 
     v0.13.38 之前只记 ``%TEMP%`` 那一族（``_is_temp_profile_dir``），配置目录里
-    ``browser-profile-<PID>-<时间戳>`` 建了没人收，真机上就攒下了那两个。
+    ``browser-profile-<PID>-<时间戳>`` 建了没人收，实际运行中就攒下了那两个。
     """
     edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
     config_dir = artifacts_dir / "config"
@@ -3400,10 +3399,10 @@ def test_a_config_dir_spare_profile_is_cleaned_up_and_the_persistent_one_is_not(
 def test_a_self_check_profile_is_cleaned_up_by_stop(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--check-browser`` 自建的那份资料目录（``xdao-browser-check-…``）也得由我们收。
+    """``--check-browser`` 自建的那份资料目录（``xdao-browser-check-…``）也得由项目收。
 
     以前只认登录那份名字，自检这份不在清单里，收尾只剩 ``browser_check`` 自己那一次
-    ``rmtree(ignore_errors=True)`` —— 浏览器还在咽气时它会静默失败，真机 %TEMP% 里
+    ``rmtree(ignore_errors=True)`` —— 浏览器还在咽气时它会静默失败，运行环境 %TEMP% 里
     攒了 5 个。
     """
     fake_temp = artifacts_dir / "temp-root"
@@ -3478,7 +3477,7 @@ def _fake_browser_info(artifacts_dir: Path, name: str, exe: str) -> bl.BrowserIn
 
 
 def test_dead_on_startup_sees_through_the_wrapped_error() -> None:
-    """这条错在真机上会经过好几层包装，认的是文案，不是类型。"""
+    """这条错在实际运行中会经过好几层包装，认的是文案，不是类型。"""
     dead = bl.BrowserLoginError("Edge 刚起来就退出了（退出码 21）")
     assert bl._dead_on_startup(dead)
     assert bl._dead_on_startup(bl.BrowserLoginError("换目录也白搭", dead))
@@ -3492,7 +3491,7 @@ def test_dead_on_startup_sees_through_the_wrapped_error() -> None:
 def test_start_switches_to_the_next_browser_when_the_first_one_dies_at_once(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """真机上的样子：Edge 起来就退（退出码 21）。
+    """实际运行中的样子：Edge 起来就退（退出码 21）。
 
     用户装了安全软件、或者 Edge 那个资料目录的旧状态坏了时会这样。程序该做的
     是换一个干净目录、再换一个浏览器试，而不是立刻把错摊给用户看。
@@ -3553,7 +3552,7 @@ def test_dead_persistent_profile_is_quarantined_after_two_strikes(
 ) -> None:
     """持久资料目录连着两次「刚起来就退出」就改名让位（v0.13.41）。
 
-    真机上这一份目录的旧状态坏了就是**每次**同一个下场：绕过去用临时目录本次处理
+    实际运行中这一份目录的旧状态坏了就是**每次**同一个下场：绕过去用临时目录当前批次
     能登录，用户下次点还是读同一句错。所以第二次要动它 —— 但只改名、一个字不删，
     里面存的是他自己的登录状态。
     """
@@ -3620,7 +3619,7 @@ def test_a_good_start_clears_the_dead_profile_account(
     edge = _fake_browser_info(artifacts_dir, "Edge", "msedge.exe")
     profile = artifacts_dir / "browser-profile"
     profile.mkdir()
-    assert bl._note_dead_profile_strike(profile, "上次处理刚起来就退出") == 1
+    assert bl._note_dead_profile_strike(profile, "上次启动刚起来就退出") == 1
     monkeypatch.setattr(bl, "_KILL_PROFILE_PROCESSES", False)
     monkeypatch.setattr(
         bl.subprocess, "Popen", lambda args, **kwargs: _PortWritingPopen(args, **kwargs)
@@ -3717,9 +3716,9 @@ def test_stop_removes_the_temp_profile_it_used(
 def test_cleanup_leaves_a_directory_whose_window_is_still_open(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """端口还答话 = 里面那扇窗还活着：这种目录一个字节都不许动（复现记录 那一类事故）。
+    """端口还答话 = 里面那扇窗还活着：这种目录一个字节都不许动（复现现象 那一类事故）。
 
-    真机上量到过：在一份**已经开着窗**的临时资料目录上再启动一次，第二次启动会被
+    实际运行中量到过：在一份**已经开着窗**的临时资料目录上再启动一次，第二次启动会被
     「已有实例接管」当场退出（退出码 0），随后收尾把那份目录连同还开着的那扇窗一起
     带走。收尾前先问一次端口，就能把这一手挡住。
     """
@@ -3890,7 +3889,7 @@ def test_looks_like_userhash_rejects_everything_else(value: str) -> None:
         # 百分号转义：站点正文里最常见的一种写法。
         "D-%91%04%02%12%F8%B8E9",
         # 二进制字节被解码出来的样子（替换字符、高位字节、控制字符混在一起）：
-        # 旧规则要求「全是可打印 ASCII」，真值就这么被静默丢掉的（复现记录）。
+        # 旧规则要求「全是可打印 ASCII」，真值就这么被静默丢掉的（复现现象）。
         "D-\x91\x04\x02\x12\xf8\xb8E9",
         "\u00d2\u00ea\x04\x02\x12\xf8",
         "\ufffd\ufffdD-%91%04",
@@ -3925,7 +3924,7 @@ def test_build_find_apply_script_reads_the_page_without_requesting_anything() ->
     """「看看当前页有什么」这一步**一个请求都不许发**。
 
     这是 v0.13.17 的核心教训：v0.13.15 在页面里用 fetch 复刻站点自己的
-    ``switchTo`` / ``export`` 两个接口，真机上拿回来的只是站点那张
+    ``switchTo`` / ``export`` 两个接口，实际运行中拿回来的只是站点那张
     「跳转提示」页 —— 那一跳不是 HTTP 重定向，页面里的 fetch 不会去执行它，
     userhash 于是永远种不进浏览器，界面一路等到超时。现在改成「读页面 + 导航」，
     读的这一半必须干干净净只读 DOM。
@@ -3966,7 +3965,7 @@ def test_build_find_apply_script_reports_a_countdown_page() -> None:
     """站点自己的倒计时页要能从脚本里认出来（v0.13.21）。
 
     认不出来就等于「没什么可等的」：调用方读一眼就判定这一页是终点，然后去读饼干罐、
-    再去导出页，把还在倒数的标签页拽走 —— 站点自己那一跳再也不会发生（用户 复现记录 的
+    再去导出页，把还在倒数的标签页拽走 —— 站点自己那一跳再也不会发生（用户 复现过程中的
     截图里，标签页正停在「饼干切换成功!／页面自动跳转 等待时间：1」上）。
     """
     script = bl.build_find_apply_script()
@@ -3980,8 +3979,8 @@ def test_build_find_apply_script_reports_a_countdown_page() -> None:
 class _ScriptedSession:
     """按「地址 → 页面状态」脚本化的假会话：只管导航与饼干罐。
 
-    导航在真机上就是换一份文档，所以这里换的只是「当前地址」，随后 ``evaluate``
-    读到的就是那一页登记的状态；饼干罐由用例自己往里放 —— 「应用」成没成，在真机上
+    导航在实际运行中就是换一份文档，所以这里换的只是「当前地址」，随后 ``evaluate``
+    读到的就是那一页登记的状态；饼干罐由用例自己往里放 —— 「应用」成没成，在实际运行中
     正体现在这里（主站 Set-Cookie 落到罐里）。
     """
 
@@ -3993,7 +3992,7 @@ class _ScriptedSession:
         export_text: str = "",
         url: str = "",
     ) -> None:
-        # 两个位置参数都是「容器」，传错了 dict()/list() 会默默吃掉（踩过一次：
+        # 两个位置参数都是「容器」，传错了 dict()/list() 会默默吃掉（曾出现一次：
         # 把饼干表当成 pages 传进来，dict() 把 {"name": …, "value": …} 变成了
         # {"name": "value"}，用例照样跑、只是永远读不到饼干）。
         assert pages is None or isinstance(pages, dict), "pages 要传「地址 → 页面状态」的字典"
@@ -4013,16 +4012,16 @@ class _ScriptedSession:
         # v0.13.42：``Storage.getCookies``（F12 面板那一族读法）的替身答案。
         # 真会话里 ``read_all_cookies`` 已经是它和 ``Network.getAllCookies`` 的并集，
         # 替身也照办 —— 分区饼干（CHIPS）只在 ``Storage`` 那一读里出现，替身要是
-        # 不并，新用例就演不出真机的形状。
+        # 不并，新用例就演不出实际运行环境的形状。
         self.storage_cookies: list[dict] = []
         self.read_storage_error: Exception | None = None
         self.storage_cookie_reads: int = 0
         # v0.13.47：同一只浏览器里**别的罐**（浏览器上下文的 id → 那一份的饼干表）。
         # cookie 按 BrowserContext 分开存（无痕窗、Edge 的「工作区」），默认那位不是
-        # 全部 —— 真机 复现记录/复现记录 的死结就卡在「F12 有、程序没有」上。
+        # 全部 —— 实际复现时的死结就卡在「F12 有、程序没有」上。
         self.context_cookies: dict[str, list[dict]] = {}
         # v0.13.30：页面内 fetch 与浏览器自报 UA 的替身答案。
-        # ``fetch_pages`` 是「地址 → fetch 响应」；没登记的地址 raise —— 真机上对应
+        # ``fetch_pages`` 是「地址 → fetch 响应」；没登记的地址 raise —— 实际运行中对应
         # 「这一页 fetch 根本没送出去」（CSP、换文档），让 _fetch_in_page 吞成 None。
         self.fetch_pages: dict[str, dict] = {}
         self.user_agent = ""
@@ -4082,7 +4081,7 @@ class _ScriptedSession:
             raise self.read_storage_error
         if browser_context_id:
             # v0.13.47：浏览器级那一读问的是**别的罐**（浏览器上下文）。替身默认一份
-            # 额外的罐都没有 —— 想演真机 复现记录/复现记录 那种「F12 有、程序没有」的
+            # 额外的罐都没有 —— 想演实际运行时复现 那种「F12 有、程序没有」的
             # 形状，就自己往 context_cookies 里塞一份。
             return [dict(item) for item in self.context_cookies.get(browser_context_id, [])]
         return list(self.storage_cookies)
@@ -4196,7 +4195,7 @@ def test_fetch_leaf_cookie_goes_to_the_cookie_list_when_the_user_is_elsewhere() 
 def test_fetch_leaf_cookie_follows_the_sites_own_jump_page() -> None:
     """站点自己的「跳转提示」页：跟着它跳，而不是把它的 HTML 当结果。
 
-    真机实测：请求 ``Member/User/Cookie/index.html`` 会回一张 1569 字节的
+    运行环境实测：请求 ``Member/User/Cookie/index.html`` 会回一张 1569 字节的
     ``<title>跳转提示</title>`` 页面，真正的落地页写在那张页面的 ``a#href`` 里，
     由页面自己的脚本等 3 秒再 ``location.href = href`` —— **不是** HTTP 重定向、
     也**不是** meta refresh，所以在页面里 ``fetch`` 永远走不到那一跳（v0.13.15 就卡在这）。
@@ -4218,7 +4217,7 @@ def test_fetch_leaf_cookie_follows_the_sites_own_jump_page() -> None:
 def test_fetch_leaf_cookie_reports_the_jump_back_to_the_login_page() -> None:
     """跟着跳转页落回登录页：既要报 navigated（界面层靠它缓一缓），也要说清是登录没成。
 
-    真机上匿名走这一步就是这条：开「饼干」页 → 站点把页面跳到 ``Member/User/Index/login.html``。
+    实际运行中匿名走这一步就是这条：开「饼干」页 → 站点把页面跳到 ``Member/User/Index/login.html``。
     ``navigated`` 报错会让界面层以为「没动过用户的页面」，于是每 5 秒重来一次 —— 用户的标签页
     会被反复拽走，而窗口上什么原因都没写。
     """
@@ -4289,7 +4288,7 @@ def test_fetch_leaf_cookie_falls_back_to_the_page_text_of_the_export_view() -> N
 class _SiteHoppingSession(_ScriptedSession):
     """站点自己的倒计时页：读第一眼只能看到「等待时间」，跳完之后才轮到落地页。
 
-    真机现场（用户 复现记录）：点下「应用」之后站点回的是它自己的倒计时页
+    运行环境现场（复现现象）：点下「应用」之后站点回的是它自己的倒计时页
     （「饼干切换成功!」+「页面自动跳转 等待时间：1」），那一页上既没有 ``a#href`` 也没有
     meta refresh —— 那是一跳**只能等**的跳转，读一眼是看不到目标的。
     """
@@ -4327,11 +4326,11 @@ def _countdown_state(url: str) -> dict:
 
 
 def test_fetch_leaf_cookie_waits_for_the_sites_own_countdown_page(monkeypatch) -> None:
-    """站点回的是它自己的倒计时页时要**等它跳**，不能读一眼就走（用户 复现记录）。
+    """站点回的是它自己的倒计时页时要**等它跳**，不能读一眼就走（复现现象）。
 
     0.13.20 只读一眼页面状态：看不到 ``a#href`` 就判定「没什么可等的」，紧接着把标签页
     拖去导出页 —— 站点自己那一跳永远没发生，userhash 也就永远没种上，界面上只剩一句
-    「还没登录」一路到超时（用户截图里标签页正停在那一页上）。
+    「还没登录」一路到超时（界面截图里标签页正停在那一页上）。
     """
     monkeypatch.setattr(bl, "NAVIGATE_POLL", 0.01)
     switch_url = f"{bl.COOKIE_SITE}/Member/User/Cookie/switchTo/id/aaa.html"
@@ -4373,7 +4372,7 @@ def test_fetch_leaf_cookie_gives_up_on_a_countdown_page_that_never_lands(monkeyp
 
 
 class _LateJarSession(_ScriptedSession):
-    """饼干罐慢半拍：第 N 次读才出现 userhash（真机上就是落地那一跳的响应到得晚）。"""
+    """饼干罐慢半拍：第 N 次读才出现 userhash（实际运行中就是落地那一跳的响应到得晚）。"""
 
     def __init__(self, put_on_read: int, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -4511,7 +4510,7 @@ def test_read_site_cookies_raises_so_the_caller_can_say_what_happened() -> None:
     """会话断了就抛（v0.13.23）：界面层要把这句话原样写进提示和运行日志。
 
     以前这里吞成空列表，界面层把「读不出来」和「罐里没登录」当成同一件事，
-    HTTP 那条路一声不响地被跳过 —— 用户截图里只剩 CDP 那句「还没登录」（复现记录）。
+    HTTP 那条路一声不响地被跳过 —— 界面截图里只剩 CDP 那句「还没登录」（复现现象）。
     """
 
     class Broken:
@@ -4534,7 +4533,7 @@ def test_read_site_cookies_keeps_an_empty_jar_as_an_empty_list() -> None:
 def test_read_site_cookies_merges_what_the_address_filtered_read_missed() -> None:
     """v0.13.29：按地址那读漏掉的 userhash，要靠整罐读补回来。
 
-    真机上的情形（2026-10-02 四张截图）：F12 的 Application 面板里 userhash
+    实际运行中的情形（2026-10-02 四张截图）：F12 的 Application 面板里 userhash
     明明白白在罐里，``Network.getCookies`` 却怎么问都不回它 —— 对话框名单里
     从头到尾没有 userhash，而用户拿同一块饼干发串发得出去。过滤维度定位不
     出来，那就两读都问：按地址的照旧，整罐的补漏。
@@ -4603,8 +4602,8 @@ def _partitioned_userhash(value: str = "D-9691%04%02abc", top: str = "https://ww
 def test_read_all_cookies_merges_the_storage_read_for_partitioned_cookies() -> None:
     """v0.13.42：``Storage.getCookies`` 是 F12 那一族的读法，与整罐读各问一次再并起来。
 
-    真机 复现记录：同一扇窗的 F12「应用程序 → Cookie」里躺着 ``userh…``（70 字节），
-    对账行却写 ``全罐=2``、``原始userhash=无`` —— 某一条读法漏了（真机复验里，按地址
+    实际运行中：同一扇窗的 F12「应用程序 → Cookie」里躺着 ``userh…``（70 字节），
+    对账行却写 ``全罐=2``、``原始userhash=无`` —— 某一条读法漏了（实际环境验证里，按地址
     读就是会漏掉带 ``Partitioned`` 的饼干；v0.13.44 复核：``Network.getAllCookies``
     在本机 Edge 上读得到，并集留着的理由是不赌浏览器版本与实现差异）。
     现在两读并起来，去重键带上分区键。
@@ -4666,7 +4665,7 @@ def test_read_all_cookies_keeps_two_partitions_of_one_name_apart() -> None:
 def test_read_site_cookies_takes_a_userhash_only_the_storage_read_sees() -> None:
     """v0.13.42 的整条链：只在 ``Storage.getCookies`` 里的 userhash 照样进合并罐、被认出来。
 
-    真机 复现记录 的形状就是「F12 有、三条老读法全无」——F12 走的就是 Storage 这一族。
+    复现时的形状就是「F12 有、三条老读法全无」——F12 走的就是 Storage 这一族。
     """
     session = _ScriptedSession(
         cookies=[], url=bl.COOKIE_SITE + "/Member/User/Cookie/index.html"
@@ -4725,9 +4724,9 @@ def test_parse_document_cookie_keeps_equals_inside_values() -> None:
 def test_read_site_cookies_adds_the_page_js_view_when_cdp_reads_miss_it() -> None:
     """第四读（v0.13.34）：三条 CDP 读法都漏了、可页面 JS 看得见 —— 照样进合并罐。
 
-    真机 复现记录：用户在被盯窗口（棕色横条那扇）里 F12 看得见 userhash，
-    程序按地址/整罐两读却报「浏览器里还是没有 userhash」。本机探针
-    （_scratch/probe_jar_read_v1334.py）证明 CDP 管道对任何 flag 组合都读得到，
+    实际运行中：用户在被盯窗口（棕色横条那扇）里 F12 看得见 userhash，
+    程序按地址/整罐两读却报「浏览器里还是没有 userhash」。探针
+    （诊断探针）证明 CDP 管道对任何 flag 组合都读得到，
     剩下的偏差只能出在存储上下文 —— document.cookie 是**页面自己的视角**，
     也就是 F12 的视角，把它接进合并罐，那种偏差当场被兜住。
     """
@@ -4807,8 +4806,8 @@ def test_jar_forensics_lines_up_the_reads_and_never_leaks_values() -> None:
 def test_jar_forensics_names_the_jar_and_a_userhash_the_domain_filter_ate() -> None:
     """v0.13.35 的三新段：罐名、全罐数、以及**没滤域**的原始 userhash 长相。
 
-    真机 复现记录 定不了案的缺口：四路名单一致，可「读的是哪份罐」「域过滤有没有
-    把 userhash 吃掉」「饼干是不是 CHIPS 分区（探针没测过的读法差异）」都没记录。
+    实际运行中 定不了案的缺口：四路名单一致，可「读的是哪份罐」「域过滤有没有
+    把 userhash 吃掉」「饼干是否 CHIPS 分区（探针没测过的读法差异）」都没记录。
     这一段把三样都写进同一行 —— 照样只报属性，值一个字符都不写。
     """
     session = _ScriptedSession(
@@ -4843,7 +4842,7 @@ def test_jar_forensics_reports_broken_reads_instead_of_raising() -> None:
 
 
 def test_jar_forensics_shows_every_attachable_tab_right_now() -> None:
-    """页= 段（v0.13.36，真机 复现记录）：此刻浏览器里有几页、各挂在哪个地址。
+    """页= 段（v0.13.36，实际运行中）：此刻浏览器里有几页、各挂在哪个地址。
 
     僵局正是「可见窗口显示已登录的饼干页、对账里 挂= 却一直是 login.html」——
     光一个 挂= 分不出是双标签顺序翻转还是别的。把整页清单并排写进同一行，
@@ -4877,7 +4876,7 @@ def test_jar_forensics_says_so_when_the_tab_reader_is_missing() -> None:
 def test_jar_forensics_says_which_window_the_program_is_talking_to() -> None:
     """接= 段（v0.13.37）：对账行点名程序接的是哪一扇——端口一亮，两罐立分。
 
-    真机 复现记录：肉眼那扇窗和对账那扇窗是两个进程，光看罐名（都叫 browser-profile）
+    实际运行中：直接那扇窗和对账那扇窗是两个进程，光看罐名（都叫 browser-profile）
     分不出在读谁。连接标签由界面层从 browser.port 拿来传入——CDPSession 自己不知道。
     """
     session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
@@ -4890,12 +4889,12 @@ def test_jar_forensics_says_which_window_the_program_is_talking_to() -> None:
 def test_jar_forensics_names_every_other_window_when_asked() -> None:
     """逐窗= 段（v0.13.45）：把**每一扇**活窗口里看见了什么名字并排写进对账行。
 
-    真机 复现记录：同一扇挂着程序横幅的窗，F12 有 三条饼干含 userhash，对账行却一路
+    实际运行中：同一扇挂着程序横幅的窗，F12 有 三条饼干含 userhash，对账行却一路
     只报 PHPSESSID。这一行把别的窗口的名单也摆出来，「同一只罐读漏了」和
     「本来就两只罐」从此一张截图分得清。
 
-    v0.13.46（复现记录 的第二张截图）：这一段**总是在**（没有别的活窗就写「没有别的活窗口」）
-    —— 真机上「逐窗=」一句都没有，用户和程序都读不出「是没别的窗，还是这一手没跑」。
+    v0.13.46（复现过程中的第二张截图）：这一段**总是在**（没有别的活窗就写「没有别的活窗口」）
+    —— 实际运行中「逐窗=」一句都没有，用户和程序都读不出「是没别的窗，还是这一手没跑」。
     """
     session = _ScriptedSession(cookies=[], url=bl.LOGIN_URL)
     line = bl.jar_forensics(
@@ -4912,7 +4911,7 @@ def test_jar_forensics_names_every_other_window_when_asked() -> None:
 def test_jar_forensics_names_the_mute_and_shared_jar_hints() -> None:
     """哑窗=／同罐进程= 两段（v0.13.46）：把「另一扇窗」剩下的两种形状摆出来。
 
-    真机 复现记录：程序读的那只罐里只有一条 PHPSESSID、也没有别的活窗 —— 而用户在同一个
+    实际运行中：程序读的那只罐里只有一条 PHPSESSID、也没有别的活窗 —— 而用户在同一个
     目录名的另一扇窗里明明登着。两种形状只有这两段能分开：那扇窗的调试端口已经死了
     （``哑窗=``，端口普查看不见它、进程还在），或者还有第二个实例在共用这只罐
     （``同罐进程=N``，多于 1 就是它）。查不到就不写这两段，别写个空壳糊弄读者。
@@ -4934,7 +4933,7 @@ def test_named_userhash_entries_separates_present_from_plausible() -> None:
     """「有 userhash 但值长得不对」和「根本没有」要能分开（v0.13.29）。
 
     以前两者在界面上都写成「还没有 userhash」，名单里明明列着 userhash 却这么
-    报，用户截图里自相矛盾 yet 查不出程序看见了什么。
+    报，界面截图里自相矛盾 yet 查不出程序看见了什么。
     """
     short = {"name": "userhash", "value": "ab", "domain": ".nmbxd1.com"}
     cookies = [short, {"name": "userhash", "value": "别家的", "domain": ".example.com"}]
@@ -5038,7 +5037,7 @@ def test_apply_leaf_cookie_over_http_builds_its_client_with_the_browsers_ua(
 ) -> None:
     """自建客户端那一支要把浏览器 UA 递给 :class:`XdaoClient`（v0.13.30）。
 
-    真机 复现记录/复现记录：整罐重放被弹回登录页、同一时刻浏览器里回帖成功 —— 差的不是
+    实际运行中：整罐重放被弹回登录页、同一时刻浏览器里回帖成功 —— 差的不是
     会话，是**嘴**。留空时仍传 ``None``：客户端按缺省 UA 走（老行为，替身与单测不变）。
     """
     built: dict = {}
@@ -5164,7 +5163,7 @@ def test_apply_leaf_cookie_in_browser_reads_the_jar_when_the_export_page_stays_s
 def test_apply_leaf_cookie_in_browser_says_when_the_session_bounces_to_login() -> None:
     """fetch 也被弹回登录页 —— 这和 HTTP 重放被弹回是**不同**的诊断（会话真死了）。
 
-    话术要直说「这个窗口里的登录没成」：复现记录 里用户看到「请重新登录」时已经在登录页
+    话术要直说「这个窗口里的登录没成」：复现现象 里用户看到「请重新登录」时已经在登录页
     上打转，两条路的话摆在一起才分得清是嘴的问题还是会话的问题。
     """
     base = bl._cookie_action_base()
@@ -5465,13 +5464,13 @@ def _remove_tree(path: Path, budget: float = 20.0) -> None:
     reason="需要本机装了浏览器，并且显式设 XDAO_BROWSER_TEST=1 才跑（默认跳过）",
 )
 def test_real_browser_reports_a_devtools_port() -> None:
-    """真开一次浏览器，确认整条启动路径在这台机器上走得通。
+    """真开一次浏览器，确认整条启动路径在当前环境上走得通。
 
     用户目录用系统临时目录、跑完删掉：不留长期痕迹，也不会跟用户自己开着的
     浏览器抢 profile 锁。界面层用的是同一套办法。
-    连的是 ``/json/list`` 的 HTTP 地址（界面层就是这么给的），顺带钉住两件事：
+    连的是 ``/json/list`` 的 HTTP 地址（界面层就是这么给的），同时钉住两件事：
     没登录时读饼干要优雅地返回 None（``navigate=False``：带导航那条要真联网，
-    留给真机核验），临时目录要能被删掉。
+    留给运行环境核验），临时目录要能被删掉。
     """
     assert _REAL_BROWSER is not None
     profile = Path(tempfile.mkdtemp(prefix="xdao-browser-login-"))
@@ -5492,10 +5491,10 @@ def test_real_browser_reports_a_devtools_port() -> None:
             assert site is not None, targets
             with bl._new_session(list_url, timeout=20.0) as session:
                 # 必须挂在站内那个标签上：挂到浏览器自己的页面（空标签、自带的对话框页）上时，
-                # 脚本里的 fetch 是跨源请求，饼干一律读不到 —— 真机上就是这么发现
+                # 脚本里的 fetch 是跨源请求，饼干一律读不到 —— 实际运行中就是这么发现
                 # edge://sync-confirmation-dialog/ 排在登录页前面的。
                 assert session._ws_url == site["webSocketDebuggerUrl"]
-                # 文档加载到哪一步取决于这台机器连不连得出去，不拿它当断言：
+                # 文档加载到哪一步取决于当前环境连不连得出去，不拿它当断言：
                 # 目标列表里报的是「待加载的地址」，连不上时文档会一直停在 about:blank。
                 # 但挂错页面（自己浏览器里的 edge:// 页面）必须被这条挡住。
                 href = session.current_url()
@@ -5540,7 +5539,7 @@ def test_profile_of_process_gives_up_quietly_outside_windows(monkeypatch):
 def test_profile_of_process_reads_the_command_line_of_that_pid(monkeypatch):
     """Windows 上要真去问一句 CIM，并只认回显里那一个 ``--user-data-dir``（v0.13.51）。
 
-    真机 复现记录 的教训：``used_profile`` 是程序**打算**用的候选目录，浏览器实际在用的
+    复现时的教训：``used_profile`` 是程序**打算**用的候选目录，浏览器实际在用的
     可能是 %TEMP% 里那只一次性罐 —— 命令行才是实据。
     """
     monkeypatch.setattr(bl, "_IS_WINDOWS", True)
@@ -5562,7 +5561,7 @@ def test_profile_of_process_reads_the_command_line_of_that_pid(monkeypatch):
     assert bl.profile_of_process(9911) == "C:\\Temp\\xdao-export-browser-profile-7-1"
     assert seen and "ProcessId=9911" in seen[0][-1], seen
     # v0.14.0：脚本开头必须钉住 UTF-8 输出 —— 中文 Windows 上 powershell 默认按 GBK
-    # 回话，按 UTF-8 解码会把带中文的资料目录变成乱码（真机详单里的「罐路径」段）。
+    # 回话，按 UTF-8 解码会把带中文的资料目录变成乱码（实际运行环境详单里的「罐路径」段）。
     assert "OutputEncoding" in seen[0][-1], seen
 
 
@@ -5593,7 +5592,7 @@ def test_the_witness_line_names_every_jar_and_every_page(monkeypatch):
 
 
 def test_the_witness_line_marks_partitioned_cookies(monkeypatch):
-    """带分区（CHIPS）的那类要单独点出来：真机上它常是「F12 看得见、按地址读看不见」那块。"""
+    """带分区（CHIPS）的那类要单独点出来：实际运行中它常是「F12 看得见、按地址读看不见」那块。"""
     monkeypatch.setattr(
         bl,
         "browser_level_jars",
@@ -5655,7 +5654,7 @@ def test_userhash_is_looked_for_in_the_page_storage():
 def test_decode_ps_output_falls_back_to_the_system_code_page():
     """powershell 被重定向时可能按系统代码页（中文 Windows 是 GBK）回话。
 
-    v0.13.51 真机详单里带中文的资料目录回来是 ``D:\С����\…`` 这种乱码；
+    v0.13.51 运行环境详单里带中文的资料目录回来是 ``D:\С����\…`` 这种乱码；
     脚本里钉 ``[Console]::OutputEncoding`` 不总被 5.1 听（stdout 重定向时），
     所以解码这一侧再兜一手：UTF-8 解出替换符就按 GBK 再解一次。
     """
@@ -5672,7 +5671,7 @@ def test_decode_ps_output_keeps_utf8_and_plain_text():
 
 
 def _fake_window(root: Path, name: str, *, port: int = 9666, age: float = 0.0) -> Path:
-    """在 ``root`` 下造一个「像我们开的浏览器资料目录」（端口文件 + 可选年龄）。"""
+    """在 ``root`` 下造一个「像项目开的浏览器资料目录」（端口文件 + 可选年龄）。"""
     path = root / name
     path.mkdir(parents=True, exist_ok=True)
     port_file = path / "DevToolsActivePort"
@@ -5772,7 +5771,7 @@ def test_wait_for_attachable_window_gives_up_at_the_deadline(
 def test_process_side_census_does_not_reap_a_window_that_is_still_starting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """刚启动、端口还没答话的窗不许当僵尸收掉（真机「第一扇莫名关掉」的根因，v0.17.3）。"""
+    """刚启动、端口还没答话的窗不许当僵尸收掉（运行环境「第一扇莫名关掉」的根因，v0.17.3）。"""
     starting = _fake_window(tmp_path, "browser-profile-11-22", age=1.0)
     monkeypatch.setattr(bl, "program_profile_dirs", lambda profile: [starting])
     monkeypatch.setattr(bl, "_profile_in_use", lambda path: False)
@@ -5782,13 +5781,13 @@ def test_process_side_census_does_not_reap_a_window_that_is_still_starting(
     live: list[Path] = []
     reaped = browser._adopt_process_side_findings(live)
     assert reaped == [] and killed == []
-    assert live == [starting], "正在启动的窗补进接手名单，交给宽限重探去等"
+    assert live == [starting], "将启动中的窗口加入候选列表，等待宽限期后再次探测"
 
 
 def test_stop_reaps_an_adopted_window_by_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """接手的窗不是我们 Popen 出来的：收尾要按资料目录把进程收掉（v0.17.3）。"""
+    """复用的窗口并非项目通过 Popen 启动：收尾要按资料目录把进程收掉（v0.17.3）。"""
     killed: list[Path] = []
     monkeypatch.setattr(bl, "kill_profile_processes", lambda path: killed.append(path))
     browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
@@ -5816,7 +5815,7 @@ def test_start_skips_the_live_window_census_when_attach_live_is_off(
 def test_start_attaches_to_a_live_window_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """登录这条路默认仍然先找活着的程序窗口接手（v0.13.33 的行为不变）。"""
+    """登录这条路默认仍然先找活着的程序复用窗口（v0.13.33 的行为不变）。"""
     browser = bl.LoginBrowser(bl.BrowserInfo("Edge", "msedge.exe"), tmp_path / "profile")
     monkeypatch.setattr(browser, "_try_attach_live", lambda: browser)
     assert browser.start() is browser
@@ -5850,7 +5849,7 @@ def test_sweep_orphan_profiles_kills_quiet_temp_windows_and_keeps_logged_in_ones
 class _HandOverPopen:
     """假 Popen：启动进程立刻以退出码 0 退出，窗口交给别的进程，端口照样答话。
 
-    真机 2026-10-18 现场（用户只点了一次、16 秒里桌上起了 5 扇窗）：Edge 把页面
+    运行环境 2026-10-18 现场（用户只点了一次、16 秒里桌上起了 5 扇窗）：Edge 把页面
     交给真正承载窗口的那个进程、``Popen`` 记下的启动进程先干净退出 —— 而
     ``_launch`` 只认「进程还活着」，于是换下一个候选目录又开一扇。候选表有五个，
     桌上就有五扇。
@@ -5970,7 +5969,7 @@ def test_every_failed_attempt_leaves_a_line_for_the_log(
     assert len(notes) == expected, "Edge 试了几个候选，就该留几行（一扇一行）"
     assert notes[0].startswith("第 1 扇没成：Edge 开在"), notes[0]
     assert notes[-1].startswith(f"第 {expected} 扇没成：Edge 开在"), notes[-1]
-    assert any("退出码 21" in note for note in notes), "原因要写清楚，别只写「失败」"
+    assert any("退出码 21" in note for note in notes), "应说明具体退出原因。"
     assert "临时资料目录" in notes[0], "第一扇开在新建的临时目录上"
     assert str(profile) in notes[1], "第二扇开在配置目录那份持久资料目录上"
 
@@ -5992,7 +5991,7 @@ def test_a_good_launch_leaves_no_attempt_notes(
 
 
 # ---------------------------------------------------------------- v0.22.5
-# 覆盖率体检：下面每一组都钉住一条**只在真机或异常路径上才会走到**的分支。
+# 覆盖率体检：下面每一组都钉住一条**只在实际运行环境或异常路径上才会走到**的分支。
 # 它们的共同点是「出错也不许往外抛」—— 这些函数都在普查、清扫、兜底的位置上，
 # 抛一次就会把登录正路拦下来，所以在用例里把异常真的喂进去。
 
@@ -6043,7 +6042,7 @@ def test_windows_default_exe_gives_up_when_the_prog_id_is_blank(
 def test_windows_default_exe_takes_the_bare_command_when_it_has_no_quotes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """命令行不带引号时取第一个空格前的部分（真机上真有这么写的 ProgId）。"""
+    """命令行不带引号时取第一个空格前的部分（实际运行中真有这么写的 ProgId）。"""
     prog_id = "ChromeHTML"
     _fake_registry(
         monkeypatch,
@@ -6061,7 +6060,7 @@ def test_windows_default_exe_takes_the_bare_command_when_it_has_no_quotes(
 def test_ordered_browsers_keeps_the_order_when_the_default_is_not_installed(
     artifacts_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """默认浏览器是 Edge、可这台机器只装了 Chrome 与 Chromium：顺序原样不动。"""
+    """默认浏览器是 Edge、可当前环境只装了 Chrome 与 Chromium：顺序原样不动。"""
     pf = artifacts_dir / "pf"
     chrome = _touch(pf, r"Google\Chrome\Application\chrome.exe")
     chromium = _touch(pf, r"Chromium\Application\chrome.exe")
@@ -6168,7 +6167,7 @@ def test_remove_dir_gives_up_after_the_third_try(
 def test_sweep_orphan_profiles_spares_a_window_that_just_started(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """宽限内的目录可能是本次处理正在开的窗：一个都不动、也不去问罐。"""
+    """宽限内的目录可能是当前批次正在开的窗：一个都不动、也不去问罐。"""
     temp = tmp_path / "temp"
     temp.mkdir()
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
@@ -6250,7 +6249,7 @@ def test_program_profile_dirs_reports_the_folder_from_the_process_table(
     lines = [
         "1111\t\"msedge.exe\" --user-data-dir=\"C:\\Users\\me\\AppData\\Local\\Other\\x\"",
         "2222\t\"msedge.exe\" --user-data-dir=\"" + str(profile) + "\"",
-        "没有 TAB 的一行（真机上不会出现，只在输出被截断时见过）",
+        "没有 TAB 的一行（正常输出中不会出现，截断输出可能缺少该字段）",
         "3333\t\"msedge.exe\" --user-data-dir=\"\"",
     ]
     payload = ("\n".join(lines) + "\n").encode("utf-8")
@@ -6456,7 +6455,7 @@ def test_browser_jar_witness_returns_empty_when_no_jar_could_be_read(
 
 
 class _BlindSession(_ScriptedSession):
-    """地址读不出来的会话（真机上标签正在换文档时会这样）。"""
+    """地址读不出来的会话（实际运行中标签正在换文档时会这样）。"""
 
     def current_url(self) -> str:
         raise RuntimeError("页面正在换文档")
@@ -6484,7 +6483,7 @@ def test_apply_leaf_cookie_in_browser_says_when_a_jump_page_could_not_be_fetched
                 '<a id="href" href="index.html?page=2"></a></html>'
             ),
         },
-        # 目标页故意不登记 —— 真机上就是这一趟 fetch 被 CSP 或换文档吞掉
+        # 目标页故意不登记 —— 实际运行中就是这一趟 fetch 被 CSP 或换文档吞掉
     }
     result = bl.apply_leaf_cookie_in_browser(session)  # type: ignore[arg-type]
     assert result.value is None
@@ -6549,7 +6548,7 @@ def test_apply_leaf_cookie_in_browser_says_when_nothing_holds_a_value() -> None:
 
 # ---------------------------------------------------------------- v0.22.5b
 # 第二轮：把覆盖率报告里还剩的「失败兜底 / 读不到就当没有」那一族补上。
-# 全是只读或打桩替身的用例，不碰真机、不联网。
+# 全是只读或打桩替身的用例，不碰实际运行环境、不联网。
 
 
 def test_program_profile_dirs_does_nothing_when_the_census_is_off(
@@ -6935,7 +6934,7 @@ def test_cleanup_temp_profile_retries_before_giving_up(
 def test_adopt_process_side_findings_skips_a_folder_it_already_knows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """端口普查已经认下的目录，进程侧又报一遍：不重复塞进接手名单。"""
+    """端口普查已经认下的目录，进程侧又报一遍：不重复塞进复用候选名单。"""
     info = bl.BrowserInfo("Edge", "C:/x/msedge.exe")
     profile = tmp_path / "browser-profile"
     browser = bl.LoginBrowser(info, profile, timeout=5.0)

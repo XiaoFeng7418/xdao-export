@@ -1,28 +1,15 @@
-"""用 GitHub Git Data API 把本地提交推送到远端。
+"""通过 GitHub Git Data API 创建提交，适用于需要 API 传输的场景。
 
-为什么还需要它：本机 git 的 HTTPS 传输长期不可用（schannel 拿不到 TLS 凭据、
-openssl 连接被重置），但 gh 的 API 通道一直正常，于是改为直接调用 Git Data API
-重建对象。**2026-09-30 起本机配好了代理（127.0.0.1:7890），`git push` 已经可用**，
-日常推送优先用 git；本脚本保留给代理不可用时的备用通道，也用于需要逐对象校验的场景。
-
-注意：走 API 创建提交时，远端对象是 GitHub 按收到的字段重新生成的，**对象字节由
-GitHub 决定**（它保留我们送上去的时区偏移，但接口读回来的日期一律被改写成 UTC）。
-所以：
-- 本地对象的 sha **能**逐字节复算校验（`git cat-file commit` 原文 + `git hash-object`）；
-- 远端对象的 sha **无法**从接口返回值复算 —— 原始偏移量（本机 `+0800`）在接口里
-  已经丢失，而偏移量是提交对象的一部分。这不是"远端历史被篡改"，只是写法不同。
-- **提交说明的结尾换行也是对象的一部分，而且本地历史里两种形态都有**：多数提交
-  以 `\n` 收尾，少数没有。所以消息必须用 `git cat-file commit` 原样取，
-  不能用 `git log --pretty=%B`（它会擅自补一个换行）。
-- 想让两边 sha 完全一致，只能用 `git push` 把本地对象原样送上去（代理已配好）。
+GitHub 根据 API 字段重新生成远端 Git 对象。日期在读取时统一转换为 UTC，因此远端对象
+可能无法根据 API 返回值复算为与本地完全相同的 SHA。提交消息必须从原始 commit 对象读取，
+以保留末尾换行；``git log --pretty=%B`` 会补入换行，不能用于此处。
 
 用法：
     python tools/push_via_api.py --repo XiaoFeng7418/xdao-export --branch master
     python tools/push_via_api.py --repo ... --branch main --dry-run
 
-`--dry-run` 不会创建提交、也不会动分支引用，但为了核对「重建出来的树与本地一致」，
-它**仍会在远端留下未引用的 blob/tree 对象**（看不到、不影响任何分支，GitHub 会自行
-回收）—— 所以它不是"完全不写远端"，别把它当只读命令用。
+``--dry-run`` 不创建提交或更新分支引用，但会在远端创建未引用的 blob/tree 对象；
+GitHub 会在之后回收这些对象，因此该选项仍会产生远端写入。
 """
 
 from __future__ import annotations
@@ -67,7 +54,7 @@ def gh_token() -> str:
 
 def api(token: str, method: str, path: str, payload: dict | None = None,
         retries: int = 4) -> dict:
-    """调用 GitHub API。网络抖动在本机很常见，因此默认重试若干次。
+    """调用 GitHub API。请求失败时按策略重试，以处理暂时性网络异常。
 
     重试与退避的实现在 :func:`xdao.github_api.request_bytes`；这里保留原先的行为：
     ``retries`` 仍是**重试次数**（总尝试 ``retries + 1`` 次）、等待曲线 ``min(20, 2×第几次)``、
@@ -195,7 +182,7 @@ def _same_instant(a: str, b: str) -> bool:
 def git_ident(date_text: str, name: str, email: str) -> str:
     """把任意写法的时间转成 git 提交对象里的 `{epoch} {±HHMM}` 写法。
 
-    实测（2026-09-30）：GitHub 的提交对象**会保留**我们送上去的偏移量，
+    实测（2026-09-30）：GitHub 的提交对象**会保留**项目送上去的偏移量，
     例如送 `2026-09-05T22:44:23+08:00` 存下来就是 `1788619463 +0800`；
     但 **接口读回来的 date 一律被改写成 `...Z`**。所以偏移量从接口那边
     是拿不回来的 —— 这也正是「树一样、sha 不一样」无法从接口侧弥合的根因。
@@ -281,7 +268,7 @@ def _sha_of(raw: bytes) -> str:
 
 
 def diagnose_commit_mismatch(commit: dict, tree: str, remote: dict, created: str) -> str:
-    """弄清"树一样但 sha 不一样"到底差在哪。
+    """弄清"树一样但 sha 不一样"实际差在哪。
 
     两种情况要分开说，不然就是在猜：
       ① 本地这份能用「本地字段 + 本地父链」复算出本地 sha → 本地对象没毛病，
@@ -318,9 +305,9 @@ def diagnose_commit_mismatch(commit: dict, tree: str, remote: dict, created: str
         return f"远端对象可复算，差异在：{delta}"
     return (
         "远端对象无法用接口返回值复算：接口返回的日期被改写成 UTC（`...Z`），"
-        "原始时区偏移（本机是 `+0800`）丢失，而偏移量是提交对象的一部分。"
+        "原始时区偏移丢失，而偏移量是提交对象的一部分。"
         "接口通道因此无法让两边 sha 对齐，需要用 `git push` 把本地对象原样送上去"
-        "（本机已有可用代理，见文件头说明）"
+        "；网络受限时需按环境配置代理。"
     )
 
 
@@ -356,7 +343,7 @@ def pushed_count_from_git(head: str, total: int) -> int | None:
 
 
 #: 从远端顶端往回「抽检」多少条父链。GitHub 每个提交对象要一次 HTTP 请求，
-#: 本机实测 2.2 秒/次（2026-10-25），逐条校验两百多条提交要八分钟 —— 所以只抽检
+#: 已验证 2.2 秒/次（2026-10-25），逐条校验两百多条提交要八分钟 —— 所以只抽检
 #: 最近几条确认没有改写，其余按 git 的祖先关系信任，靠调用的「快路」兜住常见情况。
 VERIFY_DEPTH = 4
 
@@ -366,7 +353,7 @@ def pushed_count_from_head(
 ) -> int:
     """远端顶端对应本地第几个提交：返回「本地已经推上去的提交个数」。
 
-    为什么不用 `find_pushed_prefix(local, remote_chain(...))`：`remote_chain`
+    此处不使用 `find_pushed_prefix(local, remote_chain(...))`：`remote_chain`
     只取最近 100 条，而本地历史早就超过 100 条了，于是「本地第 1 个提交」永远不在
     窗口里，匹配数恒为 0 —— 每次推送都会重建全部提交、重传一千多个 blob
     （2026-10-25 实测：一次传了 1360 个 blob，耗掉一个多小时）。
@@ -666,7 +653,7 @@ def main(argv: list[str]) -> int:
         else:
             # 树相同但 sha 不同：以前一律归因为"GitHub 规范化了时区"，
             # 这是错的——真正的根因多半是对象字节不一致（例如消息末尾换行被吃掉）。
-            # 这里逐字段复算 sha，指出到底差在哪，避免把 bug 藏起来。
+            # 这里逐字段复算 sha，指出实际差在哪，避免把 bug 藏起来。
             reason = diagnose_commit_mismatch(commit, tree_sha, result, created)
             print(
                 f"    提交 {created[:8]}（本地 {commit['sha'][:8]}，{reason}）"

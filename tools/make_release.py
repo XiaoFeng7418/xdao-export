@@ -1,6 +1,6 @@
 """创建 GitHub Release 并上传附件（走 Release 附件专用上传接口）。
 
-背景：本机 git 的 HTTPS 传输不可用，只能通过 API 维护仓库；
+本工具通过 GitHub API 管理 Release，不依赖 Git HTTPS 传输。
 Release 附件的上传接口与 Git Data API 的 blob 接口是两条不同的通道，
 附件接口更适合上传打包好的 exe。
 
@@ -57,7 +57,7 @@ def gh_token() -> str:
 
 
 def read_notes(path: Path) -> str:
-    """读发布说明，顺手扔掉文件开头的 BOM，空文件直接报错。
+    """读发布说明，同时扔掉文件开头的 BOM，空文件直接报错。
 
     说明文件常是记事本另存出来的（带 BOM）。BOM 混进 Release 正文里在页面上看不见，
     却会跟着一起发出去；空的说明更糟 —— 发版规矩要求正文里说清下的是哪个附件。
@@ -224,7 +224,7 @@ NAME_PREFIX_HINT = "vX.Y.Z：一句话说明"
 def check_release_name(tag: str, name: str) -> str:
     """检查 Release 标题的格式，返回错误文案（空串表示合格）。
 
-    为什么要有这道闸：标题只在这里一次写定，发出去之后 GitHub 按标题列版本，
+    设置该校验的原因是：标题只在这里一次写定，发出去之后 GitHub 按标题列版本，
     格式一歪和前后十几版都排不齐。合格的形状只有一种：``<tag>：<一句话>``，
     例如 ``v0.19.5：发版工具拒绝错误标题格式``。「免安装包」属于正文措辞，
     放进标题会把标题挤成一串版本号以外的信息。

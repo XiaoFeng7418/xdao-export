@@ -1,6 +1,6 @@
 """访问 GitHub 的共用层：令牌、带退避重试的请求、代理装配、git 子进程。
 
-为什么要有这个模块：同一件事原先散在各处 —— ``gh_token()`` 在四个 ``tools/`` 脚本里
+独立设置该模块的原因是：同一件事原先散在各处 —— ``gh_token()`` 在四个 ``tools/`` 脚本里
 各写了一份、带退避重试的 GitHub 请求四份（等待时长与次数还各不相同）、git 子进程封装
 三份；``xdao/updater.py`` 与 ``xdao/update_check.py`` 也各自装配过一套代理，
 ``updater`` 为了拿仓库 slug 还得反过来 import ``update_check``（依赖方向是倒的）。
@@ -228,7 +228,7 @@ def request_bytes(
     只有这一处实现，各脚本的差别全在参数里：
 
     * ``path`` 以 ``http`` 开头就原样使用，否则拼在 ``base_url`` 后面；
-    * ``payload`` 非 ``None`` 时按 JSON 发出去（顺手带上 ``Content-Type``）；
+    * ``payload`` 非 ``None`` 时按 JSON 发出去（同时带上 ``Content-Type``）；
     * ``attempts`` 是**总尝试次数**。原先各脚本的 ``retries`` 语义并不一致
       （三个是 ``retries + 1`` 次尝试，``ci_logs`` 是 ``retries`` 次），由调用方
       换算好再传，这里不去猜；

@@ -115,7 +115,7 @@ def remote_tree(repo: str, token: str, ref: str) -> dict[str, str]:
 def sha256_finding(repo: str, zip_asset: dict | None, sidecar: dict, token: str) -> tuple[str, str, str]:
     """把 ``.sha256`` 附件与它描述的 zip 对一遍，返回一条 (级别, 区域, 说明)。
 
-    这里不下载 zip（十几 MB，体检不该顺手下这么大东西），而是拿 GitHub 从上传字节
+    这里不下载 zip（十几 MB，体检不该同时下这么大东西），而是拿 GitHub 从上传字节
     算出来的 ``digest`` 比 —— 一样能说明「发布页上那份校验文件和那个包是配套的」。
     """
     area = "发布"

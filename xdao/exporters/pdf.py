@@ -10,7 +10,7 @@
 2. **CDP**（``Page.printToPDF``）：用户改了纸张/页边距/方向/缩放/背景/页码范围时走这条
    —— 命令行没有这些开关，只有 CDP 能设。
 
-为什么用浏览器而不是自己排版：中文字体、长文分页、图片缩放这些交给浏览器最稳妥，
+采用浏览器排版的依据是：中文字体、长文分页、图片缩放这些交给浏览器最稳妥，
 也不必引入任何第三方依赖（项目一直保持纯标准库）。
 
 已知限制：
@@ -324,7 +324,7 @@ def print_html_to_pdf(
 ) -> Path:
     """用 CDP 的 ``Page.printToPDF`` 渲染：只有这条路能设纸张与页边距。
 
-    为什么不用命令行：``--print-to-pdf`` 没有任何纸张/边距开关，选项只能从 CDP 传。
+    此处使用 CDP：``--print-to-pdf`` 没有任何纸张/边距开关，选项只能从 CDP 传。
     走 CDP 要先起浏览器（复用浏览器登录那条 ``LoginBrowser``），再连上它的调试端口；
     页面里的 ``document.readyState`` 变成 ``complete`` 之后才打印，否则会打出空白页。
 
@@ -365,8 +365,8 @@ def print_html_to_pdf(
             profile,
             timeout=remaining(60.0),
             start_url=source.as_uri(),
-            # v0.17.3：PDF 只要渲染结果，不显示窗口，也不接手用户开着的窗 ——
-            # 真机上这条路的窗口被当成「程序乱弹浏览器」投诉过；接手别人的窗还会
+            # v0.17.3：PDF 只要渲染结果，不显示窗口，也不复用用户开着的窗 ——
+            # 实际运行中这条路的窗口被当成「程序乱弹浏览器」报告过；复用已打开的窗口还会
             # 把它正在看的页面抢去导航成本地文件。
             headless=True,
             attach_live=False,
@@ -413,7 +413,7 @@ def _cdp_params(options: PdfOptions) -> dict:
     """把选项翻成 ``Page.printToPDF`` 的参数，并堵住一个会白选纸张的组合。
 
     ``preferCSSPageSize`` 与显式 ``paperWidth``/``paperHeight`` **不能同时出现**：
-    真机实测（见 ``_scratch/cmp_pdf_paths.py``）这种情况下浏览器改以页面 CSS 的
+    运行环境实测（见 ``_scratch/cmp_pdf_paths.py``）这种情况下浏览器改以页面 CSS 的
     ``@page size`` 为准，用户选的纸张被静默忽略；而且它还是竞态 —— 同一份 HTML、
     同一组参数连跑三次，只有 ``@page`` 还没解析完的那一次才按显式纸张出纸
     （A3＝841.92×1191.12），其余两次都出成页面里写的 A4（594.96×841.92）。

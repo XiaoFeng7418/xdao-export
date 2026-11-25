@@ -37,13 +37,6 @@ $f = 'xdao-export-v0.13.28-win64.zip'
 
 和 0.13.27 一模一样。
 
-## 关于「防替换」的实话
+## 完整性校验与签名状态
 
-`.sha256` 能证明「你下载到的字节就是 Release 里那份」，但它和 zip 放在同一个 Release 里 ——
-账号被盗时两者会一起被换，它挡不住那种情况。真要往系统层面走，只有代码签名能让 Windows
-不再显示「未知发布者」，而免费的签名（SignPath Foundation，面向开源）证书主体是
-SignPath Foundation 而不是个人网名。签名这一半在申请流程里，等有结果再单独说。
-
-**签名来源**：本项目的免费代码签名由 [SignPath.io](https://signpath.io/) 提供、证书由
-[SignPath Foundation](https://signpath.org/) 颁发（**正在申请中**）。获批之后，官方免安装包只由
-GitHub Actions 从本仓库构建后提交签名，本机打的包不会作为官方下载。
+`.sha256` 用于核对下载文件与发布页提供的摘要是否一致；校验文件与压缩包位于同一 Release，不能防止两者同时被替换。当前发布包未进行代码签名。仓库已预留 GitHub Actions + SignPath 接入流程，但尚未启用；未来满足条件后再按流程接入。

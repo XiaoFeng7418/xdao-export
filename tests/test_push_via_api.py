@@ -191,7 +191,7 @@ def test_git_date_writes_the_offset_the_way_git_does(iso, expected):
 
 
 def test_the_author_date_matches_what_git_writes(tmp_path):
-    """让真 git 自己写一个 +05:30 的提交，对照我们的写法（不是对着注释抄）。"""
+    """让真 git 自己写一个 +05:30 的提交，对照项目的写法（不是对着注释抄）。"""
     repo = make_repo(tmp_path)
     tree = git("rev-parse", "HEAD^{tree}", cwd=repo).strip()
     env = dict(GIT_ENV, GIT_AUTHOR_DATE="2026-09-05T20:14:23+05:30",

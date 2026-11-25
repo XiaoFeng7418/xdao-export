@@ -1,4 +1,4 @@
-# 依赖边界：跑这个程序到底需要什么
+# 依赖边界：跑这个程序实际需要什么
 
 这一份只回答一个问题：**把它拿到一台干净机器上，缺什么就跑不起来。**
 答案分四层——运行时（Python 包）、打包（zip 里带了什么）、外部程序（系统里
@@ -134,7 +134,7 @@ python -m PyInstaller --onedir --windowed --clean --noconfirm
 PyInstaller 静态扫描看不到（历史上有过一版包里没有这个模块、`--pdfdiag` 直接
 `ModuleNotFoundError`）。`tests/test_build_zip.py` 有两条用例把这个参数钉住。
 
-### 4.2 免安装包里到底有什么
+### 4.2 免安装包里实际有什么
 
 `v0.22.0` 的 zip 解开后：**957 个文件、28,047,691 字节**。
 
@@ -196,7 +196,7 @@ Tcl/Tk 图形库（BSD 风格许可）与 PyInstaller 启动器（GPL + 例外�
 
 实际解开 `v0.22.0` 的 zip 之后，全包里只有两份许可文件：
 
-- 包根 `LICENSE.txt`（1,078 字节，是本项目自己的 MIT 全文）；
+- 包根 `LICENSE.txt`（1,078 字节，是本程序管理的 MIT 全文）；
 - `_internal/_tk_data/license.terms`（2,307 字节，Tcl/Tk 的许可）。
 
 **Python 解释器的 PSF 许可、PyInstaller 启动器的许可都没有随包。**
@@ -213,7 +213,7 @@ Tcl/Tk 图形库（BSD 风格许可）与 PyInstaller 启动器（GPL + 例外�
 
 1. **把 `settings._apply` 里的 `from .theme import PALETTES` 与
    `_ui_font_scale` 里的 `from .theme import normalize_font_scale` 换成不依赖
-   Tk 的实现**（配色名集合与字号归一化都是纯数据／纯数学），顺手让
+   Tk 的实现**（配色名集合与字号归一化都是纯数据／纯数学），同时让
    `load()` 的异常至少写一行日志。当前后果是「无 Tk 时一半配置静默失效」。
 2. **打包时把 PSF 许可、PyInstaller 许可、OpenSSL 许可一起放进 zip**
    （或在 `README` 里改成与事实一致的表述）。现在只有 Tcl/Tk 与 MIT 两份。

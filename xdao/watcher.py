@@ -312,7 +312,7 @@ def watch_forever(
     """后台循环：每 interval 秒检查一轮，直到 stop_event 被设置。
 
     每轮的顺序是「先检查、后等待」，所以启动后马上就会出一次结果。
-    ``notifier`` 不为空时，检查出更新的串会顺带弹一条桌面通知
+    ``notifier`` 不为空时，检查出更新的串会同时弹一条桌面通知
     （节流由 :class:`~xdao.notifications.Notifier` 负责）。
     ``browser_path`` / ``pdf_options`` / ``font_size`` / ``page_workers`` 与
     :func:`check_once` 同义。

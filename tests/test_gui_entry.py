@@ -146,7 +146,7 @@ def test_describe_export_failure_explains_a_rejected_cookie():
 def test_describe_login_failure_says_what_to_do_for_a_session_that_did_not_stick():
     """实测过：邮箱登录后只看到「未找到可用的饼干」。
 
-    真相是跳转提示页被当成了饼干列表。文案必须说清是"这次登录没生效"，
+    实际原因是跳转提示页被当成了饼干列表。文案必须说清是"这次登录没生效"，
     并给出两个能马上做的动作（重登 / 用浏览器登录）。
     """
     title, body = gui.describe_login_failure(
@@ -402,7 +402,7 @@ def test_manual_userhash_does_nothing_when_the_paste_window_is_cancelled(monkeyp
 
 
 def test_paste_window_explains_why_and_where_to_copy(monkeypatch):
-    """提示语本身就是这次改动的交付物（讲清「为什么弹出来的浏览器是空的」）。
+    """提示语本身就是这次改动的交付物（讲清「弹出的浏览器使用独立资料目录」）。
 
     要讲清两件事：①程序不碰你自己浏览器的数据；②去哪儿抄 userhash（含 F12 那条路）。
     """
@@ -1389,7 +1389,7 @@ def test_watch_dialog_add_from_input_snapshots_current_settings(dialog_root, art
 
 
 def test_watch_dialog_shows_the_page_cap_in_the_table(dialog_root, artifacts_dir):
-    """列表里得看得见「最多 N 页」：不然用户没法确认这一条到底抓多少页。"""
+    """列表里得看得见「最多 N 页」：不然用户没法确认这一条实际抓多少页。"""
     settings = AppSettings(_path=artifacts_dir / "config.json")
     app = _WatchApp(
         settings,
@@ -1553,10 +1553,10 @@ def _content_root(dialog):
 def test_watch_dialog_leaves_room_for_every_row(dialog_root, artifacts_dir):
     """对话框得留够高度，不能让底下那行按钮被裁掉。
 
-    2026-10-01 真机截图抓到的：导入 / 导出挤在「添加 / 移除 / 间隔 / 校验」那一行右边，
+    2026-10-01 运行环境截图抓到的：导入 / 导出挤在「添加 / 移除 / 间隔 / 校验」那一行右边，
     被整条裁到窗口外 —— 控件对象都在、用例全绿，用户却看不见。
 
-    ⚠️ 说清楚这条断言的力度：本机 Tk 缩放下（``tk scaling`` ≈ 1.33）内容只要 415 逻辑像素，
+    ⚠️ 说清楚这条断言的力度：运行环境 Tk 缩放下（``tk scaling`` ≈ 1.33）内容只要 415 逻辑像素，
     把窗口改回 480 它照样过 —— **它不是那次裁切的复现器**，真正的元凶是显示缩放
     （Tk 用逻辑像素、内容按缩放变大）。所以这里只钉住「今天这个布局在本机量得下」，
     谁要再往对话框里加一行，请自觉同步 ``self.geometry``；别把它当成能抓裁切的哨兵。
@@ -1674,7 +1674,7 @@ def test_selftest_dialog_grows_with_the_window(dialog_root, artifacts_dir, monke
     """文本区要跟着窗口长，不能只占「请求高度」在卡片里留一大块空白。
 
     ``Card(stretch=True)`` 之前，画布里的 body 只有请求尺寸：窗口拉到 620
-    高，文本区还是 206px（真机截图里下面空一大块）。
+    高，文本区还是 206px（运行环境截图里下面空一大块）。
     """
     _isolate_settings(monkeypatch, artifacts_dir)
     app = _SelftestApp(dialog_root)
@@ -1725,7 +1725,7 @@ def _wait_until(root, predicate, timeout: float = 20.0) -> bool:
 def test_selftest_dialog_has_a_way_to_find_out_if_the_browser_even_starts(
     dialog_root, artifacts_dir, monkeypatch
 ):
-    """自检里要能回答「浏览器到底起不起得来」——不是「装没装」。
+    """自检里要能回答「浏览器实际起不起得来」——不是「装没装」。
 
     这条路真的会把假浏览器启一次（假货自己写端口文件、假调试服务答一句话），
     所以它验的是整条链路：按钮 → 后台线程 → ``browser_check.check_all``
@@ -1950,7 +1950,7 @@ def test_app_schedules_one_update_check_after_startup():
 
 
 def test_startup_sweeps_the_old_temp_profiles(monkeypatch):
-    """启动时要顺手把 %TEMP% 里的旧资料目录扫掉（被强杀留下的那些）。
+    """启动时要同时把 %TEMP% 里的旧资料目录扫掉（被强杀留下的那些）。
 
     正常收尾由 ``LoginBrowser.cleanup_temp_profile()`` 当场删；程序被强杀就没人收尾，
     所以得在启动时补一刀。放后台线程里做，而且清不干净也不许影响启动。
@@ -1986,7 +1986,7 @@ def test_startup_sweeps_the_old_temp_profiles(monkeypatch):
 def test_startup_sweeps_the_config_dir_spare_profiles_too(monkeypatch, tmp_path):
     """启动清扫要连配置目录下那族备用目录一起扫（v0.13.39）。
 
-    真机 2026-10-01 在配置目录里量到过两个没人收的空壳
+    运行环境 2026-10-01 在配置目录里量到过两个没人收的空壳
     （``browser-profile-12268-1790850954`` 96 个文件 / 5.6MB、
     ``browser-profile-12268-1790850956`` 66 个文件 / 6.3MB）。
     """
@@ -2169,7 +2169,7 @@ def test_upgrade_worker_runs_the_whole_five_steps(dialog_root, tmp_path, monkeyp
     assert kinds[-1] == "finish"
     ok, message, action = messages[-1][1]
     assert ok is True
-    assert action == "exit", "帮手在等我们退出，得真的退"
+    assert action == "exit", "辅助进程等待主程序退出，得真的退"
     assert "9.9.9" in message
 
 
@@ -2184,7 +2184,7 @@ def test_upgrade_worker_keeps_the_old_copy_when_the_selftest_fails(
 
     messages = _drive_upgrade(app, _newer_result(), monkeypatch, spy)
 
-    assert "spawn" not in spy.calls, "自检没过还想换？"
+    assert "spawn" not in spy.calls, "自检未通过时不应启动升级进程。"
     assert app._upgrade_spawned is False
     assert spy.discarded == [spy.staging], "没换成，暂存要清掉"
     ok, message, _ = messages[-1][1]
@@ -2310,7 +2310,7 @@ def test_end_self_for_upgrade_quits_the_loop_and_ends_the_process(
 ):
     """换完之后必须**真的结束进程**：帮手在等老进程消失，只 quit() 不够。
 
-    实测（`_scratch\\probe_quit_exits.py`）真机上 `root.quit()` 之后进程还活着
+    实测（`_scratch\\诊断探针`）实际运行中 `root.quit()` 之后进程还活着
     （哪怕只剩一个主线程），帮手等满 60 秒就放弃 —— 用户看到「升级完成」，
     目录其实没换。
     """
@@ -2748,8 +2748,8 @@ def test_app_registers_itself_on_the_root_window(live_app):
 def test_login_worker_writes_each_failed_attempt_into_the_log(live_app, monkeypatch):
     """v0.17.5：登录线程要把「哪几扇没成」逐行写进运行日志。
 
-    真机上「一次点击弹出好几扇窗」时，界面上只有最后成的那扇；没有这几行，
-    事后对不出候选表里试过几个目录、每一扇为什么被放弃。
+    实际运行中「一次点击弹出好几扇窗」时，界面上只有最后成的那扇；没有这几行，
+    事后对不出候选表里试过几个目录、每个候选被放弃的原因。
     """
     from types import SimpleNamespace
 

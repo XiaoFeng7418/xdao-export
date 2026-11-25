@@ -5,7 +5,7 @@
 1. 每一项都要**自己兜住异常**（坏配置、写不进去、没浏览器都不能把它带走）；
 2. 结论要**说清楚怎么办**，而不是只说「失败了」。
 
-真机跑出来的结论由 ``main.py --selftest`` 那条路核（``tests/test_cli.py`` 里另有用例）。
+运行环境跑出来的结论由 ``main.py --selftest`` 那条路核（``tests/test_cli.py`` 里另有用例）。
 """
 
 from __future__ import annotations
@@ -362,7 +362,7 @@ def test_run_network_checks_reports_a_fetch_that_raises(monkeypatch) -> None:
     assert "网络断了" in checks[1].detail
 
 
-# ------------------------------------ 浏览器到底起不起得来（--selftest --check-browser）
+# ------------------------------------ 浏览器实际起不起得来（--selftest --check-browser）
 
 
 def _browser_check(name: str, *, ok: bool, **kwargs):

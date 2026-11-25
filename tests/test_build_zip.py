@@ -1,15 +1,8 @@
-"""`tools/build_zip.py` 的用例：打包这一步不许「打出来才发现文档没跟上」。
+"""Tests for packaging metadata, checksums, BOM handling, archive members, and docs checks.
 
-这个工具是从作者本机的 `_scratch/` 脚本搬进仓库的，理由有两条（2026-10-02）：
-
-- 别人想核对 Release 里那个包是怎么来的，以前只能来问；放进仓库后谁都能复现；
-- 申请免费代码签名（SignPath Foundation）要求**要签名的产物必须由 CI 构建**，
-  所以这一步必须能在 GitHub 托管的 Windows runner 上跑通（见 `.github/workflows/build.yml`）。
-
-下面只测纯函数（版本信息、校验文件、BOM、条目清单、文档自检）—— 真的跑一遍 PyInstaller
-要好几分钟，那是 CI 的活，不是单元用例的活。最后一条盯着**本仓库当前这一版**：
-`docs/RELEASE_NOTES_vX.md`、`packaging/使用说明.txt`、`xdao/__init__.py` 三处必须已经对齐，
-否则发版时才会发现，而那时包已经打出来了。
+These tests cover deterministic helpers without running PyInstaller. A separate test verifies
+that the current release notes, packaged manual, and package version agree before packaging.
+The hosted Windows workflow performs the full build and smoke check.
 """
 
 from __future__ import annotations
@@ -114,7 +107,7 @@ def test_version_quad_rejects_anything_that_is_not_three_numbers(bad: str) -> No
 
 
 def test_version_file_names_the_author_and_the_product() -> None:
-    """证书拿不到「XiaoFeng7418」这个名字，属性里的公司名就是署名 —— 别让它空着。"""
+    """The executable metadata includes the project publisher and license notice."""
     text = build_zip.version_file_text("0.13.29")
 
     assert "StringStruct('CompanyName', 'XiaoFeng7418')" in text
@@ -164,7 +157,7 @@ def test_has_bom_accepts_exactly_one_bom(tmp_path: Path) -> None:
 
     assert build_zip.has_bom(good) is True
     assert build_zip.has_bom(bare) is False
-    assert build_zip.has_bom(double) is False, "两个 BOM 也是错的（2026-10-02 踩过一次）"
+    assert build_zip.has_bom(double) is False, "A file must not start with repeated BOM markers."
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +201,7 @@ def test_bom_list_only_covers_files_that_go_into_the_zip() -> None:
 
 
 def test_release_dir_gets_the_three_pieces_and_replaces_the_old_tree(tmp_path: Path) -> None:
-    """`--release-dir` 摆过去的是三件套，同名旧目录先删掉 —— 别让新旧文件混在一起。"""
+    """`--release-dir` copies the archive set and replaces an existing version folder."""
     out = tmp_path / "dist"
     root = out / "xdao-export-v9.9.9"
     stage = root / "xdao-export-v9.9.9-win64"
@@ -381,15 +374,15 @@ def test_version_check_accepts_the_output_even_when_the_pe_version_is_missing() 
 
 
 def test_pe_product_version_reads_the_exe_of_this_repository_when_there_is_one() -> None:
-    # 本机没打过包时跳过（CI 与干净环境里没有 dist/）。只看当前这一版的目录：
-    # dist/ 里躺着从 v0.13 起的所有旧包，随便抓一个会读到上个版本的号。
+    # A clean checkout may not contain packaged artifacts. Inspect only the current
+    # version directory because dist/ can also contain older builds.
     version = build_zip.read_version(ROOT)
     exe = next(
         iter(sorted((ROOT / "dist" / f"xdao-export-v{version}").glob("**/xdao-export.exe"))),
         None,
     )
     if exe is None:
-        pytest.skip(f"这台机器上没有打过 v{version} 的包，读不到 exe 的版本资源")
+        pytest.skip(f"No packaged artifact for v{version} is available to inspect.")
     found = build_zip.pe_product_version(exe)
     assert found is not None
     assert found.startswith(version)

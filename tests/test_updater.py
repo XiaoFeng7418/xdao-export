@@ -390,7 +390,7 @@ def test_spawn_helper_complains_when_the_package_has_no_exe(tmp_path: Path) -> N
 
 
 def make_staged_payload(root: Path, *, name: str = "xdao-export-v0.13.0-win64") -> Path:
-    """搭一个「解压到暂存目录里」的新版本（真机上就是 ``%TEMP%/xdao-export-update``）。
+    """搭一个「解压到暂存目录里」的新版本（实际运行中就是 ``%TEMP%/xdao-export-update``）。
 
     和 :func:`make_payload_dir` 的区别只在路径：``apply_update`` 成功后会
     给**暂存目录**改名留记号，所以这里必须先摆出那个真名字。
@@ -443,7 +443,7 @@ def test_apply_update_waits_then_swaps_and_launches(
     assert not bundle.exists(), "换了目录之后不该还留着 xdao-export-update"
     markers = [p for p in tmp_path.iterdir() if updater.LEFTOVER_SUFFIX in p.name]
     assert len(markers) == 1, f"应当留下一个记号目录，实际 {markers}"
-    # 记号里就是刚才那个暂存目录的空壳：`shutil.move` 把整个包目录搬去现场了，
+    # 记号里就是此前那个暂存目录的空壳：`shutil.move` 把整个包目录搬去现场了，
     # 所以这里只剩空的暂存目录 —— 关键是「它还叫那个名字、还在那个位置」，
     # 新版下一次启动照记号就能收掉。
     assert markers[0].is_dir()
@@ -597,7 +597,7 @@ def test_startup_cleanup_keeps_trying_until_the_helper_is_gone(
 ) -> None:
     """新版刚起来的那几秒帮手往往还在，一次删不掉不能就此认输。
 
-    实测（真机升级）：第一次试删必然失败（帮手住在那目录里），于是用户
+    实测（运行环境升级）：第一次试删必然失败（帮手住在那目录里），于是用户
     ``%TEMP%`` 里会一直躺着几十 MB —— 所以要隔一会儿再试，帮手一走立刻收。
     """
     # 两个记号目录，名字里都是「早就没了的进程号」：按规矩都能立刻清。

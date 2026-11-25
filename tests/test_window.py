@@ -1,7 +1,7 @@
 """主窗口布局的回归测试（真窗口，无显示环境时自动跳过）。
 
 这些用例的价值在于：左栏宽度、左右栏比例、底部按钮区不被窗口下沿吃掉，
-都是靠肉眼截图才发现过的真问题（曾经右栏被挤成 39px、进度条被压掉一截），
+都是靠直接截图才发现过的真问题（曾经右栏被挤成 39px、进度条被压掉一截），
 只靠"能 import"是看不出来的。
 """
 
@@ -31,9 +31,8 @@ from .conftest import ARTIFACTS_ROOT
 def make_root(timeout: float = 5.0) -> tk.Tk:
     """建一个根窗口；失败时重试几秒再放弃。
 
-    本机（受限运行环境 + <显示区域> 桌面）实测连开/关十几个 Tk 根窗口时，
-    偶发一两次 ``TclError``；这是环境抖动，不是代码问题，重试就能过。
-    真的没有显示环境（无头 CI）时重试也救不回来，交给调用方 skip。
+    桌面环境下反复创建和销毁 Tk 根窗口时，偶尔会出现 ``TclError``；重试用于应对该环境波动。
+    无头 CI 没有显示环境，调用方应跳过相关用例。
     """
     problem = conftest.display_problem(timeout)
     if problem is not None:
@@ -91,7 +90,7 @@ def isolated_settings():
 def root_window():
     """整组用例共用一个根窗口。
 
-    为什么不复用而不是每个用例新建：本机实测"连开/关十几个 Tk 根窗口"时，
+    复用根窗口的依据是：已验证"连开/关十几个 Tk 根窗口"时，
     Windows 偶发创建失败（表现为整组用例被 skip），而窗口重建本身很贵。
     这里改成只建一次、用例之间清空子控件 —— 用例只看布局，不需要干净的事件循环。
     """
@@ -138,7 +137,7 @@ def wait_visible(widget: tk.Misc, width: int = 1, timeout: float = 3.0) -> bool:
 
     窗口是挪到屏幕外的，Windows 偶尔要过一拍才把它映射上，``winfo_width()``
     会先报 0。硬断言宽度的用例在那种时候会莫名其妙地挂，所以这里给它一点
-    时间（并顺手 ``update()`` 推进事件），超时再交给断言去失败。
+    时间（并同时 ``update()`` 推进事件），超时再交给断言去失败。
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -171,7 +170,7 @@ def test_login_pill_follows_the_saved_cookie(app: gui.App) -> None:
     """登录之后左上角那个标要跟着变（v0.13.24）。
 
     它是 ``StatusPill``：建出来的时候就把文字**抄**走了，只改 ``status_var`` 它不会动。
-    真机上就是「运行日志说登录成功、左上角还写未登录」（用户 复现记录 因此以为没登录上，
+    实际运行中就是「运行日志说登录成功、左上角还写未登录」（复现现象 因此以为没登录上，
     又去试别的路）。
     """
     app.settings.userhash = None
@@ -270,7 +269,7 @@ def test_footer_does_not_cover_the_scroll_area(app: gui.App) -> None:
     """底部按钮区必须在滚动区下面，不能压住它。
 
     v0.22.1 之前左栏的滚动区用 ``pack``、底部按钮区用 ``grid``，同一个容器里两种
-    布局管理器各画各的：真机 940x680 时「开始导出」压在导出目录卡片上，缓存那一行
+    布局管理器各画各的：运行环境 940x680 时「开始导出」压在导出目录卡片上，缓存那一行
     永远看不见，滚动也滚不到。
     """
     app.root.geometry("940x680")
@@ -348,15 +347,15 @@ _TK_UNAVAILABLE_MARKERS = ("Can't find a usable", "no display name", "no $DISPLA
 
 
 def _tk_broke_in_child(stderr: str) -> bool:
-    """子进程失败是不是「Tk 起不来」（而不是我们真测出了回归）。"""
+    """子进程失败是否「Tk 起不来」（而不是项目真测出了回归）。"""
     return any(marker in stderr for marker in _TK_UNAVAILABLE_MARKERS)
 
 
 def _run_in_fresh_process(script: str) -> subprocess.CompletedProcess[str]:
     """在**全新解释器**里跑一段脚本，跑之前先确认这个解释器里 Tk 能用。
 
-    为什么要先确认：这段脚本的失败会以「子进程退出码非 0」的形式报出来，而
-    「Tk 起不来」和「我们真发现了回归」看起来一模一样。所以先探一次（跟
+    这样做的原因是要先确认：这段脚本的失败会以「子进程退出码非 0」的形式报出来，而
+    「Tk 起不来」和「项目真发现了回归」看起来一模一样。所以先探一次（跟
     :func:`make_root` 一样重试几秒），探不成才认输 —— 那种情况下这条用例**没法得到
     答案**，如实跳过胜过把环境抖动报成回归。真出现了回归（Tk 好、断言没过）时
     子进程会正常退出，随后的断言照样会红。
@@ -399,10 +398,10 @@ def _run_in_fresh_process(script: str) -> subprocess.CompletedProcess[str]:
 def test_widget_fonts_match_the_theme_after_startup() -> None:
     """界面控件的字体族必须与 ``theme`` 报的一致 —— 在**全新进程**里验证。
 
-    为什么另起进程：``xdao.gui`` 导入期就算好了模块级字体别名，而那时还没有
+    原因另起进程：``xdao.gui`` 导入期就算好了模块级字体别名，而那时还没有
     根窗口，``theme.resolve_fonts`` 只能给出候选里的第一个、且（这一版起）
     不落缓存。CI 上曾因此出现"控件用 Consolas、主题报 Cascadia Mono"。
-    在同进程里测是不可靠的：别的用例可能早就替我们把字体探测做了。子进程
+    在同进程里测是不可靠的：别的用例可能早就替项目把字体探测做了。子进程
     则是干净的导入顺序 —— 跟 `python main.py` 一模一样。
     """
     script = (
@@ -894,8 +893,8 @@ def test_selftest_minimum_size_fits_the_folded_buttons(app: gui.App) -> None:
 # ---------------------------------------------------------------------------
 # 「直接粘贴饼干登录」窗口
 #
-# 「用浏览器登录」弹出来的那个浏览器窗口，为什么是空的 —— 原来只有 simpledialog
-# 的一行字，讲不清「为什么不读你自己浏览器里的数据」「去哪儿抄 userhash」。
+# 「用浏览器登录」弹出来的那个浏览器窗口，原因是空的 —— 原来只有 simpledialog
+# 的一行字，讲不清「独立资料目录的用途」「去哪儿抄 userhash」。
 # 这一版换成自家窗口，下面几条守住它。
 # ---------------------------------------------------------------------------
 
@@ -998,7 +997,7 @@ def test_ask_pasted_cookie_returns_none_when_the_window_is_closed(
 def test_open_folder_falls_back_to_explorer(app: gui.App, monkeypatch, tmp_path: Path) -> None:
     """``os.startfile`` 被系统拒了就直接叫 explorer，并把这步写进日志。
 
-    2026-10-02 真机：那台机器上 ``os.startfile`` 抛异常，界面上只弹了一个写着
+    2026-10-02 运行环境：相关运行环境上 ``os.startfile`` 抛异常，界面上只弹了一个写着
     路径的提示框，用户以为按钮坏了 —— 真正的原因（系统不让程序拉起资源管理器）
     被吞掉了。
     """
@@ -1938,7 +1937,7 @@ def test_login_worker_stops_the_browser_when_cancel_lands_during_startup(
     """取消正好落在「浏览器刚起来、还没连 CDP」那一刻：那扇窗必须被收掉。
 
     这一支是最容易漏的：主线程那次 _release() 清空了 self._browser，后台线程
-    手里只剩局部引用 —— 如果这里不自己收，窗口就留成孤儿（真机 2026-10-18
+    手里只剩局部引用 —— 如果这里不自己收，窗口就留成孤儿（运行环境 2026-10-18
     那族多窗里就有它）。
     """
     from types import SimpleNamespace
@@ -2150,7 +2149,7 @@ def test_cookie_picker_apply_writes_the_chosen_cookies_back(app: gui.App) -> Non
 
 
 def test_cookie_picker_apply_with_nothing_ticked_leaves_the_box_empty(app: gui.App) -> None:
-    """本来就没勾：应用之后是空，而不是把刚才框里的东西原样留着。"""
+    """本来就没勾：应用之后是空，而不是把此前框里的东西原样留着。"""
     picker, var = _open_picker(app.root, "", {"aaa": 2, "bbb": 1})
 
     picker._apply()
@@ -2565,7 +2564,7 @@ def test_upgrade_worker_turns_an_unexpected_error_into_a_message(app, monkeypatc
     assert job[-1][1][0] is False
     assert "磁盘满了" in job[-1][1][1]
 
-# ---------- 罐里到底有没有真会话（v0.21.9）----------
+# ---------- 罐里实际有没有真会话（v0.21.9）----------
 
 
 def test_jar_with_only_the_anonymous_session_is_not_logged_in() -> None:
@@ -2583,7 +2582,7 @@ def test_jar_with_a_member_cookie_counts_as_logged_in() -> None:
 
 
 def test_jar_cookie_names_are_case_insensitive_and_values_must_be_non_empty() -> None:
-    """名字比较不分大小写；空值不算（真机上站点会把会员饼干写成空）。"""
+    """名字比较不分大小写；空值不算（实际运行中站点会把会员饼干写成空）。"""
     assert gui._jar_holds_a_session([{"name": "phpsessid", "value": "abc"}]) is False
     assert gui._jar_holds_a_session([{"name": "PhpSessId", "value": "abc"}]) is False
     # 名字只是长得像（PHPSSESSID 多一个 S）就算会员饼干 —— 判据刻意宽
@@ -2664,7 +2663,7 @@ def test_worker_suggests_the_paste_route_when_no_browser_is_installed(monkeypatc
 
 
 def test_worker_stops_before_launching_when_cancelled_while_searching(monkeypatch) -> None:
-    """用户在「找浏览器」那点时间里点了取消：不许再多开一个进程。"""
+    """用户在「找浏览器」那点时间里点了取消：应避免再次多开一个进程。"""
     from types import SimpleNamespace
 
     dialog = _bare_login_dialog(stop=True)
@@ -3306,7 +3305,7 @@ def test_try_leaf_cookie_accepts_a_good_value() -> None:
 
 
 def test_carry_browser_jar_gives_up_on_a_client_without_importer() -> None:
-    """客户端没有 import_cookies：本次处理直接放过，不算错。"""
+    """客户端没有 import_cookies：当前批次直接放过，不算错。"""
     dialog = object.__new__(gui.BrowserLoginDialog)
     dialog._session_jar_carried = False  # noqa: SLF001
     dialog.client = object()  # type: ignore[attr-defined]
@@ -3464,7 +3463,7 @@ def _login_browser(dialog, *, alive: bool = True):  # noqa: ANN001
 def test_worker_notes_a_failed_login_page_navigation(monkeypatch) -> None:
     """导航到登录页失败只是「尽力而为」：留一句提示，流程照走。"""
     dialog = _bare_login_dialog()
-    browser = _login_browser(dialog, alive=False)  # 下一轮立刻看到「窗口已关」，不用真等
+    browser = _login_browser(dialog, alive=False)  # 后续轮询立即检测到「窗口已关」，不用真等
     backend, _state = _login_backend(browser, navigate_error=RuntimeError("Page.navigate 失败"))
 
     monkeypatch.setattr(gui, "_load_browser_login", lambda: backend)
@@ -3835,7 +3834,7 @@ def test_paste_cookie_box_has_a_right_click_menu(root_window: tk.Tk, monkeypatch
     shown = _quiet_menus(monkeypatch)
     dialog = gui.PasteCookieDialog(root_window)
     try:
-        root_window.update()
+        assert wait_visible(dialog.text), "粘贴框应先完成映射"
         dialog.text.event_generate("<Button-3>", x=8, y=8)
         root_window.update()
         assert shown, "右键没有弹出菜单"
@@ -4060,7 +4059,7 @@ def test_upgrade_poll_stops_at_the_finish_event(app: gui.App, monkeypatch) -> No
 
 
 def test_watch_check_points_the_client_at_the_image_cache(app: gui.App, monkeypatch, tmp_path) -> None:
-    """勾了本地缓存：本次处理检查要把客户端的图片缓存指到缓存目录下。"""
+    """勾了本地缓存：当前批次检查要把客户端的图片缓存指到缓存目录下。"""
     from types import SimpleNamespace
 
     app.watch_targets = [gui.WatchTarget("50000001", format_key="html")]

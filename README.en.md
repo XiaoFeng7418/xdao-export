@@ -55,11 +55,9 @@ Get-Content .\xdao-export-v0.24.1-win64.zip.sha256
 
 The SHA256 values should match. This verifies the downloaded bytes against the published checksum; it does not replace checking the download source or protect against both release assets being replaced together.
 
-### Code signing policy
+### Code signing status
 
-**Current releases are unsigned.** The publisher is XiaoFeng7418 ([@XiaoFeng7418](https://github.com/XiaoFeng7418)). Windows may show “Unknown publisher” or a SmartScreen warning. Verify the source and checksum before deciding whether to run the program.
-
-The SignPath Foundation application was declined on 2026-10-02. A signing workflow exists but is not enabled, and no active signing service is claimed. If enabled in the future, builds will come from GitHub Actions, require manual approval, and sign only this project's executable. XiaoFeng7418 currently handles maintenance, review and approval. See [signing status and workflow (Chinese)](docs/SIGNING.md).
+Current releases are unsigned. Windows may show “Unknown publisher” or a SmartScreen warning. Download from the official Releases page and verify file integrity with the matching `.sha256` file. A GitHub Actions + SignPath workflow is reserved but not enabled; it may be connected when project requirements are met. See [signing status and release integrity (Chinese)](docs/SIGNING.md).
 
 ## Run from source
 
@@ -110,7 +108,7 @@ pytest and Ruff are development tools only. Read the maintenance notes before ch
 
 ## License and copyright
 
-**MIT License** · Copyright (c) 2026 XiaoFeng7418 ([@XiaoFeng7418](https://github.com/XiaoFeng7418)). Use, modify and redistribute the software, including commercially, while retaining the copyright and license notices. See [`LICENSE`](LICENSE), shipped as `LICENSE.txt` in the portable build.
+**MIT License** · Copyright (c) 2026 XiaoFeng7418. Use, modify and redistribute the software, including commercially, while retaining the copyright and license notices. See [`LICENSE`](LICENSE), shipped as `LICENSE.txt` in the portable build.
 
 Bundled Python (PSF), Tcl/Tk (BSD-style), PyInstaller (GPL with bootloader exception) and OpenSSL (Apache-2.0) retain their upstream licenses. `THIRD_PARTY_LICENSES/` includes byte-for-byte copies of the build environment's `Python-LICENSE.txt` and `PyInstaller-COPYING.txt`, plus the matching upstream `OpenSSL-LICENSE.txt` and copyright-bearing `OpenSSL-README.md`; existing Tcl/Tk notices are retained. Its `README.txt` records actual versions, sources and SHA256 hashes. Builds without a matching OpenSSL original explicitly report `MISSING`; review this inventory before redistribution. Exported content belongs to the respective X island or B island platform and its original authors. Thanks to Python, Tcl/Tk, PyInstaller, Rcrwrate/Xdnmb_downer and the DeepSeek agent that contributed implementation and tests.
 

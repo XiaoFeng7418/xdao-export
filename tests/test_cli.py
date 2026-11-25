@@ -1,6 +1,6 @@
 """命令行入口的测试（离线）。
 
-只覆盖不联网的部分：参数解析、版本输出，以及「失败原因要写进日志文件」
+只覆盖不联网的部分：参数解析、版本输出，以及失败原因是否写入日志
 这条约定 —— 之前长串 PDF 失败时一个字都没显示出来，才有了这个要求。
 """
 
@@ -178,7 +178,7 @@ def make_recording_fetcher():
     """记录每次 fetch 的调用参数，并按网址返回对应串号的结果。
 
     用来核对命令行把导出范围（页数上限、串号截止）真的交给了抓取层，以及
-    截止过滤后到底请求了哪几个串。
+    截止过滤后实际请求了哪几个串。
     """
     from xdao.cache import parse_thread_id
 
@@ -317,7 +317,7 @@ def test_output_dir_falls_back_when_the_configured_one_is_blocked(
     blocked = tmp_path / "桌面" / "被拦的新建文件夹"
     blocked.mkdir(parents=True)
     # choose_writable_dir 的默认探测函数取自 xdao.paths，patch 必须落在那一层
-    # （2026-10-07：这份实现从 exporters._shared 搬到了 xdao.paths，顺带消掉
+    # （2026-10-07：这份实现从 exporters._shared 搬到了 xdao.paths，同时消掉
     #   cache/preflight → exporters 的依赖倒挂）
     monkeypatch.setattr(paths_module, "can_write_dir", lambda path: Path(path) != blocked)
 
@@ -661,7 +661,7 @@ def test_pdf_settings_are_not_logged_for_other_formats(out_dir, monkeypatch, cap
 
 
 def test_watch_mode_hands_pdf_options_to_every_check(out_dir, monkeypatch):
-    """串监控也要用上 PDF 纸张/边距 —— 只接手动导出那条路是看不出来的漏洞。"""
+    """串监控也要用上 PDF 纸张/边距 —— 仅覆盖手动导出路径是看不出来的漏洞。"""
     import xdao.watcher as watcher_module
 
     patch_offline(monkeypatch)
@@ -782,7 +782,7 @@ def test_watch_import_replace_replaces_the_list(watch_settings, tmp_path):
 def test_watch_import_replace_keeps_entries_that_match_the_existing_list(
     watch_settings, tmp_path
 ):
-    """真机踩到的坑：文件里那条**现在就已经监控着**时，「替换」不能把它当垃圾丢掉。
+    """运行环境遇到的坑：文件里那条**现在就已经监控着**时，「替换」不能把它当垃圾丢掉。
 
     之前的写法是 ``merged = result.added``，而「同一个串、同样的设置」会被算进
     ``result.skipped`` —— 于是替换之后列表里一条不剩（用户以为只是把列表换成
@@ -977,7 +977,7 @@ def test_check_update_says_when_it_is_current(monkeypatch, capsys):
 
 
 def test_check_update_still_exits_zero_when_it_cannot_reach_github(monkeypatch, capsys):
-    """查不到不是程序出错：这条命令的用处是「顺手看一眼」。"""
+    """查不到不是程序出错：这条命令的用处是「快速查看」。"""
     from xdao import update_check
 
     failed = update_check.UpdateResult(ok=False, reason="连不上 GitHub（连接被重置）")
@@ -1236,7 +1236,7 @@ def test_max_pages_falls_back_to_the_saved_setting(out_dir, monkeypatch):
 
 
 # ---------- 正文字号：--font-size ----------
-# 2026-10-16 岛上回帖提的「这个字我是真看不清」：命令行也要能调成品的字号。
+# 命令行应支持调整成品字号，以改善长文阅读。
 
 
 def test_parser_font_size_accepts_the_range_and_rejects_junk():

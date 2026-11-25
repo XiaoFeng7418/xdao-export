@@ -19,7 +19,7 @@
   才跑。它会连真实接口抓一次官方测试串 No.50000001，在内存里伪造 3 个新楼层，
   走完「监控判定有更新 → 导出 → 发通知」的完整链路。
 
-## 实现说明（为什么这么做）
+## 实现说明（设计原因）
 
 - 仍然**零第三方依赖**：Windows 走 PowerShell 调 WinRT 的
   `Windows.UI.Notifications`，macOS 走 `osascript`，Linux 走 `notify-send`。
@@ -30,7 +30,7 @@
   免去给 exe 建开始菜单快捷方式的麻烦。
 - 通知在主线程（界面的 `_poll_watch`）里发，监控线程只管解析结果，两边互不拖累。
 
-## 顺手修掉的打包问题
+## 同时修掉的打包问题
 
 - **打包版现在能连回父控制台**：GUI 子系统的 exe 从 cmd 里跑 `xdao-export.exe --version`
   时，之前什么都不显示，还会冒出 `OSError: [Errno 22] Invalid argument`。现在只要命令行里

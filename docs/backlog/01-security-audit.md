@@ -86,13 +86,13 @@
 
 **风险等级**：低。不是崩溃、不是安全问题（写不到设备里去），只是**导出失败且报错看不懂** —— 用户看到 `[WinError 183] 当文件已存在时，无法创建该文件` 会以为是自己目录有问题。
 
-**为什么这轮没改**：`sanitize_filename` 已有 6 条既有断言钉着（`tests/test_exporters.py:63-79`），改它就等于改现有行为，而本轮约束是"不动现有 `.py`"。
+**兼容性要求**：修改 `sanitize_filename` 会改变已有文件名行为；实施时需核对现有断言并补充 Windows 设备名用例。
 
-**建议改法**（下一轮做）：
+**建议改法**：
 1. 在 `sanitize_filename` 里加一张设备名表（`CON PRN AUX NUL COM1..COM9 LPT1..LPT9`，大小写无关，比对去掉扩展名后的主名）；
 2. 命中时前缀下划线或后缀 `_`，例如 `CON` → `_CON`；
 3. 补一条用例：`for name in ("CON","prn","AUX","NUL","COM1","LPT9"): assert sanitize_filename(name) not in DEVICE_NAMES`；
-4. 顺带处理 `a\x00b`：`sanitize_filename` 里把 `\x00` 换成 `_`，比让 `Path.write_text` 抛 `ValueError` 友好。
+4. 同时处理 `a\x00b`：`sanitize_filename` 里把 `\x00` 换成 `_`，比让 `Path.write_text` 抛 `ValueError` 友好。
 
 ### 3.3 缓存目录：串号只能是整数
 
@@ -170,7 +170,7 @@ http.client.InvalidURL: URL can't contain control characters.
 
 ### 5.3 无硬编码凭据
 
-全仓 `ghp_` / `github_pat_` / `Bearer` 形状的字面量 0 处；发布脚本从 Credential Manager 取令牌（`tools/push_one_commit.py` 等），仓库里只有用户名占位。
+全仓 `ghp_` / `github_pat_` / `Bearer` 形状的字面量 0 处；发布脚本从 Credential Manager 取令牌（`tools/push_one_commit.py` 等），仓库里只部分场景名占位。
 
 ## 六、界面线程与生命周期
 
@@ -204,7 +204,7 @@ http.client.InvalidURL: URL can't contain control characters.
 
 **风险等级**：低-中。只影响"导出中途强行关窗"，产物要么完整（已 `os.replace`）要么不存在，但残留文件需人工清。
 
-**建议改法**（下一轮做）：
+**建议改法**：
 1. `on_close` 里把 1.2 秒改成"等 worker 自行退出，最多 N 秒"：给每个 worker 一个 `threading.Event` 作结束信号，`on_close` 里 `event.wait(timeout=5.0)` 再 `destroy()`；
 2. 进程启动时扫一遍输出目录与缓存目录，把超过 1 小时没动的 `*.part` 删掉（`clean_scratch` 里已有类似逻辑，可以复用）；
 3. 补用例：伪造一个卡住的 worker，断言 `on_close` 后 `wait` 真的等到超时再 destroy。

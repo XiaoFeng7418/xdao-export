@@ -8,7 +8,7 @@
 ### 1. 协议与版权
 
 - 仓库根目录本来就有 `LICENSE`（MIT 全文）。这一版把版权行补全成
-  `Copyright (c) 2026 XiaoFeng7418 (XiaoFeng7418)`（原先只写了 GitHub 账号）。
+  `Copyright (c) 2026 XiaoFeng7418`（原先只写了 GitHub 账号）。
 - `README.md` 新增 **「开源协议与版权」** 一节：是 MIT 许可，点明可以自由使用、复制、修改、
   合并、发布、分发、再许可与出售（**包括商业用途**），唯一的条件是保留版权声明与许可声明；
   并写明打包版里带的 Python 解释器（PSF）、Tcl/Tk（BSD 风格）与 PyInstaller 启动器（GPL，

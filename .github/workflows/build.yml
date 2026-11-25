@@ -2,8 +2,8 @@ name: build
 
 # 打免安装包（`xdao-export-vX-win64.zip` + 配套的 `.sha256`），上传成一个构件的 artifact。
 #
-# 为什么要有这个 workflow（2026-10-02）：
-# ① 官方包以前只在作者本机打（脚本在 `_scratch/`，进不了库），别人想核对「Release 里那个
+# 构建流程的用途（2026-10-02）：
+# ① 官方包以前只在开发环境打（脚本在 `_scratch/`，进不了库），别人想核对「Release 里那个
 #    包是怎么来的」只能来问。搬进仓库后，谁都能照 `.github/workflows/build.yml` 复现；
 # ② 申请 SignPath Foundation 的免费开源代码签名有一条硬要求：**要签名的产物必须由
 #    GitHub 托管的 runner 构建**。所以这一步先跑通，签名只是接在它后面（见 docs/SIGNING.md）。

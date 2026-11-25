@@ -3,7 +3,7 @@
 
 用法：python tools/patch_release_body.py <tag> <发布说明文件>
 
-为什么需要它：`POST` 建 Release 只在第一次；之后改正文只能 `PATCH /releases/{id}`，
+Release 创建使用 `POST`；之后改正文只能 `PATCH /releases/{id}`，
 而 `PATCH /releases/tags/{tag}` 是 404（GitHub 只给了 GET 的 tag 形式）。
 
 什么时候用：发布说明改了一句话（比如忘了写「免安装包」），不想删了 Release 重建，

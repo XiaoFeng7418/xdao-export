@@ -1,6 +1,6 @@
 """在自己熟悉的浏览器里登录，再由程序把 userhash 取回来。
 
-为什么要有这个模块：程序需要 userhash 才能取串，而它只存在浏览器的 cookie 里。
+独立设置该模块的原因是：程序需要 userhash 才能取串，而它只存在浏览器的 cookie 里。
 原本只能让用户按 F12、翻开发者工具、复制 cookie —— 对普通用户来说这一步最容易卡死。
 这里换个路子：程序用系统自带的 Edge/Chrome 打开一个**独立用户目录**的窗口，
 用户在窗口里正常登录，程序通过 Chrome DevTools Protocol（CDP）把 cookie 读走，
@@ -39,13 +39,13 @@ USER_DATA_DIR_NAME = "browser-profile"
 LOGIN_URL = "https://www.nmbxd1.com/Member/User/Index/login.html"
 
 #: 关掉 Edge 的「隐式登录」和同步（v0.17.7）。程序起的是全新的一次性资料目录，
-#: 可 Edge 会拿本机 Windows 账号自动登录、顺手把云端数据同步进来 —— 表现是窗口里
+#: 可 Edge 会拿Windows 登录账号自动登录、同时把云端数据同步进来 —— 表现是窗口里
 #: 弹出「正在同步浏览数据」、自动填充里出现云端保存的密码，整罐里也多出 msn/bing
 #: 一堆饼干。2026-10-25 实测：不加这两个开关，新窗 9 秒内整罐 11 块里 10 块是微软
 #: 家族的；加上之后只剩站点自己的那块。
 _DISABLE_FEATURES = "Translate,msImplicitSignin"
 # 收进程树时走哪条路（taskkill / kill）。写成模块级常量、测试改它，而不是去改
-# ``os.name``：``os`` 是全局共享的模块对象，改 ``os.name`` 会顺带改掉 ``pathlib``
+# ``os.name``：``os`` 是全局共享的模块对象，改 ``os.name`` 会同时改掉 ``pathlib``
 # 的行为（它按 ``os.name`` 在模块级决定 ``Path`` 用哪个具体类）；Linux 上一边把
 # ``os.name`` 改成 "nt" 一边有小用例失败，pytest 格式化失败信息时构造 ``WindowsPath``
 # 就会直接 `NotImplementedError`，把真正的失败盖成 INTERNALERROR。
@@ -61,14 +61,14 @@ _STOP_GRACE = 8.0
 # 和 updater._remove_tree 一样：删掉就立刻返回，只有真删不掉才耗满。
 TEMP_PROFILE_WAIT = 3.0
 #: 「刚开出来、调试端口还没开始收连接」的宽限（秒）：端口文件是这次启动写的、
-#: 或者浏览器进程是我们家的，就等等它，别再开一扇（v0.17.3）。
+#: 或者浏览器进程是项目家的，就等等它，别再开一扇（v0.17.3）。
 STARTING_GRACE = 120.0
 #: 宽限重探最多等多久（秒）。等不到端口答话，才照常新开一扇。
 STARTING_WAIT = 12.0
 #: 宽限重探的轮询间隔（秒）。
 STARTING_POLL = 0.5
 #: 启动进程先退出、窗口留下来时，最多等多久让它把端口接上（秒，v0.17.4）。
-#: 真机 2026-10-18：一次点击 16 秒里起了五扇窗 —— 每次都被判成「刚起来就退出」，
+#: 实际运行环境 2026-10-18：一次点击 16 秒里起了五扇窗 —— 每次都被判成「刚起来就退出」，
 #: 而窗口其实活着，只是被 Popen 记下的那个进程先行交棒退出了。
 RELAUNCH_GRACE = 8.0
 #: 删临时目录前要不要先把「命令行里带这个目录」的浏览器进程收掉（见
@@ -76,7 +76,7 @@ RELAUNCH_GRACE = 8.0
 #: 一个 powershell，不该在每个用例里跑一遍。
 #: 让 powershell 按 UTF-8 回话（v0.14.0）。中文 Windows 上 powershell 5.1 的 stdout 是
 #: ANSI/GBK 代码页，而这几处一律按 UTF-8 解码 —— 于是带中文的资料目录会变成 `D:\С����\…`
-#: 这种乱码（v0.13.51 真机详单里的「罐路径」段就是这样）。在脚本开头钉一句输出编码，
+#: 这种乱码（v0.13.51 实际运行环境详单里的「罐路径」段就是这样）。在脚本开头钉一句输出编码，
 #: 解码那侧不用动。
 _PS_UTF8 = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
 
@@ -85,8 +85,8 @@ def _decode_ps_output(raw: bytes | str) -> str:
     """解 powershell 的回话：先按 UTF-8，解出替换符再按系统代码页解一次。
 
     脚本里已经钉了 ``[Console]::OutputEncoding``，但 Windows PowerShell 5.1 在
-    **stdout 被重定向**时并不总听这一句（真机反馈：带中文的资料目录回来仍是乱码，
-    也就是技术债里那条「``profile_of_process`` 中文乱码待真机复验」）。只钉脚本是
+    **stdout 被重定向**时并不总听这一句（运行环境反馈：带中文的资料目录回来仍是乱码，
+    也就是技术债里那条「``profile_of_process`` 中文乱码待实际环境验证」）。只钉脚本是
     「指望对方听话」，这里再补一手「不管对方按什么编码回，都尽量解对」：
 
     * UTF-8 能干净解出来 → 就是它；
@@ -108,17 +108,17 @@ def _decode_ps_output(raw: bytes | str) -> str:
     return text
 
 _KILL_PROFILE_PROCESSES = _IS_WINDOWS
-#: 普查要不要再问操作系统一遍「谁此刻用着我们家的资料目录」（见 :func:`program_profile_dirs`）。
+#: 普查要不要再问操作系统一遍「谁此刻用着项目家的资料目录」（见 :func:`program_profile_dirs`）。
 #: 端口普查只认「名字猜得到」的目录（:func:`live_browser_dirs`）：备用目录的名字带着
-#: **当时那个进程**的 PID 和时间戳，新进程猜不出 —— 真机 复现记录 的「饼干窗硬刷新不弹回、
-#: 对账却 页=1」就是这么来的。当时还有另一半原因：``_launch`` 会顺手把目标目录里那份
+#: **当时那个进程**的 PID 和时间戳，新进程猜不出 —— 实际复现时的「饼干窗硬刷新不弹回、
+#: 对账却 页=1」就是这么来的。当时还有另一半原因：``_launch`` 会同时把目标目录里那份
 #: ``DevToolsActivePort`` 删掉（怕读到上次崩溃留下的过期端口），而那一眼可能正删在
 #: **一扇还开着的窗**头上；v0.13.38 起不改别人的文件了，那份端口文件一律留着。
 #: 用例会把它换成 False（或直接换掉函数本身）：这一手要真起一个 powershell。
 _PROCESS_CENSUS = _IS_WINDOWS
 #: :func:`fresh_profile_dir` 的进程内序号：同一个毫秒里连叫两次也要拿到不同的名字。
 _FRESH_PROFILE_SEQ = 0
-# 多扇窗里挑一扇接手时（见 :meth:`LoginBrowser._order_by_login`），问一扇窗「罐里有没有
+# 多扇窗里挑一扇复用时（见 :meth:`LoginBrowser._order_by_login`），问一扇窗「罐里有没有
 # userhash」的预算：够连上、够读一次饼干，又不至于让「哪扇登录过」这个问题拖慢开窗。
 # 只连本地调试端口、只读饼干，不动用户正看着的那一页。
 WINDOW_PROBE_TIMEOUT = 3.0
@@ -160,8 +160,8 @@ _CANDIDATES: tuple[tuple[str, str, str], ...] = (
 def _env_lookup(env: Mapping[str, str] | None, key: str) -> str:
     """取一个环境变量。
 
-    传进来的映射里**显式给了空串**就表示「这台机器没有它」，不再去看真实环境 ——
-    测试要能用空串把候选全关掉，否则结果会随开发机装了什么都变。
+    传进来的映射里**显式给了空串**就表示「当前环境没有它」，不再去看真实环境 ——
+    测试要能用空串把候选全关掉，确保测试结果不受实际安装的浏览器影响。
     """
     if env is not None:
         if key in env:
@@ -173,7 +173,7 @@ def _env_lookup(env: Mapping[str, str] | None, key: str) -> str:
 
 
 def known_paths(env: Mapping[str, str] | None = None) -> list[BrowserInfo]:
-    """按固定顺序列出这台机器上真正存在的浏览器（Edge → Chrome → Chromium → Brave）。"""
+    """按固定顺序列出当前环境上真正存在的浏览器（Edge → Chrome → Chromium → Brave）。"""
     found: list[BrowserInfo] = []
     seen: set[str] = set()
     for name, variable, relative in _CANDIDATES:
@@ -192,8 +192,8 @@ def known_paths(env: Mapping[str, str] | None = None) -> list[BrowserInfo]:
 
 # ---------------------------------------------------------------- 浏览器选谁
 #
-# 真机上量到的期望差：用户会把 Windows 默认浏览器改成 Chrome，可这里一直从 Edge
-# 开始试 —— 于是他看到的是「我明明换成 Chrome 了，弹出来的还是 Edge」。所以先把
+# 实际运行中量到的期望差：用户会把 Windows 默认浏览器改成 Chrome，可这里一直从 Edge
+# 开始尝试时可能与用户配置的 Chrome 不一致。因此先把
 # 「系统默认的那个」排到最前面，再按 Edge → Chrome → … 的顺序补全。
 #: Windows 注册表里记默认浏览器的位置（HKCU）。
 _DEFAULT_BROWSER_KEY = (
@@ -206,7 +206,7 @@ _EXE_NAMES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("brave.exe", "brave", "brave-browser.exe"), "Brave"),
     (("chromium.exe", "chromium"), "Chromium"),
 )
-#: 打开注册表用的模块（真机上是 ``winreg``）。
+#: 打开注册表用的模块（实际运行中是 ``winreg``）。
 #:
 #: 写成模块级变量是为了**让测试能钉住「读默认浏览器」这条逻辑**：CI 的 Linux
 #: 机器上没有 ``winreg``，用例若直接跳过，这段代码在那边就没人看着了。
@@ -247,9 +247,8 @@ def _name_of_executable(command: str) -> str:
 def _windows_default_exe() -> str:
     """读 Windows 的默认浏览器设置，返回它的可执行文件路径；读不到返回空串。
 
-    真机上量到过：用户在「设置 → 默认应用」里把 http/https 都改成了 Chrome，
-    而这里原本固定从 Edge 开始试，用户看到的就是「我换了默认浏览器，弹出来的
-    还是 Edge」。这一步只读注册表，不改任何东西；读不出来（没有这个键、注册表
+    固定从 Edge 开始尝试会忽略 Windows 的默认浏览器设置。
+    此处只读注册表，不修改默认应用；读不出来（没有这个键、注册表
     被锁、非 Windows）就当没有，按原来的固定顺序来。
     """
     try:
@@ -348,9 +347,9 @@ def browser_candidates(
     """按顺序列出「可以拿来试」的浏览器：``info`` 排最前，其余按默认优先级跟在后面。
 
     :meth:`LoginBrowser.start` 用它做「一个浏览器起不来就换下一个」的兜底。
-    单独列一个函数是为了让测试能钉住这条顺序 —— 真机上它决定了用户看到的是哪个窗口。
+    单独列一个函数是为了让测试能钉住这条顺序 —— 实际运行中它决定了用户看到的是哪个窗口。
 
-    ``info`` 为 None（或者本机只装了它一个）时就是 :func:`known_paths` 的结果。
+    ``info`` 为 None（或者仅检测到该浏览器）时就是 :func:`known_paths` 的结果。
     """
     installed = ordered_browsers(env)
     if info is None:
@@ -367,7 +366,7 @@ def browser_candidates(
 def user_data_dir(config_dir: Path) -> Path:
     """浏览器用户目录在配置目录下的位置。
 
-    为什么不复用用户自己的浏览器 profile：一是他可能正开着浏览器，
+    使用独立浏览器 profile 的依据是：一是他可能正开着浏览器，
     同一个 profile 会被锁住（新进程只会把标签页丢给已开的窗口，不监听调试端口）；
     二是调试端口和临时登录态都不该落进他的日常浏览记录里。
     """
@@ -377,7 +376,7 @@ def user_data_dir(config_dir: Path) -> Path:
 def fallback_profile_dirs(profile: Path) -> list[Path]:
     """``profile`` 用不了时的备用目录（按顺序试）。
 
-    真机上遇到过这一条：配置目录里的 ``browser-profile`` 因为权限或占用，
+    实际运行中遇到过这一条：配置目录里的 ``browser-profile`` 因为权限或占用，
     浏览器一碰就是「[WinError 5] 拒绝访问」，用户看到的就是一句
     「打开浏览器失败」，怎么点都打不开。这时候换到临时目录下的一个新 profile
     通常就能起来 —— 登录窗口本来就是临时的，放哪儿都能用。
@@ -399,8 +398,8 @@ def fallback_profile_dirs(profile: Path) -> list[Path]:
 def fresh_profile_dir() -> Path:
     """一个新的、系统临时目录下的浏览器资料目录。
 
-    为什么登录这条路要**先**用它（v0.13.9 起，见 :meth:`LoginBrowser.start`）：
-    ``--check-browser`` 走的就是这个位置，真机上「登录点不动、可自检里浏览器又
+    登录流程需要**先**使用它（v0.13.9 起，见 :meth:`LoginBrowser.start`）：
+    ``--check-browser`` 走的就是这个位置，实际运行中「登录点不动、可自检里浏览器又
     起得来」的时候，差别往往只在资料目录 —— 配置目录里那个是从上一次登录留到
     现在的，里面存着会话状态，坏掉之后浏览器一起来就退（典型现场是 Edge 退出码
     21），而每次换一个空的就没事。登录窗口本来就是临时的，用完就删。
@@ -416,7 +415,7 @@ def fresh_profile_dir() -> Path:
     )
 
 
-#: 浏览器自己那几句「为什么起不来」是写在 stderr 上的；v0.13.40 起把它留到临时
+#: 浏览器自己那几句「启动失败原因」是写在 stderr 上的；v0.13.40 起把它留到临时
 #: 日志里，报「刚起来就退出了」时最多带上这么多行、这么多字符。
 STDERR_TAIL_LINES = 5
 STDERR_TAIL_CHARS = 600
@@ -451,18 +450,18 @@ def _read_stderr_tail(
     return " / ".join(rows[-lines:])[:limit]
 
 
-#: 我们建在系统临时目录下的目录名前缀：登录用的临时资料目录，以及 ``--check-browser``
+#: 项目建在系统临时目录下的目录名前缀：登录用的临时资料目录，以及 ``--check-browser``
 #: 自检时那一份（``browser_check`` 用 ``mkdtemp(prefix="xdao-browser-check-")`` 建的）。
 #: 两样都是临时的、都该在收尾时删掉，所以清理时要一起认。
 TEMP_DIR_PREFIXES = (f"xdao-export-{USER_DATA_DIR_NAME}", "xdao-browser-check-")
 
 
 def _is_temp_profile_dir(path: Path) -> bool:
-    """这个资料目录是不是「我们建在系统临时目录下」的那种（是就该由我们负责删）。
+    """这个资料目录是否「项目建在系统临时目录下」的那种（是就该由项目负责删）。
 
     认位置 + 名字前缀：系统临时目录下的 ``xdao-export-browser-profile…`` 与
     ``xdao-browser-check-…``。备用候选里也有一个是这么命名的
-    （见 :func:`fallback_profile_dirs`），它同样是我们建出来的，
+    （见 :func:`fallback_profile_dirs`），它同样是项目建出来的，
     收尾得一起清。用户配置目录里的 ``browser-profile`` 不在此列 —— 那是他自己的资料，
     留着下次还能用，不能替他删。
     """
@@ -480,13 +479,13 @@ _FALLBACK_DIR_RE = re.compile(rf"^{re.escape(USER_DATA_DIR_NAME)}-(\d+)-(\d+)$")
 
 
 def _is_fallback_profile_dir(path: Path, profile: Path) -> bool:
-    """这个目录是不是我们建在**配置目录**里的备用资料目录（v0.13.39）。
+    """这个目录是否项目建在**配置目录**里的备用资料目录（v0.13.39）。
 
     这一族曾经是没人收的垃圾：:func:`fallback_profile_dirs` 在配置目录这一级建的名字
     带着当时进程的 PID 和时间戳，下一个进程猜不出名字；而
     :meth:`LoginBrowser.cleanup_temp_profile` 当时只记 ``%TEMP%`` 那一族
     （:func:`_is_temp_profile_dir`）⇒ 程序被强杀（或者某次「起来就退」之后没走到收尾）
-    时，它们就留在用户自己的配置目录里。真机 2026-10-01 量到过两个：
+    时，它们就留在用户自己的配置目录里。运行环境 2026-10-01 量到过两个：
     ``browser-profile-12268-1790850954``（96 个文件 / 5.6MB）与
     ``browser-profile-12268-1790850956``（66 个文件 / 6.3MB）。v0.13.39 起两边都认。
     """
@@ -510,12 +509,12 @@ def _first_line_of(exc: BaseException, limit: int = 90) -> str:
 
 
 def _is_our_profile_dir(path: Path, profile: Path) -> bool:
-    """这个资料目录是不是我们**自己建出来、该由我们收尾删掉**的那种。
+    """这个资料目录是否项目**自己建出来、该由项目收尾删掉**的那种。
 
     用户配置目录里那份持久的 ``browser-profile`` 靠名字/位置两道规则挡在外面
     （它既不在系统临时目录下，名字也不符合 ``browser-profile-<数字>-<数字>``），
     那是他下次还要用的登录状态，不能替他删。注意 ``--check-browser`` 那条路会把
-    自建在 ``%TEMP%`` 里的那份**当成** ``profile`` 传进来，那一份照样算我们的。
+    自建在 ``%TEMP%`` 里的那份**当成** ``profile`` 传进来，那一份照样算项目的。
     """
     path = Path(path)
     profile = Path(profile)
@@ -543,7 +542,7 @@ DEAD_PROFILE_MARKER = "login-failures.txt"
 
 
 def _profile_in_use(profile: Path) -> bool:
-    """这一份临时资料目录是不是还有活着的浏览器在用？
+    """这一份临时资料目录是否还有活着的浏览器在用。
 
     看 ``DevToolsActivePort`` 里那个端口答不答话：浏览器还开着这个目录时它一定答话
     （程序被强杀时浏览器自己会活下来），那一份就不能删。文件不在、端口是死的、
@@ -592,7 +591,7 @@ def _dead_profile_strikes(profile: Path) -> int:
 def _note_dead_profile_strike(profile: Path, note: str = "") -> int:
     """记一次「刚起来就退出」，返回连着的次数；写不进去就回 0（不拿它赌任何事）。
 
-    为什么要跨进程留一份账：真机上「这一份资料目录的旧状态坏了」是一票否决式的病
+    跨进程保留状态记录的原因是：实际运行中「这一份资料目录的旧状态坏了」是一票否决式的病
     —— 只要那份目录不换掉，用户每次点「用浏览器登录」都是同一个下场，界面上看不出
     任何变化。所以次数必须留在盘上，而放在**用户配置目录那份持久资料目录里面**正合适。
     """
@@ -621,7 +620,7 @@ def _quarantine_profile_dir(profile: Path, *, stamp: str | None = None) -> Path 
 
     名字取 ``browser-profile.damaged-<时间戳>``：既不符合备用目录那一族的严格命名
     （``browser-profile-<数字>-<数字>``，见 :func:`_is_fallback_profile_dir`），也不在
-    临时目录前缀里，所以两个清扫函数都不会把它当垃圾顺手删掉 —— 里面存的是用户
+    临时目录前缀里，所以两个清扫函数都不会把它当垃圾同时删掉 —— 里面存的是用户
     以前的登录状态，留着他随时可以自己删、或者改名回来接着用。
 
     ``stamp`` 只给用例用（好把名字钉死），正常调用留空。
@@ -642,7 +641,7 @@ def _quarantine_profile_dir(profile: Path, *, stamp: str | None = None) -> Path 
 
 
 def _sweep_one_profile_dir(entry: Path, min_age: float, keep_set: set[Path]) -> bool:
-    """试删一个「我们自己的」资料目录，真删掉了才回 True。
+    """试删一个「程序管理的」资料目录，真删掉了才回 True。
 
     两个扫法（临时目录族、配置目录下的备用族）共用这一段判据，见
     :func:`sweep_stale_temp_profiles` 里那三条。
@@ -670,9 +669,9 @@ def sweep_stale_temp_profiles(
 
     :meth:`LoginBrowser.cleanup_temp_profile` 只在**程序自己收尾**时删。程序被强杀
     （任务管理器结束进程、停电、被安全软件拦下）就没人收尾，那些目录会一直躺在
-    ``%TEMP%`` 里 —— 真机上量到过 147 个，多数是空壳，也有一次登录十几 MB 的。
+    ``%TEMP%`` 里 —— 实际运行中量到过 147 个，多数是空壳，也有一次登录十几 MB 的。
 
-    三条全中才删：在系统临时目录下且名字前缀是我们的（:data:`TEMP_DIR_PREFIXES`）；
+    三条全中才删：在系统临时目录下且名字前缀是项目的（:data:`TEMP_DIR_PREFIXES`）；
     目录的修改时间比 ``min_age`` 秒还老（刚建出来的多半是别的实例正在用）；
     **调试端口没人答话**（见 :func:`_profile_in_use`）。``keep`` 里的路径一律不碰
     （这次会话自己建的那几份）。删不掉的留着，下次启动再说 —— 这里不跟文件较劲。
@@ -729,7 +728,7 @@ def _window_candidates(profile: Path) -> list[Path]:
     """**可能**是自家窗口的资料目录（去重、保持顺序）：现场目录 + 备用目录 + %TEMP% 临时目录。
 
     备用目录与临时目录的名字里带着**上一个进程**的 PID / 时间戳，新进程猜不出名字，
-    只能列出来挨个问（真机 复现记录 的普查盲区就是这么来的）。
+    只能列出来挨个问（复现时的普查盲区就是这么来的）。
     """
     candidates: list[Path] = [profile, *fallback_profile_dirs(profile)]
     try:
@@ -775,7 +774,7 @@ def starting_window_dirs(
 ) -> list[Path]:
     """刚开出来、调试端口还没开始收连接的那几扇窗口的资料目录（v0.17.3）。
 
-    为什么需要它（真机 2026-10-18 现场）：用户点一次「用浏览器登录」，屏幕上留下
+    该步骤用于处理以下情况：用户点一次「用浏览器登录」，屏幕上留下
     四扇 Edge、一扇 Chrome，全停在登录页。日志里 ``[17:49:31] 开窗前普查：没探到
     活着的程序窗口，这次是全新开的一扇`` 与 18 秒后的
     ``逐窗=端口60463 …browser-profile-15884：PHPSESSID`` 直接矛盾 —— 普查那一刻
@@ -831,8 +830,8 @@ def wait_for_attachable_window(
 ) -> list[Path]:
     """等「正在启动的那扇窗」把端口接上，返回活着的目录表；等不到回空表（v0.17.3）。
 
-    为什么要有这一步：开窗前普查只能问端口，端口答不话的窗在它眼里等于不存在。
-    真机上那几秒里浏览器还在装扩展、还没把调试服务拉起来，于是程序又开一扇 ——
+    增加该步骤的原因是：开窗前普查只能问端口，端口答不话的窗在它眼里等于不存在。
+    实际运行中那几秒里浏览器还在装扩展、还没把调试服务拉起来，于是程序又开一扇 ——
     一次点击开出好几扇窗的现场就是这么来的。这里先给它 :data:`STARTING_WAIT` 秒。
 
     返回空表有两种意思，调用方要分清：
@@ -845,7 +844,7 @@ def wait_for_attachable_window(
     也值得等一等。
 
     普查本身走 :func:`live_browser_dirs`（模块级，用例会把它钉成空表，免得真去读
-    开发机 ``%TEMP%`` 里遗留的窗）；只在用例显式传 ``probe`` 时才就地扫。
+    测试环境 ``%TEMP%`` 里遗留的窗）；只在用例显式传 ``probe`` 时才就地扫。
     """
     ask = probe if probe is not None else _profile_in_use
     clock = now if now is not None else time.monotonic
@@ -878,7 +877,7 @@ def kill_profile_processes(profile: Path) -> None:
     """把用着这份资料目录的浏览器进程收掉（收尾兜底用，v0.17.3）。
 
     和 :func:`_kill_processes_using_profile` 是同一手，只是给外面一个明确的名字：
-    程序关窗、退出时要能对**不属于本次对象**的那扇窗动手（接手的窗口 ``process``
+    程序关窗、退出时要能对**不属于本次对象**的那扇窗动手（已复用的窗口口 ``process``
     是 ``None``，只终结 process 会把它漏下来）。
     """
     _kill_processes_using_profile(Path(profile))
@@ -904,9 +903,9 @@ def sweep_orphan_profiles(
     kill=None,
     grace: float = STARTING_GRACE,
 ) -> tuple[list[Path], list[Path]]:
-    """收掉上次处理程序退出时留下的孤儿窗口与临时目录（v0.17.3）。
+    """收掉先前批次程序退出时留下的孤儿窗口与临时目录（v0.17.3）。
 
-    真机 2026-10-18 现场：程序退出后 ``%TEMP%\\xdao-export-browser-profile-15884``
+    运行环境 2026-10-18 现场：程序退出后 ``%TEMP%\\xdao-export-browser-profile-15884``
     里那扇 Edge 还开着（端口 60463 还答话，占了 598 MB）。第二天用户重开程序，
     端口普查把它认成「还活着的程序窗口」—— 可它没有登录痕迹、横幅也早没了，用户
     根本不会去用它。这类孤儿窗还会让普查在「两扇窗两个罐」之间来回挑。
@@ -918,7 +917,7 @@ def sweep_orphan_profiles(
     * 端口还答话的先问罐（:func:`window_userhash`）：有 userhash 的留着 —— 那是用户
       真登过的窗，可能正开在屏幕上；没有的才算孤儿，杀进程 + 删目录。
 
-    ``grace`` 秒内刚写过端口文件的目录跳过：那可能是本次处理正在启动的窗。
+    ``grace`` 秒内刚写过端口文件的目录跳过：那可能是当前批次正在启动的窗。
     返回 ``(清掉的目录, 留下的目录)``，调用方拿去写一行日志。
     """
     ask = probe if probe is not None else _profile_in_use
@@ -934,7 +933,7 @@ def sweep_orphan_profiles(
         except OSError:
             continue
         if now - mtime <= grace:
-            continue  # 刚起来的：可能是本次处理正在开的窗
+            continue  # 刚起来的：可能是当前批次正在开的窗
         if ask(candidate):
             try:
                 port, ws_path = _parse_devtools_file(
@@ -958,13 +957,13 @@ def sweep_orphan_profiles(
 def stale_window_dirs(profile: Path) -> list[str]:
     """有 ``DevToolsActivePort``、但那个端口**不答话**的自家目录名（v0.13.46）。
 
-    为什么单列这一族（真机 复现记录/复现记录）：对账行一直「接=端口…、罐=browser-profile、
+    这一类目录需要单独扫描：对账行一直「接=端口…、罐=browser-profile、
     全罐=1」，而同一屏的 F12 里明明有三条饼干含 userhash。逐窗读又一句都没多报 ——
     说明那把 userhash 所在的窗**不是**程序能问到的活窗。可能的两种形状靠这一族分开：
     那扇窗的调试端口已经死了（文件还在）⇒ 名字出现在这里；那扇窗压根不是程序开的
     （用户自己平时的浏览器）⇒ 这一族也空，只剩「请在那扇窗里登录或直接粘贴饼干」一条路。
 
-    只报目录名、不报路径（这行会被用户截图贴到公开版面）。按端口文件修改时间倒序。
+    只报目录名、不报路径（这行会被界面截图贴到公开版面）。按端口文件修改时间倒序。
     """
     stale: list[tuple[float, str]] = []
     for candidate in _window_candidates(profile):
@@ -988,7 +987,7 @@ def _parse_program_profile_lines(text: str, profile: Path) -> list[Path]:
 
     - 配置目录下名字以 ``browser-profile`` 开头的（现场目录和它的全部备用目录），
       外加现场目录里那个 ``_new`` 候选；
-    - %TEMP% 下带我们前缀的（登录临时目录与 ``--check-browser`` 自检目录）。
+    - %TEMP% 下带项目前缀的（登录临时目录与 ``--check-browser`` 自检目录）。
 
     用户自己浏览器的 ``User Data`` 两族都不沾 —— 这是铁律：**普查永远不许碰他
     自己的窗**。比对不分大小写（Windows 路径本来就不分）。返回去重后的目录表。
@@ -1024,9 +1023,9 @@ def _parse_program_profile_lines(text: str, profile: Path) -> list[Path]:
 
 
 def program_profile_dirs(profile: Path) -> list[Path]:
-    """进程侧普查：此刻有哪些**活进程**正用着我们家的资料目录（v0.13.37）。
+    """进程侧普查：此刻有哪些**活进程**正用着项目家的资料目录（v0.13.37）。
 
-    为什么端口普查不够（真机 复现记录 的定案）：饼干窗硬刷新都不弹回登录页 ——
+    仅按调试端口普查可能遗漏活动进程：饼干窗硬刷新都不弹回登录页 ——
     那扇窗的进程罐里明明有一张有效 userhash；程序的对账却写着 页=1（只有登录页）、
     整罐只有 PHPSESSID。两边都是真的，因为它们是**两个浏览器进程**：旧那扇的
     ``DevToolsActivePort`` 被后来哪一轮 ``_launch`` 预删了（:meth:`_launch` 里那手
@@ -1088,7 +1087,7 @@ def _parse_profile_process_pids(text: str, profile: Path) -> list[int]:
 def profile_process_pids(profile: Path) -> list[int]:
     """问一次系统：此刻有几个浏览器进程正拿着这个资料目录（v0.13.46，**只读**）。
 
-    为什么单问这一句（真机 复现记录 的形状）：程序 CDP 读到的那只罐里只有一条
+    独立查询进程数量的依据是：程序 CDP 读到的那只罐里只有一条
     PHPSESSID、逐窗读也没探到别的活窗口，可用户在同一个目录名（``browser-profile``）
     的另一扇窗里明明登着、F12 里三条饼干都在。同一只罐不可能一条也读不到，
     只有两种形状说得通：
@@ -1137,8 +1136,8 @@ def _parse_user_data_dir(text: str) -> str:
 def profile_of_process(pid: int, *, timeout: float = 20.0) -> str:
     """问系统：这个 PID 的浏览器**真正**在用哪只资料目录（v0.13.51，**只读**）。
 
-    为什么不信 ``used_profile``：那是程序**打算**用的候选目录，不一定就是眼前这只
-    浏览器真在用的那只。真机 复现记录 的对账行报的是配置目录里的
+    不能仅依赖 ``used_profile``：那是程序**打算**用的候选目录，不一定就是眼前这只
+    浏览器真在用的那只。复现时的对账行报的是配置目录里的
     ``…/xdao-export/browser-profile``，可磁盘上那只罐一个多月没被碰过、``Cookies``
     一行都没有 —— 那只浏览器其实用的是 %TEMP% 里的一次性目录（关窗就删），
     日志里那行路径把「哪一只罐」指错了方向。命令行才是实据。
@@ -1169,14 +1168,14 @@ def profile_of_process(pid: int, *, timeout: float = 20.0) -> str:
 
 
 def _profile_failure(exc: BaseException) -> bool:
-    """这次失败是不是「这个 profile 用不了」造成的（权限 / 占用）。
+    """这次失败是否「这个 profile 用不了」造成的（权限 / 占用）。
 
     Windows 上看错误码：5 = 拒绝访问，32 = 文件被占用。别的错（比如浏览器路径
     不对、启动就退出）换目录也没用，别白白重试一遍。
 
-    顺带认一下 ``errno``：同一个错误在 Linux / macOS 上只带 ``errno``（分别是
+    同时认一下 ``errno``：同一个错误在 Linux / macOS 上只带 ``errno``（分别是
     ``EACCES`` 和 ``EBUSY``），而且 Linux 上 ``OSError(..., winerror=5)`` 会把
-    ``winerror`` 抹成 ``None`` —— 真机行为靠 Windows 那两个码，跨平台只认这两个。
+    ``winerror`` 抹成 ``None`` —— 运行环境行为靠 Windows 那两个码，跨平台只认这两个。
 
     要顺着 ``__cause__`` / ``__context__`` 一起看：启动失败是包成
     :class:`CdpError` 抛出来的，只盯着最外层会漏掉里面那个 ``PermissionError``。
@@ -1199,9 +1198,9 @@ def _profile_failure(exc: BaseException) -> bool:
 
 
 def _devtools_read_failure(exc: BaseException) -> bool:
-    """这次失败是不是「调试端口写了、口却连不上」。
+    """这次失败是否「调试端口写了、口却连不上」。
 
-    真机上的表现（用户截图）：
+    实际运行中的表现（界面截图）：
     ``打开浏览器失败：读取浏览器的调试接口失败：<urlopen error [WinError 10061]
     由于目标计算机积极拒绝，无法连接。>``
 
@@ -1231,9 +1230,9 @@ def _devtools_read_failure(exc: BaseException) -> bool:
 
 
 def _dead_on_startup(exc: BaseException) -> bool:
-    """这次失败是不是「浏览器刚起来就退出了」。
+    """这次失败是否「浏览器刚起来就退出了」。
 
-    真机上量到过：Edge 起来就退，退出码 21（用户装了安全软件）。这类失败和
+    实际运行中量到过：Edge 起来就退，退出码 21（用户装了安全软件）。这类失败和
     资料目录里的旧状态有关 —— 换一个空目录、或者换一个浏览器，常常就没事了，
     所以 :meth:`LoginBrowser.start` 会为它多试几轮，而不是立刻报错。
 
@@ -1268,7 +1267,7 @@ def build_args(
     ``start_url`` 默认是登录页；PDF 渲染这类「不需要人看」的场景会传本地文件地址。
 
     ``headless=True`` 给 PDF 用（v0.17.3）：那条路只要页面渲染结果，不需要人看窗口。
-    真机 2026-10-18 的教训是它也会被用户当成「浏览器窗口乱弹」投诉，所以 PDF 一律
+    运行环境 2026-10-18 的教训是它也会被用户当成「浏览器窗口乱弹」投诉，所以 PDF 一律
     不显示窗口。登录那条路必须看得见窗口，所以默认是 False。
 
     打包好的 exe 里还要补 ``--no-sandbox``（冻结环境里浏览器会以 STATUS_BREAKPOINT
@@ -1297,7 +1296,7 @@ def build_args(
 
 
 def _site_host() -> str:
-    """站点的域名，用来判断「当前页面是不是已经在站内」。"""
+    """站点的域名，用来判断「当前页面是否已经在站内」。"""
     return urllib.parse.urlsplit(COOKIE_SITE).hostname or ""
 
 
@@ -1306,7 +1305,7 @@ def ensure_login_page(session: "CDPSession") -> bool:
 
     只在页面确实不在站内时才导航：用户可能已经登录、正在自己的页面上点，
     没必要每隔几秒就把标签页拽回登录页。
-    需要它的场景是：我们连上的那个标签还停在 ``about:blank``（浏览器刚起来、
+    需要它的场景是：项目连上的那个标签还停在 ``about:blank``（浏览器刚起来、
     起始地址还没落地），这时候不导航的话，页面里的 ``fetch`` 根本读不到饼干。
     """
     try:
@@ -1347,7 +1346,7 @@ def _parse_devtools_file(text: str) -> tuple[int, str]:
 def _port_file_fresh(
     text: str, mtime: float, stale_text: str | None, stale_mtime: float | None
 ) -> bool:
-    """这份端口文件是不是我们这次启动**之后**写出来的（v0.13.38）。
+    """这份端口文件是否项目这次启动**之后**写出来的（v0.13.38）。
 
     ``stale_*`` 是启动前记下的旧内容与旧时间戳（原本没有这个文件时都是 ``None``）。
     只要两者之一对不上（内容变了、或者时间戳变了），就说明浏览器新写了一份、可以认。
@@ -1364,7 +1363,7 @@ def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
 
     浏览器把渲染、GPU、崩溃上报拆成一堆子进程，它们同样占着用户目录里的文件：
     只 terminate 父进程的话，界面层随后删临时目录会失败，在 %TEMP% 里留下删不掉的垃圾。
-    ``taskkill /T`` 收的是我们自己启动的这一棵进程树，不会碰到用户自己开着的浏览器。
+    ``taskkill /T`` 收的是当前实例启动的这一棵进程树，不会碰到用户自己开着的浏览器。
     任何一步失败都不抛异常 —— 收尾阶段的报错不该盖住真正的问题。
     """
     try:
@@ -1386,16 +1385,16 @@ def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
 def _kill_processes_using_profile(profile: Path) -> None:
     """把命令行里带这个资料目录的浏览器进程收掉（只为让目录删得掉）。
 
-    为什么要单独有这一手：浏览器是多进程的，**父进程退出不等于子进程都走了** ——
-    真机上就是这么留下过一批还开着 ``--user-data-dir=<临时目录>`` 的 msedge 子进程，
+    增加该处理步骤的原因是：浏览器是多进程的，**父进程退出不等于子进程都走了** ——
+    实际运行中就是这么留下过一批还开着 ``--user-data-dir=<临时目录>`` 的 msedge 子进程，
     把目录里的文件句柄按着，界面层随后怎么删都删不干净。``taskkill /T`` 只收得住
-    我们自己启动的那一棵树，收不住「父进程已经把活交出去、自己先退了」的那些。
+    当前实例启动的那一棵树，收不住「父进程已经把活交出去、自己先退了」的那些。
 
     用绝对路径匹配命令行，免得把用户自己开着的浏览器窗口误伤；查不到就什么都不做。
 
     **这里的 ``subprocess`` 是当场 import 标准库拿的**，不走本模块顶部那个名字：
     用例会把 ``browser_login.subprocess.Popen`` 换成替身来假装浏览器，收尾时要是
-    顺手用了那个替身，就会在测试里真去弹一个 powershell。收尾这一手没有别的意思，
+    同时用了那个替身，就会在测试里真去弹一个 powershell。收尾这一手没有别的意思，
     就是想删目录，不该被替身带着走。
     """
     if not _KILL_PROFILE_PROCESSES:  # 用例把它关掉：里面要真起一个 powershell
@@ -1426,7 +1425,7 @@ class LoginBrowser:
 
     用 ``with`` 用：进入时启动并等端口出现，退出时关掉。
     调试端口固定写 ``--remote-debugging-port=0``，由浏览器自己挑空闲端口，
-    避免和我们自己或其他程序的端口撞车。
+    避免和当前实例或其他程序的端口撞车。
     """
 
     def __init__(
@@ -1453,18 +1452,18 @@ class LoginBrowser:
         #: 启动进程先退出、窗口留下来时认下那扇窗的一句话（见 :attr:`handoff_note`）。
         self._handoff_note = ""
         #: 这一次启动逐个候选试下来，每一次失败各留一句话（v0.17.5）。
-        #: 只进运行日志，不改任何行为 —— 真机上「一次点击弹出好几扇窗」时，
-        #: 这几行是唯一能对出「哪一扇试过、为什么放弃」的证据。
+        #: 只进运行日志，不改任何行为 —— 实际运行中「一次点击弹出好几扇窗」时，
+        #: 这几行是唯一能对出「哪一扇试过、放弃原因」的证据。
         self._attempt_notes: list[str] = []
         self.proxy = proxy
         self.timeout = timeout
         self.start_url = start_url or LOGIN_URL
         #: 不显示窗口（v0.17.3：PDF 渲染用）。登录那条路必须看得见窗口。
         self.headless = bool(headless)
-        #: 启动时要不要接手之前开着的程序窗口（v0.17.3 收口成参数）。
+        #: 启动时要不要复用之前开着的程序窗口（v0.17.3 收口成参数）。
         #: PDF 渲染不能接 —— 它要的是干净的一次性页面，不是用户正在用的那扇窗。
         self.attach_live = bool(attach_live)
-        #: 这次是**接手**了别人开着的窗口、而不是自己 Popen 出来的（见 :meth:`stop`）。
+        #: 这次是**复用**了别人开着的窗口、而不是自己 Popen 出来的（见 :meth:`stop`）。
         self._attached = False
         #: 现场目录起不来时要不要换备用资料目录 / 换浏览器。登录那条路要（见 :meth:`start`），
         #: 但 ``--check-browser`` 那种「如实回答这一个浏览器行不行」的探测里必须关掉。
@@ -1497,8 +1496,8 @@ class LoginBrowser:
     def handoff_note(self) -> str:
         """启动进程先退出、窗口被交到别的进程时，记一句给用户看的话（v0.17.4）。
 
-        为什么要说：用户看到的只是「窗口出来了」，而程序这边差一点就把这扇窗判成
-        「刚起来就退出」再开一扇。这句话写进运行日志，事后核对「到底开没开第二扇」
+        补充该提示的原因是：用户看到的只是「窗口出来了」，而程序这边差一点就把这扇窗判成
+        「刚起来就退出」再开一扇。这句话写进运行日志，事后核对「实际开没开第二扇」
         时，它是唯一的一手证据。
         """
         return self._handoff_note
@@ -1507,9 +1506,9 @@ class LoginBrowser:
     def attempt_notes(self) -> tuple[str, ...]:
         """这一次启动里每个失败候选各留一句话（v0.17.5）。
 
-        为什么要有：真机 2026-10-18 的用户**只点了一次**「用浏览器登录」，桌上却
+        设计依据：运行环境 2026-10-18 的用户**只点了一次**「用浏览器登录」，桌上却
         17 秒里多出四扇窗。而日志里只有最后成功那一句 —— 候选表试了几个目录、
-        每一扇为什么被放弃，全被内部消化掉了，事后无从对账。这些行只写日志，
+        每个候选被放弃的原因，全被内部消化掉了，事后无从对账。这些行只写日志，
         不占登录对话框、也不改重试节奏：看得见的东西归界面，查案用的归日志。
         """
 
@@ -1517,11 +1516,11 @@ class LoginBrowser:
 
     @property
     def census_note(self) -> str:
-        """开窗前探到几扇「还活着的程序窗口」、接没接手（v0.13.35）。
+        """开窗前探到几扇「还活着的程序窗口」、是否复用（v0.13.35）。
 
-        真机 复现记录 的谜团只剩一种解释没被排除：用户登录的那扇窗和程序读罐的那扇
+        复现时的谜团只剩一种解释没被排除：用户登录的那扇窗和程序读罐的那扇
         不是同一扇（旧窗口带着**冻住的横幅**幸存）。这一句把普查结果写进运行日志，
-        和「读罐对账」的罐名并排，一眼定案。没做普查（``fallback_profiles`` 关掉）
+        和「读罐对账」的罐名并排，直接确认。没做普查（``fallback_profiles`` 关掉）
         时是空串。
         """
         return self._census_note
@@ -1537,7 +1536,7 @@ class LoginBrowser:
         **先试一个全新的临时资料目录**（v0.13.9 起，见 :func:`fresh_profile_dir`），
         再试配置目录里那个 ``browser-profile``，最后才是别的备用目录。
 
-        为什么把顺序倒过来：真机上出现过「点『用浏览器登录』永远是『刚起来就退出
+        调整候选顺序的依据是：实际运行中出现过「点『用浏览器登录』永远是『刚起来就退出
         （退出码 21）』，可自检里那个『试浏览器』明明说 Edge 起得来」。两边的差别
         就在资料目录 —— 自检每次都用新的临时目录，登录用的是配置目录里那个**从上
         一次登录留到现在的**目录，里面存着会话状态，坏掉之后每次都同一个下场。
@@ -1547,11 +1546,11 @@ class LoginBrowser:
         ``profile`` 仍然留在候选里：那是用户自己配置目录下的位置，能起来时用它
         （里面可能有他上次登录过的痕迹），起不来才跳过。
 
-        另一种真机上见过的失败是「调试端口写了、口却连不上」——进程当场没了，
+        另一种实际运行中见过的失败是「调试端口写了、口却连不上」——进程当场没了，
         或者安全软件把本地调试端口拦了。前一种换一个干净资料目录就能起来，
         所以``_devtools_read_failure`` 也归到「换目录重试」那一类。
 
-        还有一种是「浏览器刚起来就退出」（真机上量到过 Edge 退出码 21，
+        还有一种是「浏览器刚起来就退出」（实际运行中量到过 Edge 退出码 21，
         用户装的是安全软件）。这类失败跟资料目录的内容有关：现场那个
         ``browser-profile`` 里存着上一次的会话状态，坏掉之后**每次**都是同一个
         下场，换个空目录就没事了。所以这一种也换目录重试（备用目录都是新建的），
@@ -1559,14 +1558,14 @@ class LoginBrowser:
         单独一个浏览器被拦下，不该让用户彻底用不了浏览器登录。
 
         v0.13.41：这一种失败如果**连着**栽在配置目录里那份持久资料目录
-        （``browser-profile``）身上，程序不再只是绕过去 —— 换目录只是本次处理能登录，
+        （``browser-profile``）身上，程序不再只是绕过去 —— 换目录只是当前批次能登录，
         用户下次点还是同一个下场、读同一句错。所以攒够
         :data:`DEAD_PROFILE_STRIKES` 次就把它改名让位，见
         :meth:`_quarantine_dead_persistent`。
 
         v0.17.3：开窗前那次普查之后多了**宽限重探**（见 :meth:`_try_attach_live`）——
         刚弹出来、调试服务还在起步的那扇窗在端口普查眼里等于不存在，不等它就会
-        在它旁边再开一扇，一次点击开出好几扇窗（真机 2026-10-18 的现场）。
+        在它旁边再开一扇，一次点击开出好几扇窗（运行环境 2026-10-18 的现场）。
         """
         if self.process is not None:
             return self
@@ -1589,7 +1588,7 @@ class LoginBrowser:
         first_error: BaseException | None = None
         dead_on_startup = False
         #: 这一次持久资料目录（配置目录里那份 ``browser-profile``）**自己**也是
-        #: 「刚起来就退出」。只有它中招才值得记账 / 让位 —— 临时目录是本次处理新建的，
+        #: 「刚起来就退出」。只有它中招才值得记账 / 让位 —— 临时目录是当前批次新建的，
         #: 坏了删掉再建一份就是（见 v0.13.41 的 :meth:`_quarantine_dead_persistent`）。
         dead_persistent = False
         attempt_no = 0  # 第几扇窗（v0.17.5：失败也留一行进日志）
@@ -1599,7 +1598,7 @@ class LoginBrowser:
                 self.info = browser
                 self._browser_note = f"{browsers[0].name} 起不来，这次改用 {browser.name}。"
             # 候选表**每个浏览器各算一次**，第一个候选每次都新建一个临时目录。
-            # 为什么不共用一张表：真机上量到过「第一个浏览器把临时目录试败、目录当场
+            # 每个浏览器独立维护候选表：实际运行中量到过「第一个浏览器把临时目录试败、目录当场
             # 删掉，换下一个浏览器时第一个候选还是那个路径，``_launch`` 的 mkdir 又把它
             # 建出来，可这时 ``temp_profile`` 已经清空了 —— 那一份空壳就永远没人删」。
             # 换浏览器就换个干净目录，既躲开这个坑，也更合「每次都试空目录」的本意。
@@ -1623,9 +1622,9 @@ class LoginBrowser:
                     )
                     self._reset_process()
                     if _is_our_profile_dir(chosen, self.profile):
-                        # v0.17.4：本次处理起的窗可能还活着（启动进程先退、窗口留了
+                        # v0.17.4：当前批次起的窗可能还活着（启动进程先退、窗口留了
                         # 下来），按目录收干净再试下一个候选。不收的话，候选表里每
-                        # 试一个就在桌上多一扇 —— 真机 2026-10-18 就是这么堆出五扇的。
+                        # 试一个就在桌上多一扇 —— 实际运行环境 2026-10-18 就是这么堆出五扇的。
                         kill_profile_processes(chosen)
                     if first_error is None:
                         first_error = exc
@@ -1642,7 +1641,7 @@ class LoginBrowser:
                         # 头一次失败就换目录重试，用户只会在界面上看到一句说明。
                         self._profile = chosen
             if not self.fallback_profiles:
-                # 只问「这一个浏览器行不行」时，别顺手把别的浏览器也启起来。
+                # 只问「这一个浏览器行不行」时，别同时把别的浏览器也启起来。
                 break
         # 备用目录和其它浏览器都不行：如实把原始错误报上去，别拿最后一次的错盖掉真原因。
         # 报错之前再确认一次临时目录都收干净了 —— 失败路径上 ``_launch`` / ``_reset_process``
@@ -1672,7 +1671,7 @@ class LoginBrowser:
     def _quarantine_dead_persistent(self, dead_persistent: bool) -> Path | None:
         """持久资料目录一次次「刚起来就退出」时，把它改名让位（v0.13.41）。
 
-        为什么非做不可：真机上「这一份目录的旧状态坏了」是**每次**都同一个下场 ——
+        设计目的：实际运行中「这一份目录的旧状态坏了」是**每次**都同一个下场 ——
         用户点一次「用浏览器登录」，程序照旧把它当候选、照旧失败，界面上看不出任何
         变化，只能一遍遍读同一句错。可它又是用户自己的目录（存着他上次的登录状态），
         程序没有权力替他删。
@@ -1680,8 +1679,8 @@ class LoginBrowser:
         所以口径是两句话：**连着** :data:`DEAD_PROFILE_STRIKES` 次都栽在它身上，才认
         定它没救了；确认之后只**改名**（:func:`_quarantine_profile_dir`），一个字都不删。
 
-        三条不许动手的底线：本次处理它自己没出过「刚起来就退出」（``dead_persistent``
-        为假）、它不属于我们该收尾删的那几族（``--check-browser`` 自建在 %TEMP% 里的
+        三条不许动手的底线：当前批次它自己没出过「刚起来就退出」（``dead_persistent``
+        为假）、它不属于项目该收尾删的那几族（``--check-browser`` 自建在 %TEMP% 里的
         那份归 :meth:`cleanup_temp_profile` 管，改名反而会让它没人收）、以及
         **端口还答话**（那说明有一扇窗正开着它 —— 那是「地上两个罐」的现场，不是
         死目录，见 :meth:`_try_attach_live`）。
@@ -1698,11 +1697,11 @@ class LoginBrowser:
     def _adopt_process_side_findings(self, live: list[Path]) -> list[Path]:
         """进程侧普查的补刀：端口普查只认「名字猜得到」的目录，这一手直接问操作系统（v0.13.37）。
 
-        真机 复现记录 的现场：用户硬刷新都不弹回的饼干窗，端口普查却报「没探到」——
+        复现时的现场：用户硬刷新都不弹回的饼干窗，端口普查却报「没探到」——
         那扇窗的 DevToolsActivePort 早被哪一轮 ``_launch`` 预删了，备用目录的名字
         又带着**当时进程**的 PID，新进程猜不出。凡是进程侧探到的自家目录：
-        端口还答话的（只是名字猜不到）补进接手名单；端口已经失联的僵尸窗**先收掉**
-        ——留着它，用户在那扇窗里登录、点「应用」，程序本次处理的新罐永远看不见，
+        端口还答话的（只是名字猜不到）补进复用候选名单；端口已经失联的僵尸窗**先收掉**
+        ——留着它，用户在那扇窗里登录、点「应用」，程序当前批次的新罐永远看不见，
         两边又对不上。收掉之后照常开新窗，世界上重新只有一扇程序窗口、一个罐。
 
         返回真正被点去收掉的僵尸目录（活目录就地追加进 ``live``）。只读不改端口
@@ -1711,7 +1710,7 @@ class LoginBrowser:
 
         v0.17.3：**正在启动**的那扇窗不许收 —— 端口文件刚写出来、调试服务还没开始
         收连接时，它在端口普查眼里和「僵尸窗」长得一模一样，但它是活的正要用的那扇。
-        收掉它等于把用户眼前刚弹出来的窗当场掐死（真机 2026-10-18 现场「第一扇莫名
+        收掉它等于把用户眼前刚弹出来的窗当场掐死（运行环境 2026-10-18 现场「第一扇莫名
         关掉、第二扇报 Edge 意外关闭」）。这一类一律补进 ``live``，交给
         :func:`wait_for_attachable_window` 去等它把端口接上。
         """
@@ -1723,7 +1722,7 @@ class LoginBrowser:
                 continue
             known.add(key)
             if _profile_in_use(found) or _is_starting_window(found):
-                # 端口还答话（只是名字猜不到）或者刚启动还没答话：都补进接手名单。
+                # 端口还答话（只是名字猜不到）或者刚启动还没答话：都补进复用候选名单。
                 live.append(found)
                 continue
             _kill_processes_using_profile(found)
@@ -1733,36 +1732,36 @@ class LoginBrowser:
     def _try_attach_live(self) -> "LoginBrowser | None":
         """上次程序开的浏览器窗口还开着，就直接接上它（v0.13.33）。
 
-        为什么非做不可：v0.13.9 起每次尝试都换一份新临时目录、开一扇新窗口。
+        设计目的：v0.13.9 起每次尝试都换一份新临时目录、开一扇新窗口。
         上一次那扇要是还开着（程序被强杀、或收尾没杀掉浏览器的场景），用户在
-        眼前那扇里登录、点「应用」，程序盯的却是本次处理的新罐 —— 两边永远对不上，
-        「每次都手动点了应用还是抓不到饼干」（真机 复现记录）就是这个样子。
+        眼前那扇里登录、点「应用」，程序盯的却是当前批次的新罐 —— 两边永远对不上，
+        「每次都手动点了应用还是抓不到饼干」（实际运行中）就是这个样子。
         复用之后世界上同一时刻只有一扇程序窗口、一个罐。
         接法跟 :meth:`_launch` 拿到端口后一模一样：端口和 WebSocket 路径都从
         那扇窗自己的 ``DevToolsActivePort`` 里读。接不上（中途退了、文件读不动）
         就回 None，照常新开。
 
         v0.13.35：无论接没接上，都把**普查结果**记进 :attr:`census_note`（探到几扇、
-        目录叫什么、接的是哪扇）。真机 复现记录 的教训：「程序读空罐、用户 F12 却有
+        目录叫什么、接的是哪扇）。复现时的教训：「程序读空罐、用户 F12 却有
         饼干」只要发生在两扇窗之间就永远解释不通，而旧窗口的横幅会**冻**在原地装
-        成活的 —— 光看横幅分不清。日志里有了这句，配上「读罐对账」的罐名，一眼定案。
+        成活的 —— 光看横幅分不清。日志里有了这句，配上「读罐对账」的罐名，直接确认。
 
-        v0.13.37 补刀：端口普查只认「名字猜得到」的目录，真机 复现记录 现场那扇
+        v0.13.37 补刀：端口普查只认「名字猜得到」的目录，实际运行中 现场那扇
         硬刷新都不弹回的饼干窗偏偏猜不到 —— 端口文件早被哪轮 ``_launch`` 预删了。
         于是普查瞎报「没探到」、又开一扇，世界上出现两个罐。现在问完端口再问进程
         （:meth:`_adopt_process_side_findings`）：端口失联的僵尸窗**先收掉**，
-        名字猜不到但端口还答话的补进接手名单。
+        名字猜不到但端口还答话的补进复用候选名单。
 
-        v0.13.38 两处补刀。一是 :meth:`_launch` 不再删别人的端口文件了，复现记录 的
+        v0.13.38 两处补刀。一是 :meth:`_launch` 不再删别人的端口文件了，复现过程中的
         另一半成因就此消掉（那一手原本怕读到过期端口，代价是把还开着的窗弄瞎）。
         二是**多扇窗时先问罐**：不再是「按端口文件时间戳挑第一扇」——那跟「哪扇窗
         登录过」没有半点关系——而是挨个问一遍（:func:`window_userhash`），罐里真有
-        userhash 的那扇优先接手（见 :meth:`_order_by_login`），普查句里也点名
-        「几扇里几扇留着登录痕迹」。真机 复现记录 那种「用户在 A 窗登录、程序接 B 窗
+        userhash 的那扇优先复用（见 :meth:`_order_by_login`），普查句里也点名
+        「几扇里几扇留着登录痕迹」。实际运行中 那种「用户在 A 窗登录、程序接 B 窗
         空罐」的错认，从这一版起要么不发生、要么在日志里一眼看得见。
 
         v0.17.3：**宽限重探**。端口普查只问「端口答不答话」，刚弹出来、调试服务还在
-        起步的那扇在它眼里等于不存在。真机 2026-10-18 的日志里
+        起步的那扇在它眼里等于不存在。运行环境 2026-10-18 的日志里
         ``[17:49:31] 开窗前普查：没探到活着的程序窗口`` 与 18 秒后的
         ``逐窗=端口60463 …`` 直接矛盾 —— 那一次点击开出了好几扇窗。现在普查完要是
         没接上，先用 :func:`wait_for_attachable_window` 给正在启动的那扇一点时间。
@@ -1780,7 +1779,7 @@ class LoginBrowser:
             self._census_note += (
                 f"进程侧探到 {len(reaped)} 扇端口失联的旧窗口（"
                 f"{'、'.join(path.name for path in reaped[:5])}），已先收掉，"
-                "免得它和本次处理程序用的窗口混在一起。"
+                "免得它和当前程序使用的窗口混在一起。"
             )
         # 端口文件读得动、里面真有端口的，才算能接上的候选（读不动＝探测和读之间它退了）。
         attachable = self._attachable_from(live)
@@ -1800,8 +1799,8 @@ class LoginBrowser:
             self.port = port
             self.ws_path = ws_path
             self.browser_ws_url = f"ws://127.0.0.1:{port}{ws_path}"
-            # v0.17.3：这扇窗不是我们 Popen 出来的，stop() 只终结 process 就会漏掉它 ——
-            # 真机上「程序退了、Edge 还开着」那一族就是这么留下的。记一笔，收尾时按
+            # v0.17.3：这扇窗不是项目 Popen 出来的，stop() 只终结 process 就会漏掉它 ——
+            # 实际运行中「程序退了、Edge 还开着」那一族就是这么留下的。记一笔，收尾时按
             # 资料目录把进程收掉（见 kill_profile_processes）。
             self._attached = True
             self._profile_note = (
@@ -1834,7 +1833,7 @@ class LoginBrowser:
     ) -> list[tuple[Path, int, str]]:
         """多扇窗里把「罐里有 userhash」的排到前面（v0.13.38）。
 
-        为什么：真机 复现记录 现场两扇窗 —— 用户眼前那扇罐里有 userhash，程序却接上了
+        原因：存在两扇活动窗口时 —— 用户眼前那扇罐里有 userhash，程序却接上了
         另一扇空罐，于是「F12 里明明有饼干、程序说没有」，怎么点「应用」都对不上。
         旧逻辑是「按端口文件时间戳挑第一扇」，可「谁最后开的」和「谁登录过」毫无关系。
         现在直接问罐（:func:`window_userhash`），并在普查句里点名，一眼能看出接的是谁。
@@ -1859,7 +1858,7 @@ class LoginBrowser:
         """这次要用的新临时资料目录；建不出来就退回现场目录（让 start() 照常跑）。
 
         **建出来就立刻记在 ``self.temp_profile`` 与 ``self._temp_dirs`` 上**（不是等
-        浏览器起来才记）：真机上量过，「起来就退」的失败尝试也会把目录建出来、里面还
+        浏览器起来才记）：实际运行中量过，「起来就退」的失败尝试也会把目录建出来、里面还
         落进一二十个文件，只在成功那一步才记的话，这些目录永远没人删 —— 一连失败几次
         就在 %TEMP% 里攒一堆空壳。记下来之后无论后面哪一步失败，收尾都会把它删掉。
         """
@@ -1875,7 +1874,7 @@ class LoginBrowser:
     def devtools_failure_hint(self) -> str:
         """读调试接口重试期间的一句提示：浏览器已经没了就返回死因，否则返回空串。
 
-        为什么需要它：读 ``/json/list`` 现在会在几秒预算内重试（端口文件出现
+        重试期间需要该处理：读 ``/json/list`` 现在会在几秒预算内重试（端口文件出现
         和调试服务开始收连接之间有几百毫秒时差）。要是进程在这期间就退出了，
         等满预算是白等 —— 直接告诉用户浏览器没起来。返回空串表示「进程还在，
         继续等」。
@@ -1916,19 +1915,19 @@ class LoginBrowser:
         """这次用的是哪一份资料目录，往界面上写一句（v0.13.37 / v0.17.4 收拢）。"""
         if chosen == self.temp_profile:
             # 登录这条路现在先试新建的临时目录（见 start()）。要在界面上
-            # 说一句，否则用户会以为「我上次登录的痕迹怎么没了」。
+            # 需要说明资料目录切换，避免用户误以为旧登录状态被清除。
             return (
                 f"这次用的是临时资料目录（{chosen}），"
                 "关掉登录窗口后会自动清掉，不影响你自己的浏览器。"
             )
         if chosen == self.profile:
             # v0.13.37：落到配置目录那份**持久**资料目录时不能一声不吭。
-            # 真机案例（2026-10-03 深夜）：临时目录在这台机器上起不来
+            # 实际运行环境案例（2026-10-03 深夜）：临时目录在当前环境上起不来
             # （Edge 退出码 21 一族），每次都悄悄退到 browser-profile；
             # Edge 用同一份目录会把**上一次登录窗口那一页**原样恢复出来，
             # 用户看到的「已经登录的饼干列表」其实是上回留下的画面，
             # 罐里这时候只剩 PHPSESSID（见 MAINTENANCE.md 同日条目）。
-            # 不说清这一句，用户只会更困惑：「不是说每次都开全新目录吗？」
+            # 不说清这一句，用户只会更困惑：「不是说每次都开全新目录吗。」
             return (
                 f"这次用的是程序自己存的浏览器资料目录（{chosen}），"
                 "它留着我们以前用这扇窗登录时打开过的页面——你在窗口里"
@@ -1947,7 +1946,7 @@ class LoginBrowser:
     ) -> "LoginBrowser | None":
         """启动进程先退了、窗口却留下来时，直接把那扇窗认下来（v0.17.4）。
 
-        为什么要有这一手：真机 2026-10-18 现场，用户**只点了一次**「用浏览器
+        增加该步骤的原因是：运行环境 2026-10-18 现场，用户**只点了一次**「用浏览器
         登录」，16 秒里桌上起了 5 扇窗，最后接上的是第 5 扇。日志里前面每一扇
         都被判成「刚起来就退出了（退出码 0）」—— 但它们的窗口都活着、端口都
         答话（19:43:43 那句「逐窗=端口54725 browser-profile …」正是它们）。
@@ -1986,8 +1985,8 @@ class LoginBrowser:
                         self.port, self.ws_path = port, ws_path
                         self.browser_ws_url = f"ws://127.0.0.1:{port}{ws_path}"
                         self._profile_note = self._profile_note_for(chosen)
-                        # 这扇窗不归我们 Popen 记的那个进程管（它已经退出、把窗口交了
-                        # 出去），收尾只能按资料目录收 —— 和接手别人的窗同一条路。
+                        # 这扇窗不归项目 Popen 记的那个进程管（它已经退出、把窗口交了
+                        # 出去），收尾只能按资料目录收 —— 和复用已打开的窗口同一条路。
                         self._attached = True
                         self._handoff_note = (
                             "启动进程把窗口交给了另一个进程、自己先退出了；"
@@ -2013,10 +2012,10 @@ class LoginBrowser:
             # 交给 start() 去换下一个备用目录。
             raise CdpError(f"浏览器资料目录用不了：{exc}") from exc
         if _is_our_profile_dir(chosen, self.profile) and chosen not in self._temp_dirs:
-            # 备用候选有两个是我们自己建的：建在系统临时目录下那个，以及建在配置目录下
+            # 备用候选有两个是程序创建的：建在系统临时目录下那个，以及建在配置目录下
             # 的 browser-profile-<PID>-<时间戳>（见 :func:`fallback_profile_dirs`）。
             # 两个都记进清单，收尾一起删 —— v0.13.38 之前只记 %TEMP% 那一族，配置目录
-            # 下这一族就成了没人收的垃圾（真机 2026-10-01 留下过两个，5.6MB + 6.3MB）。
+            # 下这一族就成了没人收的垃圾（实际运行环境 2026-10-01 留下过两个，5.6MB + 6.3MB）。
             # ``self.profile``（用户配置目录里那份持久的 browser-profile）永远不记：
             # :func:`_is_our_profile_dir` 认位置 + 认名字，它两条都不符合。那是用户
             # 下次还要用的登录状态，不能替他删。
@@ -2027,8 +2026,8 @@ class LoginBrowser:
         # 当初的理由没错：上次崩溃留下的过期端口会让等待循环立刻「成功」，然后连到
         # 一个死端口。代价却一直没人看清 —— 要删的这个目录**可能正有一扇窗开着**：
         # ``self.profile``（配置目录那份持久资料目录）每一轮都在候选表里，哪一轮前面
-        # 的目录都起不来、落到它头上时，这一删就删在了**还活着的那扇窗**头上。真机
-        # 复现记录 现场正是如此：用户眼前那扇「饼干列表」窗硬刷新都还在登录态，可它
+        # 的目录都起不来、落到它头上时，这一删就删在了**还活着的那扇窗**头上。实际运行环境
+        # 复现现象 现场正是如此：用户眼前那扇「饼干列表」窗硬刷新都还在登录态，可它
         # 自己的端口文件没了 ⇒ 端口普查永远探不到它 ⇒ 程序又开一扇新窗 ⇒ 同一时刻
         # 世上两个罐，用户在旧窗里登录、程序读新窗的空罐，怎么点「应用」都对不上。
         #
@@ -2069,7 +2068,7 @@ class LoginBrowser:
             )
         except OSError as exc:
             # 这一条**不经过 start() 的重试分支**（进程都没起来，换目录也白搭），
-            # 所以刚才建出来的临时目录要当场收掉，否则失败一次就在 %TEMP% 留一个空壳。
+            # 所以此前建出来的临时目录要当场收掉，否则失败一次就在 %TEMP% 留一个空壳。
             if stderr_handle is not None:
                 # 先松手再删（Windows 上文件自己开着是删不掉的）；finally 里那次
                 # close() 重复关同一个句柄没关系。
@@ -2092,8 +2091,8 @@ class LoginBrowser:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                # v0.17.4：先看一眼「窗口是不是被交给了一个已经起来的进程」——
-                # 是的话这一扇就是好的，别当失败再开下一扇（真机 2026-10-18
+                # v0.17.4：先看一眼「窗口是否被交给了一个已经起来的进程」——
+                # 是的话这一扇就是好的，别当失败再开下一扇（实际运行环境 2026-10-18
                 # 一次点击五扇窗，全是这条判错了）。
                 adopted = self._adopt_a_window_that_outlived_the_launcher(
                     chosen, stale_text, stale_mtime
@@ -2101,7 +2100,7 @@ class LoginBrowser:
                 if adopted is not None:
                     return adopted
                 # 先把真退出码抠出来再 stop()：stop() 会 terminate / taskkill，
-                # 之后 returncode 就不是浏览器自己的死因了（真机上那句
+                # 之后 returncode 就不是浏览器自己的死因了（实际运行中那句
                 # 「刚起来就退出了（退出码 21）」里的 21 就是这么来的）。
                 code = self.process.returncode
                 message = (
@@ -2110,11 +2109,11 @@ class LoginBrowser:
                     "程序会换一个干净目录、必要时再换一个浏览器重试。"
                 )
                 if code == 21:
-                    # 真机上量到过的那个码：多半不是浏览器自己崩，而是它已经退出了
+                    # 实际运行中量到过的那个码：多半不是浏览器自己崩，而是它已经退出了
                     # 又被要求收尾（Windows ERROR_NOT_READY）。别让这句误导用户去猜。
                     message += "（这个码常常表示进程已经退出、收尾时才报出来，未必是崩溃原因。）"
                 if code == 0 and stale_text is not None:
-                    # v0.13.38 真机量到的另一种：目录启动前就有一扇窗开着（那份端口文件
+                    # v0.13.38 实际运行环境量到的另一种：目录启动前就有一扇窗开着（那份端口文件
                     # 是它留下的），第二个实例会把参数交给它、自己干干净净地退出（退出码
                     # 0，实测于 2026-10-04 的持久资料目录）。不点破的话，用户读到「刚起来
                     # 就退出了」只会往「资料目录坏了」猜，而这里的原因恰好相反：这一份
@@ -2126,7 +2125,7 @@ class LoginBrowser:
                 tail = self._stderr_tail_note()
                 if tail:
                     # v0.13.40：把浏览器自己的原话接在后面 —— 上面那几句是程序的推测，
-                    # 这一句是当事人说的，真机上「起不来」的谜底十次有九次在这里。
+                    # 这一句是当事人说的，实际运行中「起不来」的谜底十次有九次在这里。
                     message += f"（浏览器自己最后几行话：{tail}）"
                 self.stop()
                 raise CdpError(message)
@@ -2215,18 +2214,18 @@ class LoginBrowser:
                 except (subprocess.TimeoutExpired, OSError):
                     pass
         if self._attached:
-            # v0.17.3：接手的窗口不是我们 Popen 出来的（``process`` 是 None），只终结
-            # process 收不到它。真机上「程序退了、Edge 还开着」留下 598 MB 孤儿窗
+            # v0.17.3：已复用的窗口口不是项目 Popen 出来的（``process`` 是 None），只终结
+            # process 收不到它。实际运行中「程序退了、Edge 还开着」留下 598 MB 孤儿窗
             # 那一族就是这么来的 —— 按资料目录把进程收掉，尽力而为。
             kill_profile_processes(self._profile)
             self._attached = False
         # 临时资料目录**建出来过就一定要收掉**（不管这次起没起来）：失败尝试也会在里面
-        # 落下一二十个文件，真机上量到「一连失败几次，%TEMP% 里就攒一堆空壳」。
+        # 落下一二十个文件，实际运行中量到「一连失败几次，%TEMP% 里就攒一堆空壳」。
         self._discard_stderr_log()
         self.cleanup_temp_profile()
 
     def cleanup_temp_profile(self) -> bool:
-        """删掉这次启动时**我们自己建**的资料目录（见 :func:`fresh_profile_dir`）。
+        """删掉这次启动时**升级辅助进程自己建**的资料目录（见 :func:`fresh_profile_dir`）。
 
         清单见 :attr:`_temp_dirs`：``%TEMP%`` 下的临时目录，以及 v0.13.39 起一并记进来的
         配置目录下那族备用目录（``browser-profile-<PID>-<时间戳>``，见
@@ -2238,11 +2237,11 @@ class LoginBrowser:
         总共给 :data:`TEMP_PROFILE_WAIT` 秒，**删掉就立刻返回**，不白等。
 
         动手之前**先问一次端口**：端口还答话的目录一律不动（v0.13.41 起）—— 那说明
-        里面那扇窗还活着，删它等于把用户正开着的那扇窗连同资料一起带走（复现记录 那一类
+        里面那扇窗还活着，删它等于把用户正开着的那扇窗连同资料一起带走（复现现象 那一类
         事故）。这种目录会留在 :attr:`_temp_dirs` 里，下次收尾接着问。
 
         清的是 :attr:`_temp_dirs` 这张清单 —— 换浏览器时每个浏览器各拿一个新目录，
-        所以可能不止一个。**清单只增不减**（删过的路径也留着）：真机上量到过
+        所以可能不止一个。**清单只增不减**（删过的路径也留着）：实际运行中量到过
         「删掉之后那个路径又被下一次尝试重新建出来」，删一次就把路径忘掉的话，
         那一个就永远没人管了。删不掉的同样留在清单里，下次收尾接着试。
 
@@ -2264,9 +2263,9 @@ class LoginBrowser:
                 # 目录本来就不在（已经删干净了，或者还没被建出来）：跳过。
                 continue
             if _profile_in_use(profile):
-                # 端口还答话：里面那扇窗**还活着**（不是我们这次没退干净，而是真有一扇窗
+                # 端口还答话：里面那扇窗**还活着**（不是项目这次没退干净，而是真有一扇窗
                 # 正用着它）。这种目录一个字节都不许动 —— 删它会把用户正开着的那扇窗连同
-                # 资料一起带走，正是 复现记录 那一类「程序动了别人还在用的资料目录」的事故。
+                # 资料一起带走，正是 复现现象 那一类「程序动了别人还在用的资料目录」的事故。
                 # 宁可漏一个目录在临时目录里（下次收尾还会问一次端口），也不能动还开着的窗。
                 if profile not in self._temp_dirs:
                     self._temp_dirs.append(profile)
@@ -2275,7 +2274,7 @@ class LoginBrowser:
                 # 浏览器可能还没走干净（或者上一次留下的实例还开着这个目录），
                 # 先把「命令行里带这个目录」的进程收掉，再删成功率才高。
                 #
-                # **这一步放后台线程**：它要起一个 powershell 去查进程表，真机上量到
+                # **这一步放后台线程**：它要起一个 powershell 去查进程表，实际运行中量到
                 # 几百毫秒，在安全软件拦着的时候还会更久 —— 界面层是在主线程里调
                 # stop() 的，让它等一个 powershell 会把窗口卡住。真正的删除在下面
                 # 主线程里做（每 0.25 秒一次），两边同时进行，通常第一轮就删掉了。
@@ -2321,7 +2320,7 @@ def browser_open(
 #
 # 帧协议与 CDP 会话都在 ``xdao/cdp.py`` 里：浏览器登录与 PDF 渲染共用同一条通道，
 # 这一层不再留在本模块。下面这组名字是**兼容出口**：本模块的既有调用方
-# （界面层、测试、真机脚本）一直按这些名字引用，保留别名就不用全体改一遍。
+# （界面层、测试、实际运行环境脚本）一直按这些名字引用，保留别名就不用全体改一遍。
 # 这些名字在本模块里确实「定义了不用」——它们就是出口本身。pyflakes 会一直
 # 报 ``imported but unused``，是知道的：别照着提示删，删了界面层与测试当场断。
 from .cdp import (  # noqa: E402, F401
@@ -2411,10 +2410,10 @@ def looks_like_userhash(value: str) -> bool:
     「站点正文里抠出来的值」兜底用的粗筛，不要求它懂 X 岛的内部规则 ——
     真假由 :func:`xdao.gui.verify_userhash_live` 去问服务端。
 
-    2026-10-02（v0.13.25）放宽：以前要求**全是可打印 ASCII**。真机上站点从导出页
-    回给我们的值只要含一个非 ASCII 字符（正文里的字节被解码成替换字符，或高位字节），
+    2026-10-02（v0.13.25）放宽：以前要求**全是可打印 ASCII**。实际运行中站点从导出页
+    回给项目的值只要含一个非 ASCII 字符（正文里的字节被解码成替换字符，或高位字节），
     这里就判「不像」；而调用方当时是**一声不响**地丢掉，界面上只剩「还没有 userhash」。
-    复现记录 正是这样：用户自己在站点里看饼干列表一切正常，程序却一个字都不说。
+    复现结果正是这样：用户自己在站点里看饼干列表一切正常，程序却一个字都不说。
     现在只挡一眼就不是值的东西（空白、``;``、尖括号、成句的中文）。
     """
     if not value or len(value) < 6:
@@ -2488,12 +2487,12 @@ def parse_userhash_input(text: str) -> str | None:
 
 # 「应用一块饼干」这一段全部走**导航**，不在页面里复刻接口。
 #
-# 为什么不能用 fetch 复刻（v0.13.15 的做法，真机失败）：站点自己的「应用」是
+# 无法直接通过 fetch 复现此流程（v0.13.15 的做法，实际运行环境失败）：站点自己的「应用」是
 # 跳转式的 —— 点下去先落到站点自己的「跳转提示」页（1496 字节、<title>跳转提示</title>、
 # <a id="href" href="…">），再由那一页跳到真正的落地页，userhash 是在落地那一跳里
 # 由主站种下的。页面里 fetch 拿回来的只是那张提示页的 HTML：它既不执行提示页里的
 # meta refresh、也不会发出第二跳，饼干罐里始终没有 userhash —— 用户明明登录好了，
-# 界面却一路等到超时（用户 复现记录 的那张截图）。
+# 界面却一路等到超时（复现时的截图）。
 # 导航走的是浏览器自己的路：跳转页自己会跳，饼干也就种上了。
 _FIND_APPLY_JS = r"""
 (() => {
@@ -2525,7 +2524,7 @@ _FIND_APPLY_JS = r"""
   // 站点自己的倒计时页（真机上是「饼干切换成功!」+「页面自动跳转 等待时间：1」）：
   // userhash 是在**它跳完之后**那一跳的响应里由主站种下的。这一页上既没有 a#href
   // 也没有 meta refresh，认不出来就等于「没什么可等的」——调用方会直接去读饼干罐、
-  // 再去导出页，把还在倒数的标签页拽走，那一跳就永远不发生了（用户 复现记录 的截图：
+  // 再去导出页，把还在倒数的标签页拽走，那一跳就永远不发生了（复现截图：
   // 标签页停在倒计时页，程序却报「还没登录」）。
   const bodyText = (document.body ? document.body.innerText : '') || '';
   state.countdown = /等待时间|自动\s*跳转|跳转提示/.test(bodyText);
@@ -2568,7 +2567,7 @@ _FIND_APPLY_JS = r"""
 # 跟着站点自己的「跳转提示」页最多跳几次：列表 → switchTo → 落地页，两次就够，
 # 上限只是防站点把跳转写成一圈。
 MAX_COOKIE_JUMPS = 3
-# 站点自己的「跳转提示 / 倒计时」页要等多久（v0.13.21）。真机那一页上写着
+# 站点自己的「跳转提示 / 倒计时」页要等多久（v0.13.21）。实际运行环境那一页上写着
 # 「等待时间：1」，可那是站点自己的 JS 在倒数，慢一点的机器、慢一点的网都会拖几秒；
 # 等不到就等不到，别把用户的一页停在那儿不管。
 JUMP_WAIT_SECONDS = 8.0
@@ -2592,7 +2591,7 @@ def _cookie_action_base() -> str:
 def build_find_apply_script() -> str:
     """返回「看看当前页有什么」的脚本（只读 DOM，不发请求）。
 
-    返回值里有：当前地址、是不是登录页、跳转提示页的目标、列表里「应用」链接
+    返回值里有：当前地址、是否登录页、跳转提示页的目标、列表里「应用」链接
     指向哪、认出来的 id 有哪些、表格行数与链接数（后两个是给诊断用的）。
     """
     return _FIND_APPLY_JS.replace("__COOKIE_BASE__", json.dumps(_cookie_action_base()))
@@ -2602,8 +2601,8 @@ def build_find_apply_script() -> str:
 class LeafCookie:
     """领饼干的结果：成功给值，失败给一句能直接写进窗口的话。
 
-    为什么要带 ``detail``：这条路以前是**静默**的（异常一律吞掉、返回 None），
-    真机上表现为「登录好了，程序一直等到超时」，用户截的图里没有任何线索。
+    保留 ``detail`` 信息的原因是：这条路以前是**静默**的（异常一律吞掉、返回 None），
+    实际运行中表现为「登录好了，程序一直等到超时」，用户截的图里没有任何线索。
     ``navigated`` 表示这一次去动过用户的页面（导航过，或者读页面状态时就出错了）：
     界面层拿它决定下一次重试要不要缓一缓 —— 连着几秒把标签页弹来弹去，比多等一会儿糟。
     """
@@ -2658,7 +2657,7 @@ def read_userhash_cookie(
 def _probe_http_json(url: str, timeout: float = 5.0) -> object:
     """读一次调试接口，**不重试** —— 多扇窗挑一扇时的「问一句就走」。
 
-    为什么不直接用会话默认那个 ``_http_json``：它带着 ``cdp._DEVTOOLS_READ_BUDGET``
+    此处不直接使用会话默认的 ``_http_json``：它带着 ``cdp._DEVTOOLS_READ_BUDGET``
     （8 秒）的预算，那是留给「端口文件刚写出来、调试服务还没开始收连接」的时差的。
     挑窗时那扇窗的端口刚被 :func:`_profile_in_use` 验过是活的（用的是同一个不重试的
     读法），真读不通就不必替它等满预算 —— 否则「哪扇窗登录过」这一个问题能把开窗
@@ -2672,7 +2671,7 @@ def _probe_http_json(url: str, timeout: float = 5.0) -> object:
 def window_userhash(ws_url: str, timeout: float = WINDOW_PROBE_TIMEOUT) -> str:
     """问一扇**已经开着的**窗口：「你罐里有没有 userhash」（v0.13.38）。
 
-    真机 复现记录：世界上有过两扇程序窗，用户在 A 窗里登录着（罐里有 userhash），
+    实际运行中：世界上有过两扇程序窗，用户在 A 窗里登录着（罐里有 userhash），
     程序却接上了 B 窗（空罐）—— 于是「F12 里有饼干、程序说没有」，怎么点「应用」
     都对不上。两扇窗谁先开的、谁最新，跟「谁登录过」没有半点关系，能回答这个问题
     的只有罐本身。这里只跟那扇窗的调试端口说两句话：连上去、读一次饼干、断开；
@@ -2775,7 +2774,7 @@ def live_window_jars(
 ) -> list[tuple[str, int, list[dict]]]:
     """把**每一扇活着的程序窗**都问一遍：目录名、端口、那一罐里有哪些饼干（v0.13.45）。
 
-    为什么（真机 复现记录 的定案）：同一时刻世界上可能不止一扇程序窗 —— 程序此刻接的
+    原因（复现时的定案）：同一时刻世界上可能不止一扇程序窗 —— 程序此刻接的
     那一扇罐里只有匿名会话号，用户登录的那一扇罐里有 userhash，两扇窗的 F12 长得
     一模一样。此前对账行只报「程序接的那一扇」看见了什么，于是「F12 里有三条、
     程序只报两条」从日志里永远分辨不出：是同一只罐读漏了，还是本来就两只罐。
@@ -2832,14 +2831,14 @@ def userhash_across_windows(
 
 
 def _looks_like_browser_endpoint(url: str) -> bool:
-    """给的地址是不是**浏览器端点**本身（``…/devtools/browser/<id>``）。"""
+    """给的地址是否**浏览器端点**本身（``…/devtools/browser/<id>``）。"""
     return "/devtools/browser" in str(url or "")
 
 
 def _browser_endpoint(ws_url: str, timeout: float) -> str:
     """把「随便哪个调试地址」换成**浏览器端点**（v0.13.47）。
 
-    为什么需要这一步：界面层手里那个 ``browser_ws_url`` 真机上常常是**页面**地址
+    该步骤的设计依据是：界面层手里那个 ``browser_ws_url`` 实际运行中常常是**页面**地址
     （``DevToolsActivePort`` 第二行给的就是页面的调试路径，见
     :meth:`LoginBrowser.start`），而 ``Target.*`` 与「按浏览器上下文读饼干」只认
     浏览器端点。这里拿地址里的主机端口去问一句 ``/json/version``，把它的
@@ -2874,8 +2873,8 @@ def browser_level_jars(
 ) -> list[tuple[str, list[dict]]]:
     """从**浏览器级**端点把每一份罐都读一遍（v0.13.47）。
 
-    为什么还要多这一问：``v0.13.45`` 的 ``逐窗=`` 问的是**别的浏览器进程**（别的
-    端口），可真机 复现记录/复现记录 的形状是「**同一扇**挂着程序横条的窗、同一个端口，
+    还需要验证：``v0.13.45`` 的 ``逐窗=`` 问的是**别的浏览器进程**（别的
+    端口），可复现时的形状是「**同一扇**挂着程序横条的窗、同一个端口，
     F12 里明明白白有 userhash，程序四条读法一条都没看见」。同一只浏览器内部还能
     分出好几份罐 —— cookie 是按 ``BrowserContext`` 分开存的（无痕窗、Edge 的
     「工作区」那种各一份，互相看不见）。页面级连接只能看见自己那一份，浏览器级
@@ -2885,7 +2884,7 @@ def browser_level_jars(
     返回 ``[(标签, 饼干表)]``，标签形如 ``默认`` / ``上下文3f2a1b``；连不上浏览器级
     端点就回空表（调用方按「问不出来」处理）。读某一份失败只跳过那一份。
 
-    给的地址不必是浏览器端点：界面层手里那个 ``browser_ws_url`` 真机上常常是**页面**
+    给的地址不必是浏览器端点：界面层手里那个 ``browser_ws_url`` 实际运行中常常是**页面**
     地址，这里先用 :func:`_browser_endpoint` 换成浏览器端点（本来就是的就直接用）。
     """
     if not browser_ws_url:
@@ -2924,8 +2923,8 @@ def browser_page_targets(
 ) -> list[dict]:
     """同一只浏览器里有哪些**页面标签**、各在哪份罐里（v0.13.48）。
 
-    为什么单开这一手：``页=`` 只数得出「几扇」（那一手读的是 HTTP ``/json/list``），
-    数不出「每扇挂在哪个浏览器上下文里」。真机 复现记录 的形状正是「程序读的那扇
+    独立查询页面目标的依据是：``页=`` 只数得出「几扇」（那一手读的是 HTTP ``/json/list``），
+    数不出「每扇挂在哪个浏览器上下文里」。复现时的形状正是「程序读的那扇
     （login.html、罐里只有 PHPSESSID）和用户眼前那扇（已登录的 index.html）对不上，
     而且 ``页=1``」—— 页面**各有几份罐**这件事只有浏览器的 ``Target.getTargets``
     答得出来（``Target.getBrowserContexts`` 连无痕窗都不列，见
@@ -2987,7 +2986,7 @@ def describe_page_targets(rows: list[dict]) -> list[str]:
 def _cookie_names(cookies: list[dict]) -> str:
     """一份罐里有哪些名字（v0.13.51）：复用 :func:`summarize_cookies`，另标出分区那类。
 
-    分区饼干（CHIPS）在真机上常常正是「F12 看得见、按地址读看不见」的那一块，所以
+    分区饼干（CHIPS）在实际运行中常常正是「F12 看得见、按地址读看不见」的那一块，所以
     单独用一句话点出来；值一个都不写。
     """
     text = summarize_cookies(cookies)
@@ -3006,7 +3005,7 @@ def browser_jar_witness(
 ) -> str:
     """把「这一刻浏览器里每一份罐各有哪些名字」写成一行（v0.13.51）。
 
-    真机 复现记录 的死结是：同一扇窗、F12 里那块 70 字节的 userhash 明明白白，
+    复现时的死结是：同一扇窗、F12 里那块 70 字节的 userhash 明明白白，
     程序四条读法一条也没看见，而「读罐对账」只在某一轮里写一行 —— 登录落在哪一秒、
     落在哪一份罐里，日志上断不出前后。这一行每隔十几秒写一次（罐没变就不重复写），
     于是「饼干罐是随登录一起长的，还是程序盯错了另一份罐」一对就清楚。
@@ -3069,23 +3068,23 @@ def jar_dump(
     profile_path: str = "",
     timeout: float = WINDOW_PROBE_TIMEOUT,
 ) -> dict:
-    """把「这一刻程序到底读到了什么」原样抄成一份可以拿去比对的数据（v0.13.47）。
+    """把「这一刻程序实际读到了什么」原样抄成一份可以拿去比对的数据（v0.13.47）。
 
-    为什么要动这一手：复现记录/复现记录 那两张截图里，同一扇窗、同一个端口，F12 有
+    增加该处理步骤的原因是：复现时，同一扇窗、同一个端口，F12 有
     ``userhash``、程序四条读法全无。日志里只有**名字**，对不出「域、路径、分区键、
-    哪一份罐、哪条读法」到底差在哪 —— 名字一样的两块饼干可以分属不同上下文，
+    哪一份罐、哪条读法」实际差在哪 —— 名字一样的两块饼干可以分属不同上下文，
     F12 那份和程序那份都可能各自成立。这里把每条读法的**原始返回**（含域、路径、
     ``partitionKey``、``browserContextId`` 等全部字段）都抄下来，读不出来的字段写
     出错原因，然后由 :func:`write_jar_dump` 落盘。
 
-    v0.13.48 多抄两样（真机 复现记录 的怀疑：程序读的那扇页面 ≠ 用户眼前那扇，而
+    v0.13.48 多抄两样（复现时的怀疑：程序读的那扇页面 ≠ 用户眼前那扇，而
     目录名又分不出「常驻罐」还是「一次性罐」）：
 
     * ``罐路径``（``profile_path``）：这次真正在用的资料目录**完整路径**；
     * ``目标``：浏览器里每个目标的原始 ``targetInfos``（含 ``type`` / ``url`` /
       ``browserContextId``）—— 「同一扇窗、两份罐、各自读得到什么」逐字段对账要靠它。
 
-    里面**有饼干值**（会话凭据），只写在本机临时目录、只在等超时那一刻写一次，
+    里面**有饼干值**（会话凭据），只写在临时目录、只在等超时那一刻写一次，
     内容仅用于诊断；函数本身只组装数据，不落盘。
     """
     dump: dict[str, object] = {
@@ -3187,10 +3186,10 @@ def _follow_jumps(
     """等站点自己的「跳转提示」页跳完，并跟着跳（最多 :data:`MAX_COOKIE_JUMPS` 跳）。
 
     v0.13.21 之前这里是**一次性读**：读的那一刻页面上没有 ``a#href``/meta refresh 就
-    什么都不做。真机上正好踩中 —— 导航到 ``switchTo`` 之后站点回的是它自己的倒计时页
+    什么都不做。实际运行中正好踩中 —— 导航到 ``switchTo`` 之后站点回的是它自己的倒计时页
     （「饼干切换成功!」+「页面自动跳转 等待时间：1」），那一刻页面上确实两个都没有，
     于是这一跳被跳过，调用方紧接着把标签页拖去导出页，站点自己的第二跳就再也没发生，
-    userhash 永远种不上（用户 复现记录）。
+    userhash 永远种不上（复现现象）。
 
     现在分两种「还得等」的情况：页面上已经写好了目标（``jump``）就直接跟过去；只写着
     「等待时间」就**等它自己跳**，每 :data:`NAVIGATE_POLL` 秒重读一次页面状态，跳完
@@ -3228,7 +3227,7 @@ def _wait_for_cookie(
 
     站点是在跳转落地那一跳的响应里把 userhash 种进饼干罐的，读早半拍就是空；以前这里
     只读一次，读空就判「应用了饼干，但浏览器里始终没出现 userhash」，然后去导出一趟 ——
-    正好把还在跳的标签页拽走，越试越不成功（用户 复现记录 就是这么卡住的）。
+    正好把还在跳的标签页拽走，越试越不成功（复现现象是这么卡住的）。
 
     ``budget`` 缺省取 :data:`COOKIE_WAIT_SECONDS`（取在调用时，方便用例调小）。
     """
@@ -3294,13 +3293,13 @@ def fetch_leaf_cookie(
     ``navigate=False`` 时**只读页面状态和饼干罐**，一个标签页都不碰（v0.13.23 起界面层
     固定走这一支）：站点那边「应用」是跳转式的，程序一导航，用户的标签页就会被留在
     站点自己的「饼干切换成功!」倒计时页上原地重载 —— 用户看到的就是「一直无限跳转」
-    （复现记录/复现记录/复现记录）。领饼干的正事交给 :func:`apply_leaf_cookie_over_http`
+    （复现现象）。领饼干的正事交给 :func:`apply_leaf_cookie_over_http`
     （走 HTTP，见 ``XdaoClient.apply_cookie``）。
 
     ``waiting_for_login=False``（界面层在**已经真去应用过**之后传，v0.13.21）表示
     「页面停在登录页」不再按「用户正在打字」处理：程序自己那一趟导出页导航会把还没种上
     userhash 的标签页弹到登录页，要是照旧早退，就再也不会去应用饼干，界面上只会每隔
-    几秒重复一句「这个窗口里还没登录（页面停在登录页）」直到超时（用户 复现记录 卡住的
+    几秒重复一句「这个窗口里还没登录（页面停在登录页）」直到超时（复现现象 卡住的
     正是这一支）。这时宁可继续去「饼干」页试，也要把真实结果报回来。
     """
     try:
@@ -3309,7 +3308,7 @@ def fetch_leaf_cookie(
             if value:
                 return LeafCookie(value, "")
             # 不导航，但**要看一眼页面**（v0.13.23）：用户还在登录页打字时，界面层得
-            # 如实说「还没登录」，而不是一句笼统的「试过了」——那种话在真机上跟卡死
+            # 如实说「还没登录」，而不是一句笼统的「试过了」——那种话在实际运行中跟卡死
             # 没区别（v0.13.17 的教训）。看一眼不算打扰：只读 DOM，不动标签页。
             try:
                 state = _page_state(session)
@@ -3325,7 +3324,7 @@ def fetch_leaf_cookie(
                 )
             return LeafCookie(
                 None,
-                # v0.13.36 补后半句（真机 复现记录）：这一支正是「页面不是登录页、罐里却
+                # v0.13.36 补后半句（实际运行时复现）：这一支正是「页面不是登录页、罐里却
                 # 没有 userhash」——用户看到的多半是上次登录留下的「饼干列表」缓存画面，
                 # 得说破，否则他会以为已经登进去了、剩下的是程序的锅。
                 "自动取饼干这条路试过了：浏览器里还是没有 userhash。"
@@ -3341,7 +3340,7 @@ def fetch_leaf_cookie(
             return LeafCookie(None, f"浏览器窗口里现在打开的不是 X 岛（{host}），先在里面对 X 岛登录。")
         state, hops = _follow_jumps(session, state, 0)
         if state.get("login") and waiting_for_login:
-            # 真机上走到的就是这一支（匿名开「饼干」页 → 站点把页面跳到登录页）：
+            # 实际运行中走到的就是这一支（匿名开「饼干」页 → 站点把页面跳到登录页）：
             # `navigated` 必须按真跳没跳报，界面层拿它决定下次重试要不要缓一缓。
             # 已经真去应用过之后（waiting_for_login=False）不再从这里返回：那多半是
             # 程序自己那一趟导出页导航把标签页弹回来的，停在这里就再也领不到饼干了。
@@ -3401,7 +3400,7 @@ def named_userhash_entries(cookies: Iterable[dict]) -> list[dict]:
 
     与 :func:`userhash_from_cookies` 的差别只在**不认值的形状**：名字和域对上了就收。
     界面层拿它区分「罐里根本没有」和「有但值长得不对」—— 后一句以前只能写成
-    「还没有 userhash」，跟真没有一模一样，用户截图里查无可查。
+    「还没有 userhash」，跟真没有一模一样，界面截图里查无可查。
     """
     found: list[dict] = []
     for cookie in cookies or []:
@@ -3422,21 +3421,21 @@ def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> l
 
     v0.13.29 起这罐是**两读合并**：先按地址过滤的 ``Network.getCookies``，再补一次
     不问地址的整罐读（:meth:`CDPSession.read_all_cookies`），只留域沾 ``nmbxd`` 的、
-    按（名字、域、路径）去重。起因是真机上 ``getCookies`` 会系统性漏掉存储里明明白白
+    按（名字、域、路径）去重。起因是实际运行中 ``getCookies`` 会系统性漏掉存储里明明白白
     存在的 userhash（2026-10-02 的四张截图：对话框名单里从头到尾没有 userhash，同
     一个浏览器的 F12 Application 面板里却一直有），过滤维度定位不出来，那就干脆把
     不过滤的那一读也问一遍。整罐读失败不拖累主路，只用按地址那一读的结果。
 
     v0.13.42 起整罐那一读本身是 ``Network.getAllCookies`` 与 ``Storage.getCookies``
     的并集（:meth:`CDPSession.read_all_cookies`）：F12「应用程序 → Cookie」面板读的
-    是 ``Storage`` 那一族，两条路各问一次、谁的名单更全用谁的 —— 真机 复现记录 里
+    是 ``Storage`` 那一族，两条路各问一次、谁的名单更全用谁的 —— 实际运行中 里
     「F12 有 ``userhash``、四读合并却说没有」就是这种「某一条读法漏了」的形状
-    （v0.13.44 真机复验后改准：本机 Edge 上 ``Network.getAllCookies`` 也读得到分区
+    （v0.13.44 实际环境验证后改准：运行环境 Edge 上 ``Network.getAllCookies`` 也读得到分区
     饼干，并集留着的理由是「不赌浏览器版本」，不是「另一条一定瞎」）。
 
     按地址那一读读不到就**抛**（v0.13.23）：以前这里把异常吞成空列表，界面层于是把
-    「读不出来」和「罐里没登录」当成同一件事 —— 真机上表现为 HTTP 那条路一声不响地
-    被跳过，用户截图里只剩 CDP 那句「还没登录」，查无可查（复现记录）。现在调用方会把
+    「读不出来」和「罐里没登录」当成同一件事 —— 实际运行中表现为 HTTP 那条路一声不响地
+    被跳过，界面截图里只剩 CDP 那句「还没登录」，查无可查（复现现象）。现在调用方会把
     这句话原样说出来。
     """
     cookies = session.read_cookies(list(urls) if urls else cookie_urls_for(session))
@@ -3460,8 +3459,8 @@ def read_site_cookies(session: "CDPSession", urls: list[str] | None = None) -> l
             continue
         seen.add(key)
         merged.append(item)
-    # v0.13.34 第四读：页面自己的 document.cookie（F12 同源视角）。真机 复现记录：
-    # 用户的 F12 面板里 userhash 明明躺着，程序三条 CDP 读法却都看不见 —— 本机探针
+    # v0.13.34 第四读：页面自己的 document.cookie（F12 同源视角）。实际运行时复现：
+    # 用户的 F12 面板里 userhash 明明躺着，程序三条 CDP 读法却都看不见 —— 探针
     # （_scratch/probe_jar_read_v1334.py）证明管道对任何 flag 组合都读得到，剩下的
     # 偏差只能出在「CDP 问的存储上下文 ≠ 页面所在的上下文」。页面 JS 看见的就是
     # 用户看见的，这一读直接把那个视角接进合并罐；HttpOnly 的饼干它看不见，所以
@@ -3527,7 +3526,7 @@ _STORAGE_SCAN_SCRIPT = (
 def userhash_from_page_storage(session: "CDPSession") -> str:
     """在页面自己的本地存储里找一块像 userhash 的值（v0.13.51）。
 
-    真机 复现记录 的形状是「同一扇窗、F12 的 Cookie 列表里 70 字节的 userhash 明明
+    复现时的形状是「同一扇窗、F12 的 Cookie 列表里 70 字节的 userhash 明明
     在那里，程序四条读法一条也没看见」。饼干罐既然排除了分区那条路（探针
     ``probe_chips_response.py``：真 CHIPS 饼干四条读法都看得见），还有一种可能：
     站点把登录态**同时**写进了 ``localStorage``/``sessionStorage``，或者只写在那里。
@@ -3572,8 +3571,8 @@ def userhash_from_page_storage(session: "CDPSession") -> str:
 def summarize_cookies(cookies: Iterable[dict]) -> str:
     """罐子里有哪些饼干：只报**名字**（值一律不写，日志要能直接贴给人看）。
 
-    给界面层报诊断用（v0.13.23）：真机上「读不到饼干」和「只读了匿名会话号」看起来
-    一模一样，把名字写进提示行和运行日志，用户截图就能说清卡在哪。
+    给界面层报诊断用（v0.13.23）：实际运行中「读不到饼干」和「只读了匿名会话号」看起来
+    一模一样，把名字写进提示行和运行日志，界面截图就能说清卡在哪。
     """
     names: list[str] = []
     for item in cookies or ():
@@ -3598,40 +3597,40 @@ def jar_forensics(
 ) -> str:
     """「读罐对账」一行：挂着哪页、读的是哪份罐、四路各自看见哪些**名字**（v0.13.34）。
 
-    为什么：真机 复现记录 里 F12 看得见 userhash、程序四路合并读却报没有，而对话框
+    原因：F12 看得见 userhash、程序四路合并读却报没有，而对话框
     只说合并结果 —— 分不出漏在哪一读。这一行把每一路的名单并排写进运行日志，
-    下次一张截图就能定位（漏在按地址读？整罐读？还是挂错了上下文）。
+    下次一张截图就能定位（漏在按地址读。整罐读。还是挂错了上下文）。
     规矩与 :func:`summarize_cookies` 相同：**只报名字，值一个字符都不写** ——
     日志要能直接贴给人看，userhash 就是通行证本身。
 
-    v0.13.35 补三段（真机 复现记录 的教训：四路名单一致、却仍定不了案）：
+    v0.13.35 补三段（复现时的教训：四路名单一致、却仍定不了案）：
     ``罐=`` 是这份资料目录的目录名 —— 和日志里「开窗前普查」那句对得上，就能排除
     「用户登录的窗口 ≠ 程序读的窗口」；``全罐=N`` 是**不滤域**的原始条数，用来分清
     「罐里真没有」和「被 nmbxd 过滤吃掉了」；``原始userhash=`` 直接在原始罐里按名字
     找，报它的域/路径/HttpOnly/是否分区（CHIPS 分区饼干是探针没测过的读法差异），
     照样绝不报值。``jar_tag`` 空就不写罐段。
 
-    v0.13.36 补一段 ``页=``（真机 复现记录 的僵局：可见窗口显示已登录的饼干列表页，
-    可对账行里 ``挂=`` 一直是 login.html —— 一扇窗里到底是几页站点标签、程序每轮
+    v0.13.36 补一段 ``页=``（复现时的僵局：可见窗口显示已登录的饼干列表页，
+    可对账行里 ``挂=`` 一直是 login.html —— 一扇窗里实际是几页站点标签、程序每轮
     重挑时看见的顺序是什么，光看 ``挂=`` 定不了案）：报**此刻**浏览器里能挂上的
     页面标签条数与各自地址（每条截 60 字、最多列 4 条，地址不是秘密，可以进日志）。
     僵尸标签、双标签顺序翻转，从此一张截图就能看出来。
 
-    v0.13.37 补一段 ``接=``（真机 复现记录 的定案：饼干窗硬刷新都不弹回、程序对账
+    v0.13.37 补一段 ``接=``（复现时的定案：饼干窗硬刷新都不弹回、程序对账
     却写 页=1 只有登录页 —— 用户和程序各看着一扇窗，两个罐永远对不上）：报程序
     此刻**接的是哪一扇**（调试端口）。端口号是 CDPSession 自己不知道的（它只知道
     WebSocket 地址），所以由调用方传：``link_tag`` 空就不写这段。
 
-    v0.13.42 补一段 ``存储读=``（真机 复现记录 的僵局：同一扇窗的 F12「应用程序 →
+    v0.13.42 补一段 ``存储读=``（复现时的僵局：同一扇窗的 F12「应用程序 →
     Cookie」里躺着一条 ``userh…``（70 字节），对账行却写 全罐=2、原始userhash=无）。
     F12 面板读的是 ``Storage.getCookies``；此前 ``Storage`` 那条只在 ``Network`` 报错
     时才当兜底问一次，于是「两条读法名单不一致」的现场无迹可查。现在 ``整罐读=`` 与
     ``全罐=`` 报的是两条路的并集，``存储读=`` 单列 ``Storage`` 自己看见的名单 ——
     下一张截图就能分清「Storage 有、别的没有」还是「两边都没有」（后者 = 读错了罐）。
-    v0.13.44 真机复验：并集存在的理由是两条路名单可能不一致（本机复验里按地址读就是
+    v0.13.44 实际环境验证：并集存在的理由是两条路名单可能不一致（本机复验里按地址读就是
     会漏分区饼干），不是「``Network`` 那条一定看不见分区饼干」。
 
-    v0.13.45 补一段 ``逐窗=``（真机 复现记录 的僵局：同一扇被程序盯着、还挂着本程序
+    v0.13.45 补一段 ``逐窗=``（复现时的僵局：同一扇被程序盯着、还挂着本程序
     横幅的窗口，F12 里躺着三条饼干含 70 字节的 ``userh…``，对账行却一路写
     ``全罐=1``/``合并=PHPSESSID``）。本机三版探针（分区饼干、跨标签、浏览器端点）
     已排除「读法漏了」这条路，剩下的解释只有「程序读的那一扇 ≠ 用户登录的那一扇」——
@@ -3639,8 +3638,8 @@ def jar_forensics(
     （``windows_tag`` 由调用方用 :func:`userhash_across_windows` 取）。同一只罐读漏了
     还是两只罐，从此一张截图分得清。
 
-    v0.13.46 两处补强（真机 复现记录 的第二张截图：``逐窗=`` 一句都没有 —— 用户和程序
-    都读不出「到底是没别的窗，还是这一手没跑」）：
+    v0.13.46 两处补强（复现时的第二张截图：``逐窗=`` 一句都没有 —— 用户和程序
+    都读不出「实际是没别的窗，还是这一手没跑」）：
 
     * ``逐窗=`` **always 写**：一扇活窗都没有时写「没有别的活窗口」，不再靠「这段缺席」
       传达意思（缺席的含义太容易被读成「程序没查」）；
@@ -3649,28 +3648,28 @@ def jar_forensics(
       端口已经死了」的形状：端口普查看不见它、进程还在。空就不写这段（没有才是常态）；
     * 新增一段 ``同罐进程=``（``procs_tag``）：命令行里正拿着这个资料目录的浏览器
       进程数（见 :func:`profile_process_pids`）。多于 1 = 还有第二个实例在共用这只罐
-      （目录名一样、内存罐各自独立 ⇒ CDP 读的那一只里当然没有用户登录挣来的饼干）。
+      （目录名一样、内存罐各自独立 ⇒ CDP 读的那一只里当然没反馈现象登录挣来的饼干）。
       查不到就不写这段。
 
-    v0.13.47 补一段 ``别路=``（真机 复现记录/复现记录 的死结：同一扇挂着本程序横幅、
+    v0.13.47 补一段 ``别路=``（复现时的死结：同一扇挂着本程序横幅、
     同一个端口的窗，F12 里 70 字节的 ``userh…`` 明明白白，程序四条读法
     （``按地址读``/``整罐读``/``存储读``/``页面JS``）从头到尾没有它；四路读法与 F12
-    同源同全这一点，本机两轮探针已经钉死）。剩下的解释只有「读的不是同一份罐」——
+    同源同全这一点，重复探针验证已确认）。剩下的解释只有「读的不是同一份罐」——
     Chromium 的 cookie 按 ``BrowserContext`` 分开存（无痕窗、Edge 的「工作区」各一份，
     互相看不见），而 v0.13.45 的 ``逐窗=`` 只问**别的浏览器进程**，问不到同一只浏览器里
     的别的上下文。``contexts_tag`` 由调用方用 :func:`userhash_across_contexts` 取：
     只写**默认之外**的罐（默认那份就是上面四路的读数，重复一遍只是噪音），
     一份额外的罐都没有就不写这段。
 
-    v0.13.48 补两段（真机 复现记录/复现记录：v0.13.47 那轮的对账行里既没有 ``别路=``
-    也没有 ``同罐进程=``，而用户截图里同一扇窗的 F12 明明有三条饼干含 userhash ——
+    v0.13.48 补两段（实际运行中：v0.13.47 那轮的对账行里既没有 ``别路=``
+    也没有 ``同罐进程=``，而界面截图里同一扇窗的 F12 明明有三条饼干含 userhash ——
     「程序读的那一扇/那一份罐 ≠ 用户登录的那一扇/那一份罐」这个猜测还是定不了案）：
 
     * ``窗口=``（``pages_tag``）：同一只浏览器里**每个页面标签**的地址与所属上下文
       （由调用方用 :func:`browser_page_targets` 取）。``页=`` 只数得出「几扇」，
       数不出「各在哪份罐里」—— 用户开着无痕窗时这两件事必须并排看；
     * ``罐路径=``（``jar_path``）：这份资料目录的**完整路径**。只写目录名分不出
-      「配置目录下的常驻罐」与「%TEMP% 里的一次性罐」——而真机上这两个名字可能
+      「配置目录下的常驻罐」与「%TEMP% 里的一次性罐」——而实际运行中这两个名字可能
       长得一样（都叫 ``browser-profile``），文件系统里的位置才是唯一的证据。
     """
     parts: list[str] = []
@@ -3782,13 +3781,13 @@ def apply_leaf_cookie_over_http(
 ) -> LeafCookie:
     """拿浏览器里的饼干，走 HTTP 那条路「应用饼干」并读出 userhash（v0.13.22）。
 
-    为什么不再让浏览器自己去跳站点的跳转页（v0.13.21 的做法）：站点给 userhash 的地方是
+    此流程不再让浏览器导航至站点的跳转页（v0.13.21 的做法）：站点给 userhash 的地方是
     **导出页的响应体**（``{"cookie": "…"}``），而浏览器那条路上，导出页会被弹回登录页、
-    跳转页会自己原地重载 —— 用户看到的就是「停在『饼干切换成功!』一直跳」（复现记录/复现记录）。
+    跳转页会自己原地重载 —— 用户看到的就是「停在『饼干切换成功!』一直跳」（复现现象）。
     HTTP 这条路从 v0.6.1 起就在用（:meth:`XdaoClient.apply_cookie`）：认「跳转提示」页、
     跟着跳、相对地址补前缀、从导出页正文里抠值、读 cookie jar 兜底，全都是现成的。
 
-    ``user_agent``（v0.13.30）：真机 复现记录/复现记录 上这条路「登录后没能进入用户系统
+    ``user_agent``（v0.13.30）：实际运行中 上这条路「登录后没能进入用户系统
     （X 岛把请求弹回了登录页）」，而同一时刻用户的浏览器里回帖是成功的 —— 会话活着，
     被弹的是**重放**：饼干罐是 Edge 建立的，嘴却是 urllib 的缺省 UA（Chrome/124），
     站点把两张嘴认成了两个人。界面层把浏览器自报的 UA（:func:`read_user_agent`）传进来，
@@ -3796,7 +3795,7 @@ def apply_leaf_cookie_over_http(
 
     ``client`` 只给用例注入用；给 None 时自己建一个 :class:`XdaoClient`（用缺省网络设置，
     登录窗口本来就不带用户设置）。失败时把服务端/网络层那句话原样放进 ``detail`` ——
-    界面层会把它写进「程序试过的几步」，是用户截图里唯一的书面线索。
+    界面层会把它写进「程序试过的几步」，是界面截图里唯一的书面线索。
     """
     from .client import XdaoClient, XdaoError
 
@@ -3818,8 +3817,8 @@ def apply_leaf_cookie_over_http(
 def read_user_agent(session: "CDPSession") -> str:
     """浏览器自报的 User-Agent（v0.13.30），读不到给空串。
 
-    为什么要有它：HTTP 重放那条路（:func:`apply_leaf_cookie_over_http`）在真机上被弹回
-    登录页，而同一时刻用户的浏览器里回帖是成功的（复现记录/复现记录）—— 会话活着，被弹的是
+    这样处理的原因是：HTTP 重放那条路（:func:`apply_leaf_cookie_over_http`）在实际运行中被弹回
+    登录页，而同一时刻用户的浏览器里回帖是成功的（复现现象）—— 会话活着，被弹的是
     **重放**：饼干是 Edge 建立的，嘴是 urllib 的缺省 UA。界面层把这里读到的 UA 传进 HTTP
     重放，让它用原主的嗓音说话。读不到就空串 —— 它是辅助，不该拦住领饼干本身。
     """
@@ -3832,7 +3831,7 @@ def read_user_agent(session: "CDPSession") -> str:
 def build_page_fetch_script(url: str) -> str:
     """生成「在页面里用 fetch GET 一个同源地址」的脚本（v0.13.30）。
 
-    为什么用 fetch：请求由浏览器自己发出 —— UA、头、TLS 指纹、饼干罐（含 HttpOnly/Secure）
+    采用 fetch 的依据是：请求由浏览器自己发出 —— UA、头、TLS 指纹、饼干罐（含 HttpOnly/Secure）
     全是原主的，不存在 HTTP 重放那种「换一张嘴说话就被弹回登录页」的问题；而它是后台请求，
     **一个标签页都不碰**（v0.13.21 立的规矩是不动用户的页面，不是不能用浏览器发请求）。
     ``redirect:'follow'`` 让真 302 由浏览器自己跟完；站点的「跳转提示」页是 200 加 JS 倒数，
@@ -3875,19 +3874,19 @@ WATCH_BANNER_ID = "__xdaoWatchBanner"
 def build_watch_banner_script(stamp: str = "", port: int | None = None) -> str:
     """给被盯的窗口钉一条「程序正在看这个窗口」的横条（v0.13.33）。
 
-    为什么：登录这条路历史上一直分不清「用户在操作哪扇窗」—— 程序读的是它挂着
+    原因：登录这条路历史上一直分不清「用户在操作哪扇窗」—— 程序读的是它挂着
     的那个实例的饼干罐，用户在另一扇长得一模一样的窗口里登录、点「应用」，程序
-    这边就永远「取不到饼干」（真机 复现记录/复现记录）。横幅只出现在**程序正在读的那扇
+    这边就永远「取不到饼干」（实际运行中）。横幅只出现在**程序正在读的那扇
     窗**里：窗口上有条棕色横条 = 对；没有 = 你正站在别的窗口里，别看这里了。
 
-    v0.13.35 两处补强（真机 复现记录：横幅在两扇窗里可能同时存在 —— 旧程序退出后
+    v0.13.35 两处补强（实际运行中：横幅在两扇窗里可能同时存在 —— 旧程序退出后
     它注入的横幅会**冻**在那扇幸存的窗里，用户分不清哪扇是活的）：
 
-    * ``stamp`` 非空时文案尾带「【窗口号 XXXX】」，界面话术报同一个号 —— 肉眼一比
-      就知道眼前这扇是不是程序此刻在盯的；
+    * ``stamp`` 非空时文案尾带「【窗口号 XXXX】」，界面话术报同一个号 —— 直接比较
+      就知道眼前这扇是否程序此刻在盯的；
     * 已存在的横幅**也刷新文案**（旧横幅带着旧号/旧版话术，不刷就成了假信号）。
 
-    v0.13.46 两处改形（真机 复现记录：横条钉在页面**顶上**，把「我的饼干」列表的
+    v0.13.46 两处改形（实际运行中：横条钉在页面**顶上**，把「我的饼干」列表的
     复选框与『应用』按钮压住了一半）：
 
     * 横条挪到**窗口底部**、字更小、只占一行 —— 站点的操作区都在上半屏，从此不再
@@ -3986,7 +3985,7 @@ def apply_leaf_cookie_in_browser(
 ) -> LeafCookie:
     """在浏览器页面里把「列表 → 应用 → 导出」走一遍，全程 fetch、不导航（v0.13.30）。
 
-    为什么加这条路（真机 复现记录/复现记录）：HTTP 重放被弹回登录页、浏览器里回帖却成功 ——
+    增加该处理路径的原因是（实际运行中）：HTTP 重放被弹回登录页、浏览器里回帖却成功 ——
     差的是客户端长相（UA/头/TLS 指纹），不是会话。页面内 fetch 由浏览器自己发，身份**天然
     全等**，把这些变量一次消掉；它不导航，所以不会重演 v0.13.21 的「把用户拖去站点倒计时页
     原地重载」。协议照 :meth:`XdaoClient.apply_cookie`（v0.6.1 起线上跑通）逐条搬：
@@ -4007,7 +4006,7 @@ def apply_leaf_cookie_in_browser(
         # v0.13.33：地址读得到、可 host 为空（about:blank、data: 这类）以前会**直通** ——
         # fetch 落在非站内的文档里，`credentials:'same-origin'` 一块饼干也不发，
         # 站点必然把它当陌生人弹回登录页，界面就谎报「这个窗口里的登录没成」
-        # （真机 复现记录 排查时发现的口径漏洞：那句话得留着说真弹回的场景）。
+        # （实际运行时复现 排查时发现的口径漏洞：那句话得留着说真弹回的场景）。
         return LeafCookie(
             None,
             f"程序挂的这个标签现在不在 X 岛页面（{current[:120]}），先等它回到站内再领。",

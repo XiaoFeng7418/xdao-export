@@ -409,14 +409,14 @@ def test_resolved_cache_dir_prefers_explicit_setting():
 #
 # 起因：v0.8.0 给 PDF 加了纸张/边距设置，但串监控那条路没接上 ——
 # 用户在设置里选了 A3、无边距，手动导出对、后台监控导出的却还是默认纸张。
-# 这类「只有一条路接上了」的漏洞靠肉眼看不出来，所以用契约断言钉住。
+# 这类「只有一条路接上了」的漏洞靠查看不出来，所以用契约断言钉住。
 
 
 def test_check_once_hands_pdf_options_and_browser_to_the_exporter(monkeypatch):
     """监控导出 PDF 时，设置里的纸张/边距与浏览器路径必须传下去。
 
     渲染换成假件：真渲染要**启动浏览器**，而这条用例验的是「设置有没有一路传到渲染层」，
-    与浏览器起不起得来无关。真机渲染由 `tests/test_pdf_render.py` 在
+    与浏览器起不起得来无关。运行环境渲染由 `tests/test_pdf_render.py` 在
     `XDAO_PDF_TEST=1` 时单独跑（2026-10-02：这条用例在 CI 上因为浏览器起不来红过一次，
     日志是 `CdpError: 等了 60 秒还没等到 Chrome 的调试端口`）。
     """

@@ -1,17 +1,17 @@
 """文本卫生：文件开头的 BOM 与行尾风格。
 
 起因：`packaging/使用说明.txt` 本该是一个 UTF-8 BOM，有一次变成了**两个**
-（`EF BB BF EF BB BF`）—— 那是在本机脚本里读文件没剥掉原 BOM、写回又贴了一个，
-肉眼看不见，一路进了 zip。行尾混用同理：`\r\n` 和裸 `\n` 混在同一个文件里，
+（`EF BB BF EF BB BF`）—— 那是在项目脚本里读文件没剥掉原 BOM、写回又贴了一个，
+查看不见，一路进了 zip。行尾混用同理：`\r\n` 和裸 `\n` 混在同一个文件里，
 diff 会整段变色、脚本按行处理时容易多出看不见的 `\r`。
 
-这份用例把「查改动文件」的本机脚本（`check_text_hygiene.py`）升成对**仓库里所有被跟踪的
+这份用例把「查改动文件」的项目脚本（`check_text_hygiene.py`）升成对**仓库里所有被跟踪的
 文本文件**的检查，跑在 CI 上：
 ① 开头不允许有第二个 BOM；
 ② 同一个文件里不允许 `\r\n` 与裸 `\n` 混用；
 ③ 三个要交给 Windows 工具打开的文件必须**保留**开头那一个 BOM（见下）；
 ④ 一个确实被改过的文件，工作区的行尾不能与库里（索引）的行尾是两种 —— 否则提交上去
-   就是「每一行都变了」的假改动（2026-10-02：本机脚本真的把三个文档整份翻成了 LF）。
+   就是「每一行都变了」的假改动（2026-10-02：项目脚本真的把三个文档整份翻成了 LF）。
 """
 from __future__ import annotations
 
@@ -52,7 +52,11 @@ def _tracked_files() -> list[str]:
         ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8"
     )
     assert done.returncode == 0, f"git ls-files 失败：{done.stderr.strip()}"
-    names = [name for name in done.stdout.split("\0") if name]
+    names = [
+        name
+        for name in done.stdout.split("\0")
+        if name and (ROOT / name).is_file()
+    ]
     assert len(names) > 100, f"只拿到 {len(names)} 个被跟踪文件，像是在仓库外面跑的"
     return names
 
@@ -118,8 +122,8 @@ def test_the_files_windows_tools_open_keep_their_bom(name: str) -> None:
 # 行尾风格：索引（= 将要提交的形态）与工作区必须一致
 # ---------------------------------------------------------------------------
 #
-# 起因（2026-10-02）：一个改文档的本机脚本把 README/HANDOFF/MAINTENANCE 整份写成了 LF，
-# 三个文件的每一行都「变了」，而且**没有任何用例拦得住** —— 只有肉眼看 `git diff --stat`
+# 起因（2026-10-02）：一个改文档的项目脚本把 README/HANDOFF/MAINTENANCE 整份写成了 LF，
+# 三个文件的每一行都「变了」，而且**没有任何用例拦得住** —— 只有查看 `git diff --stat`
 # 才发现。行尾混用（上面那条）管的是「同一个文件里两种混着」，管不了「整份翻掉」。
 #
 # `git ls-files --eol` 一条命令就能看出来：每条给 `i/<索引形态> w/<工作区形态> attr/<属性>`。
@@ -159,7 +163,7 @@ def _eol_rows() -> list[tuple[str, str, str, str]]:
         ["git", "ls-files", "--eol", "-z"], cwd=ROOT, capture_output=True
     )
     assert done.returncode == 0, f"git ls-files --eol 失败：{done.stderr.decode('utf-8', 'replace')}"
-    rows = _parse_eol_rows(done.stdout)
+    rows = [row for row in _parse_eol_rows(done.stdout) if (ROOT / row[0]).is_file()]
     assert len(rows) > 100, f"只解析出 {len(rows)} 条，像是在仓库外面跑的"
     return rows
 
@@ -187,7 +191,7 @@ def _dirty_files() -> set[str]:
     """git 认为与 HEAD 有内容差异的文件（含已暂存的）。
 
     用 `git diff`（内容比较）而不是 `git status`：工作区行尾被改过、但过滤之后与库里一模一样时，
-    git 只会在 stat 缓存里「看起来脏」，那不是我们关心的（提交上去不会变）。
+    git 只会在 stat 缓存里「看起来脏」，那不是项目关心的（提交上去不会变）。
     """
     names: set[str] = set()
     for args in (

@@ -1,7 +1,7 @@
 """本地配置：登录状态、导出偏好、网络选项与监控列表的持久化。
 
 配置文件位置：``%APPDATA%\\xdao-export\\config.json``。
-只保存 userhash 这类本机状态，不保存明文账号密码。
+只保存 userhash 这类本地状态，不保存明文账号密码。
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ DEFAULT_UI_FONT_SCALE = 1.0
 
 
 def app_config_dir() -> Path:
-    """本机配置目录。"""
+    """用户配置目录。"""
     base = os.environ.get("APPDATA")
     if base:
         return Path(base) / APP_DIR_NAME
@@ -77,7 +77,7 @@ def _default_config_path() -> Path:
 
 @dataclass
 class AppSettings:
-    """本机配置。"""
+    """用户配置。"""
 
     userhash: str | None = None
     output_dir: str | None = None
@@ -251,8 +251,8 @@ class AppSettings:
     def save(self) -> bool:
         """把设置写进配置文件；写成功 ``True``，写不进去 ``False``（v0.13.53）。
 
-        为什么要把结果交出去：以前这里是 ``except Exception: pass`` —— 写失败也
-        一声不响，界面照着报「登录成功，饼干已保存。」。2026-10-11 真机上就出现了
+        返回保存结果的原因是：以前这里是 ``except Exception: pass`` —— 写失败也
+        一声不响，界面照着报「登录成功，饼干已保存。」。2026-10-11 实际运行中就出现了
         这种自相矛盾：日志说保存成功，``config.json`` 的修改时间却停在两周前、里面
         ``userhash`` 是空的，重启程序还得重新登录。写不进去是环境问题（目录没有写
         权限、被安全软件拦、程序放在受限目录里），但**必须让调用方有机会说出来**。

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """「用浏览器登录」只支持 Chromium 内核这件事，必须写在用户看得见的地方。
 
-为什么要有这份检查：这条路靠 CDP，而 CDP 只有 Chromium 内核（Chrome / Edge / Chromium /
+设置该检查的依据是：这条路靠 CDP，而 CDP 只有 Chromium 内核（Chrome / Edge / Chromium /
 Brave）才有 —— Firefox 是另一套协议。程序本身从来没写错过（``browser_login._CANDIDATES``
 里一个 Firefox 项都没有），错的是**话没说明白**：只有 Firefox 的人会点开这个窗口一直等，
-等不到还得自己猜为什么。
+等不到还得自己猜原因。
 
 2026-10-02 起把这句话钉在三处公开文字里（登录窗开头、`README.md`、随包发出去的
 `packaging/使用说明.txt`）。将来谁重写文案把这段丢掉，这里会红。

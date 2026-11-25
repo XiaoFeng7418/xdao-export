@@ -376,7 +376,7 @@ def test_tips_post_is_filtered_out(artifacts_dir):
 
 
 def test_cache_survives_short_page(artifacts_dir):
-    """第 2 页起只有主帖时应视为到底，不再继续翻页。"""
+    """第 2 页起只有主帖时应视为实际，不再继续翻页。"""
     api = FakeApi(
         {
             1: make_page(7001, 1, [make_reply(101)], reply_count=99, page_count=9),
@@ -477,7 +477,7 @@ def test_cache_dir_candidates_are_ordered_and_unique(artifacts_dir):
 def test_cache_dir_candidates_survive_a_broken_temp_dir(artifacts_dir, monkeypatch):
     """问不到系统临时目录时少一个候选，而不是把整次导出带走。
 
-    真实场景（v0.10.0 打包版真机核验）：冻结出来的 exe 里
+    真实场景（v0.10.0 打包版运行环境核验）：冻结出来的 exe 里
     ``tempfile.gettempdir()`` 会抛
     ``FileNotFoundError: [Errno 2] No usable temporary directory found in [...]``，
     而 ``cache_dir_candidates()`` 每次导出都会走一遍，于是整次导出直接失败。
@@ -840,8 +840,8 @@ def test_user_page_limit_beats_the_safety_valve(artifacts_dir):
 def test_safety_valve_applies_only_when_no_user_limit(artifacts_dir):
     """不填页数上限（0＝不限）时仍然保留 5000 页那道安全阀。
 
-    为什么这条要有：把"用户上限"与"安全阀"分开之后，很容易顺手把安全阀
-    一起删掉 —— 那样一个畸形的超长串会被一把拉到底。这里用一个只认页数的
+    此用例验证用户上限与安全阀相互独立：把"用户上限"与"安全阀"分开之后，很容易同时把安全阀
+    一起删掉 —— 那样一个畸形的超长串会被一把拉实际。这里用一个只认页数的
     轻量接口把 5001 次请求跑完，确认第 5001 页一次都没请求、并且明确报"没抓完"。
     """
     total_pages = SAFETY_MAX_PAGES + 1
@@ -922,7 +922,7 @@ def test_until_thread_id_keeps_the_list_order_and_plain_ids():
 
 def test_until_thread_id_keeps_unparseable_entries():
     """解析不出串号的条目（手写的备注之类）不参与比较，也不该被悄悄丢掉。"""
-    threads = ["7001", "顺手记一笔", ""]
+    threads = ["7001", "无效条目", ""]
     kept, skipped = filter_until_thread_id(threads, 7001)
 
     assert kept == threads
@@ -1160,7 +1160,7 @@ def test_page_workers_never_exceeds_the_page_count(artifacts_dir):
 
     fetcher.fetch(7002)
 
-    # 串行兜底的那半句：到底就停，没有第 3 页。
+    # 串行兜底的那半句：实际就停，没有第 3 页。
     assert not any("并行抓取 1 页" in message for message in messages)
     assert [page for _, page in api.requests] == [1, 2]
 

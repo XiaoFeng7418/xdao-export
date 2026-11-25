@@ -7,7 +7,7 @@
 - 发布说明按 utf-8 读，记事本另存出来的说明（带 BOM）会把 BOM 一起写进正文，页面上看不见。
 
 下面用假 API 跑 `main()`（`gh_token` / `request_json` / `upload_asset` 全换成测试自己的），
-并单独核 `upload_asset` 的请求本身（附件名必须走 `?name=` 查询串，这是历史上踩过的坑：
+并单独核 `upload_asset` 的请求本身（附件名必须走 `?name=` 查询串，这是历史上曾遇到的坑：
 走别的写法时接口只取第一个点号之前的部分，中文名会被截断成一个字）。
 """
 
@@ -466,7 +466,7 @@ def _capture_request_bytes(monkeypatch, body: bytes) -> list[dict]:
     """把 ``request_bytes`` 换成「记下参数、按对方的 ``parse`` 处理响应体」的假货。
 
     这里刻意**不**替掉 ``request_json`` / ``request_text`` 本身：2026-10-10 发 v0.13.49 时
-    踩过一次 —— 抽取重构把这两个函数体改成 ``body = request_bytes(...)`` 却漏了 ``return``，
+    曾出现一次 —— 抽取重构把这两个函数体改成 ``body = request_bytes(...)`` 却漏了 ``return``，
     于是 API 明明建好了 Release，函数回 ``None``、脚本在打印那一行崩掉，附件一个都没传；
     而当时的用例全是替掉 ``request_json`` 的，谁都没跑到这两行。这两条用例专门盯着返回值。
     """
@@ -530,14 +530,14 @@ def test_a_good_release_title_passes(tag: str, name: str) -> None:
 @pytest.mark.parametrize(
     "tag,name,expected",
     [
-        # 2026-10-25 真踩过两次：把「xdao-export vX.Y.Z（免安装包 · Windows 64 位）」
+        # 2026-10-25 真曾遇到两次：把「xdao-export vX.Y.Z（免安装包 · Windows 64 位）」
         # 直接粘进 --name，GitHub 版本列表里就出现两行和前后十几版都不一致的标题。
         ("v0.19.5", "xdao-export v0.19.5（免安装包 · Windows 64 位）", "开头"),
         ("v0.19.5", "v0.19.4：上一版的说法", "开头"),
         ("v0.19.5", "v0.19.5 少了冒号", "开头"),
         ("v0.19.5", "v0.19.5：", "空的"),
         ("v0.19.5", "v0.19.5：免安装包", "正文"),
-        ("v0.19.5", "v0.19.5：补测试（顺手改了标题）", "括号"),
+        ("v0.19.5", "v0.19.5：补测试（同时修改标题）", "括号"),
     ],
 )
 def test_a_bad_release_title_is_rejected(tag: str, name: str, expected: str) -> None:

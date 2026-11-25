@@ -1,26 +1,20 @@
-"""把源码打成免安装包 `xdao-export-v<版本>-win64.zip`，并写一份配套的 `.sha256`。
+"""Build a portable ``xdao-export-v<version>-win64.zip`` and its ``.sha256`` file.
 
-为什么这一步要放进仓库（2026-10-02）：
+The script is versioned with the project so release archives can be reproduced from source.
+The Windows build workflow runs it on a hosted runner; this also supports the planned
+code-signing workflow, which requires CI-built artifacts.
 
-1. 以前打包只有作者本机 `_scratch/` 里的脚本，别人想核对「Release 里那个包到底是
-   怎么来的」只能来问。搬进仓库后，谁都能 `python tools/build_zip.py` 复现；
-2. 申请免费代码签名（SignPath Foundation，面向开源项目）有一条硬要求：
-   **要签名的产物必须由 CI 构建**。所以打包必须能在 GitHub 托管的 Windows runner 上跑通，
-   见 `.github/workflows/build.yml`。
+Usage::
 
-用法::
+    python tools/build_zip.py
+    python tools/build_zip.py --out D:\\out
+    python tools/build_zip.py --release-dir D:\\release
 
-    python tools/build_zip.py                                 # 产物写到 ./dist
-    python tools/build_zip.py --out D:\\out                     # 换个目录
-    python tools/build_zip.py --release-dir D:\\发布目录         # 打完再摆一份给下载者
+The script reports the archive path, entry count, size, and SHA256 digest. The sidecar file
+contains ``<digest>  <filename>`` in the format accepted by common checksum utilities.
 
-跑完打印 zip 路径、条目数、字节数与 SHA256；`.sha256` 就写在 zip 旁边，内容是一行
-``<摘要>  <文件名>``（`sha256sum -c` / `certutil` 那一类工具认这个格式）。
-
-`--release-dir` 是 2026-10-11 加的：产物默认落在仓库里的 `./dist`，下载者习惯去的外层
-目录（本机用的是放各版本目录的那个目录）就什么都没有 —— 每版都靠人记得加 `--out`，
-v0.13.51 漏了一次，是事后手工解压补齐的。给了这个开关就一步摆好三件套，同名的旧版本
-目录先删掉再摆。
+By default, artifacts are written to ``./dist``. ``--release-dir`` also copies the version
+folder, archive, and sidecar to a download directory, replacing a same-named version folder.
 """
 
 from __future__ import annotations
@@ -66,8 +60,8 @@ EXTRA_FILES: tuple[tuple[str, str], ...] = (
     ("LICENSE", "LICENSE.txt"),
 )
 
-#: 这两个是给 Windows 自己的工具打开的，BOM 掉了中文会乱码（`tests/test_text_hygiene.py`
-#: 也盯着这一条）。打包前再核一次 —— 这个坑 2026-10-02 踩过一次，而且是肉眼看不出来的。
+#: Windows tools use these UTF-8 files; the BOM check also runs in
+#: ``tests/test_text_hygiene.py`` and is repeated before archiving.
 NEEDS_BOM = ("使用说明.txt", "诊断写入.ps1", "诊断写入-双击运行.cmd")
 
 AUTHOR = "XiaoFeng7418"
@@ -85,9 +79,8 @@ def version_quad(version: str) -> tuple[int, int, int, int]:
 def version_file_text(version: str, author: str = AUTHOR, product: str = PRODUCT) -> str:
     """PyInstaller `--version-file` 要的 PE 版本信息。
 
-    `CompanyName` 是这里唯一能真的把作者名写进二进制的地方：免费的代码签名证书
-    签发给 SignPath Foundation，Windows 上显示的发布者不是作者本人，所以
-    「右键属性 -> 详细信息」里的这一栏就是署名（2026-10-02 定的）。
+    ``CompanyName`` and ``LegalCopyright`` carry the project publisher identifier and
+    MIT notice in the executable's version resources.
     """
     quad = version_quad(version)
     return (
@@ -131,7 +124,7 @@ def sha256_file(path: Path) -> str:
 
 
 def has_bom(path: Path) -> bool:
-    """开头是不是正好一个 UTF-8 BOM（多贴一个也是错的）。"""
+    """开头是否正好一个 UTF-8 BOM（多贴一个也是错的）。"""
     data = path.read_bytes()
     return data[:3] == b"\xef\xbb\xbf" and data[3:6] != b"\xef\xbb\xbf"
 
@@ -248,9 +241,8 @@ def check_docs(repo: Path, version: str) -> list[str]:
 def pe_product_version(path: Path) -> str | None:
     """读 Windows PE 版本资源里的 ``ProductVersion``；读不到返回 None。
 
-    PyInstaller 用 ``--windowed`` 打出来的程序没有控制台，``--version`` 的输出在有些
-    环境（CI 的 runner）里抓不到 —— v0.22.3 的构建因此误判过一次（本机抓得到、
-    CI 抓不到）。PE 版本资源是 exe 里真实带着的东西，抓不到 stdout 时拿它兜底。
+    A PyInstaller ``--windowed`` executable has no console in some CI environments.
+    The PE version resource provides a fallback when stdout is unavailable.
     """
     if os.name != "nt":  # pragma: no cover - 只在 Windows 上有意义
         return None
@@ -317,8 +309,8 @@ def version_check(
 def kill_leftover_exe() -> None:
     """清掉还在跑的打包版进程。
 
-    上次处理真机核验如果没关干净，`_internal` 里的 dll 会被占住，删目录会以
-    `WinError 5` 失败（本机脚本踩过一次）。
+    An earlier packaged process can keep DLL files in ``_internal`` open and prevent
+    the build directory from being removed.
     """
     if os.name != "nt":
         return
@@ -331,10 +323,8 @@ def kill_leftover_exe() -> None:
 def pyinstaller_command(python: str, version_file: Path, work: Path, out: Path) -> list[str]:
     """拼出这次打包要跑的 PyInstaller 命令行（纯函数，方便用例断言）。
 
-    ``--hidden-import tools.pdf_diag`` 这条是必须的（v0.19.4 起）：排障开关
-    ``--pdfdiag`` 在 ``main.py`` 里是**延迟导入**，PyInstaller 静态扫描看不到它，
-    不显式点名就不会被打进包 —— 2026-10-25 实测 v0.19.3 的免安装包里没有这个模块，
-    用户敲 ``xdao-export.exe --pdfdiag`` 直接 ModuleNotFoundError，开关等于不存在。
+    ``--pdfdiag`` is imported lazily by ``main.py`` and is not detected by PyInstaller's
+    static analysis. Explicitly listing ``tools.pdf_diag`` includes it in the package.
     """
     return [
         python, "-m", "PyInstaller",
@@ -390,9 +380,8 @@ def publish_release(root: Path, zip_path: Path, sidecar: Path, release_dir: Path
 
 
 def main(argv: list[str] | None = None) -> int:
-    # 中文 Windows 的控制台默认是 GBK，脚本里那几个「✓ / ×」打印会当场抛
-    # UnicodeEncodeError（2026-10-11 打包 v0.13.52 时真撞上：包已经打好了，
-    # 卡在自检那几行上，退出码 1）。与 main.py 同一套办法：先把输出改成 UTF-8。
+    # Windows consoles may use a legacy code page that cannot encode the status symbols.
+    # Configure UTF-8 output so build diagnostics remain printable.
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
         if stream is None:  # --windowed 打包版没有控制台
@@ -500,8 +489,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"  × {note}", flush=True)
                 return 1
-            # 打包冒烟只查本机，不依赖站点可用性；浏览器或安全软件等环境项
-            # 仍然只打印不拦（理由见 docs/backlog/07-ci-assessment.md）。
+            # The packaging smoke check is offline. Browser and security-software
+            # environment checks are reported but do not fail the build.
             done = subprocess.run(
                 [str(exe), "--selftest", "--offline"], capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
@@ -519,10 +508,10 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("产物目录就是 --release-dir，不用再摆一份。", flush=True)
         elif out == (ROOT / "dist").resolve() and not os.environ.get("GITHUB_ACTIONS"):
-            # 只在本机提醒：CI 就是往 ./dist 打的（签名要求产物由 CI 构建），那儿不用摆。
+            # Hosted builds use ./dist; local builds may copy release artifacts elsewhere.
             print("提醒：这次产物留在仓库的 ./dist 里。", flush=True)
             print("      要让下载者在外层目录看到「版本目录 + zip + .sha256」，", flush=True)
-            print("      加 --release-dir <那个目录> 再跑（本机发布用的是放各版本目录的那个目录）。", flush=True)
+            print("      Add --release-dir <directory> to copy the release artifacts elsewhere.", flush=True)
         print("DONE", flush=True)
         return 0
     finally:

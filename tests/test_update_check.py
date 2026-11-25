@@ -1,7 +1,7 @@
 """新版本检查的离线用例。
 
 这部分逻辑只做两件事：比版本号、问一次 GitHub。问接口的过程全部用替身，
-真机怎么问由 ``_scratch/probe_update_check.py`` 负责（那种事只能人工看一眼）。
+运行环境怎么问由 ``诊断探针`` 负责（那种事只能人工看一眼）。
 """
 
 from __future__ import annotations
@@ -472,7 +472,7 @@ def test_cache_path_lives_next_to_the_config() -> None:
     from xdao.settings import app_config_dir
 
     # 只比路径，不碰真实文件系统：CI 的 Linux 机器上配置目录还没建，
-    # 断言 path.parent.exists() 会红（本机 Windows 因为跑过程序所以是绿的）。
+    # 断言 path.parent.exists() 会红（Windows 环境 因为跑过程序所以是绿的）。
     assert path.parent == app_config_dir()
 
 

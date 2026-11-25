@@ -150,7 +150,7 @@ def test_request_following_jumps_stops_when_the_page_points_at_itself():
 
 
 def test_apply_cookie_reports_a_session_that_did_not_stick():
-    """被弹回登录页时不能说「账号里没有饼干」—— 真相是这次登录根本没进去。"""
+    """被弹回登录页时不能说「账号里没有饼干」—— 实际原因是这次登录根本没进去。"""
     client = XdaoClient()
     fake, _ = _responder({}, default=JUMP_TO_LOGIN)
     client._request = fake  # type: ignore[method-assign]

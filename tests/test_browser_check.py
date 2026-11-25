@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""把「浏览器到底行不行」这个探测钉住（``--check-browser`` 那条路）。
+"""把「浏览器实际行不行」这个探测钉住（``--check-browser`` 那条路）。
 
-为什么这些用例必须用假浏览器：真 Edge 走的是它自己的单实例逻辑 —— 实测把
+这些用例使用浏览器替身：真 Edge 走的是它自己的单实例逻辑 —— 实测把
 ``cmd.exe`` 冒充浏览器传进去，它也会把完整的 Chromium 资料目录和活端口交出来，
 「失败」这一半根本造不出来。所以假浏览器自己写端口文件，按剧本决定要不要
 「答话」（起一个只认 ``/json/version`` 的本地 HTTP 服务）。
@@ -91,7 +91,7 @@ def _fake_browser(work: Path, mode: str, port: str = "1") -> BrowserInfo:
         encoding="utf-8",
     )
     # **写死 0o755**，别用 `st_mode | S_IXUSR`：Windows 上 `stat.S_IXUSR` 是 0，
-    # 那种写法在本机探测不出「执行位到底有没有给」（实测在 mock 成 posix 的本地探针里
+    # 那种写法在静态检查无法检测「执行位实际有没有给」（实测在 mock 成 posix 的本地探针里
     # 权限仍是 0o666），到了 ubuntu 作业上就直接 `PermissionError`。
     # 也别在这儿断言执行位：Windows 的 stat 恒返回 0o666，断言只会把本机弄红
     # （执行位只有 ubuntu 的作业才验得了）。
@@ -121,7 +121,7 @@ def test_a_browser_that_dies_after_writing_the_port_is_not_a_pass(
 ) -> None:
     """进程退得比主线程第一次 ``poll()`` 还快时，只看 ``poll()`` 会误判成「可以」。
 
-    这是实测踩到的形态（拿 ``cmd.exe`` 冒充浏览器时它比第一次 ``poll()`` 退得还快），
+    这是测试中出现的形态（拿 ``cmd.exe`` 冒充浏览器时它比第一次 ``poll()`` 退得还快），
     所以判定必须落在「调试端口答不答话」上，这条用例钉住这一点。
     """
     info = _fake_browser(artifacts_dir, "dies")
@@ -142,7 +142,7 @@ def test_a_port_nobody_answers_on_is_not_a_pass(artifacts_dir: Path) -> None:
 def test_the_probe_stays_on_the_one_browser_it_was_given(artifacts_dir: Path) -> None:
     """探测要如实回答「这一个浏览器行不行」，不能换目录、更不能换浏览器。
 
-    踩过的坑：早期版本会退到用户真正的 ``browser-profile``，那里上一次留下的端口文件
+    曾遇到的坑：早期版本会退到用户真正的 ``browser-profile``，那里上一次留下的端口文件
     让**另一个**浏览器答了话，于是把一个起不来的假货判成「可以」。
     登录那条路该换（用户要登进去），探测这条路不该换（用户要知道真相）。
     """

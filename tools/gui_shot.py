@@ -71,7 +71,7 @@ class BITMAPINFO(ctypes.Structure):
 
 
 def win_libs():
-    """真机上要用的两个库。测试里换成假对象，免得碰真实桌面。"""
+    """实际运行中要用的两个库。测试里换成假对象，免得碰真实桌面。"""
     return ctypes.windll.user32, ctypes.windll.gdi32
 
 
@@ -117,7 +117,7 @@ def grab(hwnd: int, height: int, width: int, *, libs=None) -> bytes:
 
 
 def looks_blank(raw: bytes, *, limit: int = BLANK_COLORS) -> bool:
-    """整幅画面是不是只有一两种颜色（= 窗口还没画出来 / 被挡住）。"""
+    """整幅画面是否只有一两种颜色（= 窗口还没画出来 / 被挡住）。"""
     if len(raw) < 4:
         return True
     seen = {raw[0:4]}

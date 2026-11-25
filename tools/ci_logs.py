@@ -1,8 +1,8 @@
 """下载 GitHub Actions 的运行日志（失败时辅助排查 CI）。
 
-为什么不用 `gh run view --log`：日志真实地址在
+日志下载采用独立实现：日志真实地址在
 results-receiver.actions.githubusercontent.com，带签名的临时 URL，
-本机网络下用 gh 取经常被中途掐断（unexpected EOF）。
+通过 gh 下载时可能因网络中断而失败（unexpected EOF）。
 这里自己实现：先拿带签名的日志地址，再分段重试下载并解压。
 
 用法：
@@ -14,7 +14,7 @@ results-receiver.actions.githubusercontent.com，带签名的临时 URL，
 
 退出码（这个工具的职责是「把日志摆出来」，所以只有下面这些情况才不是 0）：
     0  照办了；
-    1  --job 没匹配上任何 job（拼错了？此时会把这次运行里真实的 job 名列出来，
+    1  --job 没匹配上任何 job（拼错了。此时会把这次运行里真实的 job 名列出来，
        并且**不写** --save 指定的文件）、这次运行一个 job 都没有、
        --grep 一行都没匹配上、运行还没跑完该看的看不到。
 
@@ -122,7 +122,7 @@ def _report_retry(tries: int, wait: float, failure: BaseException, last: BaseExc
     """重试前的提示：只对 HTTP 状态码说话，而且打到 stderr（原实现如此）。
 
     网络异常（超时、连接重置）原先是静默重试的，这里靠 ``isinstance(failure, HTTPError)``
-    把这条区别保住 —— 别顺手给网络抖动也加一句话。
+    把这条区别保住 —— 别同时给网络抖动也加一句话。
     """
     if isinstance(failure, urllib.error.HTTPError):
         print(

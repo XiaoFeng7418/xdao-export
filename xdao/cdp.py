@@ -13,7 +13,7 @@
 3. 会话层：:class:`CDPSession` —— 一个专职读线程按报文 id 把应答投给等待者，
    外部线程只碰队列、不碰 socket；``call()`` 是唯一的出口。
 
-为什么要自己写：项目一直保持纯标准库（打包体积、离线可用、不受依赖升级影响）。
+维持纯标准库实现的原因是：项目一直保持纯标准库（打包体积、离线可用、不受依赖升级影响）。
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ def _http_json_once(url: str, timeout: float = 5.0) -> object:
         raise CdpError(f"读取浏览器的调试接口失败：{exc}") from exc
 
 
-#: 调试接口的读取预算（秒）。真机依据：浏览器是先把端口写进
+#: 调试接口的读取预算（秒）。实际运行环境依据：浏览器是先把端口写进
 #: ``DevToolsActivePort``、再让调试服务开始收连接的 —— 2026-10-01 六轮实测
 #: 端口文件出现后还要 328~563 ms 第一次连接才成功，这中间读一次就是
 #: ``[WinError 10061] 目标计算机积极拒绝``。以前只读一次，撞上就报「打开
@@ -187,7 +187,7 @@ def _http_json_once(url: str, timeout: float = 5.0) -> object:
 _DEVTOOLS_READ_BUDGET = 8.0
 _DEVTOOLS_RETRY_WAIT = 0.1
 
-#: 「本次处理失败再等等看」的 errno：连接被拒 / 重置 / 超时 / 网络不可达。
+#: 「当前批次失败再等等看」的 errno：连接被拒 / 重置 / 超时 / 网络不可达。
 _RETRY_ERRNOS = frozenset(
     code
     for code in (
@@ -236,7 +236,7 @@ def _http_json(
 ) -> object:
     """在预算内反复读调试接口，直到读通、或者确定再等也没用。
 
-    以前这里是「读一次就定生死」。真机上那条 ``[WinError 10061]`` 就发生在
+    以前这里是「读一次就定生死」。实际运行中那条 ``[WinError 10061]`` 就发生在
     端口文件出现、调试服务还没开始收连接的那几百毫秒里 —— 用户看到的是
     「打开浏览器失败」，再点一次「重新打开浏览器」却好了。现在这段时间自己
     等过去，不再把浏览器正常启动的时差当成故障。
@@ -269,7 +269,7 @@ http_json = _http_json
 def _ws_handshake(sock: socket.socket, ws_url: str, timeout: float = 10.0) -> bytes:
     """完成 WebSocket 握手，返回「握手响应之后可能已经读到的余包」。
 
-    为什么要把余包交回去：服务端常把 101 响应和自己的第一帧写在同一个 TCP 段里，
+    返回握手后的余包很重要，原因是：服务端常把 101 响应和自己的第一帧写在同一个 TCP 段里，
     直接丢掉会把第一帧吃掉（表现成「发出去的命令永远等不到应答」）。
     """
     host, port, path = _split_ws_url(ws_url)
@@ -316,8 +316,8 @@ def _context_ids_of(raw: object) -> list[str]:
 def _context_ids_of_targets(raw: object) -> list[str]:
     """从 ``Target.getTargets`` 的 ``targetInfos`` 里把挂着上下文的那些 id 捞出来（v0.13.48）。
 
-    为什么非得从目标身上捞：**用户自己开的无痕窗不在 ``Target.getBrowserContexts``
-    那份名单里**（本机探针 ``probe_incognito_contexts.py`` 实测它回 ``[]``），可那份
+    必须从目标身上捞：**用户自己开的无痕窗不在 ``Target.getBrowserContexts``
+    那份名单里**（探针 ``诊断探针`` 实测它回 ``[]``），可那份
     罐的 id 就明明白白挂在目标上。少了这一手，无痕窗里登录挣来的 userhash 读不到。
     """
     if not isinstance(raw, list):
@@ -347,7 +347,7 @@ def pick_page(pages: list[dict]) -> dict:
 def pick_site_page(pages: list[dict], url_prefixes: list[str] | None = None) -> dict | None:
     """挑出属于目标站点的那个标签；没有就返回 None。
 
-    为什么值得挑：真机上见过 Edge 自带的 ``edge://sync-confirmation-dialog/``
+    需要筛选标签页：实际运行中见过 Edge 自带的 ``edge://sync-confirmation-dialog/``
     排在目标页前面，挂到它上面去读 cookie 会一直读空。
     """
     prefixes = [prefix for prefix in (url_prefixes or []) if prefix]
@@ -381,7 +381,7 @@ def _describe_exception(details: object) -> str:
 class CDPSession:
     """一条 CDP 连接。
 
-    为什么单开一个读线程：WebSocket 是全双工通道，应答可能和事件通知混在一起、
+    独立读取线程用于接收消息：WebSocket 是全双工通道，应答可能和事件通知混在一起、
     也可能乱序到达，而调用方只想要「发一条命令、等这条命令的结果」。
     所以收帧交给一个专职线程，按报文 id 把结果投进各自的队列，
     外部线程只碰队列，不碰 socket。
@@ -473,7 +473,7 @@ class CDPSession:
     def list_page_targets(self) -> list[dict]:
         """现在浏览器里能挂上的页面标签清单（v0.13.36，排查用）。
 
-        真机 复现记录 的僵局：可见窗口显示已登录的「饼干列表」页，可对账行里的
+        复现时的僵局：可见窗口显示已登录的「饼干列表」页，可对账行里的
         ``挂=`` 一直是 login.html —— 分不出是浏览器里真有两页站点标签（旧登录页
         没关掉、列表是上次留下的缓存画面），还是 ``/json/list`` 的顺序把附着
         拽到了另一页。这一句把**有几页、各挂在哪**写进「读罐对账」，下次一张
@@ -484,9 +484,9 @@ class CDPSession:
     def _resolve_page_url(self) -> str:
         """等目标页面出现，再把它交给 connect()。
 
-        为什么不一次定生死：浏览器是先把调试端口写进 ``DevToolsActivePort``、
+        连接失败时保留短暂重试机会：浏览器是先把调试端口写进 ``DevToolsActivePort``、
         再加载命令行给的地址的 —— 端口文件一出现就连，页面列表里可能只有一个空标签，
-        真机上还见过 Edge 自带的 ``edge://sync-confirmation-dialog/``。
+        实际运行中还见过 Edge 自带的 ``edge://sync-confirmation-dialog/``。
         挂到那种页面上，页面里的 ``fetch`` 属于别的源，读饼干会一直读空，
         用户明明登录了程序却说没登录。所以这里给它几秒把目标页开出来。
         一直没等到（比如网断了）就退回「第一个页面标签」，让调用方拿到一个能用的
@@ -574,9 +574,9 @@ class CDPSession:
     def retarget(self) -> bool:
         """重新挂到「该挂的那个页面标签」上（v0.13.31），返回是否换了标签/重连过。
 
-        为什么需要：``connect()`` 挂上的是**那一刻**的标签，之后永不换 —— 可用户的
+        设计依据：``connect()`` 挂上的是**那一刻**的标签，之后永不换 —— 可用户的
         浏览器是活的：他可能把那个标签关掉再开一个，也可能在同一个浏览器实例里
-        **另开一个窗口**去登录（真机 复现记录：程序挂在登录页那个旧标签上，用户在
+        **另开一个窗口**去登录（实际运行中：程序挂在登录页那个旧标签上，用户在
         新窗口的饼干页里登录、点「应用」，程序却一路说「页面停在登录页」，
         页面里的 fetch 也问不到登录态）。这里每轮重新数一遍标签：
 
@@ -584,12 +584,12 @@ class CDPSession:
         - 没有站点页面 → 连接还活着就按兵不动（别把用户正停着的页面换来换去），
           连接已经断了才退而挂第一个页面标签。
 
-        v0.13.36 把第一条钉上**稳定性**（真机 复现记录：``挂=`` 在 login.html 和别的
+        v0.13.36 把第一条钉上**稳定性**（实际运行中：``挂=`` 在 login.html 和别的
         页面之间来回跳，横幅跟着刷、读数跟着换上下文，一屏日志自相矛盾 —— 两个站点
         标签时 ``/json/list`` 的返回顺序没有稳定定义，「挑第一个」就在两页之间轮着
         挑中）。现在改成三条：当前挂着的就是活着的站点页、且它**不是登录页** → 稳住
         不动；当前挂着的是登录页、而浏览器里另有**非登录**的站点页（用户已经登进去
-        停在饼干页）→ 挪到那一页去；其余情形照旧。复现记录 的教训仍然成立：旧标签一
+        停在饼干页）→ 挪到那一页去；其余情形照旧。复现过程中的教训仍然成立：旧标签一
         关，当前页不在列表里，照样换挂到用户在的那页。
 
         读标签列表本身失败（浏览器进程没了）照抛，由调用方决定怎么收场。
@@ -800,12 +800,12 @@ class CDPSession:
 
         ``Target.getBrowserContexts``：Chromium 把 cookie 存在 ``BrowserContext``
         级别的 network context 里 —— 无痕窗、Edge 的「工作区」那种都会另起一份，
-        **彼此看不见对方的饼干**。真机 复现记录/复现记录 的形状是「同一扇挂着程序横条的窗，
+        **彼此看不见对方的饼干**。复现时的形状是「同一扇挂着程序横条的窗，
         F12 看得见 userhash，程序四条读法全无」，默认上下文之外还有没有别的罐，
         必须问一句才知道。
 
-        v0.13.48 补的那一半：**用户自己开的无痕窗不在上面那份名单里**。本机探针
-        ``probe_incognito_contexts.py`` 实测（``msedge.exe --incognito`` 起浏览器）：
+        v0.13.48 补的那一半：**用户自己开的无痕窗不在上面那份名单里**。探针
+        ``诊断探针`` 实测（``msedge.exe --incognito`` 起浏览器）：
         ``Target.getBrowserContexts`` 回的是 ``[]``，而那个页面的目标身上明明挂着
         ``browserContextId=2199AF8D…``；``Storage.getCookies`` 带这个 id 也读得成。
         所以名单要从**目标**里再捞一遍 —— 少了这一手，用户「在无痕窗里登录好了」
@@ -846,19 +846,19 @@ class CDPSession:
     def read_storage_cookies(self, browser_context_id: str = "") -> list[dict]:
         """``Storage.getCookies``：开发者工具「应用程序 → Cookie」面板走的那一族读法（v0.13.42）。
 
-        为什么单开一条：真机 复现记录 的截图里，F12 面板明明白白列着 ``userhash``，
+        增加独立读取路径的依据是：复现时的截图里，F12 面板明明白白列着 ``userhash``，
         程序的三条读法（按地址 ``Network.getCookies``、整罐 ``Network.getAllCookies``、
         页面 ``document.cookie``）却一条都没看见。F12 走的就是 ``Storage`` 这一族，
-        而按地址那条 ``Network.getCookies`` 受域/路径过滤 —— 真机上正是它把带
+        而按地址那条 ``Network.getCookies`` 受域/路径过滤 —— 实际运行中正是它把带
         ``Partitioned`` 的 ``userhash`` 漏掉的；``document.cookie`` 又看不见 HttpOnly
         的它。读失败照抛，容不容忍由调用方决定。
 
-        v0.13.44 把理由改准（真机复验见 :meth:`read_all_cookies`）：这一条**不是**
-        「唯一读得到分区饼干的读法」—— 本机 Edge 上 ``Network.getAllCookies`` 也读
+        v0.13.44 把理由改准（实际环境验证见 :meth:`read_all_cookies`）：这一条**不是**
+        「唯一读得到分区饼干的读法」—— 运行环境 Edge 上 ``Network.getAllCookies`` 也读
         得到，它只是另一条独立、可以互相补名单的问法。
 
         v0.13.47：多收一个 ``browser_context_id``。不传就是**默认上下文**那一份罐
-        （老行为）；传了就问那一份。为什么需要：cookie 是按 ``BrowserContext``
+        （老行为）；传了就问那一份。设计依据：cookie 是按 ``BrowserContext``
         分开存的，页面级读法只能看见自己那一份 —— 同一扇窗里 F12 看得见、程序看不见
         的情形，剩下唯一的解释就是「读的不是同一份罐」。见 :meth:`browser_context_ids`。
         """
@@ -875,7 +875,7 @@ class CDPSession:
         """不按地址过滤，读浏览器 cookie 罐里的全部饼干（v0.13.29 的兜底路）。
 
         ``Network.getCookies`` 只回「会发给这些地址」的那部分，按域、路径、
-        Secure 逐个过滤。真机上出现过 F12 的 Application 面板明明列着
+        Secure 逐个过滤。实际运行中出现过 F12 的 Application 面板明明列着
         userhash、``getCookies`` 却怎么都不回它的情形（2026-10-02 的四张
         截图：对话框名单里始终没有 userhash，同一个浏览器存储里却有），
         过滤维度没法定位，所以补这条不过滤的读法。
@@ -887,11 +887,11 @@ class CDPSession:
         只有**两条都失败**才照抛；一条成一条败就用成功那条的名单（老规矩：
         读失败由调用方决定容不容忍）。
 
-        v0.13.44 把并集的理由改准（真机复验，2026-10-04，本机 Edge，headless 起一份
+        v0.13.44 把并集的理由改准（实际环境验证，2026-10-04，运行环境 Edge，headless 起一份
         一次性资料目录）：往罐里种一块带 ``partitionKey`` 的饼干再读 —— **按地址读**
         ``Network.getCookies`` 看不见它，而 ``Network.getAllCookies`` 与
         ``Storage.getCookies`` **两条都看得见**（都回带 ``partitionKey`` 的那一块）。
-        「``Network.getAllCookies`` 不回首分区饼干」这条传闻在本机**没有被证实**；
+        「``Network.getAllCookies`` 不回首分区饼干」这条传闻在尚未验证；
         并集留着是因为两条路的名单本来就可能不一样（按地址读受域/路径/Secure 过滤，
         不同 Chromium 版本对分区饼干的处理也不一致），合起来再加上对账行里的
         ``存储读=`` 段，下一张截图就能直接看出是哪条路漏。
@@ -959,5 +959,5 @@ class CDPSession:
         return json.dumps(value, ensure_ascii=False)
 
     def current_url(self) -> str:
-        """当前页面地址，界面层用它判断用户是不是还停在登录页。"""
+        """当前页面地址，界面层用它判断用户是否还停在登录页。"""
         return self.evaluate("location.href")

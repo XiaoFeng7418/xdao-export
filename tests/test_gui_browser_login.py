@@ -125,7 +125,7 @@ class _FakeSession:
     按 ``CDPSession`` 的**完整契约**来冒充：它是上下文管理器（``with`` 进来就连、
     出去就关），还能 ``call`` / ``current_url``。库将来若在 ``LoginBrowser.start()``
     里自己开一条会话（历史上确实有过这么一段），替身也不会漏接；判定「哪条是
-    对话框自己的」看地址是不是 ``ws://``。
+    对话框自己的」看地址是否 ``ws://``。
     """
 
     instances: list["_FakeSession"] = []
@@ -233,7 +233,7 @@ class _FakeSession:
 
     def browser_context_ids(self) -> list[str]:
         # v0.13.47：同一只浏览器里**别的罐**（无痕窗、Edge 的「工作区」各一份）。
-        # 替身默认一份额外的罐都没有；要演真机那种形状的用例自己填 context_cookies。
+        # 替身默认一份额外的罐都没有；要演实际运行环境那种形状的用例自己填 context_cookies。
         return list(self.context_cookies)
 
     def list_page_targets(self) -> list[dict]:
@@ -412,7 +412,7 @@ def install_browser_shim(monkeypatch, artifacts_dir):
     ) -> _FakeSubprocess:
         shim = _FakeSubprocess(exit_immediately=exit_immediately, popen_release=popen_release)
         monkeypatch.setattr(browser_login, "subprocess", shim)
-        # 候选失败后的收尾会真的拉起 powershell 扫全机进程（每次两三秒，真机 2026-10-23
+        # 候选失败后的收尾会真的拉起 powershell 扫全机进程（每次两三秒，实际运行环境 2026-10-23
         # 量到）。这里的浏览器本来就是假的、桌上不会有窗，跑这一手只会让用例干等 ——
         # 「启动失败要报出可读错误」那条 20 秒预算就是这么被挤爆的。纯逻辑用例
         # （tests/test_browser_login.py）早就把它关了，这里也一并关掉。
@@ -461,7 +461,7 @@ def open_dialog(root_window, artifacts_dir):
 
     ``client`` 可以换：对话框一起来后台线程就开始跑了，等造完再去改
     ``dialog.client`` 已经太晚（那正是「验饼干」这一步要用的东西）。想看
-    「验饼干到底问了谁」，就把替身在这里交进去。
+    「验饼干实际问了谁」，就把替身在这里交进去。
     """
     client = XdaoClient()
     settings = AppSettings(_path=Path(artifacts_dir) / "config.json")
@@ -634,7 +634,7 @@ def test_verify_userhash_live_asks_the_cookie_page_with_that_cookie():
     """真问一次服务端：拿这块饼干去请「饼干」页，看它有没有被弹回登录页。
 
     ``assume_live_cookies`` 那个 fixture 会把这一步短路掉（免得碰网络），但它一短路，
-    「到底问没问、问的是谁」就没人钉了 —— 走哪条路、弹回登录页算不算不认，正是最容易
+    「实际问没问、问的是谁」就没人钉了 —— 走哪条路、弹回登录页算不算不认，正是最容易
     悄悄错掉的地方。所以这条用例自己把客户端换成假的，让真实现跑一遍。
     """
     fake = _AskClient()
@@ -808,7 +808,7 @@ def test_pasting_a_cookie_while_the_browser_starts_leaves_no_orphan_process(
 
     assert _wait_for(root_window, lambda: bool(shim.processes), timeout=10.0)
     # 收尾要等的是**后台线程**，不是「轮询到某个条件成立」：机器忙的时候（全套连跑、
-    # 刚跑过真机浏览器）Tk 那套 update() 轮询会把后台线程挤到一边，15 秒都可能轮不到它。
+    # 刚跑过实际运行环境浏览器）Tk 那套 update() 轮询会把后台线程挤到一边，15 秒都可能轮不到它。
     # join 是直接睡在条件变量上，不占 GIL，负载下也不会假红；join 一返回就说明 _worker
     # 已经收完尾，后面那两条断言从此是确定的，不再靠「后台线程跑赢 10ms 轮询」。
     thread.join(timeout=30.0)
@@ -841,7 +841,7 @@ def test_leaf_cookie_comes_over_http_without_touching_the_users_tab(
 
     v0.13.17~v0.13.22 是让程序自己导航用户那个标签页去站点「应用」：站点那一跳是页面
     里的 JS 倒计时，程序一导航就把用户的页面留在「饼干切换成功!」那张**永远原地重载**
-    的页上（用户看到的就是「一直无限跳转」，复现记录/复现记录/复现记录）。现在浏览器只负责
+    的页上（用户看到的就是「一直无限跳转」，复现现象）。现在浏览器只负责
     让用户把验证码认过去，领饼干交给 ``XdaoClient.apply_cookie`` 那条从 v0.6.1 起就在
     线上跑通的 HTTP 协议。
     """
@@ -910,7 +910,7 @@ def test_the_dialog_never_navigates_the_users_tab(
     """迟迟登录不成时也只读饼干罐，一个标签页都不动（v0.13.23）。
 
     v0.13.21 起是「最多导航 6 次、用完只读罐」——可导航本身就是用户那次「一直无限
-    跳转」的来源（站点的倒计时页会把自己重载一遍又一遍，复现记录/复现记录/复现记录），
+    跳转」的来源（站点的倒计时页会把自己重载一遍又一遍，复现现象），
     所以现在一次都不导航。
     """
     dialog = open_dialog()
@@ -939,7 +939,7 @@ def test_login_finished_late_still_gets_a_chance_to_apply_the_cookie(
 ):
     """用户登录得慢一点，程序不能把「真去领饼干」的机会提前用光。
 
-    0.13.18 的真机现场：程序开浏览器时把标签页停在登录页，头几次「领饼干」都在登录页
+    0.13.18 的运行环境现场：程序开浏览器时把标签页停在登录页，头几次「领饼干」都在登录页
     上什么都没碰就返回了（「还没登录」）—— 等用户登进去，程序却已经不再去领了，而
     userhash 只有真去「应用」才会被主站种下，于是界面一路等到超时。
     v0.13.23 起程序干脆一次都不导航用户的标签页，登录晚了几十秒也照样领得到：领饼干
@@ -960,7 +960,7 @@ def test_login_finished_late_still_gets_a_chance_to_apply_the_cookie(
     session.pages = {login_url: login_page}
     session.cookies = []
 
-    # 用户在登录页上待「好几轮」——真机上这就是他打账号密码的那几十秒。
+    # 用户在登录页上待「好几轮」——实际运行中这就是他打账号密码的那几十秒。
     # v0.13.35：等的是**这句对的话**，不是「有句话」。替身的页面状态是测试线程
     # 事后才摆上去的，替身刚出生的头一轮可能先抢跑一句「试过了」；满载时那轮之后
     # 的登录页轮要慢半拍才泵到窗口上，只等「非空」就会把抢跑那句当成终局误报。
@@ -1006,7 +1006,7 @@ def test_timeout_message_lists_the_steps_the_program_tried(
 
     v0.13.23 起每轮会先说一句「罐子里有哪些饼干」（状态），再说 CDP 那句结论 ——
     收尾的结论（「自动取饼干这条路试过了…」）信息量最小，只留它会把状态那一句盖掉，
-    用户和我们都看不出卡在哪一步。
+    用户和项目都看不出卡在哪一步。
     """
     monkeypatch.setattr(gui, "BROWSER_LOGIN_TIMEOUT", 1.5)
     # 这条钉的是超时那句的形状；「到点续等」由 v0.13.31 那组用例单独钉，这里关掉免把用例拖长。
@@ -1082,7 +1082,7 @@ def test_every_round_reselects_the_tab_before_reading_it(
 ):
     """每一轮读之前先 retarget 重挑标签（v0.13.31）。
 
-    真机 复现记录：用户关掉登录那个标签、另开一个去饼干页登录，程序却盯着
+    实际运行中：用户关掉登录那个标签、另开一个去饼干页登录，程序却盯着
     connect() 那一刻挂上的旧标签一路报「页面停在登录页」。从这一版起每轮
     重新挑一次，挂错了当场换过去。
     """
@@ -1100,11 +1100,11 @@ def test_every_round_pins_the_banner_to_the_watched_tab(
 ):
     """每一轮都往被盯的标签插「程序正在看这个窗口」的横幅（v0.13.33）。
 
-    真机 复现记录/复现记录：用户在自己看的窗口里登录、点应用，程序却看着另一个
+    实际运行中：用户在自己看的窗口里登录、点应用，程序却看着另一个
     窗口的罐 —— 两个窗口长得一模一样，光靠文字说不清谁是谁。从这一版起横幅
-    每轮重插一次（导航会把页面整个换掉），插的就是本次处理 retarget 后真正在读
+    每轮重插一次（导航会把页面整个换掉），插的就是当前批次 retarget 后真正在读
     的那个 session，指哪看哪。v0.13.35 起每轮还带上这一趟的窗口号（旧窗口的
-    冻横幅装死，靠号识破 —— 复现记录）。v0.13.46 起连端口一起写进横条：窗口号管
+    冻横幅装死，靠号识破 —— 复现现象）。v0.13.46 起连端口一起写进横条：窗口号管
     「这一趟」，端口管「这一只罐」，两个叠起来两张截图才能对上。
     """
     banners: list[tuple[object, str, object]] = []
@@ -1122,7 +1122,7 @@ def test_every_round_pins_the_banner_to_the_watched_tab(
         "横幅没有每轮都插"
     )
     assert all(item[0] is session for item in banners), (
-        "横幅没钉在本次处理真正在读的标签上"
+        "横幅应固定在当前读取的标签上。"
     )
     stamps = {stamp for _unused, stamp, _port in banners}
     assert len(stamps) == 1, f"一趟尝试里窗口号换了：{stamps}"
@@ -1140,7 +1140,7 @@ def test_a_leaf_round_without_userhash_writes_the_forensics_line(
 ):
     """每一轮领饼干领空了，就把「读罐对账」写进运行日志（v0.13.34）。
 
-    真机 复现记录：F12 看得见 userhash、程序只报一句合并结果「浏览器里还是没有
+    实际运行中：F12 看得见 userhash、程序只报一句合并结果「浏览器里还是没有
     userhash」，谁也分不出漏在哪一读。从这一版起，无果的领饼干轮会把四路读法
     各自看见的名字清单并排写进日志（值绝不写）—— 下次一张日志截图就能定位。
     通道是**只进日志**：对话框已经三行话了，不再给它添第四行。
@@ -1163,7 +1163,7 @@ def test_a_leaf_round_without_userhash_writes_the_forensics_line(
         timeout=10.0,
     ), f"对账行没进运行日志：{logged}"
     assert all(item[0] is session for item in calls), (
-        "对账读的不是本次处理真正挂着的标签"
+        "对账应读取当前附着的标签。"
     )
     line = next(text for text in logged if text.startswith("读罐对账："))
     assert "PHPSESSID" in line
@@ -1185,7 +1185,7 @@ def test_a_userhash_found_in_another_window_is_used_and_named(
 ):
     """这一罐里没有、别的活窗口罐里有：就用那一块，并点名是哪一扇（v0.13.45）。
 
-    真机 复现记录：同一扇挂着本程序横幅的窗、F12 里三条饼干含 70 字节的 userhash，
+    实际运行中：同一扇挂着本程序横幅的窗、F12 里三条饼干含 70 字节的 userhash，
     对账行一路只报 PHPSESSID。逐窗读是冲它去的 —— 挨个问、找到就用，并在对话框里
     把「是哪一扇」说清楚（用户下次固定在那扇窗登录，程序就省得多问一遍）。
     """
@@ -1219,8 +1219,8 @@ def test_the_forensics_line_gets_the_mute_and_shared_jar_hints(
 ):
     """对账行还要带上「哑窗=」与「同罐进程=N」两段（v0.13.46）。
 
-    真机 复现记录：附着的那只浏览器整罐只有 1 条 PHPSESSID、对账行里连「逐窗=」
-    都没有 —— 看不出到底是「真没别的窗」还是「有窗，但调试端口已经哑了」。这两段
+    实际运行中：附着的那只浏览器整罐只有 1 条 PHPSESSID、对账行里连「逐窗=」
+    都没有 —— 看不出实际是「真没别的窗」还是「有窗，但调试端口已经哑了」。这两段
     就是替那两种形状准备的：端口不答话的自家目录点名，正拿着同一只资料目录的
     浏览器进程数也报出来（多于 1 ⇒ 还有第二个实例在共用这只罐）。
     """
@@ -1265,7 +1265,7 @@ def test_a_userhash_found_in_another_jar_is_used_and_named(
 ):
     """同一只浏览器里**别的罐**里有 userhash：就用那一块，并点名是哪一份（v0.13.47）。
 
-    真机 复现记录/复现记录：同一扇挂着本程序横幅、同一个端口的窗，F12 里 70 字节的
+    实际运行中：同一扇挂着本程序横幅、同一个端口的窗，F12 里 70 字节的
     ``userh…`` 明明白白，程序四条读法从头到尾没有它；而四路读法与 F12 同源同全已被
     两轮探针钉死 ⇒ 只剩「读的不是同一份罐」（无痕窗、Edge 的「工作区」各存一份）。
     """
@@ -1300,7 +1300,7 @@ def test_the_forensics_line_names_the_other_jars(
 ):
     """对账行还要带上「别路=」那一段（v0.13.47）：默认之外的罐各报一句名字。
 
-    真机 复现记录/复现记录 的死结：日志里只有名字，看不出「F12 那份」和「程序那份」是不是
+    复现时的死结：日志里只有名字，看不出「F12 那份」和「程序那份」是否
     同一份罐。这一段把额外的罐点名，配合超时那一刻落盘的「读罐详单」，就能逐字段比对。
     """
     seen: list[dict[str, object]] = []
@@ -1342,8 +1342,8 @@ def test_the_forensics_line_names_every_window_and_the_jar_path(
 ):
     """对账行末尾再补两段（v0.13.48）：每扇窗各在哪份罐里、这次用的目录**完整路径**。
 
-    真机 复现记录：程序读的那扇是 login.html（罐里只有 PHPSESSID），用户眼前那扇是已登录
-    的 index.html，而日志里写着「页=1」—— 「这两扇到底是不是同一扇」「同名的目录是不是
+    实际运行中：程序读的那扇是 login.html（罐里只有 PHPSESSID），用户眼前那扇是已登录
+    的 index.html，而日志里写着「页=1」—— 「这两扇实际是否同一扇」「同名的目录是否
     同一只罐」只有这两段答得出来（``罐=`` 只有目录名，配置目录下的常驻罐和 %TEMP% 里的
     一次性罐可能同名）。
     """
@@ -1468,7 +1468,7 @@ def test_the_watch_banner_is_taken_off_once_the_userhash_lands(
 ):
     """饼干拿到手就把横条摘掉（v0.13.46）。
 
-    真机 复现记录：横条一直挂着会挡住饼干列表那一排「应用」按钮。程序不替用户点
+    实际运行中：横条一直挂着会挡住饼干列表那一排「应用」按钮。程序不替用户点
     「应用」（点哪一块是账号的事），但登录一旦成功、userhash 已经拿到，横条就再没有
     存在的理由 —— 摘掉，别在用户已经登好的页面上留一条催命横幅。
     """
@@ -1490,7 +1490,7 @@ def test_the_watch_banner_is_taken_off_once_the_userhash_lands(
         "拿到 userhash 了，横条却没摘"
     )
     assert all(item is _dialog_sessions()[0] for item in removed), (
-        "摘的不是本次处理真正在读的那个标签"
+        "应从当前读取的标签移除横幅。"
     )
     dialog._on_cancel()
 
@@ -1498,10 +1498,10 @@ def test_the_watch_banner_is_taken_off_once_the_userhash_lands(
 def test_the_census_note_lands_in_the_log_and_not_the_dialog(
     root_window, browser_shim, open_dialog, monkeypatch
 ):
-    """「开窗前普查」只进运行日志：哪几扇窗、接没接手，一句都不能少（v0.13.35）。
+    """「开窗前普查」只进运行日志：哪几扇窗、是否复用，一句都不能少（v0.13.35）。
 
-    真机 复现记录 的头号嫌疑是「用户登录的窗 ≠ 程序读的窗」，而普查那句
-    「探到 N 扇、接手了哪扇」正是当场定案的证据。它不进对话框（话已经够挤），
+    复现时的头号嫌疑是「用户登录的窗 ≠ 程序读的窗」，而普查那句
+    「探到 N 扇、复用了哪扇」正是当场定案的证据。它不进对话框（话已经够挤），
     也不算失败 —— 只安静地躺在日志里等人截图。
     """
     monkeypatch.setattr(browser_login, "live_browser_dirs", lambda profile: [])
@@ -1572,9 +1572,9 @@ def test_the_live_check_speaks_with_the_browsers_own_user_agent(
 ):
     """验饼干算不算数之前，主客户端先换成浏览器自报的 UA（v0.13.31）。
 
-    站点会把「同一罐饼干、另一张嘴」的请求弹回登录页（复现记录），而主客户端
+    站点会把「同一罐饼干、另一张嘴」的请求弹回登录页（复现现象），而主客户端
     写死的 UA 正是另一张嘴 —— 不换的话，用户刚点「应用」挣来的**新**饼干也会被
-    验成「旧饼干不认」（复现记录 截图里那句冤案就是这么来的）。
+    验成「旧饼干不认」（复现现象 截图里那句误判就是这么来的）。
     """
     seen: list[str | None] = []
 
@@ -1602,7 +1602,7 @@ def test_the_wait_extends_itself_while_the_browser_is_still_open(
 ):
     """到点了、浏览器还开着：自动续等，续到上限为止才报超时（v0.13.31）。
 
-    复现记录 的抱怨就是「我登录了它已经不看了」—— 五分钟到点时用户还在打密码，
+    登录等待过早停止时，界面会遗漏随后完成的登录—— 五分钟到点时用户还在打密码，
     程序直接宣布超时撒手。这里把一轮压到 0.6 秒、续两轮，钉住：报超时那句话
     出现之前，程序至少多盯了整两轮没撒手。
     """
@@ -1619,15 +1619,15 @@ def test_the_wait_extends_itself_while_the_browser_is_still_open(
     waited = time.monotonic() - started
     # 0.6 秒 ×（首轮 + 续两轮）≈ 1.8 秒：明显超过一轮，又没越过上限。
     assert waited > 3 * 0.6, f"没续等，只等了 {waited:.1f} 秒就撒手"
-    # 上限只用来抓「多续了一整轮」，不是精度断言：带覆盖率/跑全量时这台机器上
+    # 上限只用来抓「多续了一整轮」，不是精度断言：带覆盖率/跑全量时当前环境上
     # 每轮的真实耗时会被拉长（Tk 事件循环 + 线程调度都慢），所以给足余量。
     assert waited < 4 * 0.6 + 6.0, f"续等越过了上限：{waited:.1f} 秒"
 
 
 def test_the_diagnosis_joins_what_the_program_learned() -> None:
-    """失败原因要带上「罐子里有哪些饼干」和「HTTP 那条路的原话」（v0.13.23）。
+    """失败信息应包含「罐子里有哪些饼干」和「HTTP 那条路的原话」（v0.13.23）。
 
-    遇到问题贴的是运行日志，这两样是「到底卡在哪一步」唯一的书面依据：复现记录 那次
+    遇到问题贴的是运行日志，这两样是「实际卡在哪一步」唯一的书面依据：该复现中
     日志里只有一句「浏览器窗口已经关掉了，还没取到饼干」，谁也没法查。
     """
     dialog = object.__new__(gui.BrowserLoginDialog)  # 只验拼句子，不开窗口
@@ -1648,7 +1648,7 @@ def test_the_failure_reason_carries_the_diagnosis(
 ):
     """失败原因（`_open_browser_login` 进运行日志的那一句）要带上诊断（v0.13.23）。
 
-    复现记录 那次日志里只有「浏览器窗口已经关掉了，还没取到饼干」：罐子里有什么、HTTP
+    该复现中日志里只有「浏览器窗口已经关掉了，还没取到饼干」：罐子里有什么、HTTP
     那条路说了什么，一个字都没有，远程根本查不动。这里钉住「日志那一句」的形状。
     """
     dialog = open_dialog()
@@ -1696,8 +1696,8 @@ def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
     """罐子诊断三种情形都要有话说（v0.13.23）：读不到 / 空的 / 有会话饼干。
 
     第四种情形是 v0.13.24 补的：罐里**已经有 userhash** 时不能再报「还没有 userhash」。
-    真机上就是这句话把我带偏过 —— 日志里看着像没读到饼干，其实读到了、只是站点不认
-    （复现记录：浏览器里明明登着，程序却说罐里没有 userhash）。
+    旧提示可能导致误判：日志看似未读到饼干，实际已读取但未通过站点验证
+    （复现现象：浏览器里明明登着，程序却说罐里没有 userhash）。
     """
 
     class _Backend:
@@ -1730,9 +1730,9 @@ def test_the_jar_summary_says_which_cookies_are_in_the_browser() -> None:
 def test_the_jar_summary_points_out_cookies_with_empty_values() -> None:
     """空值的饼干要点名（v0.13.26）。
 
-    为什么：真机上站点把 ``memberUserspapapa`` 写成了空值，罐子看着「登录过了」、其实
+    原因：实际运行中站点把 ``memberUserspapapa`` 写成了空值，罐子看着「登录过了」、其实
     一个真会话都没有；用户看名单分不出「有会话」和「只有空壳」，而程序原来还会据此
-    判断「算不算登录着」（复现记录 那张截图里报的正是「PHPSESSID、memberUserspapapa」）。
+    判断「算不算登录着」（此时名单为「PHPSESSID、memberUserspapapa」）。
     """
 
     class _Backend:
@@ -1767,8 +1767,8 @@ def test_the_jar_summary_keeps_quiet_when_every_cookie_has_a_value() -> None:
 def test_the_jar_summary_says_when_userhash_is_present_but_implausible() -> None:
     """「有 userhash 但值的形状不像」要和「根本没有」分开说（v0.13.29）。
 
-    以前两种都写成「还没有 userhash」：名单里明明列着 userhash 却这么报，用户截图
-    里自相矛盾 yet 查不出程序到底看见了什么。这里只写形状、不写值本身。
+    以前两种都写成「还没有 userhash」：名单里明明列着 userhash 却这么报，界面截图
+    里自相矛盾 yet 查不出程序实际看见了什么。这里只写形状、不写值本身。
     """
 
     class _Backend:
@@ -1788,10 +1788,10 @@ def test_the_jar_summary_says_when_userhash_is_present_but_implausible() -> None
 def test_read_userhash_falls_back_to_the_whole_jar_and_says_so() -> None:
     """按地址那读漏了 userhash 时：整罐读补上，并把漏在哪说出来（v0.13.29）。
 
-    真机上的情形（2026-10-02 四张截图）：对话框名单里从头到尾没有 userhash，
+    实际运行中的情形（2026-10-02 四张截图）：对话框名单里从头到尾没有 userhash，
     同一个浏览器的 F12 Application 面板里却一直有 —— ``Network.getCookies``
     的地址过滤把它滤掉了。补上之后界面要能说出「是整罐读补上的、藏在哪个域
-    哪条路径」，下次真机报告才有得查。
+    哪条路径」，下次运行环境报告才有得查。
     """
 
     class _Session:
@@ -1844,7 +1844,7 @@ def test_the_http_verdict_gets_its_own_line_and_the_log(
 ):
     """「领饼干那条路」的结论要单独占一行，并当场写进运行日志（v0.13.26）。
 
-    为什么：复现记录 那张截图里，对话框只有一行饼干名单、运行日志里只有「就绪」和
+    原因：诊断截图里，对话框只有一行饼干名单、运行日志里只有「就绪」和
     「已是最新版本」—— 整轮登录没留下任何可查的东西，连那条 HTTP 路跑没跑都说不清。
     """
     logged: list[str] = []
@@ -1927,9 +1927,9 @@ def test_try_leaf_cookie_http_tries_even_a_bare_anonymous_jar() -> None:
     """罐里只有一个匿名会话号时**也要试**（v0.13.26）。
 
     v0.13.24/v0.13.25 在这里会跳过：判断依据是「罐里除了 PHPSESSID 还有没有别的非空
-    饼干」。真机上站点把 ``memberUserspapapa`` 写成空值时，罐子看着「登录过了」、其实
+    饼干」。实际运行中站点把 ``memberUserspapapa`` 写成空值时，罐子看着「登录过了」、其实
     一个真会话都没有 —— 判错的代价是整轮一次都不试，界面上只剩「还没有 userhash」，
-    用户和我都看不出这条路到底跑没跑（复现记录）。现在不猜了：照试，只是按时间节流，
+    用户和日志无法判断这条路实际跑没跑（复现现象）。现在不猜了：照试，只是按时间节流，
     试过什么一律留痕。
     """
     backend = _HttpLeafBackend([{"name": "PHPSESSID", "value": "abc123"}], detail="没权限")
@@ -1981,7 +1981,7 @@ def test_try_leaf_cookie_http_rejects_a_value_that_is_not_a_userhash() -> None:
     """HTTP 那条路回来的东西同样要过 ``looks_like_userhash``，不能照单全收。
 
     而且被挡下时要**说得出话**（v0.13.25）：以前这里静默返回空 detail，界面上只剩
-    「还没有 userhash」，用户和我都看不出程序到底接住过什么（复现记录：用户自己在站点里
+    「还没有 userhash」，用户和日志无法判断程序实际接住过什么（复现现象：用户自己在站点里
     看饼干列表一切正常，程序却一个字都不说）。只写值的形状，不写值本身 —— 那是凭据。
     """
     secret = "这是一句人话，不是一块饼干"
@@ -1996,7 +1996,7 @@ def test_try_leaf_cookie_http_rejects_a_value_that_is_not_a_userhash() -> None:
 def test_try_leaf_cookie_http_accepts_a_value_with_high_bytes() -> None:
     """高位字节/替换字符不再一票否决（v0.13.25）：真假交给服务端去判。
 
-    真机上站点从导出页回给我们的值可能带着二进制字节解出来的字符，老粗筛要求
+    实际运行中站点从导出页回给项目的值可能带着二进制字节解出来的字符，老粗筛要求
     「全是可打印 ASCII」，于是把真值判成「不像」—— 用户看到的就是「程序什么都不说」。
     """
     value = "D-\x91\x04\x02\x12\xf8\xb8E9"
@@ -2088,7 +2088,7 @@ class _PageFetchBackend(_HttpLeafBackend):
 def test_page_fetch_wins_before_the_http_replay_is_bothered() -> None:
     """第一条路（页面内 fetch）拿到值，HTTP 重放**一趟都不许跑**。
 
-    顺序本身就是这条版本的意义（真机 复现记录/复现记录）：重放被弹回登录页而浏览器里回帖
+    顺序本身就是这条版本的意义（实际运行中）：重放被弹回登录页而浏览器里回帖
     成功 —— 差的只是客户端长相。fetch 由浏览器自己发，身份天然全等，先问它。
     """
     jar = [{"name": "PHPSESSID", "value": "abc", "domain": ".nmbxd1.com"}]
@@ -2120,7 +2120,7 @@ def test_both_leaf_paths_failing_shows_the_whole_picture() -> None:
     """两条路都败 → 界面上必须同时看得见两条路各自的原话（v0.13.30）。
 
     只留一条的话，「fetch 也被弹回登录页」（会话真死了）和「fetch 没问动、重放被弹回」
-    （多半是客户端长相）这两种完全不同的诊断就分不开了 —— 复现记录 正是靠这组对照定位的。
+    （多半是客户端长相）这两种完全不同的诊断就分不开了 —— 复现结果正是靠这组对照定位的。
     """
     jar = [{"name": "PHPSESSID", "value": "abc", "domain": ".nmbxd1.com"}]
     backend = _PageFetchBackend(
@@ -2169,8 +2169,8 @@ def test_the_timeout_message_carries_the_diagnosis_too() -> None:
     """等超时那句话要同时带上「试过的几步」和书面诊断（v0.13.24）。
 
     遇到问题时贴的是运行日志。只写「试过的几步」的话，饼干名单和「走 HTTP 领饼干」
-    那条路的原话就永远进不了日志 —— 复现记录 那份日志里一条 HTTP 记录都没有，
-    看不出那条路到底跑没跑。
+    那条路的原话就永远进不了日志 —— 该复现的日志里一条 HTTP 记录都没有，
+    看不出那条路实际跑没跑。
     """
     text = gui.BrowserLoginDialog._timeout_message(
         [
@@ -2202,7 +2202,7 @@ def test_http_leaf_cookie_rescues_a_tab_parked_on_the_login_form(
 ):
     """v0.13.22 的关键场面：标签页被弹回登录页，罐里其实还登录着。
 
-    用户 复现记录/复现记录 就卡在这里：程序把「页面停在登录页」当「用户还在打字」，
+    复现现象 就卡在这里：程序把「页面停在登录页」当「用户还在打字」，
     于是再也不去领饼干，一直等到超时（浏览器那边还在「饼干切换成功!」上原地跳）。
     新走法：罐里有真会话就直接走 HTTP 领，**一个页面都不动**。
     """
@@ -2286,8 +2286,8 @@ def test_the_http_path_is_throttled_by_time_not_by_the_jar(
 ):
     """这条路两条腿：隔 ``BROWSER_LEAF_HTTP_SECONDS`` 试一次；罐头一变**立刻**再试。
 
-    为什么不能只按「罐头变没变」：真机上出现过罐头一直没变 ⇒ 整轮一次都不试 ⇒ 界面上
-    只剩「还没有 userhash」、日志里一条登录记录都没有（复现记录）。这里钉住那一半：
+    重试条件不能仅依赖 cookie jar 是否变化：实际运行中出现过罐头一直没变 ⇒ 整轮一次都不试 ⇒ 界面上
+    只剩「还没有 userhash」、日志里一条登录记录都没有（复现现象）。这里钉住那一半：
     节流窗口之内不重复连站点。另一半（罐头一变就必须立刻试）由
     ``test_login_finished_late_still_gets_a_chance_to_apply_the_cookie`` 钉住。
     """
@@ -2330,8 +2330,8 @@ def test_the_http_path_keeps_trying_even_when_nothing_changes(
 ):
     """罐头一动不动，也要按时间一次次去试（v0.13.26 修的就是这个）。
 
-    v0.13.25 的闸门是「罐头变了才试」，而真机上罐头可以整轮都不变 —— 结果是界面上只
-    剩一行饼干名单、运行日志里连一条登录记录都没有（复现记录）。这里把节流窗口调到
+    v0.13.25 的闸门是「罐头变了才试」，而实际运行中罐头可以整轮都不变 —— 结果是界面上只
+    剩一行饼干名单、运行日志里连一条登录记录都没有（复现现象）。这里把节流窗口调到
     0.05 秒，罐头一个字都不改，看它会不会自己去第二次。
     """
     monkeypatch.setattr(gui, "BROWSER_LEAF_HTTP_SECONDS", 0.05)
@@ -2364,17 +2364,17 @@ def test_the_http_path_keeps_trying_even_when_nothing_changes(
 def test_waiting_status_says_how_long_and_which_window_counts() -> None:
     """「还在等」那句话：带秒数，点明是哪个浏览器窗口里的登录，并当场给出退路。
 
-    v0.13.32 改了口径：老断言是「还没到超时，先别急着让人换法子」，真机 复现记录 却
+    v0.13.32 改了口径：老断言是「还没到超时，先别急着让人换法子」，实际运行中 却
     证明等的人根本分不清两个 Edge 窗口 —— 在自己常用的浏览器里登录完就干等，
     左下角的粘贴按钮没人去翻。等待那句必须自己把退路说出来。
 
-    v0.13.33 又补了两件事（复现记录/复现记录）：等的人分不清两个长得一样的窗口，
-    句里给出棕色横幅这个肉眼判据；以及「要点一行『应用』才拿得到」。
-    后半句在真机 复现记录 被证伪：登录成功后 userhash 就在罐里（值=账号当前饼干），
+    v0.13.33 又补了两件事（复现现象）：等的人分不清两个长得一样的窗口，
+    句里给出棕色横幅这个直接判据；以及「要点一行『应用』才拿得到」。
+    后半句在实际运行中 被证伪：登录成功后 userhash 就在罐里（值=账号当前饼干），
     『应用』只是**换一块**的动作。v0.13.34 起口径改回来，但横幅、『应用』、
     「饼干切换成功」三个词照钉 —— 换饼干这条路还在教。
 
-    v0.13.35（复现记录）：旧窗口上**冻着的横幅**也会冒充「程序在看这里」，光看
+    v0.13.35（复现现象）：旧窗口上**冻着的横幅**也会冒充「程序在看这里」，光看
     棕色横条不够了 —— 传了窗口号时句里要报【窗口号】，让用户拿横幅末尾一比。
     """
     text = gui._waiting_status(42)
@@ -2382,11 +2382,11 @@ def test_waiting_status_says_how_long_and_which_window_counts() -> None:
     assert "这个窗口打开的那个浏览器" in text
     assert "自己平时用的浏览器里登录，程序看不到" in text
     assert "直接粘贴饼干登录" in text
-    # 哪个窗口才是被看的：肉眼判据（棕色横幅）。
+    # 哪个窗口才是被看的：直接判据（棕色横幅）。
     assert "棕色横条" in text
     assert "『应用』" in text
     assert "饼干切换成功" in text
-    # v0.13.34（复现记录）：登录即自动带上当前饼干，别再吓人说「光登录不算完」。
+    # v0.13.34（复现现象）：登录即自动带上当前饼干，别再吓人说「光登录不算完」。
     assert "自动带上" in text
     assert "光登录不算完" not in text
     # v0.13.35：没传号不硬造号；传了号必须原样出现在横幅判据旁边。
@@ -2423,10 +2423,10 @@ def test_a_two_minute_wait_points_at_the_paste_button(
     """等够久还没登录：程序主动把「罐里真没有饼干、多半是这次登录没成」说破一次，
     按钮换成显眼说法。
 
-    真机 复现记录：用户在自己常用的浏览器里登录+应用了饼干，程序盯着一次性窗口
+    实际运行中：用户在自己常用的浏览器里登录+应用了饼干，程序盯着一次性窗口
     干等 18 分钟 —— 粘贴按钮一直在，可没人会在干等时去翻一个没变过的按钮。
     等得够久就要自己开口指路；而且只说一次，反复刷反而像坏了。
-    v0.13.36（真机 复现记录）把判断掰正：窗口号对上了、罐也一直在读，可整罐就是
+    v0.13.36（实际运行中）把判断掰正：窗口号对上了、罐也一直在读，可整罐就是
     没有 userhash —— 这句不能再引导「你登错了窗」，要说破「旧『饼干列表』可能
     只是上次登录的缓存画面，请在这扇窗重新提交登录」。
     """
@@ -2599,7 +2599,7 @@ def test_the_run_log_keeps_a_live_witness_line(
 ):
     """运行日志里要**反复**留下「现场：…」那一行（v0.13.51）。
 
-    真机 复现记录 的死结是：F12 里 70 字节的 userhash 明明白白，程序四条读法一条也没
+    复现时的死结是：F12 里 70 字节的 userhash 明明白白，程序四条读法一条也没
     看见，而「读罐对账」只在某一轮里写一行 —— 登录落在哪一秒、落在哪一份罐里，
     事后从日志上断不出来（那张截图里三条对账行长得几乎一样）。这一行把时间轴补上：
     每一份罐此刻有哪些名字、哪扇页面挂在哪份罐里，变了就写一行。
@@ -2624,7 +2624,7 @@ def test_the_run_log_keeps_a_live_witness_line(
         timeout=15.0,
     ), f"「现场」那行没进运行日志：{logged}"
     line = next(text for text in logged if "现场：" in text)
-    assert "上次处理花了" in line, line
+    assert "前次轮询耗时" in line, line
     assert "默认=PHPSESSID、memberUserspapapa" in line, line
     assert "上下文2c8811=PHPSESSID" in line, line
     assert "abc123" not in line, "「现场」那行漏了饼干值"
@@ -2636,8 +2636,7 @@ def test_the_page_storage_path_is_tried_once_the_page_is_not_the_login_page(
 ):
     """页面已经不在登录页时，还要去页面自己的本地存储里找一次 userhash（v0.13.51）。
 
-    饼干罐之外唯一还可能藏着它的地方就是 ``localStorage``/``sessionStorage``（真机
-    复现记录：同一扇窗、F12 有那块饼干、程序四条读法一条也没有）。演法是钉住那一手：
+    饼干罐之外唯一还可能藏着它的地方就是 ``localStorage``/``sessionStorage``（实际运行中：同一扇窗、F12 有那块饼干、程序四条读法一条也没有）。演法是钉住那一手：
     地址是登录页时**不该**被问，换成已登录页之后就该被问、并在提示行里说清它是从哪
     找到的。值本身照样要过服务端那一关（那条路由 ``verify_userhash_live`` 管）。
     """
@@ -2672,7 +2671,7 @@ def test_the_dump_is_written_early_when_the_page_is_past_the_login(
 ):
     """页面已经不在登录页、可四条读法都看不见 userhash：当场落一份详单（v0.13.51）。
 
-    原来只在等满 ``BROWSER_LOGIN_TIMEOUT``（300 秒）× 续等轮数之后才落盘，而真机上
+    原来只在等满 ``BROWSER_LOGIN_TIMEOUT``（300 秒）× 续等轮数之后才落盘，而实际运行中
     用户往往 68 秒就截图或取消 —— 那份唯一能逐字段比对（域、路径、partitionKey、
     browserContextId）的证据谁也拿不到。这里钉住「提前落盘 + 把路径报出来」。
     """
@@ -2724,7 +2723,7 @@ def test_the_jar_path_is_corrected_from_the_process_command_line(
 ):
     """``罐路径=`` 要报**浏览器真正在用的**目录，不是程序打算用的候选目录（v0.13.51）。
 
-    真机 复现记录：对账行报的是配置目录里那只 ``browser-profile``，可磁盘上它一个多月
+    实际运行中：对账行报的是配置目录里那只 ``browser-profile``，可磁盘上它一个多月
     没被碰过（``Cookies`` 一行都没有）—— 那只浏览器其实用的是 %TEMP% 里的一次性目录。
     命令行里的 ``--user-data-dir`` 才是实据；问出来的与候选不同就改用问出来的，
     ``罐=``（目录名）也跟着改，不然两段互相打架。
@@ -2762,7 +2761,7 @@ def test_the_stale_cookie_verdict_also_goes_into_the_run_log(
 
     它以前只走 ``("note")`` —— 那是「换一句状态」的意思，只进对话框常驻那一行。用户
     等到超时再关窗，日志里就只剩几行饼干名单，连「卡在读、还是卡在验」都断不出来
-    （真机 复现记录 就是这样：我只能靠「哪些行在什么条件下才写」去反推，反推不出定论）。
+    （实际运行中 就是这样：实现只能靠「哪些行在什么条件下才写」去反推，反推不出定论）。
     """
     monkeypatch.setattr(
         gui, "verify_userhash_live", lambda client, value: gui.BROWSER_STALE_COOKIE_MESSAGE
@@ -2779,7 +2778,7 @@ def test_the_stale_cookie_verdict_also_goes_into_the_run_log(
     assert any(
         gui.BROWSER_STALE_COOKIE_MESSAGE in line for line in lines
     ), f"日志里没抄下那句原话：{lines!r}"
-    # 常驻那一行也要有（真机 复现记录：读到值以后常驻行空着，用户以为程序没看见他登录，
+    # 常驻那一行也要有（实际运行时复现：读到值以后常驻行空着，用户以为程序没看见他登录，
     # 一直等到 635 秒也没有下文）。
     assert _wait_for(
         root_window,
@@ -2795,7 +2794,7 @@ def test_closing_the_window_before_the_timeout_still_leaves_the_jar_dump(
 ):
     """等不下去、直接关窗：现场也得留下来（v0.13.52）。
 
-    真机 复现记录 那次用户「一直等到超时」之后关窗，而「读罐详单」只在超时那条路上落盘
+    实际运行中 那次用户「一直等到超时」之后关窗，而「读罐详单」只在超时那条路上落盘
     —— 唯一一份能逐字段比对的证据跟着窗口一起没了。现在取消/关窗之前先落一份，落成
     或落不成都在运行日志里写一句（那份文件到哪去了，不能再靠猜）。
     """
@@ -2829,7 +2828,7 @@ def test_the_whole_browser_jar_is_carried_before_verifying(
 ):
     """核验之前要把浏览器那一罐饼干**整罐**装进客户端（v0.13.52，根因修复）。
 
-    真机复现（2026-10-11，`_scratch/probe_verify_full_jar.py`，饼干取自 v0.13.51 落下的
+    运行环境复现（2026-10-11，`诊断探针`，饼干取自 v0.13.51 落下的
     `xdao-读罐详单-62CA.json`）：同一块 userhash，只带它请求用户系统的「饼干」页，落点仍是
     `Member/User/Index/login.html`（3592 字节）；把 `PHPSESSID`、`memberUserspapapa` 一起
     带上就停在饼干列表页（24935 字节、正文有「退出」）。程序以前只 import 了 userhash 一块，
@@ -2995,7 +2994,7 @@ def test_login_poll_reports_a_cookie_it_cannot_apply() -> None:
     assert dialog.status_var.get() == "饼干取到了，但设置失败：格式不对"
     assert str(dialog.retry_button.state) == "normal"
     assert dialog.destroyed == [], "设置失败时不能关窗，用户还得重试"
-    assert dialog.scheduled, "没关窗就要继续排队等下一轮"
+    assert dialog.scheduled, "窗口保持打开时应继续安排轮询"
 
 
 def test_login_poll_shuts_the_browser_down_before_closing() -> None:
@@ -3003,7 +3002,7 @@ def test_login_poll_shuts_the_browser_down_before_closing() -> None:
 
     assert dialog.shut_down == [True]
     assert dialog.destroyed == [True]
-    assert dialog.scheduled == [], "成功之后不该再排下一轮"
+    assert dialog.scheduled == [], "登录成功后应停止轮询"
 
 
 def test_login_poll_survives_a_broken_run_log() -> None:
