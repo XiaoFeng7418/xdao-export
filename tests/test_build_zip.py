@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,74 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build_zip  # noqa: E402
+
+
+def _license_environment(tmp_path: Path) -> dict:
+    python_license = tmp_path / "Python-LICENSE.txt"
+    python_license.write_bytes(b"PSF original\r\nApache License\r\nEND\r\n")
+    installer_license = tmp_path / "COPYING.txt"
+    installer_license.write_bytes(b"GPL original\nBootloader Exception\nEND\n")
+    return {
+        "python": "3.12.9", "openssl": "OpenSSL 3.0.15 3 Sep 2024",
+        "pyinstaller": "6.22.2", "python_license": str(python_license),
+        "pyinstaller_license": str(installer_license),
+    }
+
+
+def test_license_probe_uses_the_selected_build_interpreter(monkeypatch) -> None:
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps({"python": "selected"}), "")
+
+    import subprocess
+
+    monkeypatch.setattr(build_zip.subprocess, "run", run)
+    assert build_zip.license_environment("build-python.exe") == {"python": "selected"}
+    assert calls[0][:2] == ["build-python.exe", "-c"]
+
+
+def test_third_party_originals_and_inventory_reach_the_zip(tmp_path: Path) -> None:
+    environment = _license_environment(tmp_path)
+    stage = tmp_path / "package"
+    tk = stage / "_internal" / "_tk_data" / "license.terms"
+    tk.parent.mkdir(parents=True)
+    tk.write_bytes(b"Tcl/Tk original\r\nEND\r\n")
+    build_zip.copy_third_party_licenses(stage, environment)
+    archive_path = tmp_path / "package.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for path, name in build_zip.zip_members(tmp_path, stage):
+            archive.write(path, name)
+    with zipfile.ZipFile(archive_path) as archive:
+        prefix = "package/THIRD_PARTY_LICENSES/"
+        for key, name in (("python_license", "Python-LICENSE.txt"),
+                          ("pyinstaller_license", "PyInstaller-COPYING.txt")):
+            original = Path(environment[key]).read_bytes()
+            assert archive.read(prefix + name) == original
+            assert hashlib.sha256(original).hexdigest() in archive.read(prefix + "README.txt").decode()
+        assert archive.read("package/_internal/_tk_data/license.terms") == tk.read_bytes()
+        for name in ("LICENSE.txt", "README.md"):
+            original = ROOT / "packaging/licenses/openssl-3.0.15" / name
+            assert archive.read(prefix + "OpenSSL-" + name) == original.read_bytes()
+
+
+def test_missing_openssl_original_is_explicit_in_the_package(tmp_path: Path) -> None:
+    environment = _license_environment(tmp_path)
+    environment["openssl"] = "OpenSSL 99.99.99 test"
+    stage = tmp_path / "package"
+    build_zip.copy_third_party_licenses(stage, environment)
+    inventory = (stage / "THIRD_PARTY_LICENSES/README.txt").read_text(encoding="utf-8")
+    assert "MISSING" in inventory and "OpenSSL 99.99.99" in inventory
+    assert not (stage / "THIRD_PARTY_LICENSES/OpenSSL-LICENSE.txt").exists()
+
+
+@pytest.mark.parametrize("missing", ["python_license", "pyinstaller_license"])
+def test_missing_required_license_stops_packaging(tmp_path: Path, missing: str) -> None:
+    environment = _license_environment(tmp_path)
+    environment[missing] = ""
+    with pytest.raises(SystemExit, match="license"):
+        build_zip.copy_third_party_licenses(tmp_path / "package", environment)
 
 
 # ---------------------------------------------------------------------------

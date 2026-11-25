@@ -58,6 +58,51 @@ def test_plain_text_strips_tags_and_keeps_line_breaks():
     assert plain_text("a &amp; b &lt;c&gt;") == "a & b <c>"
     assert plain_text("  ") == ""
     assert plain_text("") == ""
+    assert plain_text("<b class>粗体</b><a href>链接</a><br class>换行") == "粗体链接\n换行"
+    assert plain_text("<span data-kind aria-label>正文</span>") == "正文"
+    assert plain_text("<big>大字</big><acronym>缩写</acronym><marquee>滚动</marquee><nobr>不换行</nobr>") == "大字缩写滚动不换行"
+    assert plain_text("第一行<br clear>第二行") == "第一行\n第二行"
+    assert plain_text("a<b and b>c") == "a<b and b>c"
+    assert plain_text("a<br 且 br>c") == "a<br 且 br>c"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("a<b 且 b>c", "a<b 且 b>c"),
+        ("a<b && b>c", "a<b && b>c"),
+        ("<颜文字> 与 <尖括号>、<int>、<&>", "<颜文字> 与 <尖括号>、<int>、<&>"),
+        ('<a href="https://example.com/?a=1&amp;b=2" title="1 > 0">链接</a>', "链接"),
+        ('<b class="strong">粗体</b><BR /><img src="x.jpg">下一行', "粗体\n下一行"),
+        ("&lt;b&gt;字面标签&lt;/b&gt;", "<b>字面标签</b>"),
+        ("<input disabled><span data-kind='x'>文字</span><script>alert(1)</script>", "文字alert(1)"),
+    ],
+)
+def test_plain_text_preserves_literal_angles_while_removing_real_tags(raw, expected):
+    assert plain_text(raw) == expected
+
+
+def test_txt_and_derived_filename_keep_literal_angle_contents():
+    thread = sample_thread("无标题")
+    thread.posts[0].content = "a<b 且 b>c 与 <颜文字>。<br><b>真实标签</b>"
+    text = TxtBuilder(FakeClient()).build(thread, "all")
+    assert "a<b 且 b>c 与 <颜文字>。\n真实标签" in text
+    assert derive_filename(thread) == "a<b 且 b>c 与 <颜文字>"
+    assert sanitize_filename(derive_filename(thread)) == "a_b 且 b_c 与 _颜文字_"
+
+
+def test_literal_angle_title_survives_txt_html_and_epub_metadata(tmp_path):
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    thread = sample_thread("<颜文字> a<b 且 b>c")
+    assert "标题：<颜文字> a<b 且 b>c" in TxtBuilder(FakeClient()).build(thread, "all")
+    html = HtmlBuilder(FakeClient()).build(thread, "all")
+    assert "&lt;颜文字&gt; a&lt;b 且 b&gt;c" in html
+    path = create_exporter("epub", FakeClient()).save(thread, "all", tmp_path)
+    with zipfile.ZipFile(path) as archive:
+        package = ET.fromstring(archive.read("OEBPS/content.opf"))
+    assert package.find(".//{http://purl.org/dc/elements/1.1/}title").text == thread.title
 
 
 @pytest.mark.parametrize(

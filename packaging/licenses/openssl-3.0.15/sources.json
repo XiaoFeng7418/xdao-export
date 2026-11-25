@@ -1,0 +1,10 @@
+{
+  "LICENSE.txt": {
+    "url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.0.15/LICENSE.txt",
+    "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+  },
+  "README.md": {
+    "url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.0.15/README.md",
+    "sha256": "9d91b81580e7c70c94df047da8f2d4e32ba747db556eee0b7cc94d2758273ca3"
+  }
+}

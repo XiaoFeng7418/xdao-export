@@ -2,7 +2,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**把 X 岛的长串完整存到本地，随时离线阅读。** 登录后可读取游客 100 页限制以外的内容；支持 HTML、PDF、EPUB、Markdown、TXT，图片可内嵌，抓取中断后可续传。
+**把 X 岛（nmbxd1.com）的长串完整存到本地，随时离线阅读，也支持 B 岛（bog.ac）公开串，无需 B 岛登录。** X 岛登录后可读取游客 100 页限制以外的内容；支持 HTML、PDF、EPUB、Markdown、TXT，图片可内嵌，抓取中断后可续传。
 
 [![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
 [![latest release](https://img.shields.io/github/v/release/XiaoFeng7418/xdao-export)](https://github.com/XiaoFeng7418/xdao-export/releases/latest)
@@ -28,17 +28,17 @@ PDF 需要本机 Edge / Chrome 等 Chromium 浏览器；浏览器不可用时会
 
 ## 下载与第一次导出
 
-最新版 **v0.24.0** 提供免安装包：
+最新版 **v0.24.1** 提供免安装包：
 
 | 附件 | 用途 |
 | --- | --- |
-| `xdao-export-v0.24.0-win64.zip` | Windows 64 位免安装包，解压后双击 `xdao-export.exe` |
-| `xdao-export-v0.24.0-win64.zip.sha256` | 与 zip 配套的 SHA256 校验文件 |
+| `xdao-export-v0.24.1-win64.zip` | Windows 64 位免安装包，解压后双击 `xdao-export.exe` |
+| `xdao-export-v0.24.1-win64.zip.sha256` | 与 zip 配套的 SHA256 校验文件 |
 
 1. 从[官方 Releases 页面](https://github.com/XiaoFeng7418/xdao-export/releases/latest)下载 zip 和同名 `.sha256`。
 2. 核对摘要后解压到可写目录；`xdao-export.exe` 与 `_internal` 文件夹必须放在一起。
-3. 打开程序，在「登录 / 设置饼干」中选择「用浏览器登录」，用 X 岛账号登录一次；也可直接粘贴 Cookie。
-4. 粘贴串网址或串号，选择格式与保存目录，点击「开始导出」。未登录也可导出，但只能读取前 100 页。
+3. 导出 X 岛长串时，在「登录 / 设置饼干」中选择「用浏览器登录」，用 X 岛账号登录一次；也可直接粘贴 Cookie。B 岛公开串无需登录。
+4. 粘贴 X 岛（nmbxd1.com）或 B 岛（bog.ac）的公开串网址，选择格式与保存目录，点击「开始导出」。纯串号默认走 X 岛；X 岛未登录时只能读取前 100 页。
 
 如 Windows 显示 SmartScreen「已保护你的电脑」，先确认来自官方发布页并核对 SHA256；确认无误后可点「更多信息」→「仍要运行」，否则取消。
 
@@ -49,8 +49,8 @@ PDF 需要本机 Edge / Chrome 等 Chromium 浏览器；浏览器不可用时会
 把两个附件放在同一文件夹，在 PowerShell 中运行：
 
 ```powershell
-Get-FileHash .\xdao-export-v0.24.0-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.24.0-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.24.1-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.24.1-win64.zip.sha256
 ```
 
 比较两处的 SHA256 摘要。相同表示文件与发布页上的校验值一致；它不能替代对下载来源的确认，也不能防止 zip 与校验文件同时被替换。
@@ -96,7 +96,7 @@ python main.py --help
 | --- | --- |
 | [使用指南](docs/USAGE.md) | 登录、导出格式、全部 CLI 参数、配置与缓存、常见问题 |
 | [文档导航](docs/README.md) | 发布说明、隐私与签名、审计报告、工程工具 |
-| [最新发布说明](docs/RELEASE_NOTES_v0.24.0.md) | v0.24.0 的发布内容与附件 |
+| [最新发布说明](docs/RELEASE_NOTES_v0.24.1.md) | v0.24.1 的发布内容与附件 |
 | [维护规范](MAINTENANCE.md) / [技术交接](HANDOFF.md) | 架构、硬性约定、测试清单与维护流程 |
 
 ```text
@@ -104,10 +104,10 @@ main.py       图形界面与命令行入口
 xdao/         网络、缓存、监控、导出器与 Tkinter 界面
 docs/         使用指南、发布说明与审计资产
 tools/        构建、截图、仓库检查与维护工具
-tests/        3003 个离线单元测试（2995 通过，另 8 项默认跳过）
+tests/        3025 个离线单元测试（3017 通过，另 8 项默认跳过）
 ```
 
-上面的读数来自 2026-11-21 的 Windows 全量运行：2995 通过、8 跳过，其中真机或权限用例按条件跳过。无显示环境会额外跳过 Tk 用例，不能视作已验证界面。开发检查（pytest / Ruff 仅为开发工具）：
+上面的读数来自 2026-11-22 的 Windows 全量运行：3017 通过、8 跳过，耗时 503.77 秒；真机或权限用例按条件跳过。无显示环境会额外跳过 Tk 用例，不能视作已验证界面。开发检查（pytest / Ruff 仅为开发工具）：
 
 ```powershell
 python -m pytest -q -rs
@@ -120,7 +120,7 @@ python -m ruff check .
 
 **MIT License** · Copyright (c) 2026 XiaoFeng7418（[@XiaoFeng7418](https://github.com/XiaoFeng7418)）。允许免费使用、修改和分发，包括商业用途，须保留版权与许可声明。全文见 [`LICENSE`](LICENSE)，免安装包内为 `LICENSE.txt`。
 
-打包版包含 Python、Tcl/Tk 与 PyInstaller 运行组件，各自适用上游许可；本项目的 MIT 许可不替代这些许可。当前包内第三方许可覆盖情况仍有待完善，详见[依赖边界审计](docs/backlog/04-dependency-boundary.md)。数据与内容归 X 岛平台及原作者所有。感谢 Python、Tcl/Tk、PyInstaller、Rcrwrate/Xdnmb_downer 与参与实现和测试的 DeepSeek 智能体。
+打包版包含 Python（PSF）、Tcl/Tk（BSD 风格）、PyInstaller（GPL 与 bootloader exception）和 OpenSSL（Apache-2.0），本项目的 MIT 许可不替代它们的上游许可。`THIRD_PARTY_LICENSES/` 原样保留构建环境的 `Python-LICENSE.txt`、`PyInstaller-COPYING.txt`，以及精确匹配版本的官方 `OpenSSL-LICENSE.txt` 与版权说明 `OpenSSL-README.md`；原有 Tcl/Tk 许可继续随包保留。索引 `README.txt` 记录实际版本、来源和 SHA256；未备有对应 OpenSSL 原文的构建会明确标注 `MISSING`，请在分发前核对该索引。数据与内容归 X 岛、B 岛平台及原作者所有。感谢 Python、Tcl/Tk、PyInstaller、Rcrwrate/Xdnmb_downer 与参与实现和测试的 DeepSeek 智能体。
 
 ## 免责声明
 

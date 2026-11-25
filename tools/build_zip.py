@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -132,6 +134,80 @@ def has_bom(path: Path) -> bool:
     """开头是不是正好一个 UTF-8 BOM（多贴一个也是错的）。"""
     data = path.read_bytes()
     return data[:3] == b"\xef\xbb\xbf" and data[3:6] != b"\xef\xbb\xbf"
+
+
+def license_environment(python: str) -> dict:
+    """向实际执行 PyInstaller 的解释器查询版本和许可来源（不能用宿主解释器代替）。"""
+    script = """
+import importlib.metadata, json, ssl, sys
+from pathlib import Path
+dist = importlib.metadata.distribution('pyinstaller')
+copying = next((dist.locate_file(p) for p in dist.files or [] if p.name == 'COPYING.txt'), None)
+license = next((p for p in (Path(sys.base_prefix) / 'LICENSE.txt',
+                           Path(sys.base_prefix) / 'LICENSE') if p.is_file()), None)
+print(json.dumps({'python': sys.version.split()[0], 'openssl': ssl.OPENSSL_VERSION,
+                  'pyinstaller': dist.version, 'python_license': str(license or ''),
+                  'pyinstaller_license': str(copying or '')}))
+"""
+    done = subprocess.run(
+        [python, "-c", script], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30,
+    )
+    if done.returncode:
+        raise SystemExit(f"Cannot locate build environment licenses: {done.stderr.strip()}")
+    return json.loads(done.stdout)
+
+
+def copy_third_party_licenses(stage: Path, environment: dict) -> list[str]:
+    """原样复制完整许可，并写入版本、来源与摘要；缺失项如实列在索引中。"""
+    directory = stage / "THIRD_PARTY_LICENSES"
+    directory.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "Third-party license inventory", "",
+        f"Python {environment['python']}; PyInstaller {environment['pyinstaller']}",
+        environment["openssl"], "",
+    ]
+    missing: list[str] = []
+
+    def copy(source: Path, name: str, origin: str) -> None:
+        data = source.read_bytes()
+        (directory / name).write_bytes(data)
+        lines.append(f"{name}: {origin}; SHA256 {hashlib.sha256(data).hexdigest()}")
+
+    for key, name, origin in (
+        ("python_license", "Python-LICENSE.txt", "build Python/LICENSE.txt (PSF and bundled notices)"),
+        ("pyinstaller_license", "PyInstaller-COPYING.txt", "build PyInstaller distribution/COPYING.txt (GPL and bootloader exception)"),
+    ):
+        path = Path(environment[key])
+        if not path.is_file() or not path.stat().st_size:
+            raise SystemExit(f"Required license missing: {key}")
+        copy(path, name, origin)
+
+    # 官方 Python 的组合许可也保留 Apache 条款；另附实际 OpenSSL 版本的完整上游
+    # LICENSE 和含版权行的 README。只匹配确切版本，不将旧版原文冒充新版许可。
+    match = re.match(r"OpenSSL (\d+\.\d+\.\d+[a-z]*)(?:\s|$)", environment["openssl"])
+    originals = ROOT / "packaging" / "licenses" / f"openssl-{match[1] if match else 'unknown'}"
+    source_index = originals / "sources.json"
+    if source_index.is_file():
+        sources = json.loads(source_index.read_text(encoding="utf-8"))
+        for name in ("LICENSE.txt", "README.md"):
+            source = originals / name
+            if sha256_file(source) != sources[name]["sha256"]:
+                raise SystemExit(f"Upstream license checksum mismatch: {source.name}")
+            copy(source, "OpenSSL-" + name, sources[name]["url"])
+    else:
+        missing.append(f"MISSING: standalone upstream license/notice for {environment['openssl']}")
+
+    for name in ("_tcl_data", "_tk_data"):
+        relative = f"_internal/{name}/license.terms"
+        path = stage / relative
+        if path.is_file():
+            lines.append(f"Preserved {relative}; SHA256 {sha256_file(path)}")
+    lines.extend(["", "Tcl/Tk notices are also retained in the complete Python-LICENSE.txt.",
+                  "Files above are copied byte for byte; no upstream license text is abridged."])
+    lines.extend(missing)
+    (directory / "README.txt").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return missing
 
 
 def zip_members(root: Path, stage: Path):
@@ -366,6 +442,11 @@ def main(argv: list[str] | None = None) -> int:
         shutil.copy2(dist / LAUNCHER_NAME, stage / LAUNCHER_NAME)
         for source, name in EXTRA_FILES:
             shutil.copy2(repo / source, stage / name)
+
+        missing_licenses = copy_third_party_licenses(stage, license_environment(args.python))
+        print("第三方许可：THIRD_PARTY_LICENSES/README.txt（版本、来源和 SHA256）", flush=True)
+        for note in missing_licenses:
+            print(f"  ! {note}", flush=True)
 
         print("包内文件自检：", flush=True)
         for name in NEEDS_BOM:

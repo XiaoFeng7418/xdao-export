@@ -654,31 +654,61 @@ def test_bad_page_workers_falls_back_to_the_default(config_path: Path, bad: obje
     assert load_config(config_path).page_workers == expected
 
 def test_config_still_loads_when_tkinter_is_missing(tmp_path: Path) -> None:
-    """没有 tkinter 的解释器也要能读配置（命令行导出用不到界面）。
-
-    ``xdao.settings`` 会从 :mod:`xdao.theme` 取 ``PALETTES``，而 theme 以前在模块
-    顶层 ``import tkinter``。少数自编译的 Python 没有 tkinter，于是整份配置在
-    ``AppSettings.load()`` 的 ``except Exception`` 里被静默丢弃 —— 命令行导出因此
-    用回默认值（导出目录、饼干、页数上限全没了），用户完全看不出来。
-    """
+    """缺 Tk 时完整加载全部配置，且不尝试导入 GUI 主题或 tkinter。"""
     config = {
+        "schema": 2,
         "userhash": "TESTHASH",
         "output_dir": str(tmp_path / "备份"),
+        "proxy": "http://127.0.0.1:9876",
+        "timeout": 12.5,
+        "retries": 4,
+        "throttle": 0.5,
         "page_workers": 5,
-        "theme_name": "dark",
+        "format_key": "pdf",
+        "scope": "po",
+        "filename_template": "{id}-{title}",
+        "include_hashes": "TESTHASH SECONDHASH",
+        "image_mode": "url",
+        "pdf_browser": "edge",
+        "max_pages": 3,
+        "until_thread_id": "7001234",
+        "export_font_size": 18,
         "ui_font_scale": 1.3,
+        "skip_existing": True,
+        "merge_export": True,
+        "pdf_paper": "a4",
+        "pdf_orientation": "landscape",
+        "pdf_margin": "narrow",
+        "pdf_margin_mm": "12",
+        "pdf_scale": "0.9",
+        "pdf_background": False,
+        "pdf_page_ranges": "1-3,5",
+        "use_cache": False,
+        "cache_dir": str(tmp_path / "cache"),
+        "watch_interval": 120.0,
+        "verify_cached": True,
+        "watch_targets": [{"thread_id": "7001234", "site": "bog"}],
+        "notify": False,
+        "notify_interval": 60.0,
+        "theme": "dark",
+        "extra": {"example": 1},
     }
-    # 存盘的键名是 "theme"（属性叫 theme_name），别照属性名写。
-    config["theme"] = config.pop("theme_name")
+    expected = {key: value for key, value in config.items() if key != "schema"}
+    expected["theme_name"] = expected.pop("theme")
+    assert set(expected) == set(AppSettings.__dataclass_fields__) - {"_path"}
     config_dir = tmp_path / "xdao-export"
     config_dir.mkdir()
     (config_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
     script = """
 import importlib.abc, json, sys
+from dataclasses import fields
+
+attempted = []
 
 class NoTkinter(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname == "tkinter" or fullname.startswith("tkinter."):
+            attempted.append(fullname)
             raise ImportError("这个解释器没有 tkinter（测试模拟）")
         return None
 
@@ -687,11 +717,9 @@ from xdao.settings import AppSettings
 
 loaded = AppSettings.load()
 print(json.dumps({
-    "userhash": loaded.userhash,
-    "output_dir": loaded.output_dir,
-    "page_workers": loaded.page_workers,
-    "theme_name": loaded.theme_name,
-    "ui_font_scale": loaded.ui_font_scale,
+    "values": {f.name: getattr(loaded, f.name) for f in fields(loaded) if f.name != "_path"},
+    "theme_imported": "xdao.theme" in sys.modules,
+    "tkinter_attempted": attempted,
 }))
 """
     env = {"APPDATA": str(tmp_path), "LOCALAPPDATA": str(tmp_path), "SYSTEMROOT": "C:\\Windows"}
@@ -705,11 +733,7 @@ print(json.dumps({
         timeout=120,
     )
     assert result.returncode == 0, result.stderr
-    loaded = json.loads(result.stdout.strip().splitlines()[-1])
-    assert loaded == {
-        "userhash": "TESTHASH",
-        "output_dir": str(tmp_path / "备份"),
-        "page_workers": 5,
-        "theme_name": "dark",
-        "ui_font_scale": 1.3,
-    }
+    outcome = json.loads(result.stdout.strip().splitlines()[-1])
+    assert outcome["values"] == expected
+    assert outcome["theme_imported"] is False
+    assert outcome["tkinter_attempted"] == []

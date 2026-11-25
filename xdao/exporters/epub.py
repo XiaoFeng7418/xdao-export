@@ -8,7 +8,7 @@
     OEBPS/nav.xhtml              EPUB 3 目录
     OEBPS/toc.ncx                EPUB 2 兼容目录
     OEBPS/text/post-0001.xhtml   每楼一个文件
-    OEBPS/images/img-0001.jpg    图片原始数据（供阅读器参考）
+    图片以 data URI 写入楼层 XHTML，不再另存 images/ 或登记冗余 manifest 项。
 
 文本处理、文件名推导、图片解析都复用 ``._shared``，避免各导出器各写一套。
 """
@@ -241,7 +241,7 @@ class EpubBuilder(Exporter):
     def _collect_images(
         self, posts: list[Post], image_mode: str
     ) -> list[tuple[str, bytes]]:
-        """按出现顺序收集要落盘的图片：(entry_name, 数据)。
+        """按出现顺序预取内嵌图片；保持旧返回接口，返回的落盘条目始终为空。
 
         和 HTML 一样开几个线程并行下载：图多的串串行下会慢好几倍。
         落盘顺序仍按正文里第一次出现的先后，成品可重复。

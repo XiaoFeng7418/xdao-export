@@ -48,7 +48,7 @@ PALETTE_FIELDS = tuple(theme.Palette.__dataclass_fields__)
 
 
 def test_both_palettes_define_every_field() -> None:
-    assert set(theme.PALETTES) == {"light", "dark"}
+    assert set(theme.PALETTES) == theme.PALETTE_NAMES == {"light", "dark"}
     for name, pal in theme.PALETTES.items():
         assert pal.name == name
         for field in PALETTE_FIELDS:

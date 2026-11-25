@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests import FakeClient, SAMPLE_JPEG, SAMPLE_PNG, data_uri_bytes, make_post, sample_thread
+from xdao.client import PostImage
 from xdao.exporters._shared import ThreadData
 from xdao.exporters.epub import EpubBuilder
 
@@ -242,8 +243,58 @@ def test_embed_mode_inlines_images_and_does_not_store_them_twice(artifacts_dir: 
         stored = [name for name in names if name.startswith("OEBPS/images/")]
         assert stored == [], f"embed 模式不该再存图片文件：{stored}"
         # OPF 里也不能挂这些图片（挂了就不是合法 EPUB：文件根本不存在）。
-        opf = archive.read("OEBPS/content.opf").decode("utf-8")
-        assert "OEBPS/images/" not in opf
+        opf = ET.fromstring(archive.read("OEBPS/content.opf"))
+        assert not [
+            item for item in opf.findall(f"{{{OPF_NS}}}manifest/{{{OPF_NS}}}item")
+            if item.get("media-type", "").startswith("image/")
+        ]
+
+
+@pytest.mark.parametrize("site", ["xdao", "bog"])
+@pytest.mark.parametrize("mode", ["embed", "url", "drop"])
+def test_single_and_multi_image_packages_store_each_payload_once(tmp_path: Path, site: str, mode: str):
+    """X 岛单图 / B 岛单楼多图均无第二份文件或悬空图片 manifest。"""
+    first = "https://image.nmb.best/image/single.jpg"
+    second = "https://bog.ac/image/large/second.png"
+    post = make_post(9001, "正文", img="single", ext=".jpg", is_po=True)
+    urls = [first]
+    payloads = [SAMPLE_JPEG]
+    if site == "bog":
+        first = "https://bog.ac/image/large/first.jpg"
+        # 归一化多图优先于旧 img/ext；重复附件 URL 也不能多存一遍。
+        post.images = [PostImage(first, ".jpg"), PostImage(second, ".png"), PostImage(first, ".jpg")]
+        urls = [first, second]
+        payloads = [SAMPLE_JPEG, SAMPLE_PNG]
+    thread = ThreadData(9001, "图片存储验证", post.user_hash, [post], site=site)
+    client = FakeClient(images=dict(zip(urls, payloads, strict=True)))
+    path = EpubBuilder(client, image_mode=mode).save(thread, output_dir=tmp_path)
+
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        assert infos[0].filename == "mimetype"
+        assert infos[0].compress_type == zipfile.ZIP_STORED
+        assert archive.read("mimetype") == b"application/epub+zip"
+        assert len(archive.namelist()) == len(set(archive.namelist()))
+        assert not any(name.startswith("OEBPS/images/") for name in archive.namelist())
+        sources = []
+        for name in archive.namelist():
+            if name.endswith(".xhtml"):
+                page = ET.fromstring(archive.read(name))
+                sources.extend(image.get("src") for image in page.iter(f"{{{XHTML_NS}}}img"))
+        opf = ET.fromstring(archive.read("OEBPS/content.opf"))
+        items = opf.findall(f"{{{OPF_NS}}}manifest/{{{OPF_NS}}}item")
+        assert not any(item.get("media-type", "").startswith("image/") for item in items)
+        assert all("OEBPS/" + item.get("href") in archive.namelist() for item in items)
+
+    if mode == "embed":
+        assert [data_uri_bytes(source) for source in sources] == payloads
+        assert sorted(client.downloaded) == sorted(urls)
+    elif mode == "url":
+        assert sources == urls
+        assert client.downloaded == []
+    else:
+        assert sources == []
+        assert client.downloaded == []
 
 
 def test_url_mode_keeps_absolute_urls(artifacts_dir: Path):

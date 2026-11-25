@@ -11,6 +11,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .theme_rules import PALETTE_NAMES, normalize_font_scale
+
 
 APP_DIR_NAME = "xdao-export"
 
@@ -149,7 +151,7 @@ class AppSettings:
     notify_interval: float = DEFAULT_NOTIFY_INTERVAL
 
     # ---------- 界面 ----------
-    # 配色：light / dark（见 xdao/theme.py 的 PALETTES）；不认识的取值回落到 light
+    # 配色：light / dark（见 theme_rules.PALETTE_NAMES）；不认识的取值回落到 light
     theme_name: str = "light"
 
     extra: dict = field(default_factory=dict)
@@ -240,12 +242,10 @@ class AppSettings:
         self.notify_interval = _as_float(
             data.get("notify_interval"), DEFAULT_NOTIFY_INTERVAL
         )
-        # 配色的合法值由 theme.PALETTES 说了算；写了不认识的名字就当没写，
+        # 配色的合法值由 theme_rules.PALETTE_NAMES 说了算；写了不认识的名字就当没写，
         # 免得界面上出现一个空白选项。
-        from .theme import PALETTES
-
         theme_name = str(data.get("theme") or "light")
-        self.theme_name = theme_name if theme_name in PALETTES else "light"
+        self.theme_name = theme_name if theme_name in PALETTE_NAMES else "light"
         self.extra = data.get("extra") or {}
 
     def save(self) -> bool:
@@ -400,12 +400,10 @@ def _export_font_size(value, fallback: int) -> int:
 
 
 def _ui_font_scale(value, fallback: float) -> float:
-    """界面字号比例：收口交给 :func:`xdao.theme.normalize_font_scale`。
+    """界面字号比例：收口交给 :func:`xdao.theme_rules.normalize_font_scale`。
 
     那边已经有 0.7~2.0 的上下限与「认不出来就回落」的规则，这里不重写一份。
     """
-    from .theme import normalize_font_scale
-
     return normalize_font_scale(value, fallback)
 
 

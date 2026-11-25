@@ -19,6 +19,14 @@ import sys
 import zlib
 from dataclasses import dataclass, fields
 
+from .theme_rules import (
+    FONT_SCALE_CHOICES,
+    FONT_SCALE_MAX,
+    FONT_SCALE_MIN,
+    PALETTE_NAMES,
+    normalize_font_scale,
+)
+
 try:  # 没有 tkinter 的 Python（少数自编译版本）也要能 import 这个模块
     import tkinter as tk
     from tkinter import font as tkfont
@@ -26,8 +34,7 @@ try:  # 没有 tkinter 的 Python（少数自编译版本）也要能 import 这
 except ImportError:  # pragma: no cover —— 只在缺 tkinter 的解释器上走到
     # 注解都在 ``from __future__ import annotations`` 之后是字符串，不会在这里求值；
     # 只有真去画界面时才会用到 tk/ttk，那时程序本来就起不来。
-    # 需要这个兜底的原因是 :mod:`xdao.settings` 会 import 本模块里的 PALETTES：
-    # 命令行导出用不到界面，不能因为缺 tkinter 就把整份配置丢掉。
+    # 保留无 Tk 时导入主题模块的兼容性；配置只读 theme_rules，不加载本模块。
     tk = None  # type: ignore[assignment]
     tkfont = None  # type: ignore[assignment]
     ttk = None  # type: ignore[assignment]
@@ -247,16 +254,7 @@ SIZE_SMALL = 9
 # 几十处调用点上时，加一档就得改几十行、还必然漏几处（角落里的提示、
 # 日志框、对话框标题……）。现在所有尺寸都过 :func:`scaled`，只有一个真源：
 # ``gui.App.switch_font_scale`` 改一次比例、重建一遍界面，全窗口一起换档。
-FONT_SCALE_CHOICES: tuple[tuple[str, float], ...] = (
-    ("小", 0.85),
-    ("标准", 1.0),
-    ("大", 1.15),
-    ("更大", 1.3),
-    ("特大", 1.5),
-)
-#: 比例的许可范围：配置里手写的值也收在这里面。
-FONT_SCALE_MIN = 0.7
-FONT_SCALE_MAX = 2.0
+# 档位、范围与归一化规则来自 theme_rules，旧的 theme 导入路径继续可用。
 #: 当前界面字号比例（``1.0`` ＝ 下面各 ``SIZE_*`` 的原值）
 FONT_SCALE = 1.0
 
@@ -287,21 +285,6 @@ def set_dpi_scale(scale: object) -> float:
 def dpi_scale() -> float:
     """当前系统缩放比例（``1.0`` ＝ 100%）。"""
     return DPI_SCALE
-
-
-def normalize_font_scale(value: object, fallback: float = 1.0) -> float:
-    """把读来的比例收进 ``[FONT_SCALE_MIN, FONT_SCALE_MAX]``。
-
-    认不出来（``None``／空串／非数字／``NaN``）时给 ``fallback`` —— 配置是纯
-    文本、用户会手改，坏值只该回落，不该让程序起不来。
-    """
-    try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return fallback
-    if number != number:  # NaN
-        return fallback
-    return min(max(number, FONT_SCALE_MIN), FONT_SCALE_MAX)
 
 
 def set_font_scale(scale: object) -> float:
@@ -973,6 +956,7 @@ __all__ = [
     "DARK",
     "LIGHT",
     "PALETTE",
+    "PALETTE_NAMES",
     "PALETTES",
     "Palette",
     "apply_theme",
@@ -997,6 +981,8 @@ __all__ = [
     "FONT_MONO",
     "FONT_SCALE",
     "FONT_SCALE_CHOICES",
+    "FONT_SCALE_MAX",
+    "FONT_SCALE_MIN",
     "FONT_UI",
     "STYLE_NAMES",
 ]

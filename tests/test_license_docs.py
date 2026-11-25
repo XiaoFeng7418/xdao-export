@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import sys
+import hashlib
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,3 +62,22 @@ def test_the_package_carries_the_license_file() -> None:
     )
     assert LICENSE.is_file(), "LICENSE 不在仓库里，打包时会 FileNotFoundError"
     assert "LICENSE.txt" not in build_zip.NEEDS_BOM, "LICENSE 是纯 ASCII，不该进 BOM 自检名单"
+
+
+def test_openssl_originals_match_the_recorded_upstream_sources() -> None:
+    directory = ROOT / "packaging/licenses/openssl-3.0.15"
+    sources = json.loads((directory / "sources.json").read_text(encoding="utf-8"))
+    for name, source in sources.items():
+        assert source["url"] == f"https://raw.githubusercontent.com/openssl/openssl/openssl-3.0.15/{name}"
+        assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == source["sha256"]
+    text = (directory / "LICENSE.txt").read_text(encoding="utf-8")
+    assert "Apache License" in text and "END OF TERMS AND CONDITIONS" in text
+    assert "The OpenSSL Project" in (directory / "README.md").read_text(encoding="utf-8")
+
+
+def test_both_readmes_describe_the_actual_license_inventory() -> None:
+    for name in ("README.md", "README.en.md"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        for marker in ("THIRD_PARTY_LICENSES/", "Python-LICENSE.txt", "PyInstaller-COPYING.txt",
+                       "OpenSSL-LICENSE.txt", "MISSING"):
+            assert marker in text, f"{name}: {marker}"

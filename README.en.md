@@ -2,7 +2,7 @@
 
 [简体中文](README.md) · **English**
 
-**Keep complete X island threads on disk for offline reading.** Log in to read beyond the guest limit of 100 pages, then export to HTML, PDF, EPUB, Markdown or TXT. Embed images, resume interrupted downloads, and follow new replies.
+**Keep complete X island (nmbxd1.com) threads on disk for offline reading; public B island (bog.ac) threads are also supported without a B island login.** Log in to X island to read beyond its guest limit of 100 pages, then export to HTML, PDF, EPUB, Markdown or TXT. Embed images, resume interrupted downloads, and follow new replies.
 
 [![tests](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml/badge.svg)](https://github.com/XiaoFeng7418/xdao-export/actions/workflows/tests.yml)
 [![latest release](https://img.shields.io/github/v/release/XiaoFeng7418/xdao-export)](https://github.com/XiaoFeng7418/xdao-export/releases/latest)
@@ -28,17 +28,17 @@ PDF requires a local Chromium browser such as Edge or Chrome. If the browser can
 
 ## Download and export
 
-The latest release, **v0.24.0**, provides these files:
+The latest release, **v0.24.1**, provides these files:
 
 | File | Purpose |
 | --- | --- |
-| `xdao-export-v0.24.0-win64.zip` | Portable Windows 64-bit build; unzip and run `xdao-export.exe` |
-| `xdao-export-v0.24.0-win64.zip.sha256` | SHA256 checksum for that zip |
+| `xdao-export-v0.24.1-win64.zip` | Portable Windows 64-bit build; unzip and run `xdao-export.exe` |
+| `xdao-export-v0.24.1-win64.zip.sha256` | SHA256 checksum for that zip |
 
 1. Download both files from the [official Releases page](https://github.com/XiaoFeng7418/xdao-export/releases/latest).
 2. Verify the checksum and extract the zip to a writable folder. Keep `xdao-export.exe` beside its `_internal` folder.
-3. Open the app, choose “登录 / 设置饼干” → “用浏览器登录”, and log in with an X island account. Pasting a cookie is also supported.
-4. Paste a thread URL or ID, select a format and destination, then click “开始导出”. Guest exports work too, but only cover the first 100 pages.
+3. For long X island threads, choose “登录 / 设置饼干” → “用浏览器登录” and log in with an X island account. Pasting a cookie is also supported. Public B island threads require no login.
+4. Paste an X island (nmbxd1.com) or B island (bog.ac) public thread URL, select a format and destination, then click “开始导出”. Numeric IDs default to X island; X island guest exports cover its first 100 pages.
 
 If Windows shows a SmartScreen warning, first confirm the official download source and verify the SHA256 checksum. Only if both check out, choose “More info” → “Run anyway”; otherwise cancel.
 
@@ -49,8 +49,8 @@ Browser login supports Chromium-based browsers such as Edge and Chrome; Firefox 
 Put the zip and checksum file in the same folder, then run in PowerShell:
 
 ```powershell
-Get-FileHash .\xdao-export-v0.24.0-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.24.0-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.24.1-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.24.1-win64.zip.sha256
 ```
 
 The SHA256 values should match. This verifies the downloaded bytes against the published checksum; it does not replace checking the download source or protect against both release assets being replaced together.
@@ -96,7 +96,7 @@ For the portable build, replace `python main.py` with `xdao-export.exe`. The [us
 | --- | --- |
 | [User guide (Chinese)](docs/USAGE.md) | Login, export formats, all CLI flags, configuration, caches and common problems |
 | [Documentation index](docs/README.md) | Release notes, privacy, signing, audits and engineering tools |
-| [Latest release notes (Chinese)](docs/RELEASE_NOTES_v0.24.0.md) | v0.24.0 changes and assets |
+| [Latest release notes (Chinese)](docs/RELEASE_NOTES_v0.24.1.md) | v0.24.1 changes and assets |
 | [Maintenance](MAINTENANCE.md) / [Handoff](HANDOFF.md) | Architecture, project rules, tests and maintenance workflows (Chinese) |
 
 `main.py` is the GUI/CLI entry point; `xdao/` contains the application, `docs/` the documentation, `tools/` the maintenance utilities, and `tests/` the offline suite. Tests use fake services and isolated configuration, with artifacts kept in `.test-artifacts/`.
@@ -112,7 +112,7 @@ pytest and Ruff are development tools only. Read the maintenance notes before ch
 
 **MIT License** · Copyright (c) 2026 XiaoFeng7418 ([@XiaoFeng7418](https://github.com/XiaoFeng7418)). Use, modify and redistribute the software, including commercially, while retaining the copyright and license notices. See [`LICENSE`](LICENSE), shipped as `LICENSE.txt` in the portable build.
 
-Bundled Python, Tcl/Tk and PyInstaller components remain subject to their upstream licenses; this project's MIT license does not replace them. Third-party license coverage in the current package still needs improvement; see the [dependency audit (Chinese)](docs/backlog/04-dependency-boundary.md). Exported content belongs to X island and its original authors. Thanks to Python, Tcl/Tk, PyInstaller, Rcrwrate/Xdnmb_downer and the DeepSeek agent that contributed implementation and tests.
+Bundled Python (PSF), Tcl/Tk (BSD-style), PyInstaller (GPL with bootloader exception) and OpenSSL (Apache-2.0) retain their upstream licenses. `THIRD_PARTY_LICENSES/` includes byte-for-byte copies of the build environment's `Python-LICENSE.txt` and `PyInstaller-COPYING.txt`, plus the matching upstream `OpenSSL-LICENSE.txt` and copyright-bearing `OpenSSL-README.md`; existing Tcl/Tk notices are retained. Its `README.txt` records actual versions, sources and SHA256 hashes. Builds without a matching OpenSSL original explicitly report `MISSING`; review this inventory before redistribution. Exported content belongs to the respective X island or B island platform and its original authors. Thanks to Python, Tcl/Tk, PyInstaller, Rcrwrate/Xdnmb_downer and the DeepSeek agent that contributed implementation and tests.
 
 ## Disclaimer
 

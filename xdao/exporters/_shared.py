@@ -21,7 +21,46 @@ from typing import Iterable
 
 from ..client import Post, XdaoClient
 
-_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+# 只剥离已知 HTML 标签与有明确语法的属性；不能把「a<b 且 b>c」或
+# 「<int>」当标签。属性值允许带引号的 >，避免在半个属性处提前结束。
+_HTML_TAG_NAMES = (
+    "a abbr address area article aside audio b base bdi bdo blockquote body br button "
+    "canvas caption center cite code col colgroup data datalist dd del details dfn "
+    "dialog div dl dt em embed fieldset figcaption figure font footer form h1 h2 h3 "
+    "h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li "
+    "link main map mark menu meta meter nav noscript object ol optgroup option output "
+    "p picture pre progress q rp rt ruby s samp script search section select slot "
+    "small source span strike strong style sub summary sup table tbody td template "
+    "textarea tfoot th thead time title tr track tt u ul var video wbr "
+    # 旧串仍可能包含这些历史 HTML 标签，不能因收紧识别而漏进 TXT。
+    "acronym applet basefont bgsound big blink command content dir element frame "
+    "frameset image keygen listing marquee menuitem multicol nextid nobr noembed "
+    "noframes param plaintext rb rtc shadow spacer xmp"
+)
+# HTML 允许普通属性也省略值；仅接受标准属性或 data-/aria-，避免把
+# 数学表达里的「and b」等任意单词视为一串空属性。
+_HTML_EMPTY_ATTRIBUTES = (
+    "allowfullscreen async autofocus autoplay checked controls default defer disabled "
+    "formnovalidate hidden inert ismap itemscope loop multiple muted nomodule "
+    "novalidate open playsinline readonly required reversed selected "
+    "accept accept-charset accesskey action align alt as autocomplete bgcolor border "
+    "cellpadding cellspacing charset cite class color colspan content contenteditable "
+    "crossorigin datetime dir download draggable enctype face for frame height href "
+    "hreflang http-equiv id kind label lang language list max maxlength media method "
+    "min minlength name pattern placeholder poster preload rel role rowspan sandbox "
+    "scope shape size sizes span spellcheck src srcdoc srclang srcset start step style "
+    "alink background behavior clear compact direction hspace link longdesc noshade "
+    "nowrap rules scrollamount scrolldelay text valign vlink vspace "
+    "tabindex target title translate type usemap value width wrap"
+)
+_HTML_ASSIGNED_ATTRIBUTE = r'''[A-Za-z_:][A-Za-z0-9_.:-]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)'''
+_TAG_RE = re.compile(
+    r"</?(?P<tag>" + "|".join(_HTML_TAG_NAMES.split()) + r")(?=\s|/?>)"
+    r"(?:\s+(?:" + _HTML_ASSIGNED_ATTRIBUTE + "|"
+    + "|".join(_HTML_EMPTY_ATTRIBUTES.split())
+    + r"|(?:data|aria)-[A-Za-z0-9_.:-]+))*\s*/?>",
+    re.IGNORECASE,
+)
 # 文件名里 Windows 不允许出现的字符。
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 # 控制字符（含 \x00）也不能进文件名：NTFS 会拒，或者在不同工具里表现不一。
@@ -44,9 +83,8 @@ _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
 
 def plain_text(value: str) -> str:
-    """去掉 HTML 标记，保留可读文本；``<br>`` 视为换行。"""
-    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
-    value = _TAG_RE.sub("", value)
+    """去掉真实 HTML 标记，保留字面尖括号；``<br>`` 视为换行。"""
+    value = _TAG_RE.sub(lambda match: "\n" if match["tag"].lower() == "br" else "", value)
     value = html_lib.unescape(value)
     return value.strip()
 
