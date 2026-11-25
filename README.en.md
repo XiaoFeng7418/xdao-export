@@ -28,12 +28,12 @@ PDF requires a local Chromium browser such as Edge or Chrome. If the browser can
 
 ## Download and export
 
-The latest release, **v0.24.1**, provides these files:
+The latest release, **v0.24.2**, provides these files:
 
 | File | Purpose |
 | --- | --- |
-| `xdao-export-v0.24.1-win64.zip` | Portable Windows 64-bit build; unzip and run `xdao-export.exe` |
-| `xdao-export-v0.24.1-win64.zip.sha256` | SHA256 checksum for that zip |
+| `xdao-export-v0.24.2-win64.zip` | Portable Windows 64-bit build; unzip and run `xdao-export.exe` |
+| `xdao-export-v0.24.2-win64.zip.sha256` | SHA256 checksum for that zip |
 
 1. Download both files from the [official Releases page](https://github.com/XiaoFeng7418/xdao-export/releases/latest).
 2. Verify the checksum and extract the zip to a writable folder. Keep `xdao-export.exe` beside its `_internal` folder.
@@ -49,8 +49,8 @@ Browser login supports Chromium-based browsers such as Edge and Chrome; Firefox 
 Put the zip and checksum file in the same folder, then run in PowerShell:
 
 ```powershell
-Get-FileHash .\xdao-export-v0.24.1-win64.zip -Algorithm SHA256
-Get-Content .\xdao-export-v0.24.1-win64.zip.sha256
+Get-FileHash .\xdao-export-v0.24.2-win64.zip -Algorithm SHA256
+Get-Content .\xdao-export-v0.24.2-win64.zip.sha256
 ```
 
 The SHA256 values should match. This verifies the downloaded bytes against the published checksum; it does not replace checking the download source or protect against both release assets being replaced together.
@@ -94,7 +94,7 @@ For the portable build, replace `python main.py` with `xdao-export.exe`. The [us
 | --- | --- |
 | [User guide (Chinese)](docs/USAGE.md) | Login, export formats, all CLI flags, configuration, caches and common problems |
 | [Documentation index](docs/README.md) | Release notes, privacy, signing, audits and engineering tools |
-| [Latest release notes (Chinese)](docs/RELEASE_NOTES_v0.24.1.md) | v0.24.1 changes and assets |
+| [Latest release notes (Chinese)](docs/RELEASE_NOTES_v0.24.2.md) | v0.24.2 changes and assets |
 | [Maintenance](MAINTENANCE.md) / [Handoff](HANDOFF.md) | Architecture, project rules, tests and maintenance workflows (Chinese) |
 
 `main.py` is the GUI/CLI entry point; `xdao/` contains the application, `docs/` the documentation, `tools/` the maintenance utilities, and `tests/` the offline suite. Tests use fake services and isolated configuration, with artifacts kept in `.test-artifacts/`.

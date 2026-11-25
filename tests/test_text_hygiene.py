@@ -85,6 +85,104 @@ def _endings(data: bytes) -> tuple[int, int]:
     return crlf, data.count(b"\n") - crlf
 
 
+def _markdown_spacing_issues(text: str) -> list[tuple[int, str]]:
+    lines = text.splitlines()
+    issues: list[tuple[int, str]] = []
+    blank_start: int | None = None
+    for index, line in enumerate(lines):
+        if not line.strip():
+            if blank_start is None:
+                blank_start = index
+            continue
+        if blank_start is not None:
+            if index - blank_start >= 3:
+                issues.append((blank_start + 1, "three or more consecutive blank lines"))
+            previous = lines[blank_start - 1].strip() if blank_start else ""
+            following = line.strip()
+            if (
+                len(previous) >= 2
+                and previous.startswith("|")
+                and previous.endswith("|")
+                and len(following) >= 2
+                and following.startswith("|")
+                and following.endswith("|")
+            ):
+                issues.append((blank_start + 1, "blank line between table rows"))
+            blank_start = None
+    if blank_start is not None and len(lines) - blank_start >= 3:
+        issues.append((blank_start + 1, "three or more consecutive blank lines"))
+    return issues
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("| A | B |\n| --- | --- |\n| 1 | 2 |\n", []),
+        ("| A |\n\nParagraph\n\n| B |\n", []),
+        ("|\n\n| B |\n", []),
+        ("Paragraph\n\n\nNext paragraph\n", []),
+        ("| A |\n\n| --- |\n", [(2, "blank line between table rows")]),
+        ("  | A |  \r\n \t\r\n| --- |\r\n", [(2, "blank line between table rows")]),
+        ("Paragraph\n\n\n\nNext paragraph\n", [(2, "three or more consecutive blank lines")]),
+        ("Paragraph\n \n\t\n\n", [(2, "three or more consecutive blank lines")]),
+    ],
+)
+def test_markdown_spacing_guard_distinguishes_tables_and_paragraphs(
+    text: str, expected: list[tuple[int, str]]
+) -> None:
+    assert _markdown_spacing_issues(text) == expected
+
+
+def test_tracked_markdown_has_no_split_tables_or_excess_blank_lines() -> None:
+    bad = []
+    for name in _tracked_files():
+        if Path(name).suffix.lower() != ".md":
+            continue
+        text = (ROOT / name).read_bytes().decode("utf-8-sig")
+        bad.extend(f"{name}:{number}: {issue}" for number, issue in _markdown_spacing_issues(text))
+    assert not bad, "Markdown spacing defects remain:\n  " + "\n  ".join(bad)
+
+
+def _readme_format_issues(data: bytes) -> list[str]:
+    issues = []
+    if BOM in data:
+        issues.append("UTF-8 BOM is not allowed")
+    without_crlf = data.replace(b"\r\n", b"")
+    if b"\r\n" not in data or b"\r" in without_crlf or b"\n" in without_crlf:
+        issues.append("expected single CRLF line endings")
+    return issues
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (b"# README\r\n\r\nText\r\n", []),
+        (BOM + b"# README\r\n", ["UTF-8 BOM is not allowed"]),
+        (b"# README\r\r\n", ["expected single CRLF line endings"]),
+        (b"# README\n", ["expected single CRLF line endings"]),
+        (b"# README\r\nText\n", ["expected single CRLF line endings"]),
+        (b"# README\r\nText\r", ["expected single CRLF line endings"]),
+        (b"# README", ["expected single CRLF line endings"]),
+    ],
+)
+def test_readme_format_guard_accepts_crlf_and_rejects_doubled_cr(
+    data: bytes, expected: list[str]
+) -> None:
+    assert _readme_format_issues(data) == expected
+
+
+@pytest.mark.parametrize("surface", ["worktree", "index"])
+def test_readme_worktree_and_index_use_single_crlf_without_bom(surface: str) -> None:
+    if surface == "worktree":
+        data = (ROOT / "README.md").read_bytes()
+    else:
+        done = subprocess.run(["git", "show", ":README.md"], cwd=ROOT, capture_output=True)
+        assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+        data = done.stdout
+    issues = _readme_format_issues(data)
+    assert not issues, f"README.md ({surface}): " + "; ".join(issues)
+
+
 def test_no_file_starts_with_two_boms() -> None:
     bad = [
         f"{name}：开头有 {count} 个 BOM"

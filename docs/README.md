@@ -17,9 +17,9 @@
 
 ## 版本与维护记录
 
-- [v0.24.0 发布说明](RELEASE_NOTES_v0.24.0.md)：当前版本说明与附件名称。
-- [v0.23.0 发布说明](RELEASE_NOTES_v0.23.0.md)：上一版的界面与文件名修复记录。
-- [全部发布版本](https://github.com/XiaoFeng7418/xdao-export/releases)：下载及历史变更；对应源码说明保留在本目录的 `RELEASE_NOTES_v*.md`，不合并删除历史。
+- [v0.24.2 发布说明](RELEASE_NOTES_v0.24.2.md)：当前版本说明与附件名称。
+- [v0.23.0 发布说明](RELEASE_NOTES_v0.23.0.md)：历史版本的界面与文件名修复记录。
+- [官方发布](https://github.com/XiaoFeng7418/xdao-export/releases)：当前免安装包；历史变更说明见本目录的 `RELEASE_NOTES_v*.md`。
 - [维护规范](../MAINTENANCE.md)：架构、界面设计系统、公开材料约定、测试与发布护栏。
 - [项目技术说明](../HANDOFF.md)：功能边界、模块职责、完整测试清单。
 

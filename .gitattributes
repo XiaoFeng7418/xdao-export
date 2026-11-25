@@ -5,6 +5,9 @@
 # 存进 Git 的永远是 LF，检出到 Windows 也不再自动换成 CRLF。
 * text=auto eol=lf
 
+# README keeps its existing CRLF bytes in both the index and working tree.
+README.md -text
+
 # Windows 批处理必须留 CRLF，否则个别环境（老 cmd.exe）解析会出问题。
 *.cmd text eol=crlf
 *.bat text eol=crlf

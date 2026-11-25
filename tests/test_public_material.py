@@ -49,7 +49,7 @@ _CONVERSATION_PARTS = (
     ("这", "一轮"), ("上", "一轮"), ("那", "一轮"),
     ("刚", "才"), ("顺", "手"), ("顺", "带"), ("人", "肉"),
     ("拍", "脑袋"), ("冤", "案"), ("踩", "坑"), ("踩", "雷"),
-    ("岛友", "原话"), ("使用者", "问"), ("有", "用户"), ("某位", "用户"),
+    ("岛" + "友", "原话"), ("使用者", "问"), ("有", "用户"), ("某位", "用户"),
     ("投诉", "过"), ("贴", "回来"), ("发", "我"), ("发给", "我"), ("发给", "维护者"),
     ("等有", "结果再说"), ("用户", "决定"),
     ("我", "们"), ("咱", "们"), ("我", "把"), ("我", "事后"),
@@ -61,7 +61,7 @@ CONVERSATION = re.compile("|".join(map(re.escape, CONVERSATION_TERMS)), re.IGNOR
 HANDOFF_RESIDUE = re.compile(r"(?<!提)" + "交" + "接" + r"(?!口)")
 
 _ADDRESS_PARTS = (
-    ("使用者", "问"), ("岛友", "原话"), ("有", "用户"), ("某位", "用户"),
+    ("使用者", "问"), ("岛" + "友", "原话"), ("有", "用户"), ("某位", "用户"),
     ("用户", "决定"), ("按你", "要求"), ("你", "说"), ("你", "要求"),
     ("你", "报"), ("你", "反馈"), ("你", "提到"), ("你", "反映"),
     ("你", "提的"), ("你", "发的"), ("你", "给的"), ("你", "要的"),
@@ -184,6 +184,26 @@ def _has_private_marker(text: str) -> bool:
     return bool(PRIVATE_MARKER.search(text) or USERNAME_VARIANT.search(text))
 
 
+def _has_community_address(text: str) -> bool:
+    return "岛" + "友" in text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("岛" + "友", True),
+        ("面向岛" + "友的说明", True),
+        ("欢迎岛" + "友", True),
+        ("用户说明", False),
+        ("岛屿与朋友", False),
+    ],
+)
+def test_community_address_guard_catches_standalone_and_embedded_terms(
+    text: str, expected: bool
+) -> None:
+    assert _has_community_address(text) is expected
+
+
 def _question_residue(text: str) -> bool:
     without_urls = re.sub(r"https?://[^\s)>`]+", "", text, flags=re.IGNORECASE)
     without_url_params = re.sub(r"\?[A-Za-z_][\w-]*=", "", without_urls)
@@ -199,8 +219,11 @@ def test_public_material_has_no_private_identifiers_or_conversation_artifacts() 
     bad: list[tuple[str, int, str]] = []
     for relative, text in _tracked_text_files():
         for number, line in enumerate(text.splitlines(), 1):
-            if _has_private_marker(line) or CHAT_ID.search(line) or re.search(
-                "发" + "给我" + "|发" + "我" + "|我替" + "用户", line
+            if (
+                _has_private_marker(line)
+                or _has_community_address(line)
+                or CHAT_ID.search(line)
+                or re.search("发" + "给我" + "|发" + "我" + "|我替" + "用户", line)
             ):
                 bad.append((relative, number, line.strip()))
         for number, surface in _narrative_surfaces(relative, text):
