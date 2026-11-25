@@ -1,5 +1,7 @@
 # X岛串导出工具
 
+> 本项目已停止后续功能开发与日常维护，当前 `v0.24.2` 按现状公开归档保留。
+
 **简体中文** · [English](README.en.md)
 
 **把 X 岛（nmbxd1.com）的长串完整存到本地，随时离线阅读，也支持 B 岛（bog.ac）公开串，无需 B 岛登录。** X 岛登录后可读取游客 100 页限制以外的内容；支持 HTML、PDF、EPUB、Markdown、TXT，图片可内嵌，抓取中断后可续传。
@@ -56,7 +58,7 @@ Get-Content .\xdao-export-v0.24.2-win64.zip.sha256
 比较两处的 SHA256 摘要。相同表示文件与发布页上的校验值一致；它不能替代对下载来源的确认，也不能防止 zip 与校验文件同时被替换。
 
 ### 代码签名状态（Code signing policy）
-当前发布包未进行代码签名，Windows 可能显示「未知发布者」或 SmartScreen 警告。请从官方 Releases 页面下载，并使用同名 `.sha256` 文件校验完整性。仓库已预留 GitHub Actions + SignPath 流程但尚未启用；未来满足条件后再按流程接入。详见[签名状态与发布完整性](docs/SIGNING.md)。
+当前发布包未进行代码签名，Windows 可能显示「未知发布者」或 SmartScreen 警告。请从官方 Releases 页面下载，并使用同名 `.sha256` 文件校验完整性。GitHub Actions + SignPath 相关配置仅作历史归档保留，流程尚未启用，当前无启用计划。详见[签名状态与发布完整性](docs/SIGNING.md)。
 ## 从源码运行
 
 需要 **Python 3.10+**。界面还需要 tkinter（Windows 官方 Python 安装包通常自带）；运行时仅使用 Python 标准库，无需安装第三方 Python 包。
