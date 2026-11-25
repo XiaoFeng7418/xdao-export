@@ -1,5 +1,7 @@
 # Xdao Thread Exporter
 
+> This project has stopped further feature development and routine maintenance. The current `v0.24.2` is retained as a public archive, as is.
+
 [简体中文](README.md) · **English**
 
 **Keep complete X island (nmbxd1.com) threads on disk for offline reading; public B island (bog.ac) threads are also supported without a B island login.** Log in to X island to read beyond its guest limit of 100 pages, then export to HTML, PDF, EPUB, Markdown or TXT. Embed images, resume interrupted downloads, and follow new replies.
@@ -57,7 +59,7 @@ The SHA256 values should match. This verifies the downloaded bytes against the p
 
 ### Code signing status
 
-Current releases are unsigned. Windows may show “Unknown publisher” or a SmartScreen warning. Download from the official Releases page and verify file integrity with the matching `.sha256` file. A GitHub Actions + SignPath workflow is reserved but not enabled; it may be connected when project requirements are met. See [signing status and release integrity (Chinese)](docs/SIGNING.md).
+Current releases are unsigned. Windows may show “Unknown publisher” or a SmartScreen warning. Download from the official Releases page and verify file integrity with the matching `.sha256` file. The GitHub Actions + SignPath configuration is retained only as a historical archive. The workflow remains disabled, with no current plans to enable it. See [signing status and release integrity (Chinese)](docs/SIGNING.md).
 
 ## Run from source
 
